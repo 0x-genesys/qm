@@ -136,9 +136,7 @@ export function createMonitorBroker(deps: MonitorBrokerDeps): MonitorBroker {
       }
       const arm = async () => {
         if (await deps.isCancelled?.()) throw new Error("turn stopped");
-        const existing = (await deps.store.list()).find(
-          (m) => m.enabled && m.processId === processId && m.threadRef === deps.threadRef,
-        );
+        const existing = (await deps.store.enabled([deps.threadRef])).find((m) => m.processId === processId);
         if (existing) {
           await deps.store.update(existing.id, {
             ...(opts?.instructions !== undefined ? { instructions: opts.instructions } : {}),

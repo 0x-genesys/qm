@@ -1767,7 +1767,7 @@ export function buildApp(
   const environments = config.databaseUrl
     ? createPostgresEnvironmentStore(config.databaseUrl)
     : createMemoryEnvironmentStore();
-  const monitors = createMonitorStore(artifactMap<Monitor>("monitors"));
+  const monitors = createMonitorStore(artifactMap<Monitor>("monitors", ["threadRef"]));
   const loopStore = createLoopStore(artifactMap<Loop>("loops"));
   const loopItemsMap = artifactMap<LoopItem>("loop_items", ["loopId"]);
   const loopOwnerCache = new Map<string, string>();

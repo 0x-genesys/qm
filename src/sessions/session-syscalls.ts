@@ -473,9 +473,8 @@ export async function stopSessionTree(
 ): Promise<boolean> {
   let stopped = false;
   const sessions = (await treeSessions(deps.sessions, root)).filter((session) => session.scopeId === root.scopeId);
-  const threads = new Set(sessions.map((session) => session.threadRef));
-  for (const monitor of (await deps.monitors?.enabled()) ?? []) {
-    if (monitor.ownerScopeId !== root.scopeId || !threads.has(monitor.threadRef)) continue;
+  for (const monitor of (await deps.monitors?.enabled(sessions.map((session) => session.threadRef))) ?? []) {
+    if (monitor.ownerScopeId !== root.scopeId) continue;
     await deps.monitors!.setEnabled(monitor.id, false);
     stopped = true;
   }
