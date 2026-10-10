@@ -4,7 +4,7 @@ import { memoryBoundedEntries, memoryContextPayload, nextMemoryContext } from ".
 import { isBackendCredential } from "../credentials/keychain.ts";
 import { resolveBrowserModel } from "../model/browser-model.ts";
 import { memoryRecallDelta } from "../memory/recall-delta.ts";
-import { requiresDelegation, delegatedAuthorizationOrigin } from "../sessions/session-syscalls.ts";
+import { requiresDelegation, delegatedAuthorizationOrigin, sessionRunCancelled } from "../sessions/session-syscalls.ts";
 import {
   MAX_DOCUMENT_BYTES,
   documentText,
@@ -2589,6 +2589,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 owner: actor.id,
                 ownerScopeId: scopeId,
                 threadRef: conversation.threadRef,
+                advisoryLock: deps.advisoryLock,
+                isCancelled: async () =>
+                  turnAbort.signal.aborted ||
+                  !!(deps.runs && deps.signals && (await sessionRunCancelled(deps.runs, deps.signals, input.runId))),
                 ...(defaultDestination ? { destination: defaultDestination } : {}),
               })
             : undefined;

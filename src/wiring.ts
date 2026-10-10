@@ -1876,6 +1876,7 @@ export function buildApp(
     signals: runSignals,
     maxAttempts,
     advisoryLock,
+    monitors,
     prepareRequest: prepareSessionRequest,
     authorize: (session, actorId) => canWriteScope(actorId, session.scopeId),
     conversations: {
@@ -2525,7 +2526,7 @@ export function buildApp(
           deliveries,
           idempotency,
           identity,
-          run: (req) => app.turn(req),
+          run: (req, monitorId) => app.turn(req, { monitorId }),
           directory,
           currentScopeMembers,
           sessions,

@@ -17,6 +17,7 @@ import type { OrchestratorInput } from "../core/orchestrator/types.ts";
 import type { Run, RunStore } from "../runs/run-store.ts";
 import type { RunSignalStore } from "../runs/run-signal-store.ts";
 import type { SessionStore } from "./session-store.ts";
+import type { MonitorStore } from "../monitors/monitor-store.ts";
 import { xmlAttrEscape, xmlEscape } from "../util/message-tag.ts";
 
 const SUBAGENT_THREAD_PREFIX = "agent:main:subagent:";
@@ -241,6 +242,7 @@ export interface SessionSyscallDeps {
   >;
   runs: Pick<RunStore, "enqueue" | "inFlightForThread" | "latestForThread" | "getByDedupKey" | "get" | "withdraw">;
   signals: Pick<RunSignalStore, "send" | "pending">;
+  monitors?: Pick<MonitorStore, "enabled" | "setEnabled">;
   maxAttempts: number;
   treeRunCap?: number;
   advisoryLock?: AdvisoryLock;
@@ -442,7 +444,7 @@ async function treeSessions(sessions: Pick<SessionStore, "childrenOf">, root: Se
   return all;
 }
 
-async function sessionRunCancelled(
+export async function sessionRunCancelled(
   runs: Pick<RunStore, "get">,
   signals: Pick<RunSignalStore, "pending">,
   runId: string | undefined,
@@ -465,12 +467,19 @@ export async function stopSessionTree(
     sessions: Pick<SessionStore, "childrenOf">;
     runs: Pick<RunStore, "inFlightForThread" | "withdraw" | "get">;
     signals: Pick<RunSignalStore, "send">;
+    monitors?: Pick<MonitorStore, "enabled" | "setEnabled">;
   },
   root: Session,
 ): Promise<boolean> {
   let stopped = false;
-  for (const session of await treeSessions(deps.sessions, root)) {
-    if (session.scopeId !== root.scopeId) continue;
+  const sessions = (await treeSessions(deps.sessions, root)).filter((session) => session.scopeId === root.scopeId);
+  const threads = new Set(sessions.map((session) => session.threadRef));
+  for (const monitor of (await deps.monitors?.enabled()) ?? []) {
+    if (monitor.ownerScopeId !== root.scopeId || !threads.has(monitor.threadRef)) continue;
+    await deps.monitors!.setEnabled(monitor.id, false);
+    stopped = true;
+  }
+  for (const session of sessions) {
     for (const run of await deps.runs.inFlightForThread(session.threadRef)) {
       await deps.signals.send(run.id, { kind: "abort" });
       if (run.status === "pending") await deps.runs.withdraw(run.id);
