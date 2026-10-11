@@ -8,6 +8,7 @@ import {
   ACTIVITY_GRACE_MS,
   ACTIVITY_TOUCH_INTERVAL_MS,
   createModalSandbox,
+  HYDRATION_WAIT_MS,
   type StoredModalSandbox,
 } from "../src/sandbox/modal-sandbox.ts";
 import { sandboxScopeName } from "../src/sandbox/exec-sandbox-base.ts";
@@ -465,7 +466,7 @@ test("reapDeepIdle spares a box running a detached background job", async () => 
 test("unhydrated named homes are refused before adoption and never overwrite checkpoints", async () => {
   await fake.client.create({ name: scopeName() });
   const counting = instrumentedSnapshotStore();
-  const s = make({ snapshots: counting.store, hydrationWaitMs: 50 });
+  const s = make({ snapshots: counting.store });
   await assert.rejects(s.provision(layers), /never finished hydrating/);
   assert.equal(counting.puts(), 0);
   assert.equal(fake.current(scopeName())?.state, "running");
@@ -728,9 +729,9 @@ test("interrupted hydration cannot expose a partially restored home through stor
   const first = make({ store });
   const handle = await first.provision(layers);
   await first.writeFile(handle, "working.txt", "do not overwrite");
-  await store.merge(scope, { hydrationPending: true });
-  const restarted = make({ store, hydrationWaitMs: 50 });
-  await assert.rejects(restarted.provision(layers), /hydration was interrupted/);
+  await store.merge(scope, { hydrationPending: true, createdAtMs: Date.now() - HYDRATION_WAIT_MS });
+  const restarted = make({ store });
+  await assert.rejects(restarted.provision(layers), /hydration is still running on another core or was interrupted/);
   assert.equal(fake.createdCount(scopeName()), 1);
   const status = await restarted.computerStatus!(scope);
   assert.match(status.recovery?.error ?? "", /computer restart/);
@@ -771,7 +772,7 @@ for (const path of ["stored", "name-conflict"] as const) {
         return fake.client.fromName(name);
       },
     };
-    const backend = make({ store, client, hydrationWaitMs: 50 });
+    const backend = make({ store, client });
     await assert.rejects(backend.provision(layers), /never finished hydrating/);
     assert.equal(fake.current(scopeName())?.state, "running");
     assert.equal(fake.createdCount(scopeName()), 1);
@@ -1019,6 +1020,56 @@ test("the reaper spares a sandbox active within the touch grace window", async (
   assert.equal(fake.current(scopeName()), null);
 });
 
+test("a command running past the grace window keeps its sandbox from being reaped", async () => {
+  const store = createMemoryMap<StoredModalSandbox>();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const wrap = (session: Awaited<ReturnType<ModalClient["create"]>>) => ({
+    ...session,
+    async runCommand(script: string, options?: Parameters<typeof session.runCommand>[1]) {
+      if (script.includes("long-build")) {
+        entered.resolve();
+        await release.promise;
+      }
+      return session.runCommand(script, options);
+    },
+  });
+  const client: ModalClient = {
+    ...fake.client,
+    create: async (options) => wrap(await fake.client.create(options)),
+    fromId: async (id) => wrap(await fake.client.fromId(id)),
+  };
+  const s = make({ store, client });
+  const h = await s.provision(layers);
+  await s.teardown(h);
+  mock.timers.enable({ apis: ["Date", "setInterval"], now: Date.now() });
+  try {
+    const running = s.run(h, "long-build");
+    await entered.promise;
+    for (let i = 0; i < 4; i++) {
+      mock.timers.tick(ACTIVITY_TOUCH_INTERVAL_MS);
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.deepEqual(await s.reapDeepIdle!(1), { reaped: 0 });
+    release.resolve();
+    await running;
+  } finally {
+    mock.timers.reset();
+  }
+  assert.equal(fake.current(scopeName())?.state, "running");
+});
+
+test("an expiring sandbox in active use is retired only once expiry is imminent", async () => {
+  const store = createMemoryMap<StoredModalSandbox>();
+  const s = make({ store });
+  await s.teardown(await s.provision(layers));
+  await store.merge(scope, { expiresAtMs: Date.now() + 20 * 60_000, lastActivityMs: Date.now() });
+  assert.deepEqual(await s.reapDeepIdle!(6 * 3600_000), { reaped: 0 });
+  assert.equal(fake.current(scopeName())?.state, "running");
+  await store.merge(scope, { expiresAtMs: Date.now() + 10 * 60_000 });
+  assert.deepEqual(await s.reapDeepIdle!(6 * 3600_000), { reaped: 1 });
+});
+
 test("two cores provisioning one scope converge on a single sandbox and the loser cleans up", async () => {
   const store = createMemoryMap<StoredModalSandbox>();
   const barrier = Promise.withResolvers<void>();
@@ -1078,7 +1129,7 @@ test("a core acting on a stale row defers to the replacement another core alread
   assert.equal(await second.readFile(b, "keep.txt"), "rotated home\n");
 });
 
-test("a core provisioning while another hydrates waits for the marker instead of racing", async () => {
+test("a core provisioning while another hydrates waits for the hydrating core instead of racing", async () => {
   const store = createMemoryMap<StoredModalSandbox>();
   const snapshots = instrumentedSnapshotStore().store;
   const first = make({ store, snapshots });
@@ -1088,16 +1139,15 @@ test("a core provisioning while another hydrates waits for the marker instead of
   fake.terminate(a.id);
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const slow: ModalClient = {
-    ...fake.client,
-    async create(options) {
-      const session = await fake.client.create(options);
+  const slow = {
+    ...snapshots,
+    async open(id: string) {
       entered.resolve();
       await release.promise;
-      return session;
+      return snapshots.open(id);
     },
   };
-  const hydrating = make({ store, snapshots, client: slow }).provision(layers);
+  const hydrating = make({ store, snapshots: slow }).provision(layers);
   await entered.promise;
   const waiter = make({ store, snapshots });
   const waiting = waiter.provision(layers);
