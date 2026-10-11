@@ -1,4 +1,5 @@
 import { basename } from "node:path/posix";
+import { randomUUID } from "node:crypto";
 import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
@@ -209,8 +210,11 @@ export function createHomeSnapshotOps<S>(opts: HomeSnapshotOpsOptions<S>): HomeS
   const timeoutMs = opts.timeoutMs ?? SNAPSHOT_TIMEOUT_MS;
   const scratchInHome = homeTarPath.startsWith(`${homeDir}/`);
   const prunePaths = scratchInHome ? [...opts.prunePaths, `./${basename(homeTarPath)}*`] : opts.prunePaths;
-  const partPath = (i: number): string => `${homeTarPath}.${i}.part`;
-  const listPath = `${homeTarPath}.list`;
+  const scratch = (): { tar: string; list: string; part: (i: number) => string } => {
+    const tar = `${homeTarPath}.${randomUUID().slice(0, 8)}`;
+    return { tar, list: `${tar}.list`, part: (i) => `${tar}.${i}.part` };
+  };
+  type Scratch = ReturnType<typeof scratch>;
 
   const startClock = (): (() => number) => {
     const deadline = Date.now() + timeoutMs;
@@ -229,27 +233,33 @@ export function createHomeSnapshotOps<S>(opts: HomeSnapshotOpsOptions<S>): HomeS
   ): Promise<{ exitCode: number; stdout: string; stderr: string }> =>
     io.runCommand(session, script, Math.min(cap, left()));
 
-  const removeScratch = (session: S, what: string): Promise<void> =>
+  const removeScratch = (session: S, what: string, files: Scratch): Promise<void> =>
     io
-      .runCommand(session, `rm -f ${shq(homeTarPath)} ${shq(homeTarPath)}.*`, 30_000)
+      .runCommand(session, `rm -f ${shq(files.tar)} ${shq(files.tar)}.*`, 30_000)
       .then(() => undefined)
       .catch(swallowAs(`${label}-sandbox: ${what}`, undefined));
 
-  async function tarSize(session: S, left: () => number): Promise<number> {
-    const stat = await run(session, `wc -c < ${shq(homeTarPath)}`, 30_000, left);
+  async function tarSize(session: S, files: Scratch, left: () => number): Promise<number> {
+    const stat = await run(session, `wc -c < ${shq(files.tar)}`, 30_000, left);
     const size = Number(stat.stdout.trim());
     if (stat.exitCode !== 0 || !Number.isSafeInteger(size) || size <= 0)
       throw new Error(`${label} snapshot read-back empty`);
     return size;
   }
 
-  async function readPart(session: S, i: number, expected: number, left: () => number): Promise<Uint8Array> {
-    const part = partPath(i);
+  async function readPart(
+    session: S,
+    files: Scratch,
+    i: number,
+    expected: number,
+    left: () => number,
+  ): Promise<Uint8Array> {
+    const part = files.part(i);
     let detail = "";
     for (let attempt = 0; attempt < 2; attempt++) {
       const cut = await run(
         session,
-        `dd if=${shq(homeTarPath)} of=${shq(part)} bs=${partBytes} skip=${i} count=1`,
+        `dd if=${shq(files.tar)} of=${shq(part)} bs=${partBytes} skip=${i} count=1`,
         180_000,
         left,
       );
@@ -265,8 +275,14 @@ export function createHomeSnapshotOps<S>(opts: HomeSnapshotOpsOptions<S>): HomeS
     throw new Error(`${label} snapshot part ${i}: ${detail}`);
   }
 
-  async function writePart(session: S, i: number, bytes: Uint8Array, left: () => number): Promise<void> {
-    const part = partPath(i);
+  async function writePart(
+    session: S,
+    files: Scratch,
+    i: number,
+    bytes: Uint8Array,
+    left: () => number,
+  ): Promise<void> {
+    const part = files.part(i);
     let lastErr: unknown;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -279,7 +295,7 @@ export function createHomeSnapshotOps<S>(opts: HomeSnapshotOpsOptions<S>): HomeS
       }
     }
     if (lastErr !== undefined) throw lastErr;
-    const appended = await run(session, `cat ${shq(part)} >> ${shq(homeTarPath)} && rm -f ${shq(part)}`, 180_000, left);
+    const appended = await run(session, `cat ${shq(part)} >> ${shq(files.tar)} && rm -f ${shq(part)}`, 180_000, left);
     if (appended.exitCode !== 0)
       throw new Error(`${label} hydrate part ${i}: append failed: ${appended.stderr.slice(0, 200)}`);
   }
@@ -287,19 +303,20 @@ export function createHomeSnapshotOps<S>(opts: HomeSnapshotOpsOptions<S>): HomeS
   return {
     async snapshotHome(scope, session): Promise<void> {
       const left = startClock();
+      const files = scratch();
       const prune = prunePaths.length
         ? `\\( ${prunePaths.map((p) => `-path ${shq(p)}`).join(" -o ")} \\) -prune -o `
         : "";
-      const script = `cd ${shq(homeDir)} 2>/dev/null || exit 0; find . ${prune}\\( ! -type d -o -exec test -r {} \\; \\) -print0 > ${shq(listPath)} 2>/dev/null; tar --no-recursion --null -T ${shq(listPath)} -cf ${shq(homeTarPath)}; rc=$?; rm -f ${shq(listPath)}; exit $rc`;
+      const script = `cd ${shq(homeDir)} 2>/dev/null || exit 0; find . ${prune}\\( ! -type d -o -exec test -r {} \\; \\) -print0 > ${shq(files.list)} 2>/dev/null; tar --no-recursion --null -T ${shq(files.list)} -cf ${shq(files.tar)}; rc=$?; rm -f ${shq(files.list)}; exit $rc`;
       try {
         const made = await run(session, script, 180_000, left);
         if (made.exitCode !== 0) throw new Error(`${label} snapshot tar failed: ${made.stderr.slice(0, 200)}`);
-        const size = await tarSize(session, left);
+        const size = await tarSize(session, files, left);
         if (size > maxBytes) throw new SnapshotTooLargeError(label, size, maxBytes);
         const upload = await withTimeout(() => store.createUpload(scope), left(), `${label} snapshot upload start`);
         try {
           for (let i = 0, offset = 0; offset < size; i++, offset += partBytes) {
-            const bytes = await readPart(session, i, Math.min(partBytes, size - offset), left);
+            const bytes = await readPart(session, files, i, Math.min(partBytes, size - offset), left);
             await withTimeout(() => upload.addPart(bytes), left(), `${label} snapshot part ${i} upload`);
           }
           await withTimeout(() => upload.complete(), left(), `${label} snapshot upload completion`);
@@ -308,18 +325,19 @@ export function createHomeSnapshotOps<S>(opts: HomeSnapshotOpsOptions<S>): HomeS
           throw e;
         }
       } finally {
-        await removeScratch(session, "snapshot cleanup");
+        await removeScratch(session, "snapshot cleanup", files);
       }
     },
 
     async hydrateHome(scope, session): Promise<boolean> {
       const left = startClock();
+      const files = scratch();
       const stored = await withTimeout(() => store.open(scope), left(), `${label} hydrate open`);
       if (!stored) return false;
       if (!Number.isSafeInteger(stored.size) || stored.size <= 0)
         throw new Error(`${label} hydrate: invalid snapshot size ${stored.size}`);
       try {
-        const started = await run(session, `mkdir -p ${shq(homeDir)} && : > ${shq(homeTarPath)}`, 30_000, left);
+        const started = await run(session, `mkdir -p ${shq(homeDir)} && : > ${shq(files.tar)}`, 30_000, left);
         if (started.exitCode !== 0)
           throw new Error(`${label} hydrate: truncate failed: ${started.stderr.slice(0, 200)}`);
         let total = 0;
@@ -328,26 +346,26 @@ export function createHomeSnapshotOps<S>(opts: HomeSnapshotOpsOptions<S>): HomeS
           total += piece.length;
           if (total > stored.size)
             throw new Error(`${label} hydrate: received ${total} bytes, expected ${stored.size}`);
-          await writePart(session, i++, piece, left);
+          await writePart(session, files, i++, piece, left);
         }
         if (total !== stored.size)
           throw new Error(`${label} hydrate: received ${total} bytes, expected ${stored.size}`);
-        const written = await tarSize(session, left);
+        const written = await tarSize(session, files, left);
         if (written !== stored.size)
           throw new Error(`${label} hydrate: wrote ${written} bytes, expected ${stored.size}`);
-        const validated = await run(session, `tar -tf ${shq(homeTarPath)} > /dev/null`, 180_000, left);
+        const validated = await run(session, `tar -tf ${shq(files.tar)} > /dev/null`, 180_000, left);
         if (validated.exitCode !== 0)
           throw new Error(`${label} hydrate archive invalid: ${validated.stderr.slice(0, 200)}`);
         const r = await run(
           session,
-          `cd ${shq(homeDir)} && tar -xf ${shq(homeTarPath)}; rc=$?; rm -f ${shq(homeTarPath)}; exit $rc`,
+          `cd ${shq(homeDir)} && tar -xf ${shq(files.tar)}; rc=$?; rm -f ${shq(files.tar)}; exit $rc`,
           180_000,
           left,
         );
         if (r.exitCode !== 0) throw new Error(`${label} hydrate extract failed: ${r.stderr.slice(0, 200)}`);
         return true;
       } finally {
-        await removeScratch(session, "hydrate cleanup");
+        await removeScratch(session, "hydrate cleanup", files);
       }
     },
   };
