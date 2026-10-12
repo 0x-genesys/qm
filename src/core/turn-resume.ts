@@ -50,7 +50,7 @@ export function isUserTurnBoundary(entry: SessionEntry): boolean {
   return (
     entry.type === "user" &&
     !isSteerEntry(entry) &&
-    (entry.payload as { hidden?: boolean } | null)?.hidden !== true &&
+    typeof (entry.payload as { resumedFromSeq?: number } | null)?.resumedFromSeq !== "number" &&
     !isOverheardEntry(entry) &&
     !isResumeNote(entryText(entry))
   );

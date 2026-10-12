@@ -224,8 +224,8 @@ test("resumed documents include the current upload and steers, not earlier turns
     { seq: 2, type: "user", payload: { attachments: [current] } },
     { seq: 3, type: "user", payload: { attachments: [steer], steered: true } },
     { seq: 4, type: "user", payload: { text: "Be concise", steered: true } },
-    { seq: 5, type: "user", payload: { text: "Resume", hidden: true } },
-    { seq: 6, type: "user", payload: { attachments: [meta] } },
+    { seq: 5, type: "user", payload: { text: "Resume", hidden: true, resumedFromSeq: 2 } },
+    { seq: 6, type: "user", payload: { attachments: [meta], hidden: true } },
   ] as SessionEntry[];
   assert.deepEqual(resumedDocumentMetas(history), []);
   assert.deepEqual(resumedDocumentMetas(history, 2), [current, steer]);

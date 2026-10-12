@@ -3193,9 +3193,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           .join("\n\n");
         const baseText = input.proactiveOpener && !input.text.trim() ? PROACTIVE_OPENER_PROMPT : input.text;
         const pausedTurnUserEntry = input.approval
-          ? approvalRecord?.turnUserSeq !== undefined
-            ? visibleHistory.find((entry) => entry.seq === approvalRecord.turnUserSeq)
-            : [...visibleHistory].reverse().find((e) => e.type === "user" && !isOverheardEntry(e))
+          ? visibleHistory.findLast(
+              (entry) =>
+                entry.type === "user" &&
+                !isOverheardEntry(entry) &&
+                (approvalRecord?.turnUserSeq === undefined || entry.seq === approvalRecord.turnUserSeq),
+            )
           : undefined;
         const resumedFromSeq = pausedTurnUserEntry?.seq;
         const approvalReplay =
@@ -3513,6 +3516,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 if (input.displayText?.trim() && payload.text === input.text && typeof payload.display !== "string")
                   payload.display = input.displayText;
                 if ((syntheticPrompt || continuation) && payload.steered !== true) payload.hidden = true;
+                if (approvalReplay && payload.steered !== true) payload.resumedFromSeq = resumedFromSeq;
                 return { ...tainted, payload };
               })();
               const appended = await withManagedRosterVersion(() => deps.sessions.append(lease, stored));
