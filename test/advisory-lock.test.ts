@@ -3,7 +3,7 @@ import { upgradeLegacySandboxes, type SandboxResourceUpgradeMarker } from "../sr
 import { createPostgresMap } from "../src/persistence/durable-map.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createPgPool, configurePgPooling } from "../src/persistence/pg-pool.ts";
+import { createPgPool, configurePgPooling, setSandboxPoolMax, type PoolClient } from "../src/persistence/pg-pool.ts";
 import {
   createPostgresAdvisoryLock,
   createNoopAdvisoryLock,
@@ -14,6 +14,68 @@ const URL = process.env.DATABASE_URL;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the advisory-lock tests";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+test(
+  "sandbox capacity changes wake waiters and drain excess clients without dropping active locks",
+  { skip, timeout: 10_000 },
+  async () => {
+    configurePgPooling({ databaseUrl: URL!, sandboxMax: 1 });
+    const pg = createPgPool(URL!);
+    const held = new Set<PoolClient>();
+    try {
+      const pool = await pg.sessionPool("sandbox");
+      const first = await pool.connect();
+      held.add(first);
+      await first.query("SELECT pg_advisory_lock(827360195)");
+      const pending = Array.from({ length: 3 }, async () => {
+        const client = await pool.connect();
+        held.add(client);
+        return client;
+      });
+      assert.equal(pool.waitingCount, 3);
+      setSandboxPoolMax(URL!, 4);
+      await Promise.all(pending);
+      assert.equal(pool.waitingCount, 0);
+      assert.equal(pool.totalCount, 4);
+      assert.equal(await pg.sessionPool("sandbox"), pool);
+
+      setSandboxPoolMax(URL!, 1);
+      assert.equal(pool.totalCount, 4);
+      assert.equal((await pg.q("SELECT pg_try_advisory_xact_lock(827360195) AS acquired"))[0]!.acquired, false);
+      const waiting = pool.connect().then((client) => {
+        held.add(client);
+        return client;
+      });
+      for (const client of [...held].filter((client) => client !== first)) {
+        held.delete(client);
+        client.release();
+      }
+      assert.equal(pool.totalCount, 1);
+      assert.equal(pool.waitingCount, 1);
+      await first.query("SELECT pg_advisory_unlock(827360195)");
+      held.delete(first);
+      first.release();
+      const next = await waiting;
+      assert.equal((await next.query("SELECT 42 AS answer")).rows[0].answer, 42);
+      held.delete(next);
+      next.release();
+
+      setSandboxPoolMax(URL!, 4);
+      const idle = await Promise.all(Array.from({ length: 4 }, () => pool.connect()));
+      idle.forEach((client) => client.release());
+      assert.equal(pool.idleCount, 4);
+      setSandboxPoolMax(URL!, 2);
+      assert.equal(pool.idleCount, 2);
+      assert.equal(pool.totalCount, 2);
+      assert.throws(() => setSandboxPoolMax(URL!, 0), /positive safe integer/);
+      assert.equal(pool.options.max, 2);
+    } finally {
+      held.forEach((client) => client.release(true));
+      await pg.close();
+      configurePgPooling({});
+    }
+  },
+);
 
 test("no-op mutex: withLock runs fn and returns its value (single-instance dev/test path)", async () => {
   const lock = createNoopAdvisoryLock();

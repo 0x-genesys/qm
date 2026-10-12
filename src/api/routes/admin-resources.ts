@@ -146,6 +146,35 @@ function channelContainer(scope: string): string | undefined {
 
 export const ADMIN_RESOURCES: readonly AdminResource[] = [
   {
+    id: "sandbox-settings",
+    kind: "custom",
+    target: "org",
+    clearable: true,
+    label:
+      "Sandbox coordination connections per core process. PUT { connectionPoolMax: positive integer }; null restores the deployment default. Applies live across processes; decreases drain active operations. Process count multiplies database usage; query and general coordination pools remain separate.",
+    readKey: "sandboxSettings",
+    get: (deps) => deps.config!.getSandboxSettings(),
+    apply: generic<number | null>(
+      (body, { scope }) => {
+        const bad = orgOnly(scope, "sandbox settings are organization-wide");
+        if (bad) return bad;
+        if (
+          !body ||
+          typeof body !== "object" ||
+          Array.isArray(body) ||
+          Object.keys(body).some((key) => key !== "connectionPoolMax")
+        )
+          return { error: "sandbox-settings requires { connectionPoolMax: positive integer or null }" };
+        const max = (body as { connectionPoolMax?: unknown }).connectionPoolMax;
+        if (max === null) return { value: null };
+        if (typeof max !== "number" || !Number.isSafeInteger(max) || max < 1)
+          return { error: "connectionPoolMax must be a positive safe integer or null" };
+        return { value: max };
+      },
+      (deps, _scope, max) => deps.config!.setSandboxPoolMax(max),
+    ),
+  },
+  {
     id: "security-posture",
     kind: "enum",
     target: "any",

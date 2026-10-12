@@ -33,11 +33,54 @@ export function configurePgPooling(config: PgPoolingConfig): void {
     throw new Error("DATABASE_SANDBOX_POOL_MAX must be a positive safe integer");
   }
   poolingConfig = { ...config };
+  if (config.databaseUrl) sandboxPoolLimits.delete(config.databaseUrl);
+  else sandboxPoolLimits.clear();
 }
 
 const migrationQueue = createKeyedQueue();
 
 const sharedPools = new Map<string, { pool: Pool; users: number }>();
+const sandboxPoolLimits = new Map<string, number>();
+
+type ResizableSandboxPool = Pool & {
+  _idle: Array<{ client: PoolClient }>;
+  _remove(client: PoolClient): void;
+  _pulseQueue(): void;
+};
+
+export function validateSandboxPoolMax(value: unknown): asserts value is number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    throw new Error("sandbox connectionPoolMax must be a positive safe integer");
+  }
+}
+
+function resizableSandboxPool(pool: Pool): Pool {
+  const adjustable = pool as ResizableSandboxPool;
+  const pulse = adjustable._pulseQueue.bind(adjustable);
+  adjustable._pulseQueue = () => {
+    while (pool.totalCount > pool.options.max! && adjustable._idle.length) {
+      adjustable._remove(adjustable._idle.at(-1)!.client);
+    }
+    do {
+      pulse();
+    } while (
+      !pool.ending &&
+      !pool.ended &&
+      pool.waitingCount > 0 &&
+      (pool.idleCount > 0 || pool.totalCount < pool.options.max!)
+    );
+  };
+  return pool;
+}
+
+export function setSandboxPoolMax(connectionString: string, max: number): void {
+  validateSandboxPoolMax(max);
+  sandboxPoolLimits.set(connectionString, max);
+  const entry = sharedPools.get(`sandbox:${connectionString}`);
+  if (!entry || entry.pool.options.max === max) return;
+  entry.pool.options.max = max;
+  (entry.pool as ResizableSandboxPool)._pulseQueue();
+}
 
 async function retainPool(
   connectionString: string,
@@ -53,7 +96,7 @@ async function retainPool(
   const max = {
     query: poolingConfig.queryMax ?? 10,
     session: poolingConfig.sessionMax ?? 32,
-    sandbox: poolingConfig.sandboxMax ?? 32,
+    sandbox: sandboxPoolLimits.get(connectionString) ?? poolingConfig.sandboxMax ?? 32,
     migration: 1,
   }[kind];
   let url = connectionString;
@@ -65,6 +108,7 @@ async function retainPool(
     ssl = { ssl: { ca: poolingConfig.caCert } };
   }
   const pool = guardedPool(new pg.Pool({ connectionString: url, ...ssl, max, connectionTimeoutMillis: 10_000 }));
+  if (kind === "sandbox") resizableSandboxPool(pool);
   sharedPools.set(key, { pool, users: 1 });
   return pool;
 }
