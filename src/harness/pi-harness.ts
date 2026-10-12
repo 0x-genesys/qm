@@ -6,10 +6,12 @@ import {
   type BridgedTool,
   type SteerIntake,
 } from "./harness-shared.ts";
-import { withDocumentInputs, type DocumentModel } from "./document-inputs.ts";
+import { withDocumentAnchors, withDocumentInputs, type DocumentModel } from "./document-inputs.ts";
+import { documentRefs, type DocumentInput, type DocumentRef } from "../core/document-inputs.ts";
 import { gatewayModelsJson, gatewayModelsVersion } from "../model/gateway-models.ts";
 import { Type } from "typebox";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -441,7 +443,12 @@ export function sanitizeTitle(out = ""): string | undefined {
 
 interface TurnSession {
   agentSession: AgentSession;
-  ref: ToolContextRef & { effortLevel?: string };
+  ref: ToolContextRef & {
+    effortLevel?: string;
+    historyDocuments?: DocumentInput[];
+    documentAnchors?: Map<string, DocumentInput[]>;
+    documentBlocks?: Map<string, Promise<Record<string, unknown>[]>>;
+  };
   composedPromptTokens: number;
   cwd: string;
   agentDir: string;
@@ -726,6 +733,34 @@ export function stoppedPartialTapeMessage(
     stopReason: "stop",
     usage: zeroUsage(),
   };
+}
+
+function anchorDocuments(ref: TurnSession["ref"], messages: unknown): unknown {
+  if (!Array.isArray(messages)) return messages;
+  const available = new Map<string, DocumentInput>();
+  for (const document of [...(ref.historyDocuments ?? []), ...(ref.documents ?? [])])
+    if (document.artifactId) available.set(document.artifactId, document);
+  const anchors = new Map<string, DocumentInput[]>();
+  const anchored = messages.map((message: unknown) => {
+    const refs = documentRefs(message);
+    const content = (message as { content?: unknown }).content;
+    if (!refs.length || !Array.isArray(content)) return message;
+    const token = `qm-document-anchor:${randomUUID()}`;
+    anchors.set(
+      token,
+      refs.flatMap((r) => available.get(r.artifactId) ?? []),
+    );
+    return { ...(message as object), content: [...content, { type: "text", text: token }] };
+  });
+  ref.documentAnchors = anchors;
+  return anchored;
+}
+
+function attachDocumentRefs(message: unknown, documents: readonly DocumentInput[] | undefined): void {
+  const refs: DocumentRef[] = (documents ?? []).flatMap((d) =>
+    d.artifactId ? [{ artifactId: d.artifactId, name: d.name, mimeType: d.mimeType }] : [],
+  );
+  if (refs.length) (message as { documents?: DocumentRef[] }).documents = refs;
 }
 
 export function stripImageBytes(message: unknown, images?: readonly { artifactId?: string }[]): unknown {
@@ -1757,11 +1792,18 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           applyFastSpeed(payload, ref.fast, (model as { api?: string } | undefined)?.api);
           applyReasoningMode(payload, model as Model<Api>, ref.effortLevel);
           const result = prior ? await prior(payload, model) : payload;
-          const capturedPayload = captureRequests ? sanitizeLlmPayload(result ?? payload, model) : undefined;
+          const anchors = ref.documentAnchors ?? new Map<string, DocumentInput[]>();
+          const anchoredIds = new Set([...anchors.values()].flat().map((document) => document.artifactId));
           let finalPayload = await withDocumentInputs(
-            result ?? payload,
+            await withDocumentAnchors(
+              result ?? payload,
+              model as DocumentModel,
+              anchors,
+              (ref.documentBlocks ??= new Map()),
+              ref.abortSignal,
+            ),
             model as DocumentModel,
-            ref.documents ?? [],
+            (ref.documents ?? []).filter((document) => !document.artifactId || !anchoredIds.has(document.artifactId)),
             ref.abortSignal,
           );
           const guarded = guardOutputBudget(finalPayload, model);
@@ -1777,7 +1819,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           }
           if (captureRequests) {
             try {
-              ref.llmCapture?.push(capturedPayload!);
+              ref.llmCapture?.push(sanitizeLlmPayload(finalPayload, model));
             } catch (e) {
               swallow("pi: llm request capture", e);
             }
@@ -1802,7 +1844,8 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           } catch (e) {
             swallow("pi: transformContext stamp", e);
           }
-          return priorTransform ? await priorTransform(messages, signal) : messages;
+          const transformed = priorTransform ? await priorTransform(messages, signal) : messages;
+          return anchorDocuments(ref, transformed);
         };
         agent.afterToolCall = pauseStampAfterToolCall(ref, agent.afterToolCall);
         const priorPrepare = agent.prepareNextTurn;
@@ -1854,6 +1897,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         const ref: TurnSession["ref"] = {
           current: dispatched.tools,
           documents: dispatched.documents,
+          historyDocuments: dispatched.historyDocuments,
           runtimeHandoff: undefined,
           runtimeMutationPending: false,
           runtimeInFlight: new Set(),
@@ -1988,6 +2032,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             SteerIntake & {
               prompt: string;
               images?: HarnessTurnInput["images"];
+              documents?: HarnessTurnInput["documents"];
             }
           > = [];
           const tapeMessage = async (message: unknown): Promise<void> => {
@@ -2002,6 +2047,8 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
                   )
                 : -1;
             const steer = steerAt >= 0 ? pendingSteerTapeMeta.splice(steerAt, 1)[0] : undefined;
+            if (isTrigger) attachDocumentRefs(message, turn.documents);
+            else if (steer) attachDocumentRefs(message, steer.documents);
             if (steer) await thinkTail;
             const steerStamp = steer ? await recordSteerIntake(turn, steer) : undefined;
             if (!turn.tape || tapeError) return;
@@ -2201,6 +2248,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
                         ts,
                         images: prepared?.images,
                         attachments: prepared?.attachments,
+                        documents: prepared?.documents,
                         acknowledge,
                       };
                       pendingSteerTapeMeta.push(steer);

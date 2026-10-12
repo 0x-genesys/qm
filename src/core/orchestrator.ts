@@ -11,6 +11,8 @@ import {
   documentText,
   resumedDocumentMetas,
   isTextDocument,
+  documentRefs,
+  loadAnchoredDocuments,
   loadDocumentInputs,
 } from "./document-inputs.ts";
 import { recoveredRuntime } from "../harness/runtime-recovery.ts";
@@ -3100,11 +3102,21 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           history !== visibleHistory &&
           history.some((entry) => isObj(entry.payload) && entry.payload.mode === "recent");
         compactMs = Date.now() - compactStart;
+        const servedFold = tapeRows?.serve && history === visibleHistory ? (tapeRows.fold ?? []) : [];
+        const foldDocumentIds = new Set(servedFold.flatMap((m) => documentRefs(m).map((ref) => ref.artifactId)));
+        const historyDocuments = strictReadOnly
+          ? []
+          : await loadAnchoredDocuments(deps.files, servedFold, mayReadArtifact, turnAbort.signal);
         const documentInputs = strictReadOnly
           ? { documents: [], notices: [] }
           : await loadDocumentInputs(
               deps.files,
-              [...resumedDocumentMetas(history, partial?.userSeq ?? approvalRecord?.turnUserSeq), ...inbound.metas],
+              [
+                ...resumedDocumentMetas(history, partial?.userSeq ?? approvalRecord?.turnUserSeq).filter(
+                  (meta) => !meta.artifactId || !foldDocumentIds.has(meta.artifactId),
+                ),
+                ...inbound.metas,
+              ],
               mayReadArtifact,
               undefined,
               turnAbort.signal,
@@ -3694,6 +3706,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ...(extras.attachments?.length ? { attachments: extras.attachments } : {}),
             ...(extras.images?.length ? { images: extras.images } : {}),
             documents: [...documentInputs.documents],
+            ...(!continuation && selectedTape?.mode === "serve" && historyDocuments.length ? { historyDocuments } : {}),
             ...(Object.keys(requestedRuntime).length ? { runtime: requestedRuntime } : {}),
             ...(strictReadOnly ? { readOnly: true } : {}),
             surfaceName,

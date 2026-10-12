@@ -80,6 +80,51 @@ export function resumedDocumentMetas(history: readonly SessionEntry[], userSeq?:
   });
 }
 
+export interface DocumentRef {
+  artifactId: string;
+  name: string;
+  mimeType: string;
+}
+
+export function documentRefs(message: unknown): DocumentRef[] {
+  const m = message as { role?: unknown; documents?: unknown } | null;
+  if (m?.role !== "user" || !Array.isArray(m.documents)) return [];
+  return m.documents.filter(
+    (ref): ref is DocumentRef =>
+      typeof ref?.artifactId === "string" && typeof ref.name === "string" && typeof ref.mimeType === "string",
+  );
+}
+
+export async function loadAnchoredDocuments(
+  files: FileArtifactStore,
+  messages: readonly unknown[],
+  authorize: (artifact: FileArtifact) => boolean | Promise<boolean>,
+  signal?: AbortSignal,
+): Promise<DocumentInput[]> {
+  const documents: DocumentInput[] = [];
+  const seen = new Set<string>();
+  for (const message of messages) {
+    const refs = documentRefs(message).filter((ref) => !seen.has(ref.artifactId));
+    if (!refs.length) continue;
+    refs.forEach((ref) => seen.add(ref.artifactId));
+    const loaded = await loadDocumentInputs(
+      files,
+      refs.map((ref) => ({
+        artifactId: ref.artifactId,
+        name: ref.name,
+        mimetype: ref.mimeType,
+        sizeBytes: 0,
+        direction: "in" as const,
+      })),
+      authorize,
+      undefined,
+      signal,
+    );
+    documents.push(...loaded.documents);
+  }
+  return documents;
+}
+
 export async function loadDocumentInputs(
   files: FileArtifactStore,
   metas: readonly AttachmentMeta[],
