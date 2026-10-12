@@ -3198,6 +3198,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           documentsUnscreened = await screenDocuments(documentInputs, input.text);
           const earlier = { documents: historyDocuments.filter((d) => !reusedDocuments.includes(d)), notices: [] };
           documentsUnscreened = (await screenDocuments(earlier, input.text)) || documentsUnscreened;
+          documentInputs.notices.push(...earlier.notices);
           historyDocuments = historyDocuments.filter(
             (d) => earlier.documents.includes(d) || documentInputs.documents.includes(d),
           );
