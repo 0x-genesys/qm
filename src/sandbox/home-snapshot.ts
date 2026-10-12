@@ -17,7 +17,7 @@ import type { TeardownOptions } from "./sandbox.ts";
 
 const SNAPSHOT_PART_BYTES = 64 * 1024 * 1024;
 const SNAPSHOT_MAX_BYTES = 2 * 1024 * 1024 * 1024;
-const SNAPSHOT_TIMEOUT_MS = 10 * 60_000;
+export const SNAPSHOT_TIMEOUT_MS = 10 * 60_000;
 export const HOME_SNAPSHOT_PRUNE = [
   "./.cred-state*",
   ...displacedPruneGlobs(),

@@ -933,3 +933,22 @@ test("two concurrent turns on one parking computer: only the last turn to finish
   assert.deepEqual(teardowns, [{ keepWarm: true }, {}]);
   assert.deepEqual((await resources.get(record.id)).holders, []);
 });
+
+test("a parking teardown keeps the computer warm when another run holds it by the time it parks", async () => {
+  const { options, backend, layers } = fixture();
+  const parking: Sandbox = { ...backend, profile: { ...backend.profile, parksOnTeardown: true } };
+  const resources = createSandboxResources({ ...options, backends: { e2b: parking }, defaultBackend: "e2b" });
+  const router = createSandboxRouter({ backends: { e2b: parking }, defaultBackend: "e2b", resources });
+  const record = await resources.create("alice", "personal:alice", "e2b");
+  await resources.setDefault("alice", "personal:alice", record.id);
+  const teardowns: unknown[] = [];
+  parking.teardown = async (_handle, opts) => {
+    teardowns.push(opts ?? {});
+  };
+  const handle = await router.provision(layers);
+  await resources.hold(record.id, "late-run");
+  await router.teardown(handle);
+  await resources.release(record.id, "late-run", async () => false);
+  await router.teardown(handle);
+  assert.deepEqual(teardowns, [{ keepWarm: true }, {}]);
+});

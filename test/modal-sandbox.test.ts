@@ -1070,6 +1070,36 @@ test("an expiring sandbox in active use is retired only once expiry is imminent"
   assert.deepEqual(await s.reapDeepIdle!(6 * 3600_000), { reaped: 1 });
 });
 
+test("a command cut off by another core destroying its scope never regrows a sandbox", async () => {
+  const store = createMemoryMap<StoredModalSandbox>();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const wrap = (session: Awaited<ReturnType<ModalClient["create"]>>) => ({
+    ...session,
+    async runCommand(script: string, options?: Parameters<typeof session.runCommand>[1]) {
+      if (script.includes("long-build")) {
+        entered.resolve();
+        await release.promise;
+      }
+      return session.runCommand(script, options);
+    },
+  });
+  const client: ModalClient = {
+    ...fake.client,
+    create: async (options) => wrap(await fake.client.create(options)),
+    fromId: async (id) => wrap(await fake.client.fromId(id)),
+  };
+  const running = make({ store, client });
+  const h = await running.provision(layers);
+  const command = running.run(h, "long-build");
+  await entered.promise;
+  await make({ store, client }).destroyScope!(scope);
+  release.resolve();
+  await assert.rejects(command, /gone/);
+  assert.equal(await store.get(scope), null);
+  assert.equal(fake.createdCount(scopeName()), 1);
+});
+
 test("two cores provisioning one scope converge on a single sandbox and the loser cleans up", async () => {
   const store = createMemoryMap<StoredModalSandbox>();
   const barrier = Promise.withResolvers<void>();

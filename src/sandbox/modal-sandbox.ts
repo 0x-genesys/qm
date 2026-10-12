@@ -34,6 +34,7 @@ import {
   createHomeSnapshotOps,
   createMemorySnapshotStore,
   HOME_SNAPSHOT_PRUNE,
+  SNAPSHOT_TIMEOUT_MS,
   snapshotDue,
   type HomeSnapshotStore,
 } from "./home-snapshot.ts";
@@ -56,7 +57,7 @@ const HOME_TAR = `${HOME_DIR}/.qm-home.tar`;
 const HYDRATED_MARKER = `${HOME_DIR}/.qm-hydrated`;
 export const ACTIVITY_TOUCH_INTERVAL_MS = 10 * 60_000;
 export const ACTIVITY_GRACE_MS = 2 * ACTIVITY_TOUCH_INTERVAL_MS;
-export const HYDRATION_WAIT_MS = 5 * 60_000;
+export const HYDRATION_WAIT_MS = SNAPSHOT_TIMEOUT_MS + 5 * 60_000;
 const swallowGone = (error: unknown): void => {
   if (!(error instanceof ModalSandboxGoneError)) throw error;
 };
@@ -249,9 +250,9 @@ export function createModalSandbox(workspace: WorkspaceStore, opts: ModalSandbox
     const stamp = { sandboxId: session.sandboxId, lastActivityMs: now };
     const row = await updateRow(scope, (current) => (current.hydrationPending ? current : { ...current, ...stamp }));
     if (row?.hydrationPending) {
-      if (row.sandboxId !== session.sandboxId) throw hydrationIncomplete();
-      await settledRow(scope);
-      return adopt(scope, name, session);
+      const settled = await settledRow(scope);
+      const holder = settled?.sandboxId ?? session.sandboxId;
+      return adopt(scope, name, holder === session.sandboxId ? session : await client.fromId(holder));
     }
     if (!row) await store.putIfAbsent(scope, { ...stamp, createdAtMs: now, orgId: configOrgId() });
     sessionByName.set(name, session);
@@ -438,33 +439,24 @@ export function createModalSandbox(workspace: WorkspaceStore, opts: ModalSandbox
     const scope = scratchKey === undefined ? scopeByName.get(name) : undefined;
     if (scratchKey === undefined && scope === undefined) throw new Error("sandbox handle has been released");
     if (scope !== undefined) await touchActivity(scope);
-    const reviveScratch = async (): Promise<ModalSession> => {
+    const revive = async (): Promise<ModalSession> => {
+      if (scope !== undefined) return (await ensureSession(scope, name, undefined, false)).session;
       const session = await client.create({ tags: tags("scratch") });
       sessionByName.set(name, session);
       return session;
     };
-    const first =
-      scratchKey !== undefined
-        ? { session: sessionByName.get(name) ?? (await reviveScratch()) }
-        : {
-            session:
-              sessionByName.get(name) ??
-              (await ensureSession(scopeByName.get(name) ?? "default", name, undefined, false)).session,
-          };
+    const first = sessionByName.get(name) ?? (await revive());
     const heartbeat =
       scope === undefined
         ? undefined
-        : setInterval(() => void touchActivity(scope), ACTIVITY_TOUCH_INTERVAL_MS).unref();
+        : setInterval(() => void touchActivity(scope), ACTIVITY_TOUCH_INTERVAL_MS / 2).unref();
     try {
-      return await action(first.session);
+      return await action(first);
     } catch (err) {
       if (!(err instanceof ModalSandboxGoneError)) throw err;
       sessionByName.delete(name);
-      const second =
-        scratchKey !== undefined
-          ? { session: await reviveScratch() }
-          : await ensureSession(scopeByName.get(name) ?? "default", name, undefined, false);
-      return action(second.session);
+      if (scope !== undefined && !(await store.get(scope))) throw err;
+      return action(await revive());
     } finally {
       clearInterval(heartbeat);
     }
@@ -861,12 +853,15 @@ export function createModalSandbox(workspace: WorkspaceStore, opts: ModalSandbox
           machine,
           provisioned: true,
           guestResponsive: false,
-          recovery: {
-            ...recovery,
-            state: "failed",
-            error:
-              "Home hydration is incomplete. After confirming no core is still hydrating, use computer restart to discard the incomplete replacement and retry the retained checkpoint.",
-          },
+          recovery:
+            Date.now() < stored.createdAtMs + HYDRATION_WAIT_MS
+              ? { ...recovery, state: "hydrating" }
+              : {
+                  ...recovery,
+                  state: "failed",
+                  error:
+                    "Home hydration did not finish. Use computer restart to discard the incomplete replacement and retry the retained checkpoint.",
+                },
         };
       try {
         scopeByName.set(name, scopeId);
