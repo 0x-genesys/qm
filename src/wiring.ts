@@ -1,3 +1,8 @@
+import {
+  createSandboxConfiguration,
+  type SandboxConfiguration,
+  type StoredSandboxConfiguration,
+} from "./sandbox/configuration.ts";
 import type { SlackSessionStatusState } from "./slack/session-status.ts";
 import { availableRuntimeError } from "./api/runtime-config.ts";
 import { createApprovalStore } from "./core/approval-store.ts";
@@ -482,6 +487,7 @@ export interface BuiltApp {
   surfaceCache: SurfaceCache;
   runtime: Runtime;
   config: ScopedConfigStore;
+  sandboxConfiguration: SandboxConfiguration;
   connectorTokens: ConnectorTokenStore;
   slackInstallation: SlackInstallationStore;
   resolveClient: OAuthClientResolver;
@@ -648,6 +654,10 @@ export function buildApp(
   const sandboxAdvisoryLock: AdvisoryLock = pgArtifactMap
     ? createPostgresAdvisoryLock(pgArtifactMap.pool, { pool: "sandbox" })
     : createMemoryAdvisoryLock();
+  const sandboxConfiguration = createSandboxConfiguration({
+    config,
+    backing: artifactMap<StoredSandboxConfiguration>("sandbox_configuration"),
+  });
   const principalLinks = createPrincipalLinkService(artifactMap<PrincipalLink>("principal_links"), advisoryLock);
   installPrincipalLinks(principalLinks);
   const identity = createIdentityService(artifactMap<DeactivationRecord>("deactivated_principals"), {
@@ -1646,7 +1656,7 @@ export function buildApp(
   const buildAwsDeploy = (): DeployProvider =>
     createAwsDeployProvider({
       ...config.awsDeploy,
-      ...(!config.awsDeploy.dataBucket && config.awsSandbox.s3Bucket ? { dataBucket: config.awsSandbox.s3Bucket } : {}),
+
       advisoryLock,
       store: artifactMap<StoredDeployBody>("aws_deploy_bodies"),
     });
@@ -1687,7 +1697,7 @@ export function buildApp(
     throw new Error("Fly durable application storage requires DATABASE_URL for persistent rollback configuration");
   }
   const deployProvider: DeployProvider = buildDeployProvider[config.deployProvider]();
-  if (config.deployProvider === "aws" && !config.awsDeploy.dataBucket && !config.awsSandbox.s3Bucket) {
+  if (config.deployProvider === "aws" && !config.awsDeploy.dataBucket) {
     console.warn(
       "[wiring] aws deploy: no data bucket resolved (AWS_DEPLOY_DATA_BUCKET unset, sandbox is not aws) — deployed apps have NO durable /data",
     );
@@ -2838,6 +2848,7 @@ export function buildApp(
     surfaceCache,
     runtime,
     config: configStore,
+    sandboxConfiguration,
     connectorTokens,
     slackInstallation,
     resolveClient,
@@ -2954,6 +2965,7 @@ export function serverDeps(
     ...(built.replayDedupe ? { replayDedupe: built.replayDedupe } : {}),
     ...(built.brokerSessions ? { brokerSessions: built.brokerSessions } : {}),
     config: built.config,
+    sandboxConfiguration: built.sandboxConfiguration,
     ...(built.screenSecurity ? { screenSecurity: built.screenSecurity } : {}),
     ...(configuredModel ? { baseModelDefault: configuredModel } : {}),
     modelProviders: modelProviderAvailabilityFor(config.harness, providerKeysPresent(config)),

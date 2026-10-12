@@ -1,3 +1,4 @@
+import { getSandboxConfiguration } from "./admin/sandbox-configuration.ts";
 import { modelRegistry, lookupRegistryModel, enableBuiltinModel } from "./admin/model-registry.ts";
 import { type ApiCtx, type Route } from "./route.ts";
 import {
@@ -114,6 +115,7 @@ const routes: ReadonlyArray<Route<ApiCtx>> = [
     auth: "either",
     handle: getCredentialUsageSummary,
   },
+  { method: "GET", path: "/v1/admin/sandbox-configuration", auth: "either", handle: getSandboxConfiguration },
   { method: "GET", path: "/v1/admin/resources", auth: "either", handle: getAdminResources },
   { method: "GET", path: "/v1/admin/retention", auth: "either", handle: retention },
   { method: "GET", path: "/v1/admin/metrics", auth: "either", handle: metrics },

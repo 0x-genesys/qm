@@ -12,6 +12,10 @@ store on every call, and every call is audited under their name. Two standing ru
 **confirm before any mutation** (state exactly what you'll change and where), and report
 afterwards exactly what changed. Reads are fine to just do.
 
+Sandbox provider and execution settings are available as the org-only `sandbox-configuration` resource. Read `GET /v1/admin/sandbox-configuration` before editing: it lists supported setting names, types, secret status, current-process values, next-start values, override sources, and deployment-owned controls. Use `PUT /v1/admin/scopes/<org-scope>/sandbox-configuration` with `{ "expectedVersion": <the current version or null>, "set": { "SETTING": "value" }, "reset": ["SETTING"] }`. Values use the existing environment-setting syntax. Omitted names stay unchanged; reset restores startup environment/provider defaults and does not revoke an ambient credential. Read again after a 409 conflict. Credentials can be replaced but their values are never returned.
+
+Provider edits persist and take effect as each core or worker process restarts; saving does not restart anything. Read `restartRequired` and `appliedVersion` for the responding process. Existing computers may be reused or replaced on their next operation, and changing storage destinations does not migrate recovery data. Use the existing deployment controls for shared database, encryption, proxy-service and host-executable settings. Live connection capacity remains in `sandbox-settings.connectionPoolMax`. These operations retain the normal admin authorization and confirmation rules below.
+
 ## System administration
 
 System administration is not limited to this API. A verified admin may use independently

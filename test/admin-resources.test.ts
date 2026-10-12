@@ -43,6 +43,7 @@ function start(harnessId = "pi", withLayer = true): { base: string; built: Built
   );
   const server = createInsecureTestServer(built.app, {
     config: built.config,
+    sandboxConfiguration: built.sandboxConfiguration,
     admin: built.admin,
     auditLog: built.auditLog,
     sessions: built.sessions,
@@ -93,6 +94,36 @@ test("configuration writes preserve both the original and recovery failures", as
         assert.deepEqual(error.errors, [primary, recovery]);
         return true;
       },
+    );
+  } finally {
+    await srv.close();
+  }
+});
+
+test("provider configuration is discoverable with its application rules", async () => {
+  const srv = start();
+  try {
+    const response = await fetch(`${srv.base}/v1/admin/scopes/org:default-org`, { headers: ADMIN });
+    assert.equal(response.status, 200);
+    const body = (await response.json()) as { sandboxConfiguration?: { appliesOn: string; detailsPath: string } };
+    assert.equal(body.sandboxConfiguration?.appliesOn, "process_restart");
+    assert.equal(body.sandboxConfiguration?.detailsPath, "/v1/admin/sandbox-configuration");
+    const details = (await (
+      await fetch(`${srv.base}${body.sandboxConfiguration!.detailsPath}`, { headers: ADMIN })
+    ).json()) as { fields: { name: string }[] };
+    assert.ok(details.fields.some((field) => field.name === "MODAL_CPUS"));
+    assert.ok(details.fields.some((field) => field.name === "E2B_TEMPLATE_ID"));
+    const outsider = { ...ADMIN, "x-admin-actor": "nobody@default-org" };
+    assert.equal((await fetch(`${srv.base}/v1/admin/sandbox-configuration`, { headers: outsider })).status, 403);
+    assert.equal(
+      (
+        await fetch(`${srv.base}/v1/admin/scopes/org:default-org/sandbox-configuration`, {
+          method: "PUT",
+          headers: outsider,
+          body: JSON.stringify({ expectedVersion: null, set: { MODAL_CPUS: "4" } }),
+        })
+      ).status,
+      403,
     );
   } finally {
     await srv.close();

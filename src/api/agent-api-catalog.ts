@@ -800,6 +800,11 @@ const FAMILIES: AgentApiFamily[] = [
       { method: "GET", path: "/v1/admin/whoami", summary: "this user's admin status" },
       {
         method: "GET",
+        path: "/v1/admin/sandbox-configuration",
+        summary: "provider and execution settings, supported fields, redacted credentials, and restart effects",
+      },
+      {
+        method: "GET",
         path: "/v1/admin/resources",
         summary:
           "discover editable admin configuration resources, request shapes, scope, and application timing; includes sandbox-settings for the live sandbox connection-pool limit",

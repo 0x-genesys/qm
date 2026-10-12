@@ -1,10 +1,10 @@
 import "./instrument.ts";
-import { loadConfig } from "../config.ts";
+import { loadStartupConfig } from "../startup-config.ts";
 import { buildApp, stopWithBackstop } from "../wiring.ts";
 import { shutdownOnUncaught } from "../util/process-guard.ts";
 import { migrateRegisteredPgSchemas } from "../persistence/pg-pool.ts";
 
-const config = loadConfig();
+const config = await loadStartupConfig();
 const built = buildApp(config);
 await migrateRegisteredPgSchemas(config.databaseUrl);
 await built.sandboxResources.initialize();

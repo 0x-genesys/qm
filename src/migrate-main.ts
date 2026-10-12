@@ -1,8 +1,8 @@
-import { loadConfig } from "./config.ts";
+import { loadStartupConfig } from "./startup-config.ts";
 import { migrateRegisteredPgSchemas } from "./persistence/pg-pool.ts";
 import { buildApp } from "./wiring.ts";
 
-const config = loadConfig();
+const config = await loadStartupConfig();
 const { runtime } = buildApp(config);
 try {
   await migrateRegisteredPgSchemas(config.databaseUrl);
