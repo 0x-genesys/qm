@@ -14,7 +14,7 @@ export interface DocumentInput {
   artifactId?: string;
 }
 
-export const MAX_DOCUMENT_BYTES = 8_000_000;
+export const MAX_DOCUMENT_BYTES = 6_000_000;
 export const MAX_DOCUMENTS = 10;
 const MAX_DOCUMENT_TEXT_CHARS = 200_000;
 const TEXT_EXTENSIONS = new Set(
