@@ -8,12 +8,12 @@ import { memoryRecallDelta } from "../memory/recall-delta.ts";
 import { requiresDelegation, delegatedAuthorizationOrigin } from "../sessions/session-syscalls.ts";
 import {
   MAX_DOCUMENT_BYTES,
+  MAX_DOCUMENTS,
   documentText,
   resumedDocumentMetas,
   isTextDocument,
   historyDocumentMessages,
   documentRefs,
-  type DocumentInput,
   loadAnchoredDocuments,
   loadDocumentInputs,
 } from "./document-inputs.ts";
@@ -3108,37 +3108,17 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           tapeRows?.serve && history === visibleHistory && tapeRows.fold
             ? tapeRows.fold
             : historyDocumentMessages(history);
-        const anchoredHistory = strictReadOnly
-          ? { documents: [], notices: [], remainingBytes: 0, remainingCount: 0 }
-          : await loadAnchoredDocuments(deps.files, documentHistory, mayReadArtifact, turnAbort.signal);
-        let historyDocuments = anchoredHistory.documents;
-        const documentBytes = (documents: readonly DocumentInput[]) =>
-          documents.reduce((sum, document) => sum + Buffer.byteLength(document.dataBase64, "base64"), 0);
-        const resumedMetas = strictReadOnly
-          ? []
-          : resumedDocumentMetas(history, partial?.userSeq ?? approvalRecord?.turnUserSeq);
-        const reusedDocuments = historyDocuments.filter((document) =>
-          resumedMetas.some((meta) => meta.artifactId === document.artifactId),
+        const historyDocumentIds = new Set(
+          documentHistory.flatMap((message) => documentRefs(message).map((document) => document.artifactId)),
         );
-        const freshDocuments = strictReadOnly
+        const resumedMetas = resumedDocumentMetas(history, partial?.userSeq ?? approvalRecord?.turnUserSeq);
+        const resumedDocumentIds = new Set(resumedMetas.map((meta) => meta.artifactId));
+        const loadedDocuments = strictReadOnly
           ? { documents: [], notices: [] }
-          : await loadDocumentInputs(
-              deps.files,
-              [...resumedMetas, ...(approvalRecord?.turnUserSeq !== undefined ? [] : inbound.metas)].filter(
-                (meta) => !meta.artifactId || !reusedDocuments.some((d) => d.artifactId === meta.artifactId),
-              ),
-              mayReadArtifact,
-              Math.max(
-                0,
-                Math.min(MAX_DOCUMENT_BYTES - documentBytes(reusedDocuments), anchoredHistory.remainingBytes),
-              ),
-              turnAbort.signal,
-              Math.min(10 - reusedDocuments.length, anchoredHistory.remainingCount),
-            );
-        const documentInputs = {
-          documents: [...reusedDocuments, ...freshDocuments.documents],
-          notices: [...anchoredHistory.notices, ...freshDocuments.notices],
-        };
+          : await loadAnchoredDocuments(deps.files, documentHistory, mayReadArtifact, turnAbort.signal, [
+              ...resumedMetas,
+              ...(approvalRecord?.turnUserSeq !== undefined ? [] : inbound.metas),
+            ]);
         const screenDocuments = async (
           documentInputs: Awaited<ReturnType<typeof loadDocumentInputs>>,
           requestText: string,
@@ -3194,23 +3174,25 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const observeDocuments = (inputs: Awaited<ReturnType<typeof loadDocumentInputs>>, requestText: string) =>
           void screenDocuments(inputs, requestText).catch(swallowAs("orchestrator: observed document screen", false));
         let documentsUnscreened = false;
-        if (enforceScreen) {
-          documentsUnscreened = await screenDocuments(documentInputs, input.text);
-          const earlier = { documents: historyDocuments.filter((d) => !reusedDocuments.includes(d)), notices: [] };
-          documentsUnscreened = (await screenDocuments(earlier, input.text)) || documentsUnscreened;
-          documentInputs.notices.push(...earlier.notices);
-          historyDocuments = historyDocuments.filter(
-            (d) => earlier.documents.includes(d) || documentInputs.documents.includes(d),
+        if (enforceScreen) documentsUnscreened = await screenDocuments(loadedDocuments, input.text);
+        else observeDocuments(loadedDocuments, input.text);
+        const historyDocuments = loadedDocuments.documents.filter((document) =>
+          historyDocumentIds.has(document.artifactId ?? ""),
+        );
+        let remainingDocumentBytes =
+          MAX_DOCUMENT_BYTES -
+          loadedDocuments.documents.reduce(
+            (sum, document) => sum + Buffer.byteLength(document.dataBase64, "base64"),
+            0,
           );
-        } else observeDocuments(documentInputs, input.text);
-        let remainingDocumentBytes = Math.min(
-          MAX_DOCUMENT_BYTES - documentBytes(documentInputs.documents),
-          anchoredHistory.remainingBytes - documentBytes(freshDocuments.documents),
-        );
-        let remainingDocumentCount = Math.min(
-          10 - documentInputs.documents.length,
-          anchoredHistory.remainingCount - freshDocuments.documents.length,
-        );
+        let remainingDocumentCount = MAX_DOCUMENTS - loadedDocuments.documents.length;
+        const documentInputs = {
+          documents: loadedDocuments.documents.filter(
+            (document) =>
+              !historyDocumentIds.has(document.artifactId ?? "") || resumedDocumentIds.has(document.artifactId),
+          ),
+          notices: loadedDocuments.notices,
+        };
         const principalDelivered = await recentPrincipalDeliveryNote(
           deps.deliveries,
           session.threadRef,

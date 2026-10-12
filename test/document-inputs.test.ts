@@ -459,6 +459,21 @@ test("anchored history documents load per original message and respect the reade
     [...artifacts.keys()].filter((id) => id !== "doc3").slice(0, 10),
     "oldest admitted documents win; the conversation keeps at most ten",
   );
+  const fresh = [...artifacts.values()].map(({ artifact }) => ({
+    artifactId: artifact.id,
+    name: artifact.name,
+    mimetype: artifact.mimetype,
+    sizeBytes: artifact.sizeBytes,
+    direction: "in" as const,
+  }));
+  const combined = await loadAnchoredDocuments(
+    store,
+    messages.slice(0, 2),
+    (artifact) => artifact.id !== "doc3",
+    undefined,
+    fresh,
+  );
+  assert.deepEqual(combined.documents, loaded, "history and fresh uploads share one deduplicated budget");
 });
 
 test("an exhausted text budget leaves earlier anchored documents byte-identical", async () => {

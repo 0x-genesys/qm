@@ -14,8 +14,7 @@ export interface DocumentInput {
 }
 
 export const MAX_DOCUMENT_BYTES = 8_000_000;
-const MAX_CONVERSATION_DOCUMENT_BYTES = 12_000_000;
-const MAX_CONVERSATION_DOCUMENTS = 10;
+export const MAX_DOCUMENTS = 10;
 const MAX_DOCUMENT_TEXT_CHARS = 200_000;
 const TEXT_EXTENSIONS = new Set(
   "asm bat c cc conf cpp css cxx def dic eml h hh htm html ics ifb in js json ksh list log markdown md mht mhtml mime mjs nws pl py rst s sql srt text txt vcf vtt xml ts tsx jsx sh bash zsh yml yaml toml rs go java rb php swift kt scala lua r jl perl tex cs graphql ndjson json5 dockerfile".split(
@@ -110,39 +109,23 @@ export async function loadAnchoredDocuments(
   messages: readonly unknown[],
   authorize: (artifact: FileArtifact) => boolean | Promise<boolean>,
   signal?: AbortSignal,
-): Promise<{ documents: DocumentInput[]; notices: string[]; remainingBytes: number; remainingCount: number }> {
-  const documents: DocumentInput[] = [];
-  const notices: string[] = [];
-  const seen = new Set<string>();
-  let remaining = MAX_CONVERSATION_DOCUMENT_BYTES;
-  for (const message of messages) {
-    const refs = documentRefs(message).filter((ref) => !seen.has(ref.artifactId));
-    if (!refs.length) continue;
-    refs.forEach((ref) => seen.add(ref.artifactId));
-    const loaded = await loadDocumentInputs(
-      files,
-      refs.map((ref) => ({
-        artifactId: ref.artifactId,
-        name: ref.name,
-        mimetype: ref.mimeType,
-        sizeBytes: 0,
-        direction: "in" as const,
-      })),
-      authorize,
-      Math.min(MAX_DOCUMENT_BYTES, remaining),
-      signal,
-      MAX_CONVERSATION_DOCUMENTS - documents.length,
-    );
-    remaining -= loaded.documents.reduce((sum, d) => sum + Buffer.byteLength(d.dataBase64, "base64"), 0);
-    documents.push(...loaded.documents);
-    notices.push(...loaded.notices);
+  fresh: readonly AttachmentMeta[] = [],
+): Promise<{ documents: DocumentInput[]; notices: string[] }> {
+  const metas = new Map<string, AttachmentMeta>();
+  const history = messages.flatMap((message) =>
+    documentRefs(message).map((ref) => ({
+      artifactId: ref.artifactId,
+      name: ref.name,
+      mimetype: ref.mimeType,
+      sizeBytes: 0,
+      direction: "in" as const,
+    })),
+  );
+  for (const meta of [...history, ...fresh]) {
+    if (meta.artifactId && !metas.has(meta.artifactId)) metas.set(meta.artifactId, meta);
   }
-  return {
-    documents,
-    notices,
-    remainingBytes: Math.max(0, remaining),
-    remainingCount: MAX_CONVERSATION_DOCUMENTS - documents.length,
-  };
+  const loaded = await loadDocumentInputs(files, [...metas.values()].reverse(), authorize, undefined, signal);
+  return { ...loaded, documents: loaded.documents.reverse() };
 }
 
 export async function loadDocumentInputs(
@@ -151,7 +134,7 @@ export async function loadDocumentInputs(
   authorize: (artifact: FileArtifact) => boolean | Promise<boolean>,
   maxBytes = MAX_DOCUMENT_BYTES,
   signal?: AbortSignal,
-  maxDocuments = 10,
+  maxDocuments = MAX_DOCUMENTS,
 ): Promise<{ documents: DocumentInput[]; notices: string[] }> {
   const documents: DocumentInput[] = [];
   const notices: string[] = [];
