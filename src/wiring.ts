@@ -1,3 +1,4 @@
+import { createPostgresTeamStore, type TeamStore } from "./teams/teams.ts";
 import type { SlackSessionStatusState } from "./slack/session-status.ts";
 import { availableRuntimeError } from "./api/runtime-config.ts";
 import { createApprovalStore } from "./core/approval-store.ts";
@@ -540,6 +541,7 @@ export interface BuiltApp {
   files: FileArtifactStore;
   fileUploads?: DirectFileUploads;
   featureFlags: FeatureFlagStore;
+  teams?: TeamStore;
   replayDedupe?: ReplayDedupe;
   brokerSessions?: BrokerSessionStore;
   directory: DirectoryStore;
@@ -702,6 +704,9 @@ export function buildApp(
   const skillPacks = createSkillPackStore({ backing: artifactMap<SkillPack>("skill_packs") });
   const skillBundles = createSkillBundleStore({ backing: artifactMap<SkillBundle>("skill_bundles") });
   const featureFlags = createFeatureFlagStore(artifactMap<FeatureFlagRecord>("feature_flags"));
+  const teams = config.databaseUrl
+    ? createPostgresTeamStore(config.databaseUrl, featureFlags, scopeId("org", config.orgId))
+    : undefined;
   const connectorStatusCache = createConnectorStatusCache(artifactMap<ConnectorStatusRecord>("connector_status"));
   const slackInstallation = createSlackInstallationStore(
     config.orgId,
@@ -1728,8 +1733,8 @@ export function buildApp(
     isActiveMember: (principalId) => identity.isInternal(identity.classify(principalId)),
     advisoryLock,
   });
-  const canReadScope = createCanReadScope({ managedGroups: projects, directory, identity, sessions });
-  const canWriteScope = createCanWriteScope({ managedGroups: projects, directory, identity });
+  const canReadScope = createCanReadScope({ managedGroups: projects, directory, identity, teams, sessions });
+  const canWriteScope = createCanWriteScope({ managedGroups: projects, directory, identity, teams });
   const canManageScope = createCanManageScope({ managedGroups: projects, directory, identity, sessions });
   const managesArtifactHome = createManagesArtifactHome({ managedGroups: projects, directory }, canManageScope);
   const currentScopeMembers = createCurrentScopeMembers({ managedGroups: projects, directory, identity });
@@ -2007,6 +2012,7 @@ export function buildApp(
     tasks,
     blobTransfer,
     featureFlags,
+    teams,
     credentialUsage,
     connectorStatusCache,
     resolveConnectorClient: resolveClient,
@@ -2896,6 +2902,7 @@ export function buildApp(
     files,
     ...(fileUploads ? { fileUploads } : {}),
     featureFlags,
+    teams,
     ...(replayDedupe ? { replayDedupe } : {}),
     ...(brokerSessions ? { brokerSessions } : {}),
     directory,

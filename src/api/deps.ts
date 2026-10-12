@@ -1,3 +1,4 @@
+import type { TeamStore } from "../teams/teams.ts";
 import type { ExternalSlackPolicies } from "../resolution/external-slack.ts";
 import type { ProviderKeys } from "../harness/pi-harness.ts";
 import type { ModelGatewayTransportConfig } from "../model/provider-endpoints.ts";
@@ -121,6 +122,7 @@ export interface ServerDeps {
   acl?: AclStore;
   credentialUsage?: CredentialUsageSink;
   featureFlags?: FeatureFlagStore;
+  teams?: TeamStore;
   egressAudit?: EgressAuditSink;
   brokerFetch?: BrokerFetch;
   gitHttpFetch?: GitHttpFetch;
