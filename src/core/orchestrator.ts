@@ -3618,6 +3618,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             }
           };
           const initialDocuments = continuation ? [] : [...documentInputs.documents];
+          const activeDocuments = [...segmentHistoryDocuments, ...initialDocuments];
           return deps.harness.turns.runTurn({
             session,
             ...(turnTimezone ? { timezone: turnTimezone } : {}),
@@ -3685,7 +3686,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 remainingDocumentBytes,
                 turnAbort.signal,
                 remainingDocumentCount,
-                initialDocuments,
+                activeDocuments,
               );
               let steeredUnscreened = false;
               if (enforceScreen) steeredUnscreened = await screenDocuments(steeredDocuments, text);
@@ -3696,6 +3697,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               );
               remainingDocumentCount -= steeredDocuments.documents.length;
               documentInputs.documents.push(...steeredDocuments.documents);
+              activeDocuments.push(...steeredDocuments.documents);
               const issues = inboundIssueList({
                 ...received,
                 surfaceNotes: strictReadOnly
