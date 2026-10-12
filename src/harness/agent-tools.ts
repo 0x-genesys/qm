@@ -48,7 +48,9 @@ function describePublishAudience(a: PublishAudienceDescriptor | undefined): stri
   const note = a.note ? ` (note: ${a.note})` : "";
   if (a.kind === "org") return `Owned by you; reachable by anyone at ${a.orgId ?? "your org"}.${note}`;
   if (a.kind === "members") {
-    const n = a.memberCount ?? 0;
+    if (a.memberCount === undefined)
+      return `Owned by you; access follows the visibility and membership of its shared scopes.${note}`;
+    const n = a.memberCount;
     const who = a.channelRef
       ? `the ${n} ${n === 1 ? "person" : "people"} currently in #${a.channelRef}`
       : `${n} ${n === 1 ? "person" : "people"} you've shared it with`;
@@ -1160,12 +1162,12 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     name: "publish",
     label: "publish",
     description:
-      "Publish a directory from the workspace as a durable, private-by-default web app " +
+      "Publish a directory from the workspace as a durable web app " +
       "(it keeps running after the turn ends and gets a stable link). Before publishing, verify the " +
       "directory exists and contains files. For a new app or a code/file update, always pass `entrypoint`; " +
       "the app must listen on the PORT env var. `dir` is workspace-relative: use `app`, never a path " +
       "beginning with `/` or a redundant `workspace/app`. `renameFrom` takes an existing " +
-      "deployment name, not its ID. Publishing is always private to the owner and never changes who can reach an app; " +
+      "deployment name, not its ID. New apps are shared for read/use with their creation channel; DMs stay private. Republishing never changes access; " +
       "grant access separately with apps action share. Share the full absolute URL " +
       "returned by apps action publish so it works in Slack and other surfaces. Use `name` for a friendly, " +
       "stable link /d/<name>/; `renameFrom` to rename; `rollbackTo` to flip back to an earlier version. " +
