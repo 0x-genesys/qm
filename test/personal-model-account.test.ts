@@ -73,6 +73,7 @@ test("account API binds choice to the signed-in person, preserves connections, a
       required: false,
       account: "personal",
       connections: [{ provider: "anthropic", kind: "apikey" }],
+      person: "alice@default-org",
     });
     assert.equal(await built.config.getIndividualModelAuthDurable("bob@default-org"), false);
     assert.equal((await request("company")).status, 200);
