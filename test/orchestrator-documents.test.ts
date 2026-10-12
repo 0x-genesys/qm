@@ -12,7 +12,7 @@ function freshApp(maxContextTokens?: number) {
   return buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "document-turn-")), maxContextTokens }));
 }
 
-test("document uploads are included only in their own turn and remain available on demand", async () => {
+test("document uploads survive follow-up turns and stay isolated to their conversation", async () => {
   const built = freshApp();
   const blob = await built.blobTransfer.put(Buffer.from("QUARTZ-731"));
   const request = {
@@ -30,8 +30,8 @@ test("document uploads are included only in their own turn and remain available 
   assert.equal(followup.status, "ok");
   const requests = (await built.sessions.listLlmRequests(followup.sessionId!)).filter((r) => r.model === "mock");
   assert.equal(requests.length, 2);
-  assert.match(JSON.stringify(requests[0]!.promptEnvelope), /"documents":\[\{"name":"notes.txt"/);
-  assert.doesNotMatch(JSON.stringify(requests[1]!.promptEnvelope), /"documents":/);
+  for (const recorded of requests)
+    assert.match(JSON.stringify(recorded.promptEnvelope), /"documents":\[\{"name":"notes.txt"/);
   const entries = await built.sessions.getEntries(first.sessionId!);
   const meta = (
     entries.find((entry) => entry.type === "user")!.payload as {

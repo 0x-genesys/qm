@@ -3,11 +3,17 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
-import { documentBlocks, nativeDocumentFormat, withDocumentInputs } from "../src/harness/document-inputs.ts";
+import {
+  documentBlocks,
+  nativeDocumentFormat,
+  withDocumentAnchors,
+  withDocumentInputs,
+} from "../src/harness/document-inputs.ts";
 import {
   documentFallbackText,
   isDocumentAttachment,
   resumedDocumentMetas,
+  loadAnchoredDocuments,
   loadDocumentInputs,
   type DocumentInput,
 } from "../src/core/document-inputs.ts";
@@ -417,4 +423,72 @@ test("output budgeting does not count native document base64 as text tokens", ()
     assert.equal(result.kind, "raised");
     if (result.kind === "raised") assert.ok(result.estimatedPromptTokens < 2000);
   }
+});
+
+test("anchored history documents load per original message and respect the reader's access", async () => {
+  const artifacts = new Map(
+    Array.from({ length: 12 }, (_, i) => {
+      const data = Buffer.from(`DOC-${i}`);
+      const artifact = {
+        id: `doc${i}`,
+        name: `doc${i}.txt`,
+        mimetype: "text/plain",
+        sizeBytes: data.length,
+        sha256: createHash("sha256").update(data).digest("hex"),
+        ownerScopeId: "user:owner",
+        enabled: true,
+      } as FileArtifact;
+      return [artifact.id, { artifact, data }] as const;
+    }),
+  );
+  const store = {
+    get: async (id: string) => artifacts.get(id)?.artifact,
+    open: async (id: string) => {
+      const found = artifacts.get(id)!;
+      return { artifact: found.artifact, sizeBytes: found.data.length, stream: Readable.from(found.data) };
+    },
+  } as unknown as FileArtifactStore;
+  const messages = [...artifacts.values()].map(({ artifact }) => ({
+    role: "user",
+    content: [{ type: "text", text: "see attached" }],
+    documents: [{ artifactId: artifact.id, name: artifact.name, mimeType: artifact.mimetype }],
+  }));
+  const { documents: loaded } = await loadAnchoredDocuments(store, messages, (artifact) => artifact.id !== "doc3");
+  assert.deepEqual(
+    loaded.map((document) => document.artifactId),
+    [...artifacts.keys()].filter((id) => id !== "doc3").slice(0, 10),
+    "oldest admitted documents win; the conversation keeps at most ten",
+  );
+});
+
+test("an exhausted text budget leaves earlier anchored documents byte-identical", async () => {
+  const text = (id: string, body: string): DocumentInput => ({
+    name: `${id}.txt`,
+    mimeType: "text/plain",
+    dataBase64: Buffer.from(body).toString("base64"),
+    artifactId: id,
+  });
+  const model = { api: "anthropic-messages", provider: "anthropic", contextWindow: 8192 + 50 };
+  const user = (token: string) => ({
+    role: "user",
+    content: [
+      { type: "text", text: "see" },
+      { type: "text", text: token },
+    ],
+  });
+  const render = (tokens: string[], docs: DocumentInput[]) =>
+    withDocumentAnchors(
+      { messages: tokens.map(user) },
+      model,
+      new Map(tokens.map((token, i) => [token, [docs[i]!]])),
+      new Map(),
+    ) as Promise<{ messages: unknown[] }>;
+  const a = text("a", "A".repeat(40));
+  const b = text("b", "B".repeat(40));
+  const c = text("c", "C".repeat(40));
+  const two = await render(["t1", "t2"], [a, b]);
+  const three = await render(["u1", "u2", "u3"], [a, b, c]);
+  assert.deepEqual(three.messages.slice(0, 2), two.messages);
+  assert.match(JSON.stringify(two.messages[1]), /omitted or truncated/);
+  assert.ok(!JSON.stringify(three.messages[2]).includes("CCCC"));
 });

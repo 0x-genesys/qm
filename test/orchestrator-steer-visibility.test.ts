@@ -175,3 +175,44 @@ for (const mode of ["retry", "approval"] as const) {
     }
   });
 }
+
+test("mid-turn compaction does not reattach documents excluded from retained history", async () => {
+  const built = buildApp(testConfig({ maxContextTokens: 1000 }));
+  const blob = await built.blobTransfer.put(Buffer.from("COMPACTED-DOCUMENT"));
+  let calls = 0;
+  let artifactId: string | undefined;
+  exercise = async (turn) => {
+    calls++;
+    if (calls === 1) {
+      assert.equal(turn.documents?.length, 1);
+      artifactId = turn.documents![0]!.artifactId;
+      await turn.emit({ type: "user", payload: { text: turn.input }, scopeLabel: turn.scopeLabel });
+      await turn.emit({
+        type: "assistant",
+        payload: { text: "Newer context to retain. ".repeat(1000) },
+        scopeLabel: turn.scopeLabel,
+      });
+      return { reply: "", runtimeHandoff: { context: "recent" } };
+    }
+    assert.equal(calls, 2);
+    assert.ok(turn.history.some((entry) => (entry.payload as { mode?: string }).mode === "recent"));
+    assert.ok(artifactId);
+    assert.ok(!JSON.stringify(turn.history).includes(artifactId));
+    assert.deepEqual(turn.documents ?? [], []);
+    assert.deepEqual(turn.historyDocuments ?? [], []);
+    return { reply: "Done" };
+  };
+  try {
+    const result = await built.app.turn({
+      surface: "test",
+      actor: { externalId: "U1" },
+      conversation: { kind: "dm", threadRef: "compact-during-document-turn" },
+      text: "Use this document and then reduce context",
+      attachments: [{ name: "compacted.txt", mimetype: "text/plain", ...blob }],
+    });
+    assert.equal(result.status, "ok");
+    assert.equal(calls, 2);
+  } finally {
+    exercise = undefined;
+  }
+});

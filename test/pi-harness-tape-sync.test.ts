@@ -146,7 +146,16 @@ for (const variant of ["text", "images", "documents", "finished during preparati
             text: `${text}\nFile available in inbox/photo.png`,
             images: [{ mimeType: "image/png", dataBase64: "YWJj", artifactId: "steered-photo" }],
             ...(variant === "documents"
-              ? { documents: [{ name: "steered.pdf", mimeType: "application/pdf", dataBase64: documentBase64 }] }
+              ? {
+                  documents: [
+                    {
+                      name: "steered.pdf",
+                      mimeType: "application/pdf",
+                      dataBase64: documentBase64,
+                      artifactId: "steered-doc",
+                    },
+                  ],
+                }
               : {}),
           };
         };
@@ -184,6 +193,10 @@ for (const variant of ["text", "images", "documents", "finished during preparati
         assert.ok(!JSON.stringify(requestMessages[0]).includes(documentBase64));
         assert.ok(JSON.stringify(requestMessages[1]).includes(documentBase64));
         assert.ok(!JSON.stringify(sink.tape).includes(documentBase64));
+        assert.ok(JSON.stringify(requestMessages[1]!.at(-1)).includes(documentBase64));
+        assert.deepEqual((messageRows[2]!.payload as { documents?: unknown }).documents, [
+          { artifactId: "steered-doc", name: "steered.pdf", mimeType: "application/pdf" },
+        ]);
       }
       const steeredEntry = sink.entries.find(
         (entry) => entry.type === "user" && (entry.payload as { steered?: boolean }).steered,

@@ -6,12 +6,19 @@ import {
   type BridgedTool,
   type SteerIntake,
 } from "./harness-shared.ts";
-import { withDocumentAnchors, withDocumentInputs, type DocumentModel } from "./document-inputs.ts";
+import {
+  anchorDocuments,
+  documentRefsFor,
+  withDocumentAnchors,
+  withDocumentInputs,
+  type DocumentAnchors,
+  type DocumentModel,
+  type RenderedAnchor,
+} from "./document-inputs.ts";
 import { documentRefs, type DocumentInput, type DocumentRef } from "../core/document-inputs.ts";
 import { gatewayModelsJson, gatewayModelsVersion } from "../model/gateway-models.ts";
 import { Type } from "typebox";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -446,8 +453,8 @@ interface TurnSession {
   ref: ToolContextRef & {
     effortLevel?: string;
     historyDocuments?: DocumentInput[];
-    documentAnchors?: Map<string, DocumentInput[]>;
-    documentBlocks?: Map<string, Promise<Record<string, unknown>[]>>;
+    documentAnchors?: DocumentAnchors;
+    documentBlocks?: Map<string, Promise<RenderedAnchor>>;
   };
   composedPromptTokens: number;
   cwd: string;
@@ -735,31 +742,8 @@ export function stoppedPartialTapeMessage(
   };
 }
 
-function anchorDocuments(ref: TurnSession["ref"], messages: unknown): unknown {
-  if (!Array.isArray(messages)) return messages;
-  const available = new Map<string, DocumentInput>();
-  for (const document of [...(ref.historyDocuments ?? []), ...(ref.documents ?? [])])
-    if (document.artifactId) available.set(document.artifactId, document);
-  const anchors = new Map<string, DocumentInput[]>();
-  const anchored = messages.map((message: unknown) => {
-    const refs = documentRefs(message);
-    const content = (message as { content?: unknown }).content;
-    if (!refs.length || !Array.isArray(content)) return message;
-    const token = `qm-document-anchor:${randomUUID()}`;
-    anchors.set(
-      token,
-      refs.flatMap((r) => available.get(r.artifactId) ?? []),
-    );
-    return { ...(message as object), content: [...content, { type: "text", text: token }] };
-  });
-  ref.documentAnchors = anchors;
-  return anchored;
-}
-
 function attachDocumentRefs(message: unknown, documents: readonly DocumentInput[] | undefined): void {
-  const refs: DocumentRef[] = (documents ?? []).flatMap((d) =>
-    d.artifactId ? [{ artifactId: d.artifactId, name: d.name, mimeType: d.mimeType }] : [],
-  );
+  const refs = documentRefsFor(documents);
   if (refs.length) (message as { documents?: DocumentRef[] }).documents = refs;
 }
 
@@ -799,7 +783,11 @@ export function seedRawMessagesIntoSession(session: unknown, messages: readonly 
 }
 
 const LLM_REQUEST_TRIM_SLACK_BYTES = 3_000_000;
-export function trimPayloadToByteBudget(payload: unknown, maxBytes: number = MAX_LLM_REQUEST_BYTES): unknown {
+export function trimPayloadToByteBudget(
+  payload: unknown,
+  maxBytes: number = MAX_LLM_REQUEST_BYTES,
+  keepDocuments = false,
+): unknown {
   const p = payload as Record<string, unknown> | null;
   let listKey: "messages" | "input" | "contents" | undefined;
   if (Array.isArray(p?.messages)) listKey = "messages";
@@ -830,6 +818,13 @@ export function trimPayloadToByteBudget(payload: unknown, maxBytes: number = MAX
     }
     return block?.file_data?.length ?? block?.file?.file_data?.length ?? block?.inlineData?.data?.length ?? 0;
   };
+  const isDocument = (b: unknown) => {
+    const block = b as { type?: string; inlineData?: { mimeType?: string } };
+    return (
+      ["document", "input_file", "file"].includes(block?.type ?? "") ||
+      (!!block?.inlineData && !block.inlineData.mimeType?.startsWith("image/"))
+    );
+  };
   const placeholder = (b: unknown) => {
     const block = b as { type?: string; cache_control?: unknown };
     const cache = block.cache_control !== undefined ? { cache_control: block.cache_control } : undefined;
@@ -848,7 +843,7 @@ export function trimPayloadToByteBudget(payload: unknown, maxBytes: number = MAX
     let changed = false;
     const out = content.map((block) => {
       const imageChars = inlineImageChars(block);
-      if (imageChars > 0 && toShed > 0) {
+      if (imageChars > 0 && toShed > 0 && !(keepDocuments && isDocument(block))) {
         toShed -= imageChars - ELIDED_IMAGE_TEXT.length;
         changed = true;
         return placeholder(block);
@@ -1792,8 +1787,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           applyFastSpeed(payload, ref.fast, (model as { api?: string } | undefined)?.api);
           applyReasoningMode(payload, model as Model<Api>, ref.effortLevel);
           const result = prior ? await prior(payload, model) : payload;
-          const anchors = ref.documentAnchors ?? new Map<string, DocumentInput[]>();
-          const anchoredIds = new Set([...anchors.values()].flat().map((document) => document.artifactId));
+          const anchors: DocumentAnchors = ref.documentAnchors ?? new Map();
           let finalPayload = await withDocumentInputs(
             await withDocumentAnchors(
               result ?? payload,
@@ -1803,7 +1797,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
               ref.abortSignal,
             ),
             model as DocumentModel,
-            (ref.documents ?? []).filter((document) => !document.artifactId || !anchoredIds.has(document.artifactId)),
+            (ref.documents ?? []).filter((document) => !document.artifactId),
             ref.abortSignal,
           );
           const guarded = guardOutputBudget(finalPayload, model);
@@ -1813,10 +1807,14 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             );
           }
           try {
-            finalPayload = trimPayloadToByteBudget(finalPayload);
+            finalPayload = trimPayloadToByteBudget(finalPayload, MAX_LLM_REQUEST_BYTES, anchors.size > 0);
           } catch (e) {
             swallow("pi: request byte budget", e);
           }
+          if (anchors.size && Buffer.byteLength(JSON.stringify(finalPayload)) > MAX_LLM_REQUEST_BYTES)
+            throw new NonRetryableTurnError(
+              "This conversation's attachments no longer fit in one model request. Start a new conversation or re-share only the files still needed.",
+            );
           if (captureRequests) {
             try {
               ref.llmCapture?.push(sanitizeLlmPayload(finalPayload, model));
@@ -1845,7 +1843,9 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             swallow("pi: transformContext stamp", e);
           }
           const transformed = priorTransform ? await priorTransform(messages, signal) : messages;
-          return anchorDocuments(ref, transformed);
+          const anchored = anchorDocuments(transformed, [...(ref.historyDocuments ?? []), ...(ref.documents ?? [])]);
+          ref.documentAnchors = anchored.anchors;
+          return anchored.messages;
         };
         agent.afterToolCall = pauseStampAfterToolCall(ref, agent.afterToolCall);
         const priorPrepare = agent.prepareNextTurn;
@@ -1978,6 +1978,12 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             console.log(
               `[pi] resume cannot continue the assistant turn — seeded context does not end at a recorded tool result; prompting the resume note session=${turn.session.id}`,
             );
+          const seededDocumentIds = new Set(
+            entry.agentSession.agent.state.messages.flatMap((m) => documentRefs(m).map((r) => r.artifactId)),
+          );
+          const triggerDocuments = (turn.documents ?? []).filter(
+            (d) => !d.artifactId || !seededDocumentIds.has(d.artifactId),
+          );
           const userEntry = continueTurn
             ? turn.history.find(
                 (e) => e.type === "user" && (e.payload as { runId?: unknown } | null)?.runId === turn.runId,
@@ -1989,6 +1995,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
                   ...(turn.environment ? { environment: turn.environment } : {}),
                   ...((turn.triggerTs ?? turn.entryTs) ? { ts: turn.triggerTs ?? turn.entryTs } : {}),
                   ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
+                  ...(documentRefsFor(triggerDocuments).length ? { documents: documentRefsFor(triggerDocuments) } : {}),
                 },
                 scopeLabel: turn.scopeLabel,
               });
@@ -2047,7 +2054,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
                   )
                 : -1;
             const steer = steerAt >= 0 ? pendingSteerTapeMeta.splice(steerAt, 1)[0] : undefined;
-            if (isTrigger) attachDocumentRefs(message, turn.documents);
+            if (isTrigger) attachDocumentRefs(message, triggerDocuments);
             else if (steer) attachDocumentRefs(message, steer.documents);
             if (steer) await thinkTail;
             const steerStamp = steer ? await recordSteerIntake(turn, steer) : undefined;

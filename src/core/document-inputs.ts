@@ -14,6 +14,8 @@ export interface DocumentInput {
 }
 
 export const MAX_DOCUMENT_BYTES = 8_000_000;
+const MAX_CONVERSATION_DOCUMENT_BYTES = 12_000_000;
+const MAX_CONVERSATION_DOCUMENTS = 10;
 const MAX_DOCUMENT_TEXT_CHARS = 200_000;
 const TEXT_EXTENSIONS = new Set(
   "asm bat c cc conf cpp css cxx def dic eml h hh htm html ics ifb in js json ksh list log markdown md mht mhtml mime mjs nws pl py rst s sql srt text txt vcf vtt xml ts tsx jsx sh bash zsh yml yaml toml rs go java rb php swift kt scala lua r jl perl tex cs graphql ndjson json5 dockerfile".split(
@@ -95,14 +97,24 @@ export function documentRefs(message: unknown): DocumentRef[] {
   );
 }
 
+export function historyDocumentMessages(history: readonly SessionEntry[]): unknown[] {
+  return forModelContext([...history]).flatMap((entry) =>
+    entry.type === "user"
+      ? [{ role: "user", documents: (entry.payload as { documents?: unknown } | null)?.documents }]
+      : [],
+  );
+}
+
 export async function loadAnchoredDocuments(
   files: FileArtifactStore,
   messages: readonly unknown[],
   authorize: (artifact: FileArtifact) => boolean | Promise<boolean>,
   signal?: AbortSignal,
-): Promise<DocumentInput[]> {
+): Promise<{ documents: DocumentInput[]; notices: string[]; remainingBytes: number; remainingCount: number }> {
   const documents: DocumentInput[] = [];
+  const notices: string[] = [];
   const seen = new Set<string>();
+  let remaining = MAX_CONVERSATION_DOCUMENT_BYTES;
   for (const message of messages) {
     const refs = documentRefs(message).filter((ref) => !seen.has(ref.artifactId));
     if (!refs.length) continue;
@@ -117,12 +129,20 @@ export async function loadAnchoredDocuments(
         direction: "in" as const,
       })),
       authorize,
-      undefined,
+      Math.min(MAX_DOCUMENT_BYTES, remaining),
       signal,
+      MAX_CONVERSATION_DOCUMENTS - documents.length,
     );
+    remaining -= loaded.documents.reduce((sum, d) => sum + Buffer.byteLength(d.dataBase64, "base64"), 0);
     documents.push(...loaded.documents);
+    notices.push(...loaded.notices);
   }
-  return documents;
+  return {
+    documents,
+    notices,
+    remainingBytes: Math.max(0, remaining),
+    remainingCount: MAX_CONVERSATION_DOCUMENTS - documents.length,
+  };
 }
 
 export async function loadDocumentInputs(
@@ -271,12 +291,12 @@ export interface DocumentTextBudget {
   remaining: number;
 }
 
+export const DOCUMENT_TEXT_OMITTED = "[Document text omitted or truncated to fit the model context.]";
+
 export function fitDocumentText(text: string, budget: DocumentTextBudget): string {
   const length = Math.min(text.length, Math.max(0, budget.remaining));
   budget.remaining -= length;
-  return length < text.length
-    ? `${text.slice(0, length)}\n[Document text omitted or truncated to fit the model context.]`
-    : text;
+  return length < text.length ? `${text.slice(0, length)}\n${DOCUMENT_TEXT_OMITTED}` : text;
 }
 
 export async function documentsFallbackText(

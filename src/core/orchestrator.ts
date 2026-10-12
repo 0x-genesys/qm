@@ -11,7 +11,9 @@ import {
   documentText,
   resumedDocumentMetas,
   isTextDocument,
+  historyDocumentMessages,
   documentRefs,
+  type DocumentInput,
   loadAnchoredDocuments,
   loadDocumentInputs,
 } from "./document-inputs.ts";
@@ -3102,25 +3104,41 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           history !== visibleHistory &&
           history.some((entry) => isObj(entry.payload) && entry.payload.mode === "recent");
         compactMs = Date.now() - compactStart;
-        const servedFold = tapeRows?.serve && history === visibleHistory ? (tapeRows.fold ?? []) : [];
-        const foldDocumentIds = new Set(servedFold.flatMap((m) => documentRefs(m).map((ref) => ref.artifactId)));
-        const historyDocuments = strictReadOnly
+        const documentHistory =
+          tapeRows?.serve && history === visibleHistory && tapeRows.fold
+            ? tapeRows.fold
+            : historyDocumentMessages(history);
+        const anchoredHistory = strictReadOnly
+          ? { documents: [], notices: [], remainingBytes: 0, remainingCount: 0 }
+          : await loadAnchoredDocuments(deps.files, documentHistory, mayReadArtifact, turnAbort.signal);
+        let historyDocuments = anchoredHistory.documents;
+        const documentBytes = (documents: readonly DocumentInput[]) =>
+          documents.reduce((sum, document) => sum + Buffer.byteLength(document.dataBase64, "base64"), 0);
+        const resumedMetas = strictReadOnly
           ? []
-          : await loadAnchoredDocuments(deps.files, servedFold, mayReadArtifact, turnAbort.signal);
-        const documentInputs = strictReadOnly
+          : resumedDocumentMetas(history, partial?.userSeq ?? approvalRecord?.turnUserSeq);
+        const reusedDocuments = historyDocuments.filter((document) =>
+          resumedMetas.some((meta) => meta.artifactId === document.artifactId),
+        );
+        const freshDocuments = strictReadOnly
           ? { documents: [], notices: [] }
           : await loadDocumentInputs(
               deps.files,
-              [
-                ...resumedDocumentMetas(history, partial?.userSeq ?? approvalRecord?.turnUserSeq).filter(
-                  (meta) => !meta.artifactId || !foldDocumentIds.has(meta.artifactId),
-                ),
-                ...inbound.metas,
-              ],
+              [...resumedMetas, ...(approvalRecord?.turnUserSeq !== undefined ? [] : inbound.metas)].filter(
+                (meta) => !meta.artifactId || !reusedDocuments.some((d) => d.artifactId === meta.artifactId),
+              ),
               mayReadArtifact,
-              undefined,
+              Math.max(
+                0,
+                Math.min(MAX_DOCUMENT_BYTES - documentBytes(reusedDocuments), anchoredHistory.remainingBytes),
+              ),
               turnAbort.signal,
+              Math.min(10 - reusedDocuments.length, anchoredHistory.remainingCount),
             );
+        const documentInputs = {
+          documents: [...reusedDocuments, ...freshDocuments.documents],
+          notices: [...anchoredHistory.notices, ...freshDocuments.notices],
+        };
         const screenDocuments = async (
           documentInputs: Awaited<ReturnType<typeof loadDocumentInputs>>,
           requestText: string,
@@ -3176,12 +3194,22 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const observeDocuments = (inputs: Awaited<ReturnType<typeof loadDocumentInputs>>, requestText: string) =>
           void screenDocuments(inputs, requestText).catch(swallowAs("orchestrator: observed document screen", false));
         let documentsUnscreened = false;
-        if (enforceScreen) documentsUnscreened = await screenDocuments(documentInputs, input.text);
-        else observeDocuments(documentInputs, input.text);
-        let remainingDocumentBytes =
-          MAX_DOCUMENT_BYTES -
-          documentInputs.documents.reduce((sum, document) => sum + Buffer.byteLength(document.dataBase64, "base64"), 0);
-        let remainingDocumentCount = 10 - documentInputs.documents.length;
+        if (enforceScreen) {
+          documentsUnscreened = await screenDocuments(documentInputs, input.text);
+          const earlier = { documents: historyDocuments.filter((d) => !reusedDocuments.includes(d)), notices: [] };
+          documentsUnscreened = (await screenDocuments(earlier, input.text)) || documentsUnscreened;
+          historyDocuments = historyDocuments.filter(
+            (d) => earlier.documents.includes(d) || documentInputs.documents.includes(d),
+          );
+        } else observeDocuments(documentInputs, input.text);
+        let remainingDocumentBytes = Math.min(
+          MAX_DOCUMENT_BYTES - documentBytes(documentInputs.documents),
+          anchoredHistory.remainingBytes - documentBytes(freshDocuments.documents),
+        );
+        let remainingDocumentCount = Math.min(
+          10 - documentInputs.documents.length,
+          anchoredHistory.remainingCount - freshDocuments.documents.length,
+        );
         const principalDelivered = await recentPrincipalDeliveryNote(
           deps.deliveries,
           session.threadRef,
@@ -3494,6 +3522,23 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               ...(tapeRows.fold ? { fold: tapeRows.fold } : {}),
             };
           }
+          const retainedDocumentIds = continuation
+            ? new Set(
+                (selectedTape?.mode === "serve"
+                  ? (selectedTape.fold ?? foldTape(selectedTape.rows))
+                  : historyDocumentMessages(continuation.history)
+                ).flatMap((message) => documentRefs(message).map((document) => document.artifactId)),
+              )
+            : undefined;
+          const segmentHistoryDocuments = retainedDocumentIds
+            ? [
+                ...new Map(
+                  [...historyDocuments, ...documentInputs.documents]
+                    .filter((document) => retainedDocumentIds.has(document.artifactId ?? ""))
+                    .map((document) => [document.artifactId, document]),
+                ).values(),
+              ]
+            : historyDocuments;
           const emit: HarnessTurnInput["emit"] = async (entry) => {
             turnProgress++;
             const persistStart = Date.now();
@@ -3705,8 +3750,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ...(extras.overheard?.length ? { overheard: extras.overheard } : {}),
             ...(extras.attachments?.length ? { attachments: extras.attachments } : {}),
             ...(extras.images?.length ? { images: extras.images } : {}),
-            documents: [...documentInputs.documents],
-            ...(!continuation && selectedTape?.mode === "serve" && historyDocuments.length ? { historyDocuments } : {}),
+            documents: continuation ? [] : [...documentInputs.documents],
+            ...(segmentHistoryDocuments.length ? { historyDocuments: segmentHistoryDocuments } : {}),
             ...(Object.keys(requestedRuntime).length ? { runtime: requestedRuntime } : {}),
             ...(strictReadOnly ? { readOnly: true } : {}),
             surfaceName,
