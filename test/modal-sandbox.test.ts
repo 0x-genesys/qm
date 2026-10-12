@@ -1084,17 +1084,22 @@ test("a command cut off by another core destroying its scope never regrows a san
       return session.runCommand(script, options);
     },
   });
+  let command: Promise<unknown> = Promise.resolve();
   const client: ModalClient = {
     ...fake.client,
     create: async (options) => wrap(await fake.client.create(options)),
     fromId: async (id) => wrap(await fake.client.fromId(id)),
+    async terminate(id) {
+      await fake.client.terminate(id);
+      release.resolve();
+      await command.catch(() => undefined);
+    },
   };
   const running = make({ store, client });
   const h = await running.provision(layers);
-  const command = running.run(h, "long-build");
+  command = running.run(h, "long-build");
   await entered.promise;
   await make({ store, client }).destroyScope!(scope);
-  release.resolve();
   await assert.rejects(command, /gone/);
   assert.equal(await store.get(scope), null);
   assert.equal(fake.createdCount(scopeName()), 1);

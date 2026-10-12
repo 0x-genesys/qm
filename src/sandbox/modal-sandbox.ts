@@ -550,14 +550,16 @@ export function createModalSandbox(workspace: WorkspaceStore, opts: ModalSandbox
     const stored = await store.get(scope);
     const cached = sessionByName.get(name);
     const ids = new Set([stored?.sandboxId, cached?.sandboxId].filter((id): id is string => !!id));
+    if (stored) await deleteRowIf(scope, (current) => current.sandboxId === stored.sandboxId);
     for (const id of ids) {
       try {
         await client.terminate(id);
       } catch (error) {
-        if (!(error instanceof ModalSandboxGoneError)) throw error;
+        if (error instanceof ModalSandboxGoneError) continue;
+        if (stored) await store.putIfAbsent(scope, stored);
+        throw error;
       }
     }
-    if (stored) await deleteRowIf(scope, (current) => current.sandboxId === stored.sandboxId);
     sessionByName.delete(name);
     scopeByName.delete(name);
     rotationHoldUntil.delete(scope);
