@@ -10,6 +10,7 @@ import { createServer as createHttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createServer } from "../src/api/server.ts";
 import { buildApp } from "../src/wiring.ts";
+import { installPrincipalLinks } from "../src/directory/person.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const SECRET = "core-signing-secret".repeat(3);
@@ -137,4 +138,44 @@ test("a channel member can continue a teammate's shared web thread; outsiders an
     }),
   );
   assert.equal(outsider.status, 403);
+});
+
+test("a linked login continues its person's personal web chat; other people can't", async () => {
+  const links = { "oidc:test:42": "carol@example.com" } as Record<string, string>;
+  installPrincipalLinks({ canonical: (key) => links[key], aliases: () => [] });
+  try {
+    const me = (await (await fetch(`${webBase}/me`, asUser("oidc:test:42"))).json()) as { person?: string };
+    assert.equal(me.person, "carol@example.com");
+
+    const started = await fetch(
+      `${webBase}/api/turn`,
+      asUser("carol@example.com", {
+        method: "POST",
+        body: JSON.stringify({ text: "hello", threadRef: "web:carol@example.com:p1" }),
+      }),
+    );
+    assert.ok(started.status < 300, `carol's turn should be accepted (got ${started.status})`);
+    const session = await waitForSession("carol@example.com", "web:carol@example.com:p1");
+    assert.equal(session.scopeId, "personal:carol@example.com");
+
+    const continued = await fetch(
+      `${webBase}/api/turn`,
+      asUser("oidc:test:42", {
+        method: "POST",
+        body: JSON.stringify({ text: "again", threadRef: session.threadRef, scopeId: session.scopeId }),
+      }),
+    );
+    assert.ok(continued.status < 300, `the linked login should continue (got ${continued.status})`);
+
+    const other = await fetch(
+      `${webBase}/api/turn`,
+      asUser("dave", {
+        method: "POST",
+        body: JSON.stringify({ text: "sneak", threadRef: session.threadRef, scopeId: session.scopeId }),
+      }),
+    );
+    assert.equal(other.status, 403);
+  } finally {
+    installPrincipalLinks(null);
+  }
 });
