@@ -10,6 +10,8 @@ import { createModalSandbox } from "../src/sandbox/modal-sandbox.ts";
 import type { ModalSession } from "../src/sandbox/modal-client.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { installFakeModal } from "./support/fake-modal.ts";
+import { swarmFixture } from "./support/swarm-fixture.ts";
+import { createMemoryRunStore } from "../src/runs/memory-run-store.ts";
 import { scopeId } from "../src/types.ts";
 import { createPgPool, configurePgPooling, setSandboxPoolMax, type PoolClient } from "../src/persistence/pg-pool.ts";
 import {
@@ -22,6 +24,61 @@ const URL = process.env.DATABASE_URL;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the advisory-lock tests";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+test(
+  "swarm delivery leaves sandbox capacity available while waiting for run admission",
+  { skip, timeout: 5_000 },
+  async () => {
+    configurePgPooling({ databaseUrl: URL!, sessionMax: 1, sandboxMax: 1 });
+    const pg = createPgPool(URL!);
+    const general = createPostgresAdvisoryLock(pg);
+    const sandbox = createPostgresAdvisoryLock(pg, { pool: "sandbox" });
+    const originalRuns = createMemoryRunStore().runs;
+    const fixture = await swarmFixture({
+      lock: sandbox,
+      deliveryLock: general,
+      runs: {
+        ...originalRuns,
+        enqueue: (input) => general.withLock("session-run-admission", () => originalRuns.enqueue(input)),
+      },
+    });
+    const entered = Promise.withResolvers<void>();
+    const startCommand = Promise.withResolvers<void>();
+    let cron: Promise<unknown> | undefined;
+    let sweep: Promise<void> | undefined;
+    try {
+      await fixture.service.spawn(fixture.caller, { requestId: "initial", text: "Work" });
+      const generalPool = await pg.sessionPool();
+      const sandboxPool = await pg.sessionPool("sandbox");
+      generalPool.options.connectionTimeoutMillis = 500;
+      sandboxPool.options.connectionTimeoutMillis = 500;
+      cron = general.withLock("cron-lifecycle:capacity", async () => {
+        entered.resolve();
+        await startCommand.promise;
+        await sandbox.withSharedLock!("sandbox-resource:capacity", async () => {});
+      });
+      const completed = Promise.allSettled([cron]);
+      await entered.promise;
+      sweep = fixture.service.sweep();
+      const deadline = Date.now() + 1_000;
+      while (!generalPool.waitingCount && Date.now() < deadline) await sleep(5);
+      assert.equal(generalPool.waitingCount, 1);
+      startCommand.resolve();
+      const [result] = await completed;
+      assert.equal(result.status, "fulfilled");
+      await sweep;
+      const swarm = (await fixture.store.get(fixture.root.id))!;
+      assert.equal(swarm.messages[0]!.notifications[swarm.members[1]!.id]!.state, "queued");
+      assert.equal(generalPool.waitingCount, 0);
+      assert.equal(sandboxPool.waitingCount, 0);
+    } finally {
+      startCommand.resolve();
+      await Promise.allSettled([cron, sweep]);
+      await pg.close();
+      configurePgPooling({});
+    }
+  },
+);
 
 test(
   "Modal cancellation uses its protected session while the sandbox pool is full",

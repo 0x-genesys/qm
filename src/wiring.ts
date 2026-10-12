@@ -1549,6 +1549,7 @@ export function buildApp(
           runs,
           sandboxes: sandboxResources,
           lock: sandboxAdvisoryLock,
+          deliveryLock: advisoryLock,
           signals: runSignals,
           enabled: (actorId) => featureFlags.enabled("swarms", scopeId("personal", actorId)),
           authorize: async (claims) => {
