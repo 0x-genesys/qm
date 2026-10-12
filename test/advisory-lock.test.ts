@@ -1,3 +1,6 @@
+import { createE2bSandbox } from "../src/sandbox/e2b-sandbox.ts";
+import type { E2bSession } from "../src/sandbox/e2b-client.ts";
+import { installFakeE2b } from "./support/fake-e2b.ts";
 import type { SandboxResource, SandboxDefault } from "../src/sandbox/sandbox-resources.ts";
 import { upgradeLegacySandboxes, type SandboxResourceUpgradeMarker } from "../src/sandbox/sandbox-resource-upgrade.ts";
 import { createPostgresMap } from "../src/persistence/durable-map.ts";
@@ -130,6 +133,74 @@ test(
       const controller = new AbortController();
       running = lock.withSharedLock!("sandbox-resource:modal-capacity", () =>
         sandbox.run(handle, "SATURATED_MODAL_COMMAND", { signal: controller.signal }),
+      ).finally(() => {
+        settled = true;
+      });
+      await entered.promise;
+      controller.abort();
+      await sleep(50);
+      assert.equal(kills, 1, "Stop dispatches without borrowing a second connection");
+      assert.equal((await pg.sessionPool("sandbox")).waitingCount, 0);
+      assert.equal(settled, false, "the protected operation waits for the kill to finish");
+      finishKill.resolve();
+      await running;
+    } finally {
+      command.resolve();
+      finishKill.resolve();
+      await running?.catch(() => {});
+      await pg.close();
+      fake.cleanup();
+      configurePgPooling({});
+    }
+  },
+);
+
+test(
+  "E2b cancellation uses its protected session while the sandbox pool is full",
+  { skip, timeout: 10_000 },
+  async () => {
+    configurePgPooling({ databaseUrl: URL!, sandboxMax: 1 });
+    const pg = createPgPool(URL!);
+    const fake = installFakeE2b();
+    const entered = Promise.withResolvers<void>();
+    const command = Promise.withResolvers<void>();
+    const finishKill = Promise.withResolvers<void>();
+    let kills = 0;
+    let settled = false;
+    const wrap = (session: E2bSession): E2bSession => ({
+      ...session,
+      async runCommand(script, options) {
+        if (script.includes("SATURATED_E2B_COMMAND")) {
+          entered.resolve();
+          await command.promise;
+          return { stdout: "", stderr: "", exitCode: 137 };
+        }
+        if (script.includes("kill -KILL")) {
+          kills++;
+          command.resolve();
+          await finishKill.promise;
+          return { stdout: "", stderr: "", exitCode: 0 };
+        }
+        return session.runCommand(script, options);
+      },
+    });
+    const lock = createPostgresAdvisoryLock(pg, { pool: "sandbox" });
+    const sandbox = createE2bSandbox(createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "e2b-capacity-"))), {
+      advisoryLock: lock,
+      client: {
+        ...fake.client,
+        create: async (options) => wrap(await fake.client.create(options)),
+        connect: async (id) => wrap(await fake.client.connect(id)),
+      },
+    });
+    let running: Promise<unknown> | undefined;
+    try {
+      const handle = await sandbox.provision([
+        { scopeId: scopeId("personal", "capacity"), mountPath: "/", mode: "rw" },
+      ]);
+      const controller = new AbortController();
+      running = lock.withSharedLock!("sandbox-resource:e2b-capacity", () =>
+        sandbox.run(handle, "SATURATED_E2B_COMMAND", { signal: controller.signal }),
       ).finally(() => {
         settled = true;
       });
