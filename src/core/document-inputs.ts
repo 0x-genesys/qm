@@ -65,10 +65,13 @@ export function isTextDocument(file: Pick<DocumentInput, "name" | "mimeType">): 
 
 export function resumedDocumentMetas(history: readonly SessionEntry[], userSeq?: number): AttachmentMeta[] {
   if (userSeq === undefined) return [];
-  const nextTurn = history.find((entry) => entry.seq > userSeq && isUserTurnBoundary(entry));
+  let inTurn = false;
   return forModelContext([...history]).flatMap((entry) => {
-    if (entry.type !== "user" || entry.seq < userSeq || (nextTurn && entry.seq >= nextTurn.seq)) return [];
-    const attachments = (entry.payload as { attachments?: AttachmentMeta[] } | null)?.attachments;
+    const payload = entry.payload as { attachments?: AttachmentMeta[]; resumedFromSeq?: number } | null;
+    if (entry.seq === userSeq || payload?.resumedFromSeq === userSeq) inTurn = true;
+    else if (isUserTurnBoundary(entry, userSeq)) inTurn = false;
+    if (entry.type !== "user" || !inTurn) return [];
+    const attachments = payload?.attachments;
     return Array.isArray(attachments)
       ? attachments.filter(
           (file) => file.direction === "in" && typeof file.name === "string" && isDocumentAttachment(file),

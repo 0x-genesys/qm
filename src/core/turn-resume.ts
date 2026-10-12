@@ -46,11 +46,11 @@ function isSteerEntry(e: SessionEntry): boolean {
   return (e.payload as { steered?: unknown } | null)?.steered === true;
 }
 
-export function isUserTurnBoundary(entry: SessionEntry): boolean {
+export function isUserTurnBoundary(entry: SessionEntry, userSeq: number): boolean {
   return (
     entry.type === "user" &&
     !isSteerEntry(entry) &&
-    typeof (entry.payload as { resumedFromSeq?: number } | null)?.resumedFromSeq !== "number" &&
+    (entry.payload as { resumedFromSeq?: number } | null)?.resumedFromSeq !== userSeq &&
     !isOverheardEntry(entry) &&
     !isResumeNote(entryText(entry))
   );
@@ -76,7 +76,7 @@ export function turnAtSeq(entries: readonly SessionEntry[], userSeq: number): Re
       workEntries += 1;
       continue;
     }
-    if (!isUserTurnBoundary(e)) continue;
+    if (!isUserTurnBoundary(e, userSeq)) continue;
     break;
   }
   return { userSeq, workEntries, ...(answer ? { answer } : {}) };

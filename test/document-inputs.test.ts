@@ -218,6 +218,7 @@ test("resumed documents include the current upload and steers, not earlier turns
   const { meta } = storeFor();
   const current = { ...meta, artifactId: "current" };
   const steer = { ...meta, artifactId: "steer" };
+  const laterSteer = { ...meta, artifactId: "later-steer" };
   const history = [
     { seq: 0, type: "user", payload: { attachments: [meta] } },
     { seq: 1, type: "assistant", payload: { text: "Done" } },
@@ -226,9 +227,11 @@ test("resumed documents include the current upload and steers, not earlier turns
     { seq: 4, type: "user", payload: { text: "Be concise", steered: true } },
     { seq: 5, type: "user", payload: { text: "Resume", hidden: true, resumedFromSeq: 2 } },
     { seq: 6, type: "user", payload: { attachments: [meta], hidden: true } },
+    { seq: 7, type: "user", payload: { text: "Resume original", resumedFromSeq: 2 } },
+    { seq: 8, type: "user", payload: { attachments: [laterSteer], steered: true } },
   ] as SessionEntry[];
   assert.deepEqual(resumedDocumentMetas(history), []);
-  assert.deepEqual(resumedDocumentMetas(history, 2), [current, steer]);
+  assert.deepEqual(resumedDocumentMetas(history, 2), [current, steer, laterSteer]);
 });
 
 test("document replay follows compaction boundaries and excludes security-tainted uploads", () => {
