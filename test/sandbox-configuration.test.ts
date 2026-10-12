@@ -101,6 +101,7 @@ test("saved configuration uses provider startup validation before committing", a
   });
   for (const set of [
     { SANDBOX_BACKEND: "aws" },
+    { PORTER_DEPLOY_API_TOKEN: "test-porter" },
     { E2B_MAX_LIFETIME_SEC: "30" },
     { E2B_EGRESS_PROXY_URL: "https://proxy.example:8443" },
     { MODAL_SNAPSHOT_RETENTION_SEC: "0" },

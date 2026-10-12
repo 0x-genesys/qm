@@ -1222,7 +1222,7 @@ export function loadSandboxConfig(env: NodeJS.ProcessEnv, warn: (message: string
       "[config] SANDBOX_BACKEND=porter without PORTER_SANDBOX_EGRESS_PROXY_URL — sandboxes run with NO egress enforcement (fail-open); set PORTER_SANDBOX_EGRESS_PROXY_URL to the egress proxy to force sandbox traffic through it.",
     );
   }
-  if (porterSandboxSelected && !porterLocatorPresent(env)) {
+  if ((porterSandboxSelected || env.PORTER_DEPLOY_API_TOKEN) && !porterLocatorPresent(env)) {
     throw new Error(
       "SANDBOX_BACKEND=porter requires PORTER_DEPLOY_PROJECT_ID and PORTER_DEPLOY_CLUSTER_ID (or PORTER_SANDBOX_BASE_URL, or PORTER_CLUSTER_ID)",
     );
@@ -1299,7 +1299,7 @@ export function loadSandboxConfig(env: NodeJS.ProcessEnv, warn: (message: string
     throw new Error("SANDBOX_BACKEND=aws requires AWS_SANDBOX_S3_BUCKET");
   if (parsed.e2bSandbox.apiKey) {
     const e2b = parsed.e2bSandbox;
-    e2bSandboxTtlMs({ ...(e2b.maxLifetimeSec ? { maxLifetimeMs: e2b.maxLifetimeSec * 1000 } : {}) });
+    e2bSandboxTtlMs(e2b.maxLifetimeSec ? { maxLifetimeMs: e2b.maxLifetimeSec * 1000 } : {});
     if (e2b.egressProxyUrl) e2bEgressNetwork(e2b.egressProxyUrl);
   }
   if (parsed.modalSandbox.tokenId && parsed.modalSandbox.tokenSecret) {
