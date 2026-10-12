@@ -3,7 +3,7 @@ import { scopeId } from "../types.ts";
 import { defaultOrgPolicy } from "../policy/command-policy.ts";
 import { randomBytes } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { validateSandboxPoolMax } from "../persistence/pg-pool.ts";
+import { DEFAULT_SANDBOX_POOL_MAX, validateSandboxPoolMax } from "../persistence/pg-pool.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import { createMemoryMap } from "../persistence/durable-map.ts";
 import { createKeyedQueue } from "../util/async.ts";
@@ -375,7 +375,7 @@ export function createMemoryConfigStore(
   const browseModelStore = opts.browseModels ?? createMemoryMap<PersistedBrowseModel>();
   const autoFlaggerStore = opts.autoFlaggerConfigs ?? createMemoryMap<PersistedAutoFlaggerConfig>();
   const sandboxSettingsStore = opts.sandboxSettings ?? createMemoryMap<PersistedSandboxSettings>();
-  const defaultSandboxPoolMax = opts.defaultSandboxPoolMax ?? 32;
+  const defaultSandboxPoolMax = opts.defaultSandboxPoolMax ?? DEFAULT_SANDBOX_POOL_MAX;
   validateSandboxPoolMax(defaultSandboxPoolMax);
   const turnWallClockStore = opts.turnWallClocks ?? createMemoryMap<PersistedTurnWallClock>();
   const deploymentIdentity = opts.deploymentIdentity ?? createMemoryMap<PersistedDeploymentIdentity>();

@@ -696,7 +696,7 @@ export function buildApp(
     browseModels: artifactMap<PersistedBrowseModel>("browse_model_configs"),
     autoFlaggerConfigs: artifactMap<PersistedAutoFlaggerConfig>("auto_flagger_configs"),
     sandboxSettings: artifactMap<PersistedSandboxSettings>("sandbox_settings"),
-    defaultSandboxPoolMax: config.databaseSandboxPoolMax ?? 32,
+    ...(config.databaseSandboxPoolMax !== undefined ? { defaultSandboxPoolMax: config.databaseSandboxPoolMax } : {}),
     onSandboxSettingsChanged: async () => {
       await refreshSandboxSettings();
       sandboxSettingsEvents.emit(null);

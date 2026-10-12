@@ -1,6 +1,7 @@
 import { parseAckEmoji } from "../../slack/config.ts";
 import { orgId as configOrgId } from "../../config.ts";
 import type { ServerDeps } from "../deps.ts";
+import { validateSandboxPoolMax } from "../../persistence/pg-pool.ts";
 import type { ApiCtx } from "./route.ts";
 import { parseCommandPolicy } from "../../policy/command-policy.ts";
 import { parseScopeId, scopeId, type CommandPolicy, type Grant, type ScopeId } from "../../types.ts";
@@ -167,8 +168,11 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
           return { error: "sandbox-settings requires { connectionPoolMax: positive integer or null }" };
         const max = (body as { connectionPoolMax?: unknown }).connectionPoolMax;
         if (max === null) return { value: null };
-        if (typeof max !== "number" || !Number.isSafeInteger(max) || max < 1)
-          return { error: "connectionPoolMax must be a positive safe integer or null" };
+        try {
+          validateSandboxPoolMax(max);
+        } catch (error) {
+          return { error: errMessage(error) };
+        }
         return { value: max };
       },
       (deps, _scope, max) => deps.config!.setSandboxPoolMax(max),

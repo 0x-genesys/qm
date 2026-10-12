@@ -7,6 +7,7 @@ import { errMessage, swallowAs } from "../util/errors.ts";
 export type { Pool, PoolClient };
 
 export type Rows = Record<string, unknown>[];
+export const DEFAULT_SANDBOX_POOL_MAX = 32;
 
 interface PgPoolingConfig {
   databaseUrl?: string;
@@ -29,9 +30,7 @@ export function configurePgPooling(config: PgPoolingConfig): void {
       throw new Error(`${name} must be an integer between 1 and 100`);
     }
   }
-  if (config.sandboxMax !== undefined && (!Number.isSafeInteger(config.sandboxMax) || config.sandboxMax < 1)) {
-    throw new Error("DATABASE_SANDBOX_POOL_MAX must be a positive safe integer");
-  }
+  if (config.sandboxMax !== undefined) validateSandboxPoolMax(config.sandboxMax, "DATABASE_SANDBOX_POOL_MAX");
   poolingConfig = { ...config };
   if (config.databaseUrl) sandboxPoolLimits.delete(config.databaseUrl);
   else sandboxPoolLimits.clear();
@@ -48,9 +47,9 @@ type ResizableSandboxPool = Pool & {
   _pulseQueue(): void;
 };
 
-export function validateSandboxPoolMax(value: unknown): asserts value is number {
+export function validateSandboxPoolMax(value: unknown, name = "connectionPoolMax"): asserts value is number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
-    throw new Error("sandbox connectionPoolMax must be a positive safe integer");
+    throw new Error(`${name} must be a positive safe integer`);
   }
 }
 
@@ -96,7 +95,7 @@ async function retainPool(
   const max = {
     query: poolingConfig.queryMax ?? 10,
     session: poolingConfig.sessionMax ?? 32,
-    sandbox: sandboxPoolLimits.get(connectionString) ?? poolingConfig.sandboxMax ?? 32,
+    sandbox: sandboxPoolLimits.get(connectionString) ?? poolingConfig.sandboxMax ?? DEFAULT_SANDBOX_POOL_MAX,
     migration: 1,
   }[kind];
   let url = connectionString;
