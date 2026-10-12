@@ -3,7 +3,7 @@ import { upgradeLegacySandboxes, type SandboxResourceUpgradeMarker } from "../sr
 import { createPostgresMap } from "../src/persistence/durable-map.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createPgPool } from "../src/persistence/pg-pool.ts";
+import { createPgPool, configurePgPooling } from "../src/persistence/pg-pool.ts";
 import {
   createPostgresAdvisoryLock,
   createNoopAdvisoryLock,
@@ -236,123 +236,159 @@ test(
   },
 );
 
-test("pg concurrent sandbox locks leave admission capacity available", { skip, timeout: 10000 }, async () => {
-  const { Pool } = await import("pg");
-  const pool = new Pool({ connectionString: URL, max: 2, connectionTimeoutMillis: 200 });
-  await pool.query("SELECT 1");
-  const pg = createPgPool(URL!);
-  const lock = createPostgresAdvisoryLock({ ...pg, sessionPool: async () => pool }, { pollMs: 5 });
-  const release = Promise.withResolvers<void>();
-  const entered = Array.from({ length: 8 }, () => Promise.withResolvers<void>());
-  const running = entered.map((ready) =>
-    lock.withSharedLock!("busy-sandbox", async () => {
-      ready.resolve();
-      await release.promise;
-    }),
-  );
-  const finished = Promise.allSettled(running);
-  try {
-    await Promise.race([
-      Promise.all(entered.map(({ promise }) => promise)),
-      sleep(500).then(() => assert.fail("parallel sandbox operations exhausted the connection pool")),
-    ]);
-    assert.equal(await lock.withLock("session-tree-admission", async () => true), true);
-    assert.equal(await lock.tryWithLock!("busy-sandbox", async () => assert.fail("overlapped readers")), null);
-    const spare = await pool.connect();
-    spare.release();
-  } finally {
-    release.resolve();
-    await finished;
-    await pool.end();
-    await pg.close();
+test("sandbox pool capacity is independent of query and coordination capacity", { skip, timeout: 10000 }, async () => {
+  for (const capacity of [1, 3]) {
+    configurePgPooling({ queryMax: 1, sessionMax: 1, sandboxMax: capacity });
+    const pg = createPgPool(URL!);
+    const other = createPgPool(URL!);
+    const release = Promise.withResolvers<void>();
+    const running: Promise<unknown>[] = [];
+    try {
+      const sandboxPool = await pg.sessionPool("sandbox");
+      assert.ok(sandboxPool !== (await pg.sessionPool()), "sandbox and coordination pools must be separate");
+      assert.ok(sandboxPool !== (await pg.pool()), "sandbox and query pools must be separate");
+      assert.ok(sandboxPool === (await other.sessionPool("sandbox")));
+      assert.equal(sandboxPool.options.max, capacity);
+      const sandbox = createPostgresAdvisoryLock(pg, { pool: "sandbox", pollMs: 5 });
+      const coordination = createPostgresAdvisoryLock(other);
+      const key = `sandbox-capacity:${crypto.randomUUID()}`;
+      const entered = Array.from({ length: capacity }, () => Promise.withResolvers<void>());
+      for (const ready of entered) {
+        running.push(
+          sandbox.withSharedLock!(key, async () => {
+            ready.resolve();
+            await release.promise;
+          }),
+        );
+      }
+      void Promise.allSettled(running);
+      await Promise.all(entered.map(({ promise }) => promise));
+      assert.equal(sandboxPool.totalCount, capacity);
+      assert.equal(sandboxPool.idleCount, 0);
+      let overflowStarted = false;
+      running.push(
+        sandbox.withLock("sandbox-overflow", async () => {
+          overflowStarted = true;
+        }),
+      );
+      await sleep(30);
+      assert.equal(overflowStarted, false);
+      assert.equal(
+        await coordination.withLock("session-tree-admission", async () => (await pg.q("SELECT 42 AS n"))[0]!.n),
+        42,
+      );
+      assert.equal(await coordination.tryWithLock!(key, async () => true), null);
+      release.resolve();
+      await Promise.all(running);
+      assert.equal(overflowStarted, true);
+      assert.equal(sandboxPool.idleCount, capacity);
+      await pg.close();
+      assert.equal(await createPostgresAdvisoryLock(other, { pool: "sandbox" }).withLock(key, async () => true), true);
+    } finally {
+      release.resolve();
+      await Promise.allSettled(running);
+      await pg.close();
+      await other.close();
+      configurePgPooling({});
+    }
   }
 });
 
-test("pg shared connection acquisition recovers after a failed connection", { skip }, async () => {
+test("failed cleanup preserves nested locks until their callbacks finish", { skip, timeout: 10000 }, async () => {
   const { Pool } = await import("pg");
-  const pool = new Pool({ connectionString: URL, max: 1 });
+  const pool = new Pool({ connectionString: URL, max: 2 });
   const pg = createPgPool(URL!);
-  const failure = new Error("connection unavailable");
-  let attempts = 0;
-  const lock = createPostgresAdvisoryLock({
-    ...pg,
-    sessionPool: async () => {
-      if (++attempts === 1) throw failure;
-      return pool;
-    },
-  });
+  const lock = createPostgresAdvisoryLock({ ...pg, sessionPool: async () => pool });
+  const contender = createPostgresAdvisoryLock(pg);
+  const rootKey = `cleanup:${crypto.randomUUID()}`;
+  const childKey = `child:${crypto.randomUUID()}`;
+  const failure = new Error("unlock unavailable");
+  const callbackFailure = new Error("sandbox operation failed");
+  const client = await pool.connect();
+  const originalQuery = client.query.bind(client);
+  client.query = ((...args: Parameters<typeof client.query>) => {
+    if (String(args[0]).includes("pg_advisory_unlock") && (args[1] as unknown as string[])[0] === rootKey)
+      return Promise.reject(failure);
+    return originalQuery(...args);
+  }) as typeof client.query;
+  client.release();
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let child: Promise<unknown> | undefined;
   try {
-    const results = await Promise.allSettled(
-      Array.from({ length: 8 }, (_, i) => lock.withLock(`connect:${i}`, async () => true)),
+    await assert.rejects(
+      lock.withLock(rootKey, async () => {
+        child = lock.withLock(childKey, async () => {
+          entered.resolve();
+          await release.promise;
+        });
+        void child.catch(() => {});
+        await entered.promise;
+        throw callbackFailure;
+      }),
+      (error) => {
+        assert.ok(error instanceof AggregateError);
+        assert.deepEqual(error.errors, [callbackFailure, failure]);
+        return true;
+      },
     );
-    assert.ok(results.every((result) => result.status === "rejected" && result.reason === failure));
-    assert.equal(await lock.withLock("reconnected", async () => true), true);
+    assert.equal(await contender.tryWithLock!(rootKey, async () => true), null);
+    assert.equal(await contender.tryWithLock!(childKey, async () => true), null);
+    assert.equal(await lock.withLock("independent-operation", async () => true), true);
+    release.resolve();
+    await assert.rejects(child!, (error) => error === failure);
+    assert.equal(await contender.withLock(rootKey, async () => true), true);
+    assert.equal(await contender.withLock(childKey, async () => true), true);
+    assert.equal(pool.totalCount, 1);
     assert.equal(pool.idleCount, 1);
   } finally {
+    release.resolve();
+    await child?.catch(() => {});
     await pool.end();
     await pg.close();
   }
 });
 
 test(
-  "pg failed unlock keeps sibling protection until the shared connection drains",
+  "losing one sandbox connection leaves unrelated locks and admission usable",
   { skip, timeout: 10000 },
   async () => {
-    const { Pool } = await import("pg");
-    const pool = new Pool({ connectionString: URL, max: 1 });
+    configurePgPooling({ sandboxMax: 3, sessionMax: 1 });
     const pg = createPgPool(URL!);
-    const other = createPgPool(URL!);
-    const lock = createPostgresAdvisoryLock({ ...pg, sessionPool: async () => pool });
-    const contender = createPostgresAdvisoryLock(other);
-    const entered = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    const failedKey = `unlock:${crypto.randomUUID()}`;
-    const siblingKey = `sibling:${crypto.randomUUID()}`;
-    const failure = new Error("unlock unavailable");
-    const callbackFailure = new Error("sandbox operation failed");
-    const client = await pool.connect();
-    const originalQuery = client.query.bind(client);
-    client.query = ((...args: Parameters<typeof client.query>) => {
-      if (String(args[0]).includes("pg_advisory_unlock") && (args[1] as unknown as string[])[0] === failedKey)
-        return Promise.reject(failure);
-      return originalQuery(...args);
-    }) as typeof client.query;
-    client.release();
-    const holding = lock.withLock(siblingKey, async () => {
-      entered.resolve();
-      await release.promise;
-      throw callbackFailure;
-    });
-    const settled = Promise.allSettled([holding]);
+    const sandbox = createPostgresAdvisoryLock(pg, { pool: "sandbox" });
+    const coordination = createPostgresAdvisoryLock(pg);
+    const keys = Array.from({ length: 2 }, () => `disconnect:${crypto.randomUUID()}`);
+    const entered = keys.map(() => Promise.withResolvers<void>());
+    const release = keys.map(() => Promise.withResolvers<void>());
+    const running = keys.map((key, index) =>
+      sandbox.withLock(key, async () => {
+        entered[index]!.resolve();
+        await release[index]!.promise;
+      }),
+    );
+    const finished = Promise.allSettled(running);
     try {
-      await entered.promise;
-      await assert.rejects(
-        lock.withLock(failedKey, async () => true),
-        (error) => error === failure,
+      await Promise.all(entered.map(({ promise }) => promise));
+      const [held] = await pg.q(
+        "SELECT pid FROM pg_locks WHERE locktype='advisory' AND granted AND classid=(hashtextextended($1,0)>>32)::int::oid AND objid=(hashtextextended($1,0)&4294967295)::oid",
+        [keys[0]],
       );
-      await assert.rejects(
-        lock.withLock("new-admission", async () => true),
-        (error) => error === failure,
-      );
-      assert.equal(await contender.tryWithLock!(failedKey, async () => true), null);
-      assert.equal(await contender.tryWithLock!(siblingKey, async () => true), null);
-      assert.equal(pool.totalCount, 1);
-      release.resolve();
-      const result = (await settled)[0]!;
-      assert.equal(result.status, "rejected");
-      if (result.status !== "rejected") assert.fail("callback failure was lost");
-      assert.ok(result.reason instanceof AggregateError);
-      assert.deepEqual(result.reason.errors, [callbackFailure, failure]);
-      assert.equal(pool.totalCount, 0);
-      assert.equal(await contender.withLock(failedKey, async () => true), true);
-      assert.equal(await contender.withLock(siblingKey, async () => true), true);
-      assert.equal(await lock.withLock("reconnected", async () => true), true);
+      assert.ok(held);
+      await pg.q("SELECT pg_terminate_backend($1)", [held.pid]);
+      assert.equal(await coordination.tryWithLock!(keys[1]!, async () => true), null);
+      assert.equal(await sandbox.withLock("new-sandbox-operation", async () => true), true);
+      assert.equal(await coordination.withLock("session-tree-admission", async () => true), true);
+      release[0]!.resolve();
+      await assert.rejects(running[0]!);
+      assert.equal(await coordination.tryWithLock!(keys[1]!, async () => true), null);
+      release[1]!.resolve();
+      await running[1];
+      assert.equal(await sandbox.withLock(keys[0]!, async () => true), true);
     } finally {
-      release.resolve();
-      await settled;
-      await pool.end();
+      for (const gate of release) gate.resolve();
+      await finished;
       await pg.close();
-      await other.close();
+      configurePgPooling({});
     }
   },
 );

@@ -582,6 +582,7 @@ export function buildApp(
     ...(config.databasePoolCaCert ? { caCert: config.databasePoolCaCert } : {}),
     ...(config.databasePoolMax !== undefined ? { queryMax: config.databasePoolMax } : {}),
     ...(config.databaseDirectPoolMax !== undefined ? { sessionMax: config.databaseDirectPoolMax } : {}),
+    ...(config.databaseSandboxPoolMax !== undefined ? { sandboxMax: config.databaseSandboxPoolMax } : {}),
   });
   configurePgCaTrust({
     ...(config.databaseCaCert ? { cert: config.databaseCaCert } : {}),
@@ -642,6 +643,9 @@ export function buildApp(
   };
   const advisoryLock: AdvisoryLock = pgArtifactMap
     ? createPostgresAdvisoryLock(pgArtifactMap.pool)
+    : createMemoryAdvisoryLock();
+  const sandboxAdvisoryLock: AdvisoryLock = pgArtifactMap
+    ? createPostgresAdvisoryLock(pgArtifactMap.pool, { pool: "sandbox" })
     : createMemoryAdvisoryLock();
   const principalLinks = createPrincipalLinkService(artifactMap<PrincipalLink>("principal_links"), advisoryLock);
   installPrincipalLinks(principalLinks);
@@ -847,7 +851,7 @@ export function buildApp(
     return createSpritesSandbox(workspace, {
       ...sprites,
       initializationStore: artifactMap<{ pending: boolean }>("sprites_initialization"),
-      advisoryLock,
+      advisoryLock: sandboxAdvisoryLock,
       ...(snapshotS3Bucket
         ? { snapshots: createS3SnapshotStore({ bucket: snapshotS3Bucket, prefix: "sprites-home" }) }
         : {}),
@@ -876,7 +880,7 @@ export function buildApp(
       ...(config.capabilitySecret ? { capabilitySecret: config.capabilitySecret } : {}),
       ...(config.apiBaseUrl ? { apiBaseUrl: config.apiBaseUrl } : {}),
       store: smolmachinesBodies,
-      advisoryLock,
+      advisoryLock: sandboxAdvisoryLock,
       ...(snapshotS3Bucket
         ? { snapshots: createS3SnapshotStore({ bucket: snapshotS3Bucket, prefix: "smolmachines-home" }) }
         : {}),
@@ -890,7 +894,7 @@ export function buildApp(
     const e2b = config.e2bSandbox;
     if (!e2b.apiKey) throw new Error("SANDBOX_BACKEND=e2b requires E2B_API_KEY");
     return createE2bSandbox(workspace, {
-      advisoryLock,
+      advisoryLock: sandboxAdvisoryLock,
       client: createSdkE2bClient({
         apiKey: e2b.apiKey,
         ...(e2b.templateId ? { templateId: e2b.templateId } : {}),
@@ -926,7 +930,7 @@ export function buildApp(
     if (!modal.tokenId || !modal.tokenSecret)
       throw new Error("SANDBOX_BACKEND=modal requires MODAL_TOKEN_ID and MODAL_TOKEN_SECRET");
     return createModalSandbox(workspace, {
-      advisoryLock,
+      advisoryLock: sandboxAdvisoryLock,
       client: createSdkModalClient({
         tokenId: modal.tokenId,
         tokenSecret: modal.tokenSecret,
@@ -969,7 +973,7 @@ export function buildApp(
   const buildAgent37 = (): Sandbox =>
     createAgent37Sandbox(workspace, {
       ...config.agent37Sandbox,
-      advisoryLock,
+      advisoryLock: sandboxAdvisoryLock,
       blobTransfer,
       extraTools: deploymentLayer.advertisedTools,
       credentialPaths: deploymentLayer.credentialPaths,
@@ -1005,7 +1009,7 @@ export function buildApp(
     return createSuperserveSandbox(workspace, {
       configEpoch:
         ss.configGeneration ??
-        (pgArtifactMap ? createConfigEpochResolver(superserveEpochs, generationKey, advisoryLock) : 0),
+        (pgArtifactMap ? createConfigEpochResolver(superserveEpochs, generationKey, sandboxAdvisoryLock) : 0),
       client: createSdkSuperserveClient({
         apiKey: ss.apiKey,
         ...(ss.baseUrl ? { baseUrl: ss.baseUrl } : {}),
@@ -1020,7 +1024,7 @@ export function buildApp(
       ...(ss.egressAllow ? { egressAllow: ss.egressAllow } : {}),
       ...(ss.egressDeny ? { egressDeny: ss.egressDeny } : {}),
       ...(ss.defaultTimeoutSec ? { defaultTimeoutSec: ss.defaultTimeoutSec } : {}),
-      advisoryLock,
+      advisoryLock: sandboxAdvisoryLock,
       extraTools: deploymentLayer.advertisedTools,
       credentialPaths: deploymentLayer.credentialPaths,
       layerToolFiles: () => deploymentLayer.installFiles,
@@ -1037,7 +1041,7 @@ export function buildApp(
     return createAwsSandbox(workspace, {
       ...config.awsSandbox,
       s3Bucket: config.awsSandbox.s3Bucket,
-      advisoryLock,
+      advisoryLock: sandboxAdvisoryLock,
       extraTools: deploymentLayer.advertisedTools,
       credentialPaths: deploymentLayer.credentialPaths,
       blobTransfer,
@@ -1051,7 +1055,7 @@ export function buildApp(
   const buildPorter = (): Sandbox =>
     createPorterSandbox(workspace, {
       ...config.porterSandbox,
-      advisoryLock,
+      advisoryLock: sandboxAdvisoryLock,
       blobTransfer,
       extraTools: deploymentLayer.advertisedTools,
       credentialPaths: deploymentLayer.credentialPaths,
@@ -1090,7 +1094,7 @@ export function buildApp(
         defaults: sandboxDefaults,
         marker: artifactMap<{ activatedAt: string }>("sandbox_resource_rollout"),
         routes: () => artifactMap<LegacyRoute>("sandbox_routing").entries(),
-        lock: advisoryLock,
+        lock: sandboxAdvisoryLock,
         legacyBackend: (scope) =>
           legacySandboxBackendForScope(scope, config.sandboxBackend, config.legacySandboxScopeDefaults),
         specFor: (backend) => sandboxBackends[backend]?.profile.spec,
@@ -1119,7 +1123,7 @@ export function buildApp(
       }),
     backends: sandboxBackends,
     defaultBackend: config.sandboxBackend,
-    lock: advisoryLock,
+    lock: sandboxAdvisoryLock,
     beforeRetire: async (record) => {
       if (
         (await processes?.liveByScope(record.ownerScopeId))?.some(
@@ -1521,7 +1525,7 @@ export function buildApp(
           sessions,
           runs,
           sandboxes: sandboxResources,
-          lock: advisoryLock,
+          lock: sandboxAdvisoryLock,
           signals: runSignals,
           enabled: (actorId) => featureFlags.enabled("swarms", scopeId("personal", actorId)),
           authorize: async (claims) => {

@@ -100,35 +100,31 @@ export function createMemoryAdvisoryLock(): AdvisoryLock {
 
 export function createPostgresAdvisoryLock(
   pg: PgPool,
-  opts: { timeoutMs?: number; pollMs?: number } = {},
+  opts: { timeoutMs?: number; pollMs?: number; pool?: "session" | "sandbox" } = {},
 ): AdvisoryLock {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_ADVISORY_LOCK_TIMEOUT_MS;
   const pollMs = opts.pollMs ?? DEFAULT_ADVISORY_LOCK_POLL_MS;
 
   type Context = {
-    client: Promise<PoolClient>;
+    client: PoolClient;
     references: number;
     keys: Map<string, { shared: boolean; count: number }>;
     error?: Error;
   };
-  let current: Context | undefined;
+  const sessions = new AsyncLocalStorage<{ context: Context; active: boolean }>();
   const withClient = async <T>(action: (context: Context, client: PoolClient) => Promise<T>): Promise<T> => {
-    const context: Context = (current ??= {
-      client: pg.sessionPool().then((pool) => pool.connect()),
-      references: 0,
-      keys: new Map(),
-    });
+    const parent = sessions.getStore();
+    const context: Context = parent?.active
+      ? parent.context
+      : { client: await (await pg.sessionPool(opts.pool)).connect(), references: 0, keys: new Map() };
     context.references++;
-    let client: PoolClient | undefined;
+    const lease = { context, active: true };
     try {
-      client = await context.client;
       if (context.error) throw context.error;
-      return await action(context, client);
+      return await sessions.run(lease, () => action(context, context.client));
     } finally {
-      if (--context.references === 0) {
-        if (current === context) current = undefined;
-        client?.release(context.error);
-      }
+      lease.active = false;
+      if (--context.references === 0) context.client.release(context.error);
     }
   };
   const queries = createKeyedQueue<PoolClient>();

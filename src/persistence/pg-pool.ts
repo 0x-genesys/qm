@@ -14,6 +14,7 @@ interface PgPoolingConfig {
   caCert?: string;
   queryMax?: number;
   sessionMax?: number;
+  sandboxMax?: number;
 }
 
 let poolingConfig: PgPoolingConfig = {};
@@ -28,6 +29,9 @@ export function configurePgPooling(config: PgPoolingConfig): void {
       throw new Error(`${name} must be an integer between 1 and 100`);
     }
   }
+  if (config.sandboxMax !== undefined && (!Number.isSafeInteger(config.sandboxMax) || config.sandboxMax < 1)) {
+    throw new Error("DATABASE_SANDBOX_POOL_MAX must be a positive safe integer");
+  }
   poolingConfig = { ...config };
 }
 
@@ -35,7 +39,10 @@ const migrationQueue = createKeyedQueue();
 
 const sharedPools = new Map<string, { pool: Pool; users: number }>();
 
-async function retainPool(connectionString: string, kind: "query" | "session" | "migration"): Promise<Pool> {
+async function retainPool(
+  connectionString: string,
+  kind: "query" | "session" | "sandbox" | "migration",
+): Promise<Pool> {
   const pg = (await import("pg")).default;
   const key = `${kind}:${connectionString}`;
   const existing = sharedPools.get(key);
@@ -43,10 +50,12 @@ async function retainPool(connectionString: string, kind: "query" | "session" | 
     existing.users++;
     return existing.pool;
   }
-  const setting = kind === "query" ? "DATABASE_POOL_MAX" : "DATABASE_DIRECT_POOL_MAX";
-  const max = { query: poolingConfig.queryMax ?? 10, session: poolingConfig.sessionMax ?? 32, migration: 1 }[kind];
-  if (!Number.isInteger(max) || max < 1 || max > 100)
-    throw new Error(`${setting} must be an integer between 1 and 100`);
+  const max = {
+    query: poolingConfig.queryMax ?? 10,
+    session: poolingConfig.sessionMax ?? 32,
+    sandbox: poolingConfig.sandboxMax ?? 32,
+    migration: 1,
+  }[kind];
   let url = connectionString;
   let ssl = pgCaOptions();
   if (kind === "query" && connectionString === poolingConfig.poolUrl && poolingConfig.caCert) {
@@ -69,7 +78,7 @@ function guardedPool(pool: Pool): Pool {
 async function releasePool(
   connectionString: string,
   pool: Pool,
-  kind: "query" | "session" | "migration",
+  kind: "query" | "session" | "sandbox" | "migration",
 ): Promise<void> {
   const key = `${kind}:${connectionString}`;
   const entry = sharedPools.get(key);
@@ -119,7 +128,7 @@ export interface PgQueryOptions {
 
 export interface PgPool {
   pool(): Promise<Pool>;
-  sessionPool(): Promise<Pool>;
+  sessionPool(kind?: "session" | "sandbox"): Promise<Pool>;
   q(text: string, params?: unknown[], options?: PgQueryOptions): Promise<Rows>;
   query(text: string, params?: unknown[], options?: PgQueryOptions): Promise<{ rows: Rows; rowCount: number }>;
   registerMigration(migration: PgMigrationDefinition): void;
@@ -436,7 +445,7 @@ export function createPgPool(
     .filter((definition) => !definition.beforeMigrations)
     .map((definition) => definePgMigration(definition.id, definition.statements));
   let readyP: Promise<void> | null = null;
-  let sessionPoolP: Promise<Pool> | null = null;
+  const sessionPools = new Map<"session" | "sandbox", Promise<Pool>>();
   let queryPoolP: Promise<Pool> | null = null;
   let closed = false;
   const queryUrl = pooledDatabaseUrl(connectionString);
@@ -467,10 +476,15 @@ export function createPgPool(
     if (closed) throw new Error("Postgres store is closed");
     return (queryPoolP ??= retainPool(queryUrl, "query"));
   }
-  async function sessionPool(): Promise<Pool> {
+  async function sessionPool(kind: "session" | "sandbox" = "session"): Promise<Pool> {
     await ready();
     if (closed) throw new Error("Postgres store is closed");
-    return (sessionPoolP ??= retainPool(connectionString, "session"));
+    let instance = sessionPools.get(kind);
+    if (!instance) {
+      instance = retainPool(connectionString, kind);
+      sessionPools.set(kind, instance);
+    }
+    return instance;
   }
   async function query(
     text: string,
@@ -549,7 +563,9 @@ export function createPgPool(
     await readyP?.catch(() => {});
     await Promise.all([
       queryPoolP?.then((instance) => releasePool(queryUrl, instance, "query")),
-      sessionPoolP?.then((instance) => releasePool(connectionString, instance, "session")),
+      ...[...sessionPools].map(([kind, pending]) =>
+        pending.then((instance) => releasePool(connectionString, instance, kind)),
+      ),
     ]);
   }
   async function migrate(definition: PgMigrationDefinition): Promise<void> {
