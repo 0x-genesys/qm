@@ -7,7 +7,7 @@ import { documentBlocks, nativeDocumentFormat, withDocumentInputs } from "../src
 import {
   documentFallbackText,
   isDocumentAttachment,
-  historicalDocumentMetas,
+  resumedDocumentMetas,
   loadDocumentInputs,
   type DocumentInput,
 } from "../src/core/document-inputs.ts";
@@ -205,13 +205,30 @@ function storeFor(data = Buffer.from("QUARTZ-731")) {
 test("restores stopped/restarted turns from durable document metadata and deduplicates retries", async () => {
   const { store, meta, opens } = storeFor();
   const history = [
-    { type: "user", payload: { attachments: [meta] } },
+    { seq: 0, type: "user", payload: { attachments: [meta] } },
     { type: "assistant", payload: { text: "stopped" } },
   ] as SessionEntry[];
-  const inputs = await loadDocumentInputs(store, [...historicalDocumentMetas(history), meta], () => true);
+  const inputs = await loadDocumentInputs(store, [...resumedDocumentMetas(history, 0), meta], () => true);
   assert.equal(inputs.documents.length, 1);
   assert.equal(opens(), 1);
   assert.match(await documentFallbackText(inputs.documents[0]!), /QUARTZ-731/);
+});
+
+test("resumed documents include the current upload and steers, not earlier turns", () => {
+  const { meta } = storeFor();
+  const current = { ...meta, artifactId: "current" };
+  const steer = { ...meta, artifactId: "steer" };
+  const history = [
+    { seq: 0, type: "user", payload: { attachments: [meta] } },
+    { seq: 1, type: "assistant", payload: { text: "Done" } },
+    { seq: 2, type: "user", payload: { attachments: [current] } },
+    { seq: 3, type: "user", payload: { attachments: [steer], steered: true } },
+    { seq: 4, type: "user", payload: { text: "Be concise", steered: true } },
+    { seq: 5, type: "user", payload: { text: "Resume", hidden: true } },
+    { seq: 6, type: "user", payload: { attachments: [meta] } },
+  ] as SessionEntry[];
+  assert.deepEqual(resumedDocumentMetas(history), []);
+  assert.deepEqual(resumedDocumentMetas(history, 2), [current, steer]);
 });
 
 test("document replay follows compaction boundaries and excludes security-tainted uploads", () => {
@@ -223,7 +240,8 @@ test("document replay follows compaction boundaries and excludes security-tainte
     { seq: 2, type: "system", payload: { kind: "context_summary", text: "Prior upload", throughSeq: 0 } },
     { seq: 3, type: "user", payload: { attachments: [meta], securityTainted: true } },
   ] as SessionEntry[];
-  assert.deepEqual(historicalDocumentMetas(history), [recent]);
+  assert.deepEqual(resumedDocumentMetas(history), []);
+  assert.deepEqual(resumedDocumentMetas(history, 1), [recent]);
   assert.deepEqual((history[0]!.payload as { attachments: AttachmentMeta[] }).attachments, [meta]);
 });
 

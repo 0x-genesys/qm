@@ -3,6 +3,7 @@ import { Worker } from "node:worker_threads";
 import type { AttachmentMeta, SessionEntry } from "../types.ts";
 import type { FileArtifact, FileArtifactStore } from "../files/file-artifact-store.ts";
 import { forModelContext } from "../harness/context-compaction.ts";
+import { isUserTurnBoundary } from "./turn-resume.ts";
 import { collectBytes } from "../util/bytes.ts";
 
 export interface DocumentInput {
@@ -62,9 +63,11 @@ export function isTextDocument(file: Pick<DocumentInput, "name" | "mimeType">): 
   return TEXT_EXTENSIONS.has(ext) || ["csv", "tsv", "iif"].includes(ext);
 }
 
-export function historicalDocumentMetas(history: readonly SessionEntry[]): AttachmentMeta[] {
+export function resumedDocumentMetas(history: readonly SessionEntry[], userSeq?: number): AttachmentMeta[] {
+  if (userSeq === undefined) return [];
+  const nextTurn = history.find((entry) => entry.seq > userSeq && isUserTurnBoundary(entry));
   return forModelContext([...history]).flatMap((entry) => {
-    if (entry.type !== "user") return [];
+    if (entry.type !== "user" || entry.seq < userSeq || (nextTurn && entry.seq >= nextTurn.seq)) return [];
     const attachments = (entry.payload as { attachments?: AttachmentMeta[] } | null)?.attachments;
     return Array.isArray(attachments)
       ? attachments.filter(

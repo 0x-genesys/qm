@@ -12,7 +12,7 @@ function freshApp(maxContextTokens?: number) {
   return buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "document-turn-")), maxContextTokens }));
 }
 
-test("document uploads survive follow-up turns and stay isolated to their conversation", async () => {
+test("document uploads are included only in their own turn and remain available on demand", async () => {
   const built = freshApp();
   const blob = await built.blobTransfer.put(Buffer.from("QUARTZ-731"));
   const request = {
@@ -30,8 +30,19 @@ test("document uploads survive follow-up turns and stay isolated to their conver
   assert.equal(followup.status, "ok");
   const requests = (await built.sessions.listLlmRequests(followup.sessionId!)).filter((r) => r.model === "mock");
   assert.equal(requests.length, 2);
-  for (const recorded of requests)
-    assert.match(JSON.stringify(recorded.promptEnvelope), /"documents":\[\{"name":"notes.txt"/);
+  assert.match(JSON.stringify(requests[0]!.promptEnvelope), /"documents":\[\{"name":"notes.txt"/);
+  assert.doesNotMatch(JSON.stringify(requests[1]!.promptEnvelope), /"documents":/);
+  const entries = await built.sessions.getEntries(first.sessionId!);
+  const meta = (
+    entries.find((entry) => entry.type === "user")!.payload as {
+      attachments: Array<{ artifactId: string }>;
+    }
+  ).attachments[0]!;
+  const opened = await built.files.open(meta.artifactId);
+  assert.ok(opened);
+  const chunks = [];
+  for await (const chunk of opened.stream) chunks.push(Buffer.from(chunk));
+  assert.equal(Buffer.concat(chunks).toString(), "QUARTZ-731");
   const other = await built.app.turn({
     ...request,
     conversation: { kind: "dm", threadRef: "dm:U1:other" },

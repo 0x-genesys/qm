@@ -9,7 +9,7 @@ import { requiresDelegation, delegatedAuthorizationOrigin } from "../sessions/se
 import {
   MAX_DOCUMENT_BYTES,
   documentText,
-  historicalDocumentMetas,
+  resumedDocumentMetas,
   isTextDocument,
   loadDocumentInputs,
 } from "./document-inputs.ts";
@@ -3104,7 +3104,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           ? { documents: [], notices: [] }
           : await loadDocumentInputs(
               deps.files,
-              [...historicalDocumentMetas(history), ...inbound.metas],
+              [...resumedDocumentMetas(history, partial?.userSeq ?? approvalRecord?.turnUserSeq), ...inbound.metas],
               mayReadArtifact,
               undefined,
               turnAbort.signal,
@@ -3193,7 +3193,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           .join("\n\n");
         const baseText = input.proactiveOpener && !input.text.trim() ? PROACTIVE_OPENER_PROMPT : input.text;
         const pausedTurnUserEntry = input.approval
-          ? [...visibleHistory].reverse().find((e) => e.type === "user" && !isOverheardEntry(e))
+          ? approvalRecord?.turnUserSeq !== undefined
+            ? visibleHistory.find((entry) => entry.seq === approvalRecord.turnUserSeq)
+            : [...visibleHistory].reverse().find((e) => e.type === "user" && !isOverheardEntry(e))
           : undefined;
         const resumedFromSeq = pausedTurnUserEntry?.seq;
         const approvalReplay =
@@ -4332,6 +4334,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 createdAt: Date.now(),
                 reason: pa.reason,
                 request,
+                turnUserSeq: approvalRecord?.turnUserSeq ?? spine.turnUserEntrySeq,
                 blocksInput: blocks,
                 ...grantModes,
                 ...(pa.matched ? { matched: pa.matched } : {}),
