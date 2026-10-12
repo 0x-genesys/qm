@@ -3,7 +3,7 @@ import { createBackgroundController } from "./runs/background-controller.ts";
 import { createManagedSlack } from "./surfaces/slack-managed.ts";
 import { randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { loadStartupConfig } from "./startup-config.ts";
+import { loadConfig } from "./config.ts";
 import { buildApp, serverDeps, stopWithBackstop } from "./wiring.ts";
 import { shutdownOnUncaught } from "./util/process-guard.ts";
 import { createServer } from "./api/server.ts";
@@ -13,7 +13,7 @@ import { slackAccountConfigsFromEnv, slackPluginConfigFromEnv, startSlackPlugin 
 import { createSlackRuntimeReconciler } from "./surfaces/slack-runtime.ts";
 import { migrateRegisteredPgSchemas } from "./persistence/pg-pool.ts";
 
-const config = await loadStartupConfig();
+const config = loadConfig();
 
 const built = buildApp(config);
 await migrateRegisteredPgSchemas(config.databaseUrl);

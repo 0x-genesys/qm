@@ -129,7 +129,7 @@ export function e2bEgressNetwork(egressProxyUrl: string): E2bEgressNetwork {
   return { allowOut: [host], denyOut: [ALL_TRAFFIC] };
 }
 
-export function e2bSandboxTtlMs(opts: Pick<SdkE2bClientOptions, "sandboxTtlMs" | "maxLifetimeMs" | "maxCommandMs">): {
+function e2bSandboxTtlMs(opts: Pick<SdkE2bClientOptions, "sandboxTtlMs" | "maxLifetimeMs" | "maxCommandMs">): {
   sandboxTtlMs: number;
   maxLifetimeMs: number;
   maxCommandMs: number;

@@ -1,7 +1,3 @@
-import { e2bEgressNetwork, e2bSandboxTtlMs } from "./sandbox/e2b-client.ts";
-import { modalEgressAllowlist, modalSnapshotTtlMs } from "./sandbox/modal-client.ts";
-import { spritesEgressHosts } from "./sandbox/sprites-egress.ts";
-import { sandboxEnvironment, type SandboxStartup } from "./sandbox/config-fields.ts";
 import type { ExternalSlackPolicies } from "./resolution/external-slack.ts";
 import { isStrongSigningSecret } from "./auth/source-auth.ts";
 import { parseSandboxCapabilityTtlMs } from "./auth/capability-token.ts";
@@ -25,7 +21,7 @@ import { parseMemoryStrategyKind, type MemoryStrategyKind } from "./memory/strat
 import { parseMemoryProviderConfig, type MemoryProviderConfig } from "./memory/provider-config.ts";
 import { sanitizeBranding } from "./resolution/branding.ts";
 import type { OrgBranding } from "./resolution/config-store.ts";
-import { validateCoreSecretEnv, validateSandboxSecretEnv } from "./deployment/secret-schema.ts";
+import { validateCoreSecretEnv } from "./deployment/secret-schema.ts";
 import { DEFAULT_CAPTURE_QUIET_MS } from "./memory/strategies/per-turn.ts";
 import {
   parseSecurityPosture,
@@ -54,7 +50,6 @@ import {
 import { resolveSwarmSettings, type SwarmSettings } from "./swarms/swarm-settings.ts";
 
 export interface Config {
-  sandboxStartup?: SandboxStartup;
   productAnalytics?: { apiKey: string; host?: string };
   slackContextSource?: SlackContextSource;
   suggestedActivitiesEnabled?: boolean;
@@ -1148,84 +1143,123 @@ function modelProviderEnvStrict(env: NodeJS.ProcessEnv): ModelProvider | undefin
   return declared;
 }
 
-type SandboxConfig = Pick<
-  Config,
-  | "sandboxBackend"
-  | "legacySandboxScopeDefaults"
-  | "execTimeoutDefaultMs"
-  | "execTimeoutMaxMs"
-  | "sandboxCapabilityTtlMs"
-  | "backgroundJobTtlMs"
-  | "backgroundJobTtlMaxMs"
-  | "deepIdleMachineMs"
-  | "devIdleMachineMs"
-  | "scratchExecEnabled"
-  | "reachExecEnabled"
-  | "eagerProvisionEnabled"
-  | "awsSandbox"
-  | "localSandbox"
-  | "spritesSandbox"
-  | "smolmachinesSandbox"
-  | "agent37Sandbox"
-  | "superserveSandbox"
-  | "porterSandbox"
-  | "e2bSandbox"
-  | "modalSandbox"
->;
-
-export function loadSandboxConfig(env: NodeJS.ProcessEnv, warn: (message: string) => void = () => {}): SandboxConfig {
-  const missing = validateSandboxSecretEnv(env);
-  if (missing.length) throw new Error(`missing or insecure required sandbox credentials: ${missing.join(", ")}`);
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  if (env.BACKGROUND_DEPLOYMENT_ID !== undefined) {
+    if (!env.BACKGROUND_DEPLOYMENT_ID.trim() || env.BACKGROUND_DEPLOYMENT_ID.length > 256)
+      throw new Error("BACKGROUND_DEPLOYMENT_ID must be nonempty and at most 256 characters");
+    if (!env.DATABASE_URL) throw new Error("Background ownership requires DATABASE_URL");
+    if (
+      !isStrongSigningSecret(env.CORE_SIGNING_SECRET) ||
+      !isStrongSigningSecret(env.DEPLOYMENT_CONTROL_SECRET) ||
+      env.DEPLOYMENT_CONTROL_SECRET === env.CORE_SIGNING_SECRET
+    )
+      throw new Error(
+        "Background ownership requires a distinct DEPLOYMENT_CONTROL_SECRET of at least 32 characters and CORE_SIGNING_SECRET",
+      );
+  }
+  const swarmDefaults = resolveSwarmSettings(
+    env.SWARM_DEFAULTS === undefined ? undefined : JSON.parse(env.SWARM_DEFAULTS),
+  );
+  const harness = harnessEnvStrict(env.HARNESS);
+  const codexAuthCredential = env.CODEX_AUTH_CREDENTIAL?.trim() || undefined;
+  const claudeAuthCredential = env.CLAUDE_AUTH_CREDENTIAL?.trim() || undefined;
+  const codexAuthCandidate = harness === "codex" && !codexAuthCredential ? codexAuthFileForEnv(env, true) : undefined;
+  const codexOAuthConfigured = Boolean(codexAuthCandidate && readCodexOAuthAuthFile(codexAuthCandidate));
+  const secretEnv =
+    codexOAuthConfigured && codexAuthCandidate
+      ? { ...env, CODEX_AUTH_FILE: codexAuthCandidate }
+      : { ...env, CODEX_AUTH_FILE: undefined };
+  const deployAppsDomain = deployAppsDomainEnv(env, env.DEPLOY_PROVIDER ?? "docker");
+  const missingSecrets = validateCoreSecretEnv(secretEnv);
+  if (missingSecrets.length) {
+    throw new Error(`missing or insecure required core secrets: ${missingSecrets.join(", ")}`);
+  }
+  if (harness === "codex" && !env.OPENAI_API_KEY?.trim() && !codexOAuthConfigured && !codexAuthCredential) {
+    throw new Error(
+      "HARNESS=codex needs OPENAI_API_KEY, a keychain credential via CODEX_AUTH_CREDENTIAL, or a readable ChatGPT OAuth auth.json via CODEX_AUTH_FILE (or ~/.codex/auth.json)",
+    );
+  }
+  if (env.NODE_ENV === "production" && codexOAuthConfigured) {
+    throw new Error(
+      "CODEX_AUTH_FILE is supported for local Codex harnesses only; production must use CODEX_AUTH_CREDENTIAL (keychain custody)",
+    );
+  }
+  const modelProvider = modelProviderEnvStrict(env);
+  for (const key of ["SESSION_STORE", "RUN_STORE", "ARTIFACT_STORE"] as const) {
+    if (env[key] === "sqlite") {
+      throw new Error(
+        `${key}=sqlite is no longer supported — SQLite was removed. ` +
+          `Set ${key === "ARTIFACT_STORE" ? "DATABASE_URL (Postgres)" : `${key}=postgres (with DATABASE_URL)`} for durability, ` +
+          `or use the in-memory default (${key === "ARTIFACT_STORE" ? "unset ARTIFACT_STORE" : `${key}=memory`}) for an ephemeral store.`,
+      );
+    }
+  }
   if (env.E2B_API_KEY && !env.E2B_SNAPSHOT_S3_BUCKET) {
-    warn(
+    console.warn(
       "[config] e2b sandbox backend enabled without E2B_SNAPSHOT_S3_BUCKET — provider pause preserves the machine, but portable recovery snapshots are memory-only; set E2B_SNAPSHOT_S3_BUCKET for durable portable recovery.",
     );
   }
   if (env.MODAL_TOKEN_ID && env.MODAL_TOKEN_SECRET && !env.MODAL_SNAPSHOT_S3_BUCKET) {
-    warn(
+    console.warn(
       "[config] modal sandbox backend enabled without MODAL_SNAPSHOT_S3_BUCKET — native home checkpoints have limited retention; portable recovery snapshots are memory-only. Set MODAL_SNAPSHOT_S3_BUCKET for durable portable recovery and configure DATABASE_URL for durable checkpoint references.",
     );
   }
   if (env.SMOLMACHINES_TOKEN && !env.SMOLMACHINES_SNAPSHOT_S3_BUCKET) {
-    warn(
+    console.warn(
       "[config] smolmachines sandbox backend enabled without SMOLMACHINES_SNAPSHOT_S3_BUCKET — stopping a machine is not a backup; set SMOLMACHINES_SNAPSHOT_S3_BUCKET for durable home recovery snapshots.",
     );
   }
+  if (env.NODE_ENV === "production" && harnessEnvStrict(env.HARNESS) === "mock") {
+    console.warn(
+      `[config] HARNESS is ${env.HARNESS?.trim() ? '"mock"' : "unset, which means mock"} in production — this deployment answers every message with canned text and calls no model provider. Set HARNESS=pi to run real agent turns.`,
+    );
+  }
   if (env.SANDBOX_BACKEND === "sprites" && !env.SPRITES_EGRESS_PROXY_URL) {
-    warn(
+    console.warn(
       "[config] SANDBOX_BACKEND=sprites without SPRITES_EGRESS_PROXY_URL — sandboxes run with NO egress enforcement (fail-open); set SPRITES_EGRESS_PROXY_URL to the public egress proxy to force sandbox traffic through it.",
     );
   }
   if (env.SANDBOX_BACKEND === "e2b" && !env.E2B_EGRESS_PROXY_URL) {
-    warn(
+    console.warn(
       "[config] SANDBOX_BACKEND=e2b without E2B_EGRESS_PROXY_URL — sandboxes run with NO egress enforcement (fail-open); set E2B_EGRESS_PROXY_URL to the public egress proxy so E2B's network rules admit only that host.",
     );
   }
   if (env.MODAL_TOKEN_ID && env.MODAL_TOKEN_SECRET && !env.MODAL_EGRESS_PROXY_URL) {
-    warn(
+    console.warn(
       "[config] modal sandbox backend enabled without MODAL_EGRESS_PROXY_URL — sandboxes run with NO egress enforcement (fail-open); set MODAL_EGRESS_PROXY_URL to the public https egress proxy so Modal's outbound allowlist admits only that host.",
     );
   }
   if (env.SANDBOX_BACKEND === "sprites" && !env.SPRITES_SNAPSHOT_S3_BUCKET) {
-    warn(
+    console.warn(
       "[config] SANDBOX_BACKEND=sprites without SPRITES_SNAPSHOT_S3_BUCKET — retiring a computer deletes its sprite and every checkpoint irreversibly with no exported home; set SPRITES_SNAPSHOT_S3_BUCKET to export the home to S3 before a sprite is destroyed and to rehydrate a replacement.",
     );
   }
   if (env.SANDBOX_BACKEND === "smolmachines" && !env.SMOLMACHINES_EGRESS_PROXY_URL) {
-    warn(
+    console.warn(
       "[config] SANDBOX_BACKEND=smolmachines without SMOLMACHINES_EGRESS_PROXY_URL — machines are created with open outbound networking and NO egress enforcement (fail-open); set SMOLMACHINES_EGRESS_PROXY_URL to allow-list only the egress proxy.",
     );
   }
+  const dataDir = resolve(env.DATA_DIR ?? "./data");
   const porterSandboxSelected = env.SANDBOX_BACKEND === "porter";
   if (porterSandboxSelected && !env.PORTER_SANDBOX_EGRESS_PROXY_URL) {
-    warn(
+    console.warn(
       "[config] SANDBOX_BACKEND=porter without PORTER_SANDBOX_EGRESS_PROXY_URL — sandboxes run with NO egress enforcement (fail-open); set PORTER_SANDBOX_EGRESS_PROXY_URL to the egress proxy to force sandbox traffic through it.",
     );
   }
-  if ((porterSandboxSelected || env.PORTER_DEPLOY_API_TOKEN) && !porterLocatorPresent(env)) {
-    throw new Error(
-      "SANDBOX_BACKEND=porter requires PORTER_DEPLOY_PROJECT_ID and PORTER_DEPLOY_CLUSTER_ID (or PORTER_SANDBOX_BASE_URL, or PORTER_CLUSTER_ID)",
+  if (env.DEPLOY_PROVIDER === "porter" && !env.PORTER_DEPLOY_APPS_DOMAIN && !env.DEPLOY_APPS_DOMAIN) {
+    console.warn(
+      "[config] DEPLOY_PROVIDER=porter without an apps domain — published apps are reachable signed-in at /d/<app>/ only; set DEPLOY_APPS_DOMAIN to a domain you control to serve each app on its own subdomain.",
     );
+  }
+  for (const [selected, label] of [
+    [porterSandboxSelected, "SANDBOX_BACKEND=porter"],
+    [env.DEPLOY_PROVIDER === "porter", "DEPLOY_PROVIDER=porter"],
+  ] as const) {
+    if (selected && !porterLocatorPresent(env)) {
+      throw new Error(
+        `${label} requires PORTER_DEPLOY_PROJECT_ID and PORTER_DEPLOY_CLUSTER_ID (or PORTER_SANDBOX_BASE_URL, or PORTER_CLUSTER_ID) to locate the Porter sandbox API.`,
+      );
+    }
   }
   if (env.NODE_ENV === "production" && !env.SANDBOX_BACKEND?.trim()) {
     throw new Error(
@@ -1260,135 +1294,10 @@ export function loadSandboxConfig(env: NodeJS.ProcessEnv, warn: (message: string
   }
 
   if (env.SANDBOX_SECONDARY_BACKEND?.trim()) {
-    warn(
+    console.warn(
       `[config] SANDBOX_SECONDARY_BACKEND=${JSON.stringify(env.SANDBOX_SECONDARY_BACKEND.trim())} is retired and ignored — every backend whose credential is present is constructed; per-scope routes pick between them. Remove the variable.`,
     );
   }
-  const parsed: SandboxConfig = {
-    sandboxBackend,
-    legacySandboxScopeDefaults,
-    execTimeoutDefaultMs:
-      (numEnvStrict("EXEC_TIMEOUT_DEFAULT_SEC", env.EXEC_TIMEOUT_DEFAULT_SEC) ??
-        CONFIG_DEFAULTS.execTimeoutDefaultSec) * 1000,
-    execTimeoutMaxMs:
-      (numEnvStrict("EXEC_TIMEOUT_MAX_SEC", env.EXEC_TIMEOUT_MAX_SEC) ?? CONFIG_DEFAULTS.execTimeoutMaxSec) * 1000,
-    sandboxCapabilityTtlMs: parseSandboxCapabilityTtlMs(env.SANDBOX_CAPABILITY_TTL_HOURS),
-    backgroundJobTtlMs:
-      (numEnvStrict("BACKGROUND_JOB_TTL_SEC", env.BACKGROUND_JOB_TTL_SEC) ?? CONFIG_DEFAULTS.backgroundJobTtlSec) *
-      1000,
-    backgroundJobTtlMaxMs:
-      (numEnvStrict("BACKGROUND_JOB_TTL_MAX_SEC", env.BACKGROUND_JOB_TTL_MAX_SEC) ??
-        CONFIG_DEFAULTS.backgroundJobTtlMaxSec) * 1000,
-    deepIdleMachineMs:
-      numEnvStrict("DEEP_IDLE_MACHINE_MS", env.DEEP_IDLE_MACHINE_MS) ?? CONFIG_DEFAULTS.deepIdleMachineMs,
-    devIdleMachineMs: numEnvStrict("DEV_IDLE_MACHINE_MS", env.DEV_IDLE_MACHINE_MS) ?? CONFIG_DEFAULTS.devIdleMachineMs,
-    scratchExecEnabled: boolEnvStrict("EXECUTE_SCRATCH", env.EXECUTE_SCRATCH) ?? false,
-    reachExecEnabled: boolEnvStrict("REACH_EXEC", env.REACH_EXEC) ?? false,
-    eagerProvisionEnabled: boolEnvStrict("EAGER_PROVISION", env.EAGER_PROVISION) ?? true,
-    awsSandbox: awsSandboxEnv(env),
-    localSandbox: localSandboxEnv(env),
-    spritesSandbox: spritesSandboxEnv(env),
-    smolmachinesSandbox: smolmachinesSandboxEnv(env),
-    agent37Sandbox: agent37SandboxEnv(env),
-    superserveSandbox: superserveSandboxEnv(env),
-    porterSandbox: porterSandboxEnv(env),
-    e2bSandbox: e2bSandboxEnv(env),
-    modalSandbox: modalSandboxEnv(env),
-  };
-  if (sandboxBackend === "aws" && !parsed.awsSandbox.s3Bucket)
-    throw new Error("SANDBOX_BACKEND=aws requires AWS_SANDBOX_S3_BUCKET");
-  if (parsed.e2bSandbox.apiKey) {
-    const e2b = parsed.e2bSandbox;
-    e2bSandboxTtlMs(e2b.maxLifetimeSec ? { maxLifetimeMs: e2b.maxLifetimeSec * 1000 } : {});
-    if (e2b.egressProxyUrl) e2bEgressNetwork(e2b.egressProxyUrl);
-  }
-  if (parsed.modalSandbox.tokenId && parsed.modalSandbox.tokenSecret) {
-    const modal = parsed.modalSandbox;
-    modalSnapshotTtlMs(modal.snapshotRetentionSec === undefined ? undefined : modal.snapshotRetentionSec * 1000);
-    if (modal.egressProxyUrl) modalEgressAllowlist(modal.egressProxyUrl);
-  }
-  if (parsed.spritesSandbox.token)
-    spritesEgressHosts(parsed.spritesSandbox.egressProxyUrl, parsed.spritesSandbox.egressProxyAdditionalUrls);
-  if (parsed.execTimeoutDefaultMs > parsed.execTimeoutMaxMs)
-    throw new Error("EXEC_TIMEOUT_DEFAULT_SEC must not exceed EXEC_TIMEOUT_MAX_SEC");
-  if (parsed.backgroundJobTtlMs > parsed.backgroundJobTtlMaxMs)
-    throw new Error("BACKGROUND_JOB_TTL_SEC must not exceed BACKGROUND_JOB_TTL_MAX_SEC");
-  return parsed;
-}
-
-export function loadConfig(
-  env: NodeJS.ProcessEnv = process.env,
-  sandboxOverrides: Record<string, string> = {},
-  sandboxVersion: string | null = null,
-): Config {
-  const sandboxEnv = { ...env, ...sandboxOverrides };
-  if (env.BACKGROUND_DEPLOYMENT_ID !== undefined) {
-    if (!env.BACKGROUND_DEPLOYMENT_ID.trim() || env.BACKGROUND_DEPLOYMENT_ID.length > 256)
-      throw new Error("BACKGROUND_DEPLOYMENT_ID must be nonempty and at most 256 characters");
-    if (!env.DATABASE_URL) throw new Error("Background ownership requires DATABASE_URL");
-    if (
-      !isStrongSigningSecret(env.CORE_SIGNING_SECRET) ||
-      !isStrongSigningSecret(env.DEPLOYMENT_CONTROL_SECRET) ||
-      env.DEPLOYMENT_CONTROL_SECRET === env.CORE_SIGNING_SECRET
-    )
-      throw new Error(
-        "Background ownership requires a distinct DEPLOYMENT_CONTROL_SECRET of at least 32 characters and CORE_SIGNING_SECRET",
-      );
-  }
-  const swarmDefaults = resolveSwarmSettings(
-    env.SWARM_DEFAULTS === undefined ? undefined : JSON.parse(env.SWARM_DEFAULTS),
-  );
-  const harness = harnessEnvStrict(env.HARNESS);
-  const codexAuthCredential = env.CODEX_AUTH_CREDENTIAL?.trim() || undefined;
-  const claudeAuthCredential = env.CLAUDE_AUTH_CREDENTIAL?.trim() || undefined;
-  const codexAuthCandidate = harness === "codex" && !codexAuthCredential ? codexAuthFileForEnv(env, true) : undefined;
-  const codexOAuthConfigured = Boolean(codexAuthCandidate && readCodexOAuthAuthFile(codexAuthCandidate));
-  const secretEnv =
-    codexOAuthConfigured && codexAuthCandidate
-      ? { ...env, CODEX_AUTH_FILE: codexAuthCandidate }
-      : { ...env, CODEX_AUTH_FILE: undefined };
-  const deployAppsDomain = deployAppsDomainEnv(env, env.DEPLOY_PROVIDER ?? "docker");
-  const missingSecrets = validateCoreSecretEnv(secretEnv, sandboxEnv);
-  if (missingSecrets.length) {
-    throw new Error(`missing or insecure required core secrets: ${missingSecrets.join(", ")}`);
-  }
-  const sandbox = loadSandboxConfig(sandboxEnv, console.warn);
-  if (harness === "codex" && !env.OPENAI_API_KEY?.trim() && !codexOAuthConfigured && !codexAuthCredential) {
-    throw new Error(
-      "HARNESS=codex needs OPENAI_API_KEY, a keychain credential via CODEX_AUTH_CREDENTIAL, or a readable ChatGPT OAuth auth.json via CODEX_AUTH_FILE (or ~/.codex/auth.json)",
-    );
-  }
-  if (env.NODE_ENV === "production" && codexOAuthConfigured) {
-    throw new Error(
-      "CODEX_AUTH_FILE is supported for local Codex harnesses only; production must use CODEX_AUTH_CREDENTIAL (keychain custody)",
-    );
-  }
-  const modelProvider = modelProviderEnvStrict(env);
-  for (const key of ["SESSION_STORE", "RUN_STORE", "ARTIFACT_STORE"] as const) {
-    if (env[key] === "sqlite") {
-      throw new Error(
-        `${key}=sqlite is no longer supported — SQLite was removed. ` +
-          `Set ${key === "ARTIFACT_STORE" ? "DATABASE_URL (Postgres)" : `${key}=postgres (with DATABASE_URL)`} for durability, ` +
-          `or use the in-memory default (${key === "ARTIFACT_STORE" ? "unset ARTIFACT_STORE" : `${key}=memory`}) for an ephemeral store.`,
-      );
-    }
-  }
-  if (env.NODE_ENV === "production" && harnessEnvStrict(env.HARNESS) === "mock") {
-    console.warn(
-      `[config] HARNESS is ${env.HARNESS?.trim() ? '"mock"' : "unset, which means mock"} in production — this deployment answers every message with canned text and calls no model provider. Set HARNESS=pi to run real agent turns.`,
-    );
-  }
-  if (env.DEPLOY_PROVIDER === "porter" && !env.PORTER_DEPLOY_APPS_DOMAIN && !env.DEPLOY_APPS_DOMAIN) {
-    console.warn(
-      "[config] DEPLOY_PROVIDER=porter without an apps domain — published apps are reachable signed-in at /d/<app>/ only; set DEPLOY_APPS_DOMAIN to a domain you control to serve each app on its own subdomain.",
-    );
-  }
-  if (env.DEPLOY_PROVIDER === "porter" && !porterLocatorPresent(env)) {
-    throw new Error(
-      "DEPLOY_PROVIDER=porter requires PORTER_DEPLOY_PROJECT_ID and PORTER_DEPLOY_CLUSTER_ID (or PORTER_SANDBOX_BASE_URL, or PORTER_CLUSTER_ID)",
-    );
-  }
-  const dataDir = resolve(env.DATA_DIR ?? "./data");
   const retiredBrainEnv = ["BRAIN", "BRAIN_MCP_URL", "BRAIN_RO_CLIENT_ID", "BRAIN_RW_CLIENT_ID"].filter((name) =>
     env[name]?.trim(),
   );
@@ -1538,12 +1447,6 @@ export function loadConfig(
     ...(env.SUGGESTED_ACTIVITIES_CONTEXT
       ? { suggestedActivitiesContext: env.SUGGESTED_ACTIVITIES_CONTEXT.slice(0, 8000) }
       : {}),
-    ...sandbox,
-    sandboxStartup: {
-      environment: sandboxEnvironment(env),
-      overrides: { ...sandboxOverrides },
-      version: sandboxVersion,
-    },
     production: env.NODE_ENV === "production",
     allowUnauthenticatedCore: boolEnvStrict("ALLOW_UNAUTHENTICATED_CORE", env.ALLOW_UNAUTHENTICATED_CORE) ?? false,
     port: numEnvStrict("PORT", env.PORT) ?? CONFIG_DEFAULTS.port,
@@ -1573,6 +1476,8 @@ export function loadConfig(
     ...(securityScreenClassifier === "proxy"
       ? { securityScreenProxy: { provider: proxyProvider!, endpoint: proxyEndpoint!, token: proxyToken! } }
       : {}),
+    sandboxBackend,
+    legacySandboxScopeDefaults,
     deployProvider,
     ...(env.EGRESS_SERVICE_HOSTS
       ? {
@@ -1637,11 +1542,23 @@ export function loadConfig(
     ...(numEnvStrict("MAX_CONTEXT_TOKENS", env.MAX_CONTEXT_TOKENS) !== undefined
       ? { maxContextTokens: numEnvStrict("MAX_CONTEXT_TOKENS", env.MAX_CONTEXT_TOKENS) }
       : {}),
+    execTimeoutDefaultMs:
+      (numEnvStrict("EXEC_TIMEOUT_DEFAULT_SEC", env.EXEC_TIMEOUT_DEFAULT_SEC) ??
+        CONFIG_DEFAULTS.execTimeoutDefaultSec) * 1000,
+    execTimeoutMaxMs:
+      (numEnvStrict("EXEC_TIMEOUT_MAX_SEC", env.EXEC_TIMEOUT_MAX_SEC) ?? CONFIG_DEFAULTS.execTimeoutMaxSec) * 1000,
     turnWallClockMs,
     swarmsEnabled: boolEnvStrict("SWARMS_ENABLED", env.SWARMS_ENABLED) ?? true,
     swarmDefaults,
     runMaxAgeMs,
     runWaitMs: (turnWallClockMs > 0 ? turnWallClockMs : runMaxAgeMs) + 60_000,
+    sandboxCapabilityTtlMs: parseSandboxCapabilityTtlMs(env.SANDBOX_CAPABILITY_TTL_HOURS),
+    backgroundJobTtlMs:
+      (numEnvStrict("BACKGROUND_JOB_TTL_SEC", env.BACKGROUND_JOB_TTL_SEC) ?? CONFIG_DEFAULTS.backgroundJobTtlSec) *
+      1000,
+    backgroundJobTtlMaxMs:
+      (numEnvStrict("BACKGROUND_JOB_TTL_MAX_SEC", env.BACKGROUND_JOB_TTL_MAX_SEC) ??
+        CONFIG_DEFAULTS.backgroundJobTtlMaxSec) * 1000,
     backgroundWorkEnabled:
       boolEnvStrict("BACKGROUND_WORK_ENABLED", env.BACKGROUND_WORK_ENABLED) ?? CONFIG_DEFAULTS.backgroundWorkEnabled,
     ...(env.BACKGROUND_DEPLOYMENT_ID
@@ -1714,6 +1631,9 @@ export function loadConfig(
     deployDialTimeoutMs:
       numEnvStrict("DEPLOY_DIAL_TIMEOUT_MS", env.DEPLOY_DIAL_TIMEOUT_MS) ?? CONFIG_DEFAULTS.deployDialTimeoutMs,
     ...deployAppsEnv(env, publicUrl),
+    deepIdleMachineMs:
+      numEnvStrict("DEEP_IDLE_MACHINE_MS", env.DEEP_IDLE_MACHINE_MS) ?? CONFIG_DEFAULTS.deepIdleMachineMs,
+    devIdleMachineMs: numEnvStrict("DEV_IDLE_MACHINE_MS", env.DEV_IDLE_MACHINE_MS) ?? CONFIG_DEFAULTS.devIdleMachineMs,
     cronFireConcurrency:
       numEnvStrict("CRON_FIRE_CONCURRENCY", env.CRON_FIRE_CONCURRENCY) ?? CONFIG_DEFAULTS.cronFireConcurrency,
     workers: numEnvStrict("WORKERS", env.WORKERS) ?? CONFIG_DEFAULTS.workers,
@@ -1733,11 +1653,22 @@ export function loadConfig(
       CONFIG_DEFAULTS.approvalSummaryTimeoutMs,
     turnLeaseWaitMs: numEnvStrict("TURN_LEASE_WAIT_MS", env.TURN_LEASE_WAIT_MS) ?? CONFIG_DEFAULTS.turnLeaseWaitMs,
     securityScreenTimeoutMs,
+    scratchExecEnabled: boolEnvStrict("EXECUTE_SCRATCH", env.EXECUTE_SCRATCH) ?? false,
+    reachExecEnabled: boolEnvStrict("REACH_EXEC", env.REACH_EXEC) ?? false,
     surfaceDebugFooter: boolEnvStrict("SURFACE_DEBUG_FOOTER", env.SURFACE_DEBUG_FOOTER) ?? false,
+    eagerProvisionEnabled: boolEnvStrict("EAGER_PROVISION", env.EAGER_PROVISION) ?? true,
+    awsSandbox: awsSandboxEnv(env),
+    localSandbox: localSandboxEnv(env),
+    spritesSandbox: spritesSandboxEnv(env),
+    smolmachinesSandbox: smolmachinesSandboxEnv(env),
+    agent37Sandbox: agent37SandboxEnv(env),
+    superserveSandbox: superserveSandboxEnv(env),
+    porterSandbox: porterSandboxEnv(env),
     porterDeploy: porterDeployEnv(env),
+    e2bSandbox: e2bSandboxEnv(env),
+    modalSandbox: modalSandboxEnv(env),
     awsDeploy: {
       ...awsDeployEnv(env),
-      ...(!env.AWS_DEPLOY_DATA_BUCKET && env.AWS_SANDBOX_S3_BUCKET ? { dataBucket: env.AWS_SANDBOX_S3_BUCKET } : {}),
       ...(env.DEPLOY_APPS_DOMAIN && deployAppsDomain && !env.AWS_DEPLOY_APPS_DOMAIN
         ? { appsDomain: deployAppsDomain }
         : {}),

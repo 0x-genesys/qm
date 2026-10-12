@@ -4,8 +4,7 @@ import { pathToFileURL } from "node:url";
 import { PORTAL_IDENTITY_HEADER } from "../auth/portal-identity.ts";
 import { mintSignedPayload } from "../auth/signed-token.ts";
 import { signedRequestHeaders } from "../../plugins/chassis/src/source-auth-sign.ts";
-import type { Config } from "../config.ts";
-import { loadStartupConfig } from "../startup-config.ts";
+import { loadConfig, type Config } from "../config.ts";
 import { errMessage } from "../util/errors.ts";
 import { sleep } from "../util/async.ts";
 
@@ -338,7 +337,7 @@ export async function runSessionSmoke(config: PostdeployConfig, baseUrl: string)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const config = await loadStartupConfig();
+  const config = loadConfig();
   if (process.argv[2] === "session") {
     await runSessionSmoke(config, process.argv[3] ?? `http://127.0.0.1:${config.port}`);
     console.log("database and live session smoke passed");

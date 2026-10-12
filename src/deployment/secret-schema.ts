@@ -88,32 +88,14 @@ const GATE_PREDICATES: Readonly<Record<SecretGate, (env: NodeJS.ProcessEnv) => b
   "model-openrouter": (env) => env.MODEL_PROVIDER?.trim() === "openrouter",
 };
 
-const sandboxGates = new Set<SecretGate>([
-  "sprites",
-  "smolmachines",
-  "e2b",
-  "modal",
-  "porter",
-  "agent37",
-  "superserve",
-]);
-
-function missingSecrets(environment: (gate: SecretGate) => NodeJS.ProcessEnv | undefined): string[] {
-  return CORE_SECRET_SPECS.filter((spec) => {
+export function validateCoreSecretEnv(env: NodeJS.ProcessEnv): string[] {
+  const enabled = (spec: RuntimeSecretSpec): boolean => {
     const gates = typeof spec.requiredWhen === "string" ? [spec.requiredWhen] : spec.requiredWhen;
-    return gates.some((gate) => {
-      const env = environment(gate);
-      return env && GATE_PREDICATES[gate](env) && isInvalidSecret(spec.name, env[spec.name]);
-    });
-  }).map((spec) => spec.name);
-}
-
-export function validateSandboxSecretEnv(env: NodeJS.ProcessEnv): string[] {
-  return missingSecrets((gate) => (sandboxGates.has(gate) ? env : undefined));
-}
-
-export function validateCoreSecretEnv(env: NodeJS.ProcessEnv, sandboxEnv = env): string[] {
-  return missingSecrets((gate) => (sandboxGates.has(gate) ? sandboxEnv : env));
+    return gates.some((gate) => GATE_PREDICATES[gate](env));
+  };
+  return CORE_SECRET_SPECS.filter((spec) => enabled(spec) && isInvalidSecret(spec.name, env[spec.name])).map(
+    (spec) => spec.name,
+  );
 }
 
 function isInvalidSecret(name: string, value: string | undefined): boolean {

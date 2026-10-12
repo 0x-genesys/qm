@@ -1,4 +1,3 @@
-import type { Config } from "../config.ts";
 import { cleanupFailedProvision } from "./sandbox.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
@@ -83,46 +82,17 @@ export interface StoredConfigEpoch {
 
 const CONFIG_EPOCH_LOCK = "superserve-config-epoch";
 
-export function superserveGenerationKey(
-  config: Pick<Config, "buildSha" | "sandboxStartup" | "superserveSandbox" | "backgroundJobTtlMaxMs">,
-): string {
-  const ss = config.superserveSandbox;
-  return createHash("sha256")
-    .update(
-      JSON.stringify([
-        config.buildSha ?? "",
-        config.sandboxStartup?.version ?? null,
-        ss.configGeneration ?? null,
-        ss.template,
-        ss.namePrefix ?? "",
-        ss.homeDir ?? "",
-        ss.idlePauseSec ?? null,
-        ss.retentionSec ?? null,
-        Math.ceil(config.backgroundJobTtlMaxMs / 1000),
-        [...(ss.egressAllow ?? [])].sort(),
-        [...(ss.egressDeny ?? [])].sort(),
-      ]),
-    )
-    .digest("hex")
-    .slice(0, 32);
-}
-
 export function createConfigEpochResolver(
   store: DurableMap<StoredConfigEpoch>,
   generationKey: string,
   lock: AdvisoryLock = createNoopAdvisoryLock(),
-  minimumGeneration = 0,
-  isCurrent?: () => Promise<boolean>,
 ): () => Promise<number> {
   let pending: Promise<number> | undefined;
   const claim = (): Promise<number> =>
     lock.withLock(CONFIG_EPOCH_LOCK, async () => {
       const stored = await store.get(generationKey);
       if (stored) return stored.generation;
-      if (isCurrent && !(await isCurrent()))
-        throw new Error("Sandbox configuration changed during startup; restart this process before using Superserve");
-      const generation =
-        (await store.entries()).reduce((high, [, seen]) => Math.max(high, seen.generation), minimumGeneration) + 1;
+      const generation = (await store.entries()).reduce((high, [, seen]) => Math.max(high, seen.generation), 0) + 1;
       await store.put(generationKey, { generation });
       return (await store.get(generationKey))?.generation ?? generation;
     });

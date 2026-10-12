@@ -296,7 +296,7 @@ test("Slack HTTP ingress exposes only a valid configured receiver port", () => {
 });
 
 test("sandbox backend is parsed once before production backend guards", () => {
-  assert.equal(loadConfig({ SANDBOX_BACKEND: " aws ", AWS_SANDBOX_S3_BUCKET: "test-bucket" }).sandboxBackend, "aws");
+  assert.equal(loadConfig({ SANDBOX_BACKEND: " aws " }).sandboxBackend, "aws");
   assert.throws(
     () => loadConfig({ ...productionEnv, SANDBOX_BACKEND: "bogus" }),
     /SANDBOX_BACKEND="bogus" is not recognized/,

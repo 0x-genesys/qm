@@ -1,4 +1,3 @@
-import { loadConfig } from "../src/config.ts";
 import { test, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -6,7 +5,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createConfigEpochResolver,
-  superserveGenerationKey,
   createSuperserveSandbox,
   SUPERSERVE_METADATA,
   type StoredConfigEpoch,
@@ -609,86 +607,6 @@ test("the config epoch is claimed once per deployment generation, so a restarted
   await restarted.teardown(await restarted.provision(layers));
   assert.equal(fake.current(scopeName())?.timeoutSeconds, 1_800, "the restarted older release stays passive");
   assert.equal(fake.current(scopeName())?.metadata[SUPERSERVE_METADATA.epoch], String(newRelease));
-});
-
-test("resetting saved lifecycle settings claims a new generation and updates an existing computer", async () => {
-  const epochs: DurableMap<StoredConfigEpoch> = createMemoryMap();
-  const env = {
-    SANDBOX_BACKEND: "superserve",
-    SUPERSERVE_API_KEY: "test-key",
-    SUPERSERVE_TEMPLATE: "test-template",
-    SUPERSERVE_IDLE_PAUSE_SEC: "600",
-  };
-  const states = [
-    loadConfig(env),
-    loadConfig(env, { SUPERSERVE_IDLE_PAUSE_SEC: "1800" }, "saved-change"),
-    loadConfig(env, {}, "saved-reset"),
-  ];
-  let previous = 0;
-  for (const config of states) {
-    const resolve = createConfigEpochResolver(epochs, superserveGenerationKey(config));
-    const epoch = await resolve();
-    assert.ok(epoch > previous);
-    previous = epoch;
-    const current = make({ configEpoch: resolve, idlePauseSec: config.superserveSandbox.idlePauseSec });
-    await current.teardown(await current.provision(layers));
-    assert.equal(fake.current(scopeName())?.timeoutSeconds, config.superserveSandbox.idlePauseSec);
-    assert.equal(fake.current(scopeName())?.metadata[SUPERSERVE_METADATA.epoch], String(epoch));
-    assert.equal(await createConfigEpochResolver(epochs, superserveGenerationKey(config))(), epoch);
-  }
-  assert.equal(fake.createdCount(scopeName()), 1);
-});
-
-test("saved settings outrank an explicit deployment generation during a rolling restart", async () => {
-  const epochs: DurableMap<StoredConfigEpoch> = createMemoryMap();
-  const env = {
-    SANDBOX_BACKEND: "superserve",
-    SUPERSERVE_API_KEY: "test-key",
-    SUPERSERVE_TEMPLATE: "test-template",
-    SUPERSERVE_CONFIG_GENERATION: "42",
-    SUPERSERVE_IDLE_PAUSE_SEC: "600",
-  };
-  const older = make({ configEpoch: 42, idlePauseSec: 600 });
-  await older.teardown(await older.provision(layers));
-  const config = loadConfig(env, { SUPERSERVE_IDLE_PAUSE_SEC: "1800" }, "saved-change");
-  const resolve = createConfigEpochResolver(
-    epochs,
-    superserveGenerationKey(config),
-    undefined,
-    config.superserveSandbox.configGeneration,
-  );
-  const newer = make({ configEpoch: resolve, idlePauseSec: 1800 });
-  await newer.teardown(await newer.provision(layers));
-  assert.equal(await resolve(), 43);
-  await older.teardown(await older.provision(layers));
-  assert.equal(fake.current(scopeName())?.timeoutSeconds, 1800);
-  assert.equal(fake.current(scopeName())?.metadata[SUPERSERVE_METADATA.epoch], "43");
-});
-
-test("a delayed first generation claim cannot overtake a newer saved revision", async () => {
-  const epochs: DurableMap<StoredConfigEpoch> = createMemoryMap();
-  const saved = { version: "newer-saved" };
-  const olderClaim = createConfigEpochResolver(
-    epochs,
-    "older-saved",
-    undefined,
-    0,
-    async () => saved.version === "older-saved",
-  );
-  const newerClaim = createConfigEpochResolver(
-    epochs,
-    saved.version,
-    undefined,
-    0,
-    async () => saved.version === "newer-saved",
-  );
-  const newer = make({ configEpoch: newerClaim, idlePauseSec: 1800 });
-  await newer.teardown(await newer.provision(layers));
-  const older = make({ configEpoch: olderClaim, idlePauseSec: 600 });
-  await assert.rejects(older.provision(layers), /configuration changed during startup/);
-  assert.equal(await epochs.get("older-saved"), null);
-  assert.equal(fake.current(scopeName())?.timeoutSeconds, 1800);
-  assert.equal(fake.createdCount(scopeName()), 1);
 });
 
 test("a command that finds its sandbox gone leaves a replacement provisioned meanwhile in place", async () => {

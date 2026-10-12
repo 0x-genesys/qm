@@ -1,8 +1,3 @@
-import {
-  createSandboxConfiguration,
-  type SandboxConfiguration,
-  type StoredSandboxConfiguration,
-} from "./sandbox/configuration.ts";
 import type { SlackSessionStatusState } from "./slack/session-status.ts";
 import { availableRuntimeError } from "./api/runtime-config.ts";
 import { createApprovalStore } from "./core/approval-store.ts";
@@ -58,7 +53,7 @@ import type { SessionShare, SessionShareStore } from "./sessions/session-share.t
 import { createModelOverlayStore, type ModelOverlayStore } from "./model/model-overlay-store.ts";
 import { mkdirSync } from "node:fs";
 import type { StagedEnvelope } from "./slack/envelope-staging.ts";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import {
   baseModelProviders,
@@ -230,7 +225,6 @@ import { createSmolmachinesSandbox, type StoredSmolmachinesSandbox } from "./san
 import { createAgent37Sandbox } from "./sandbox/agent37-sandbox.ts";
 import {
   createConfigEpochResolver,
-  superserveGenerationKey,
   createSuperserveSandbox,
   type StoredConfigEpoch,
   type StoredSuperserveSandbox,
@@ -488,7 +482,6 @@ export interface BuiltApp {
   surfaceCache: SurfaceCache;
   runtime: Runtime;
   config: ScopedConfigStore;
-  sandboxConfiguration: SandboxConfiguration;
   connectorTokens: ConnectorTokenStore;
   slackInstallation: SlackInstallationStore;
   resolveClient: OAuthClientResolver;
@@ -655,10 +648,6 @@ export function buildApp(
   const sandboxAdvisoryLock: AdvisoryLock = pgArtifactMap
     ? createPostgresAdvisoryLock(pgArtifactMap.pool, { pool: "sandbox" })
     : createMemoryAdvisoryLock();
-  const sandboxConfiguration = createSandboxConfiguration({
-    config,
-    backing: artifactMap<StoredSandboxConfiguration>("sandbox_configuration"),
-  });
   const principalLinks = createPrincipalLinkService(artifactMap<PrincipalLink>("principal_links"), advisoryLock);
   installPrincipalLinks(principalLinks);
   const identity = createIdentityService(artifactMap<DeactivationRecord>("deactivated_principals"), {
@@ -1024,18 +1013,26 @@ export function buildApp(
     if (!ss.template)
       throw new Error("SANDBOX_BACKEND=superserve requires SUPERSERVE_TEMPLATE (a ready qm-agent-<release> template)");
     const keepWarmSec = Math.ceil(config.backgroundJobTtlMaxMs / 1000);
-    const generationKey = superserveGenerationKey(config);
-    let configEpoch: number | (() => Promise<number>) = ss.configGeneration ?? 0;
-    if (pgArtifactMap && (ss.configGeneration === undefined || config.sandboxStartup?.version))
-      configEpoch = createConfigEpochResolver(
-        superserveEpochs,
-        generationKey,
-        sandboxAdvisoryLock,
-        ss.configGeneration,
-        async () => (await sandboxConfiguration.summary()).version === (config.sandboxStartup?.version ?? null),
-      );
+    const generationKey = createHash("sha256")
+      .update(
+        JSON.stringify([
+          config.buildSha ?? "",
+          ss.template,
+          ss.namePrefix ?? "",
+          ss.homeDir ?? "",
+          ss.idlePauseSec ?? null,
+          ss.retentionSec ?? null,
+          keepWarmSec,
+          [...(ss.egressAllow ?? [])].sort(),
+          [...(ss.egressDeny ?? [])].sort(),
+        ]),
+      )
+      .digest("hex")
+      .slice(0, 32);
     return createSuperserveSandbox(workspace, {
-      configEpoch,
+      configEpoch:
+        ss.configGeneration ??
+        (pgArtifactMap ? createConfigEpochResolver(superserveEpochs, generationKey, sandboxAdvisoryLock) : 0),
       client: createSdkSuperserveClient({
         apiKey: ss.apiKey,
         ...(ss.baseUrl ? { baseUrl: ss.baseUrl } : {}),
@@ -1649,7 +1646,7 @@ export function buildApp(
   const buildAwsDeploy = (): DeployProvider =>
     createAwsDeployProvider({
       ...config.awsDeploy,
-
+      ...(!config.awsDeploy.dataBucket && config.awsSandbox.s3Bucket ? { dataBucket: config.awsSandbox.s3Bucket } : {}),
       advisoryLock,
       store: artifactMap<StoredDeployBody>("aws_deploy_bodies"),
     });
@@ -1690,7 +1687,7 @@ export function buildApp(
     throw new Error("Fly durable application storage requires DATABASE_URL for persistent rollback configuration");
   }
   const deployProvider: DeployProvider = buildDeployProvider[config.deployProvider]();
-  if (config.deployProvider === "aws" && !config.awsDeploy.dataBucket) {
+  if (config.deployProvider === "aws" && !config.awsDeploy.dataBucket && !config.awsSandbox.s3Bucket) {
     console.warn(
       "[wiring] aws deploy: no data bucket resolved (AWS_DEPLOY_DATA_BUCKET unset, sandbox is not aws) — deployed apps have NO durable /data",
     );
@@ -2841,7 +2838,6 @@ export function buildApp(
     surfaceCache,
     runtime,
     config: configStore,
-    sandboxConfiguration,
     connectorTokens,
     slackInstallation,
     resolveClient,
@@ -2958,7 +2954,6 @@ export function serverDeps(
     ...(built.replayDedupe ? { replayDedupe: built.replayDedupe } : {}),
     ...(built.brokerSessions ? { brokerSessions: built.brokerSessions } : {}),
     config: built.config,
-    sandboxConfiguration: built.sandboxConfiguration,
     ...(built.screenSecurity ? { screenSecurity: built.screenSecurity } : {}),
     ...(configuredModel ? { baseModelDefault: configuredModel } : {}),
     modelProviders: modelProviderAvailabilityFor(config.harness, providerKeysPresent(config)),

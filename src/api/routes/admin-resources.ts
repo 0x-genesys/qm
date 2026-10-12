@@ -1,4 +1,3 @@
-import { SandboxConfigurationError } from "../../sandbox/configuration.ts";
 import { parseAckEmoji } from "../../slack/config.ts";
 import { orgId as configOrgId } from "../../config.ts";
 import type { ServerDeps } from "../deps.ts";
@@ -147,28 +146,6 @@ function channelContainer(scope: string): string | undefined {
 }
 
 export const ADMIN_RESOURCES: readonly AdminResource[] = [
-  {
-    id: "sandbox-configuration",
-    kind: "custom",
-    target: "org",
-    secret: true,
-    label:
-      "Provider and execution configuration. GET /v1/admin/sandbox-configuration for field names, active values, overrides and restart effects. PUT { expectedVersion, set: { SETTING: string }, reset: [SETTING] }; reset restores startup defaults. Secrets are replaceable and redacted. Saving does not restart processes or verify provider access. Pool capacity uses sandbox-settings.",
-    readKey: "sandboxConfiguration",
-    get: (deps) => deps.sandboxConfiguration?.summary() ?? null,
-    apply: async (ctx, actor, scope) => {
-      const bad = orgOnly(scope, "sandbox configuration is organization-wide");
-      if (bad) return bad;
-      if (!ctx.deps.sandboxConfiguration) return { error: "Sandbox configuration is unavailable", status: 503 };
-      try {
-        await ctx.deps.sandboxConfiguration.write(ctx.body, actor.id);
-        return { ok: true };
-      } catch (error) {
-        if (error instanceof SandboxConfigurationError) return { error: error.message, status: error.status };
-        throw error;
-      }
-    },
-  },
   {
     id: "sandbox-settings",
     kind: "custom",

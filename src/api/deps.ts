@@ -1,4 +1,3 @@
-import type { SandboxConfiguration } from "../sandbox/configuration.ts";
 import type { ExternalSlackPolicies } from "../resolution/external-slack.ts";
 import type { ProviderKeys } from "../harness/pi-harness.ts";
 import type { ModelGatewayTransportConfig } from "../model/provider-endpoints.ts";
@@ -120,7 +119,6 @@ export interface ServerDeps {
   publicUrl?: string;
   portalUrl?: string;
   config?: ScopedConfigStore;
-  sandboxConfiguration?: SandboxConfiguration;
   acl?: AclStore;
   credentialUsage?: CredentialUsageSink;
   featureFlags?: FeatureFlagStore;
