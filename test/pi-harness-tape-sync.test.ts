@@ -344,6 +344,58 @@ test("completed Pi attach results retain openable files in viewer history", asyn
   }
 });
 
+for (const route of ["gateway", "direct", "personal"] as const) {
+  test(`native document byte budget respects ${route} routing`, async () => {
+    const modelId = "claude-opus-5";
+    const harness = createPiHarness({
+      apiKey: "sk-test",
+      modelId,
+      ...(route !== "direct"
+        ? {
+            modelGateway: {
+              url: "https://gateway.test",
+              apiKey: "gateway-test",
+              apiKeyHeader: "api-key",
+              models: { [modelId]: "router/opus" },
+            },
+          }
+        : {}),
+    });
+    const sink: Sink = { entries: [], tape: [] };
+    const pdf = await readFile(new URL("./fixtures/documents/sample.pdf", import.meta.url));
+    const dataBase64 = Buffer.concat([pdf, Buffer.alloc(4_000_000 - pdf.length, 32)]).toString("base64");
+    const realFetch = globalThis.fetch;
+    let body = "";
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      body = String(init?.body);
+      return sse(textReplyEvents("read the document"));
+    }) as typeof fetch;
+    try {
+      const request = harness.turns.runTurn(
+        turnInput(`document-budget-${route}`, sink, {
+          ...(route === "personal" ? { providerKeys: { anthropic: "personal-test" } } : {}),
+          documents: [
+            { name: "first.pdf", mimeType: "application/pdf", dataBase64, artifactId: "doc1" },
+            { name: "latest.pdf", mimeType: "application/pdf", dataBase64, artifactId: "doc2" },
+          ],
+        }),
+      );
+      if (route === "gateway") {
+        await assert.rejects(request, /attachments no longer fit/);
+        assert.equal(body, "", "an oversized document request must not silently drop a document");
+        return;
+      }
+      await request;
+      const blocks = JSON.parse(body).messages.at(-1).content;
+      assert.equal(blocks.filter((block: { type: string }) => block.type === "document").length, 2);
+      assert.ok(Buffer.byteLength(body) > 10 * 1024 * 1024);
+      assert.ok(body.includes(dataBase64));
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+}
+
 test("native document bytes reach the provider on every step without entering the transcript tape", async () => {
   const harness = createPiHarness({ apiKey: "sk-test" });
   const sink: Sink = { entries: [], tape: [] };

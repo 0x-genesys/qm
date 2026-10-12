@@ -1806,12 +1806,14 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
               `[pi] output-budget guard raised output cap ${guarded.from} -> ${guarded.to} (estimated prompt ${guarded.estimatedPromptTokens} tokens) session=${sessionId}`,
             );
           }
+          const gateway = modelGatewayRequest(turnProviderKeys ? undefined : modelGateway, model as Model<Api>);
+          const requestByteLimit = gateway ? 9_000_000 : MAX_LLM_REQUEST_BYTES;
           try {
-            finalPayload = trimPayloadToByteBudget(finalPayload, MAX_LLM_REQUEST_BYTES, anchors.size > 0);
+            finalPayload = trimPayloadToByteBudget(finalPayload, requestByteLimit, anchors.size > 0);
           } catch (e) {
             swallow("pi: request byte budget", e);
           }
-          if (anchors.size && Buffer.byteLength(JSON.stringify(finalPayload)) > MAX_LLM_REQUEST_BYTES)
+          if (anchors.size && Buffer.byteLength(JSON.stringify(finalPayload)) > requestByteLimit)
             throw new NonRetryableTurnError(
               "This conversation's attachments no longer fit in one model request. Start a new conversation or re-share only the files still needed.",
             );
