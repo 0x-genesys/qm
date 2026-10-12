@@ -150,7 +150,7 @@ export interface PersistedAutoFlaggerConfig extends AutoFlaggerConfig {
 export interface PersistedSandboxSettings {
   connectionPoolMax: number;
 }
-export interface SandboxSettings {
+interface SandboxSettings {
   connectionPoolMax: number;
   defaultConnectionPoolMax: number;
   override: number | null;

@@ -3,6 +3,14 @@ import { upgradeLegacySandboxes, type SandboxResourceUpgradeMarker } from "../sr
 import { createPostgresMap } from "../src/persistence/durable-map.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createModalSandbox } from "../src/sandbox/modal-sandbox.ts";
+import type { ModalSession } from "../src/sandbox/modal-client.ts";
+import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
+import { installFakeModal } from "./support/fake-modal.ts";
+import { scopeId } from "../src/types.ts";
 import { createPgPool, configurePgPooling, setSandboxPoolMax, type PoolClient } from "../src/persistence/pg-pool.ts";
 import {
   createPostgresAdvisoryLock,
@@ -14,6 +22,78 @@ const URL = process.env.DATABASE_URL;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the advisory-lock tests";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+test(
+  "Modal cancellation uses its protected session while the sandbox pool is full",
+  { skip, timeout: 10_000 },
+  async () => {
+    configurePgPooling({ databaseUrl: URL!, sandboxMax: 1 });
+    const pg = createPgPool(URL!);
+    const fake = installFakeModal();
+    const entered = Promise.withResolvers<void>();
+    const command = Promise.withResolvers<void>();
+    const finishKill = Promise.withResolvers<void>();
+    let kills = 0;
+    let settled = false;
+    const wrap = (session: ModalSession): ModalSession => ({
+      ...session,
+      async runCommand(script, options) {
+        if (script.includes("SATURATED_MODAL_COMMAND")) {
+          entered.resolve();
+          await command.promise;
+          return { stdout: "", stderr: "", exitCode: 137 };
+        }
+        if (script.includes("kill -KILL")) {
+          kills++;
+          command.resolve();
+          await finishKill.promise;
+          return { stdout: "", stderr: "", exitCode: 0 };
+        }
+        return session.runCommand(script, options);
+      },
+    });
+    const lock = createPostgresAdvisoryLock(pg, { pool: "sandbox" });
+    const sandbox = createModalSandbox(createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "modal-capacity-"))), {
+      advisoryLock: lock,
+      client: {
+        ...fake.client,
+        create: async (options) => wrap(await fake.client.create(options)),
+        fromId: async (id) => wrap(await fake.client.fromId(id)),
+        fromName: async (name) => {
+          const session = await fake.client.fromName(name);
+          return session ? wrap(session) : null;
+        },
+      },
+    });
+    let running: Promise<unknown> | undefined;
+    try {
+      const handle = await sandbox.provision([
+        { scopeId: scopeId("personal", "capacity"), mountPath: "/", mode: "rw" },
+      ]);
+      const controller = new AbortController();
+      running = lock.withSharedLock!("sandbox-resource:modal-capacity", () =>
+        sandbox.run(handle, "SATURATED_MODAL_COMMAND", { signal: controller.signal }),
+      ).finally(() => {
+        settled = true;
+      });
+      await entered.promise;
+      controller.abort();
+      await sleep(50);
+      assert.equal(kills, 1, "Stop dispatches without borrowing a second connection");
+      assert.equal((await pg.sessionPool("sandbox")).waitingCount, 0);
+      assert.equal(settled, false, "the protected operation waits for the kill to finish");
+      finishKill.resolve();
+      await running;
+    } finally {
+      command.resolve();
+      finishKill.resolve();
+      await running?.catch(() => {});
+      await pg.close();
+      fake.cleanup();
+      configurePgPooling({});
+    }
+  },
+);
 
 test(
   "sandbox capacity changes wake waiters and drain excess clients without dropping active locks",
