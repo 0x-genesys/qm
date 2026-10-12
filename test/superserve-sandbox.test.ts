@@ -665,6 +665,32 @@ test("saved settings outrank an explicit deployment generation during a rolling 
   assert.equal(fake.current(scopeName())?.metadata[SUPERSERVE_METADATA.epoch], "43");
 });
 
+test("a delayed first generation claim cannot overtake a newer saved revision", async () => {
+  const epochs: DurableMap<StoredConfigEpoch> = createMemoryMap();
+  const saved = { version: "newer-saved" };
+  const olderClaim = createConfigEpochResolver(
+    epochs,
+    "older-saved",
+    undefined,
+    0,
+    async () => saved.version === "older-saved",
+  );
+  const newerClaim = createConfigEpochResolver(
+    epochs,
+    saved.version,
+    undefined,
+    0,
+    async () => saved.version === "newer-saved",
+  );
+  const newer = make({ configEpoch: newerClaim, idlePauseSec: 1800 });
+  await newer.teardown(await newer.provision(layers));
+  const older = make({ configEpoch: olderClaim, idlePauseSec: 600 });
+  await assert.rejects(older.provision(layers), /configuration changed during startup/);
+  assert.equal(await epochs.get("older-saved"), null);
+  assert.equal(fake.current(scopeName())?.timeoutSeconds, 1800);
+  assert.equal(fake.createdCount(scopeName()), 1);
+});
+
 test("a command that finds its sandbox gone leaves a replacement provisioned meanwhile in place", async () => {
   const store: DurableMap<StoredSuperserveSandbox> = createMemoryMap();
   sandbox = make({ store });

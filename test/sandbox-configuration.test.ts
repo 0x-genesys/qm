@@ -119,6 +119,19 @@ test("saved configuration uses provider startup validation before committing", a
   assert.equal((second.nextStartup as { eagerProvisionEnabled: boolean }).eagerProvisionEnabled, false);
 });
 
+test("reset to a process's original values still requires applying the new revision", async () => {
+  const backing = createMemoryMap<StoredSandboxConfiguration>();
+  const env = { DATABASE_URL: "postgresql://localhost/unused", CONNECTOR_SECRET_KEY: key };
+  const original = createSandboxConfiguration({ backing, config: loadConfig(env) });
+  await original.write({ expectedVersion: null, set: { MODAL_CPUS: "4" } }, "admin");
+  await original.write({ expectedVersion: (await original.read()).version, reset: ["MODAL_CPUS"] }, "admin");
+  const reset = await original.read();
+  assert.deepEqual(reset.active, reset.nextStartup);
+  assert.equal(reset.restartRequired, true);
+  const restarted = createSandboxConfiguration({ backing, config: loadConfig(env, {}, reset.version) });
+  assert.equal((await restarted.read()).restartRequired, false);
+});
+
 test(
   "PostgreSQL settings survive startup and concurrent edits cannot overwrite one another",
   { skip: !process.env.DATABASE_URL },

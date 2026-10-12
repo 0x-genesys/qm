@@ -94,7 +94,7 @@ export function createSandboxConfiguration(input: { backing: DurableMap<StoredSa
         appliedVersion: startup.version,
         appliesOn: "process_restart",
         activeAppliesTo: "this_process",
-        restartRequired: !sameOverrides(startup.overrides, overrides),
+        restartRequired: startup.version !== (saved?.version ?? null) || !sameOverrides(startup.overrides, overrides),
         durable,
         ...(saved ? { updatedAt: saved.updatedAt, updatedBy: saved.updatedBy } : {}),
         detailsPath: "/v1/admin/sandbox-configuration",

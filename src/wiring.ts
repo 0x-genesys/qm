@@ -1032,6 +1032,7 @@ export function buildApp(
         generationKey,
         sandboxAdvisoryLock,
         ss.configGeneration,
+        async () => (await sandboxConfiguration.summary()).version === (config.sandboxStartup?.version ?? null),
       );
     return createSuperserveSandbox(workspace, {
       configEpoch,
