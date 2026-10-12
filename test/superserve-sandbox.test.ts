@@ -639,6 +639,32 @@ test("resetting saved lifecycle settings claims a new generation and updates an 
   assert.equal(fake.createdCount(scopeName()), 1);
 });
 
+test("saved settings outrank an explicit deployment generation during a rolling restart", async () => {
+  const epochs: DurableMap<StoredConfigEpoch> = createMemoryMap();
+  const env = {
+    SANDBOX_BACKEND: "superserve",
+    SUPERSERVE_API_KEY: "test-key",
+    SUPERSERVE_TEMPLATE: "test-template",
+    SUPERSERVE_CONFIG_GENERATION: "42",
+    SUPERSERVE_IDLE_PAUSE_SEC: "600",
+  };
+  const older = make({ configEpoch: 42, idlePauseSec: 600 });
+  await older.teardown(await older.provision(layers));
+  const config = loadConfig(env, { SUPERSERVE_IDLE_PAUSE_SEC: "1800" }, "saved-change");
+  const resolve = createConfigEpochResolver(
+    epochs,
+    superserveGenerationKey(config),
+    undefined,
+    config.superserveSandbox.configGeneration,
+  );
+  const newer = make({ configEpoch: resolve, idlePauseSec: 1800 });
+  await newer.teardown(await newer.provision(layers));
+  assert.equal(await resolve(), 43);
+  await older.teardown(await older.provision(layers));
+  assert.equal(fake.current(scopeName())?.timeoutSeconds, 1800);
+  assert.equal(fake.current(scopeName())?.metadata[SUPERSERVE_METADATA.epoch], "43");
+});
+
 test("a command that finds its sandbox gone leaves a replacement provisioned meanwhile in place", async () => {
   const store: DurableMap<StoredSuperserveSandbox> = createMemoryMap();
   sandbox = make({ store });

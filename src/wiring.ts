@@ -1025,10 +1025,16 @@ export function buildApp(
       throw new Error("SANDBOX_BACKEND=superserve requires SUPERSERVE_TEMPLATE (a ready qm-agent-<release> template)");
     const keepWarmSec = Math.ceil(config.backgroundJobTtlMaxMs / 1000);
     const generationKey = superserveGenerationKey(config);
+    let configEpoch: number | (() => Promise<number>) = ss.configGeneration ?? 0;
+    if (pgArtifactMap && (ss.configGeneration === undefined || config.sandboxStartup?.version))
+      configEpoch = createConfigEpochResolver(
+        superserveEpochs,
+        generationKey,
+        sandboxAdvisoryLock,
+        ss.configGeneration,
+      );
     return createSuperserveSandbox(workspace, {
-      configEpoch:
-        ss.configGeneration ??
-        (pgArtifactMap ? createConfigEpochResolver(superserveEpochs, generationKey, sandboxAdvisoryLock) : 0),
+      configEpoch,
       client: createSdkSuperserveClient({
         apiKey: ss.apiKey,
         ...(ss.baseUrl ? { baseUrl: ss.baseUrl } : {}),

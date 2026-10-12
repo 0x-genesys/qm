@@ -92,6 +92,7 @@ export function superserveGenerationKey(
       JSON.stringify([
         config.buildSha ?? "",
         config.sandboxStartup?.version ?? null,
+        ss.configGeneration ?? null,
         ss.template,
         ss.namePrefix ?? "",
         ss.homeDir ?? "",
@@ -110,13 +111,15 @@ export function createConfigEpochResolver(
   store: DurableMap<StoredConfigEpoch>,
   generationKey: string,
   lock: AdvisoryLock = createNoopAdvisoryLock(),
+  minimumGeneration = 0,
 ): () => Promise<number> {
   let pending: Promise<number> | undefined;
   const claim = (): Promise<number> =>
     lock.withLock(CONFIG_EPOCH_LOCK, async () => {
       const stored = await store.get(generationKey);
       if (stored) return stored.generation;
-      const generation = (await store.entries()).reduce((high, [, seen]) => Math.max(high, seen.generation), 0) + 1;
+      const generation =
+        (await store.entries()).reduce((high, [, seen]) => Math.max(high, seen.generation), minimumGeneration) + 1;
       await store.put(generationKey, { generation });
       return (await store.get(generationKey))?.generation ?? generation;
     });
