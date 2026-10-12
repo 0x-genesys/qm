@@ -134,14 +134,17 @@ export function modalEgressAllowlist(
   );
 }
 
+export function modalSnapshotTtlMs(snapshotRetentionMs = 30 * 24 * 3600_000): number {
+  if (!Number.isFinite(snapshotRetentionMs) || snapshotRetentionMs <= 0)
+    throw new Error("Modal snapshot retention must be a positive finite duration");
+  return wholeSeconds(snapshotRetentionMs);
+}
+
 export function createSdkModalClient(opts: SdkModalClientOptions): ModalClient {
   const sandboxTimeoutMs = wholeSeconds(Math.min(opts.sandboxTimeoutMs ?? MAX_LIFETIME_MS, MAX_LIFETIME_MS));
   const idleTimeoutMs = wholeSeconds(Math.min(opts.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS, sandboxTimeoutMs));
   const maxCommandMs = opts.maxCommandMs ?? DEFAULT_MAX_COMMAND_MS;
-  const snapshotRetentionMs = opts.snapshotRetentionMs ?? 30 * 24 * 3600_000;
-  if (!Number.isFinite(snapshotRetentionMs) || snapshotRetentionMs <= 0)
-    throw new Error("Modal snapshot retention must be a positive finite duration");
-  const snapshotTtlMs = wholeSeconds(snapshotRetentionMs);
+  const snapshotTtlMs = modalSnapshotTtlMs(opts.snapshotRetentionMs);
   const network = opts.egressProxyUrl ? modalEgressAllowlist(opts.egressProxyUrl) : {};
   type ModalSdk = typeof import("modal");
   type SdkClient = InstanceType<ModalSdk["ModalClient"]>;

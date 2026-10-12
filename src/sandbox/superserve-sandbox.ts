@@ -1,3 +1,4 @@
+import type { Config } from "../config.ts";
 import { cleanupFailedProvision } from "./sandbox.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
@@ -81,6 +82,29 @@ export interface StoredConfigEpoch {
 }
 
 const CONFIG_EPOCH_LOCK = "superserve-config-epoch";
+
+export function superserveGenerationKey(
+  config: Pick<Config, "buildSha" | "sandboxStartup" | "superserveSandbox" | "backgroundJobTtlMaxMs">,
+): string {
+  const ss = config.superserveSandbox;
+  return createHash("sha256")
+    .update(
+      JSON.stringify([
+        config.buildSha ?? "",
+        config.sandboxStartup?.version ?? null,
+        ss.template,
+        ss.namePrefix ?? "",
+        ss.homeDir ?? "",
+        ss.idlePauseSec ?? null,
+        ss.retentionSec ?? null,
+        Math.ceil(config.backgroundJobTtlMaxMs / 1000),
+        [...(ss.egressAllow ?? [])].sort(),
+        [...(ss.egressDeny ?? [])].sort(),
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 32);
+}
 
 export function createConfigEpochResolver(
   store: DurableMap<StoredConfigEpoch>,

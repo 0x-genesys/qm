@@ -15,8 +15,8 @@ export interface StoredSandboxConfiguration {
 
 export class SandboxConfigurationError extends Error {
   status: number;
-  constructor(message: string, status = 400) {
-    super(message);
+  constructor(message: string, status = 400, options?: ErrorOptions) {
+    super(message, options);
     this.status = status;
   }
 }
@@ -34,11 +34,6 @@ function validateValue(name: string, value: unknown): asserts value is string {
     throw new SandboxConfigurationError(`${name} requires a string of at most 16384 characters without NUL`);
   if (field.type === "number" && value !== "" && (!Number.isFinite(Number(value)) || Number(value) < 0))
     throw new SandboxConfigurationError(`${name} requires a nonnegative finite number`);
-  if (
-    field.type === "boolean" &&
-    !["", "true", "false", "1", "0", "yes", "no", "on", "off"].includes(value.toLowerCase())
-  )
-    throw new SandboxConfigurationError(`${name} requires a boolean string`);
   if (!field.secret && name.endsWith("_URL") && value) {
     try {
       parseProviderBaseUrl(name, value);
@@ -168,13 +163,9 @@ export function createSandboxConfiguration(input: { backing: DurableMap<StoredSa
             const overrides = { ...previous, ...set } as Record<string, string>;
             for (const name of reset) delete overrides[name];
             try {
-              try {
-                loadSandboxConfig({ ...startup.environment, ...overrides });
-              } catch (error) {
-                throw new SandboxConfigurationError(errMessage(error));
-              }
+              loadSandboxConfig({ ...startup.environment, ...overrides });
             } catch (error) {
-              throw new SandboxConfigurationError(errMessage(error));
+              throw new SandboxConfigurationError(errMessage(error), 400, { cause: error });
             }
             if (saved && sameOverrides(previous, overrides)) return saved;
             return {

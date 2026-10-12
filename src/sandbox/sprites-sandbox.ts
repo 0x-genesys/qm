@@ -1,3 +1,4 @@
+import { spritesEgressHosts } from "./sprites-egress.ts";
 import { randomUUID } from "node:crypto";
 import { setTimeout as wait } from "node:timers/promises";
 import type { Readable } from "node:stream";
@@ -303,20 +304,7 @@ export function createSpritesSandbox(workspace: WorkspaceStore, opts: SpritesSan
   }
 
   const norm = (domain?: string): string => (domain ?? "").toLowerCase().replace(/\.$/, "");
-  const egressProxyHosts = opts.egressProxyUrl
-    ? [
-        ...new Set(
-          [opts.egressProxyUrl, ...(opts.egressProxyAdditionalUrls ?? [])].map((value) => {
-            const url = new URL(value);
-            if (!["https:", "http:"].includes(url.protocol) || !url.hostname || url.username || url.password)
-              throw new Error("sprites egress proxy URLs must be HTTP(S) URLs without credentials");
-            return norm(url.hostname);
-          }),
-        ),
-      ].sort()
-    : [];
-  if (!opts.egressProxyUrl && opts.egressProxyAdditionalUrls?.length)
-    throw new Error("sprites additional egress proxy URLs require a primary proxy URL");
+  const egressProxyHosts = spritesEgressHosts(opts.egressProxyUrl, opts.egressProxyAdditionalUrls);
 
   async function ensureEgressPolicy(name: string): Promise<void> {
     const rules = egressProxyHosts.map((domain) => ({ domain, action: "allow" as const }));

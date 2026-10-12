@@ -85,6 +85,39 @@ test("configuration edits encrypt secrets, preserve unrelated overrides, reject 
   await assert.rejects(ephemeral.write({ expectedVersion: null, set: { MODAL_CPUS: "4" } }, "admin"), { status: 503 });
 });
 
+test("saved configuration uses provider startup validation before committing", async () => {
+  const backing = createMemoryMap<StoredSandboxConfiguration>();
+  const store = createSandboxConfiguration({
+    backing,
+    config: loadConfig({
+      DATABASE_URL: "postgresql://localhost/unused",
+      CONNECTOR_SECRET_KEY: key,
+      SANDBOX_BACKEND: "local",
+      E2B_API_KEY: "test-e2b",
+      MODAL_TOKEN_ID: "test-id",
+      MODAL_TOKEN_SECRET: "test-secret",
+      SPRITES_TOKEN: "test-sprites",
+    }),
+  });
+  for (const set of [
+    { SANDBOX_BACKEND: "aws" },
+    { E2B_MAX_LIFETIME_SEC: "30" },
+    { E2B_EGRESS_PROXY_URL: "https://proxy.example:8443" },
+    { MODAL_SNAPSHOT_RETENTION_SEC: "0" },
+    { MODAL_EGRESS_PROXY_URL: "http://proxy.example" },
+    { SPRITES_EGRESS_PROXY_ADDITIONAL_URLS: "https://proxy.example" },
+  ]) {
+    await assert.rejects(store.write({ expectedVersion: null, set }, "admin"), { status: 400 });
+    assert.equal(await backing.get("org:default-org"), null);
+  }
+  await store.write({ expectedVersion: null, set: { EAGER_PROVISION: " true " } }, "admin");
+  const first = await store.read();
+  assert.equal((first.nextStartup as { eagerProvisionEnabled: boolean }).eagerProvisionEnabled, true);
+  await store.write({ expectedVersion: first.version, set: { EAGER_PROVISION: "none" } }, "admin");
+  const second = await store.read();
+  assert.equal((second.nextStartup as { eagerProvisionEnabled: boolean }).eagerProvisionEnabled, false);
+});
+
 test(
   "PostgreSQL settings survive startup and concurrent edits cannot overwrite one another",
   { skip: !process.env.DATABASE_URL },

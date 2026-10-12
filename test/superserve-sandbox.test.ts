@@ -1,3 +1,4 @@
+import { loadConfig } from "../src/config.ts";
 import { test, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -5,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   createConfigEpochResolver,
+  superserveGenerationKey,
   createSuperserveSandbox,
   SUPERSERVE_METADATA,
   type StoredConfigEpoch,
@@ -607,6 +609,34 @@ test("the config epoch is claimed once per deployment generation, so a restarted
   await restarted.teardown(await restarted.provision(layers));
   assert.equal(fake.current(scopeName())?.timeoutSeconds, 1_800, "the restarted older release stays passive");
   assert.equal(fake.current(scopeName())?.metadata[SUPERSERVE_METADATA.epoch], String(newRelease));
+});
+
+test("resetting saved lifecycle settings claims a new generation and updates an existing computer", async () => {
+  const epochs: DurableMap<StoredConfigEpoch> = createMemoryMap();
+  const env = {
+    SANDBOX_BACKEND: "superserve",
+    SUPERSERVE_API_KEY: "test-key",
+    SUPERSERVE_TEMPLATE: "test-template",
+    SUPERSERVE_IDLE_PAUSE_SEC: "600",
+  };
+  const states = [
+    loadConfig(env),
+    loadConfig(env, { SUPERSERVE_IDLE_PAUSE_SEC: "1800" }, "saved-change"),
+    loadConfig(env, {}, "saved-reset"),
+  ];
+  let previous = 0;
+  for (const config of states) {
+    const resolve = createConfigEpochResolver(epochs, superserveGenerationKey(config));
+    const epoch = await resolve();
+    assert.ok(epoch > previous);
+    previous = epoch;
+    const current = make({ configEpoch: resolve, idlePauseSec: config.superserveSandbox.idlePauseSec });
+    await current.teardown(await current.provision(layers));
+    assert.equal(fake.current(scopeName())?.timeoutSeconds, config.superserveSandbox.idlePauseSec);
+    assert.equal(fake.current(scopeName())?.metadata[SUPERSERVE_METADATA.epoch], String(epoch));
+    assert.equal(await createConfigEpochResolver(epochs, superserveGenerationKey(config))(), epoch);
+  }
+  assert.equal(fake.createdCount(scopeName()), 1);
 });
 
 test("a command that finds its sandbox gone leaves a replacement provisioned meanwhile in place", async () => {

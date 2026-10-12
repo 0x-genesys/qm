@@ -1,3 +1,6 @@
+import { e2bEgressNetwork, e2bSandboxTtlMs } from "./sandbox/e2b-client.ts";
+import { modalEgressAllowlist, modalSnapshotTtlMs } from "./sandbox/modal-client.ts";
+import { spritesEgressHosts } from "./sandbox/sprites-egress.ts";
 import { sandboxEnvironment, type SandboxStartup } from "./sandbox/config-fields.ts";
 import type { ExternalSlackPolicies } from "./resolution/external-slack.ts";
 import { isStrongSigningSecret } from "./auth/source-auth.ts";
@@ -1292,6 +1295,20 @@ export function loadSandboxConfig(env: NodeJS.ProcessEnv, warn: (message: string
     e2bSandbox: e2bSandboxEnv(env),
     modalSandbox: modalSandboxEnv(env),
   };
+  if (sandboxBackend === "aws" && !parsed.awsSandbox.s3Bucket)
+    throw new Error("SANDBOX_BACKEND=aws requires AWS_SANDBOX_S3_BUCKET");
+  if (parsed.e2bSandbox.apiKey) {
+    const e2b = parsed.e2bSandbox;
+    e2bSandboxTtlMs({ ...(e2b.maxLifetimeSec ? { maxLifetimeMs: e2b.maxLifetimeSec * 1000 } : {}) });
+    if (e2b.egressProxyUrl) e2bEgressNetwork(e2b.egressProxyUrl);
+  }
+  if (parsed.modalSandbox.tokenId && parsed.modalSandbox.tokenSecret) {
+    const modal = parsed.modalSandbox;
+    modalSnapshotTtlMs(modal.snapshotRetentionSec === undefined ? undefined : modal.snapshotRetentionSec * 1000);
+    if (modal.egressProxyUrl) modalEgressAllowlist(modal.egressProxyUrl);
+  }
+  if (parsed.spritesSandbox.token)
+    spritesEgressHosts(parsed.spritesSandbox.egressProxyUrl, parsed.spritesSandbox.egressProxyAdditionalUrls);
   if (parsed.execTimeoutDefaultMs > parsed.execTimeoutMaxMs)
     throw new Error("EXEC_TIMEOUT_DEFAULT_SEC must not exceed EXEC_TIMEOUT_MAX_SEC");
   if (parsed.backgroundJobTtlMs > parsed.backgroundJobTtlMaxMs)

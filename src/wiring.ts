@@ -58,7 +58,7 @@ import type { SessionShare, SessionShareStore } from "./sessions/session-share.t
 import { createModelOverlayStore, type ModelOverlayStore } from "./model/model-overlay-store.ts";
 import { mkdirSync } from "node:fs";
 import type { StagedEnvelope } from "./slack/envelope-staging.ts";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import {
   baseModelProviders,
@@ -230,6 +230,7 @@ import { createSmolmachinesSandbox, type StoredSmolmachinesSandbox } from "./san
 import { createAgent37Sandbox } from "./sandbox/agent37-sandbox.ts";
 import {
   createConfigEpochResolver,
+  superserveGenerationKey,
   createSuperserveSandbox,
   type StoredConfigEpoch,
   type StoredSuperserveSandbox,
@@ -1023,22 +1024,7 @@ export function buildApp(
     if (!ss.template)
       throw new Error("SANDBOX_BACKEND=superserve requires SUPERSERVE_TEMPLATE (a ready qm-agent-<release> template)");
     const keepWarmSec = Math.ceil(config.backgroundJobTtlMaxMs / 1000);
-    const generationKey = createHash("sha256")
-      .update(
-        JSON.stringify([
-          config.buildSha ?? "",
-          ss.template,
-          ss.namePrefix ?? "",
-          ss.homeDir ?? "",
-          ss.idlePauseSec ?? null,
-          ss.retentionSec ?? null,
-          keepWarmSec,
-          [...(ss.egressAllow ?? [])].sort(),
-          [...(ss.egressDeny ?? [])].sort(),
-        ]),
-      )
-      .digest("hex")
-      .slice(0, 32);
+    const generationKey = superserveGenerationKey(config);
     return createSuperserveSandbox(workspace, {
       configEpoch:
         ss.configGeneration ??
