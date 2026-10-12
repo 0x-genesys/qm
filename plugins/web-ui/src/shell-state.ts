@@ -11,6 +11,7 @@ export interface Me {
   suggestedActivitiesGeneration?: boolean;
   individualModelAuth?: boolean;
   modelAuthConnected?: boolean;
+  person?: string;
   mode?: AuthMode;
   user: string;
   org: string;

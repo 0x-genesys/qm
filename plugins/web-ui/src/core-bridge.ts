@@ -601,11 +601,16 @@ export function continuableMessages(
 
 export const SUBAGENT_THREAD_PREFIX = "agent:main:subagent:";
 
-export function isContinuable(s: Pick<CoreSession, "threadRef" | "scopeId">, user: string): boolean {
-  if (s.threadRef.startsWith(SUBAGENT_THREAD_PREFIX))
-    return s.scopeId === `personal:${user}` || s.scopeId.startsWith("channel:") || s.scopeId.startsWith("group:");
+export function isContinuable(
+  s: Pick<CoreSession, "threadRef" | "scopeId">,
+  me: { user: string; person?: string } | null | undefined,
+): boolean {
+  const user = me?.user ?? "";
+  const ownScope = s.scopeId === `personal:${me?.person ?? user}`;
+  const shared = s.scopeId.startsWith("channel:") || s.scopeId.startsWith("group:");
+  if (s.threadRef.startsWith(SUBAGENT_THREAD_PREFIX)) return ownScope || shared;
   if (!s.threadRef.startsWith("web:")) return false;
-  return s.threadRef.startsWith(`web:${user}:`) || s.scopeId.startsWith("channel:") || s.scopeId.startsWith("group:");
+  return ownScope || s.threadRef.startsWith(`web:${user}:`) || shared;
 }
 
 function zeroUsage(): Usage {

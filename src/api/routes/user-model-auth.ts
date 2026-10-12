@@ -1,6 +1,7 @@
 import type { ModelProvider } from "../../model/pi-models.ts";
 import { completeClaudeLogin, startClaudeLogin } from "../../model/subscription-oauth.ts";
 import { createCodexDeviceLogin } from "../../model/codex-device-login.ts";
+import { canonicalPerson } from "../../directory/person.ts";
 import { errMessage } from "../../util/errors.ts";
 import { sendJson } from "../http.ts";
 import { validateProviderApiKey } from "./admin/model-providers.ts";
@@ -28,7 +29,13 @@ async function getStatus(ctx: ApiCtx): Promise<void> {
   const connections = (await ctx.deps.userModelCredentials?.connections(principal)) ?? [];
   const individualModelAuth = (await ctx.deps.config?.getIndividualModelAuthDurable(principal)) ?? false;
   const account = (await ctx.deps.config?.getModelAccountDurable(principal)) ?? "company";
-  return sendJson(ctx.res, 200, { individualModelAuth, required, account, connections });
+  return sendJson(ctx.res, 200, {
+    individualModelAuth,
+    required,
+    account,
+    connections,
+    person: canonicalPerson(principal),
+  });
 }
 
 async function setAccount(ctx: ApiCtx): Promise<void> {

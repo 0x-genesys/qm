@@ -1391,6 +1391,7 @@ const apiRoutes: readonly WebRoute[] = [
         individualModelAuth?: boolean;
         account?: string;
         connections?: { provider: string }[];
+        person?: string;
       };
       const permissions = allPermissions.filter((permission) => permission !== "loops" && permission !== "inbox");
       if (await hasInboxLoopPreview(user)) {
@@ -1399,6 +1400,7 @@ const apiRoutes: readonly WebRoute[] = [
       }
       return json(res, 200, {
         user,
+        person: parsed.person ?? user,
         org: ORG,
         companyName: companyBranding.orgName?.trim() || null,
         ...(analyticsConfig && !resolveIdentity(req)?.impersonator ? { analytics: analyticsConfig } : {}),
