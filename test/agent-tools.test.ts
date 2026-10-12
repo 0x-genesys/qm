@@ -4286,6 +4286,38 @@ test("background list labels jobs by purpose and retains commands and legacy fal
   assert.match(result, /old-job[^\n]*bg: npm test/);
 });
 
+test("sessions search forwards a bounded query and preserves source references and failures", async () => {
+  const tc = fakeToolContext();
+  const seen: unknown[] = [];
+  tc.sessionSyscalls = {
+    open: async () => ({ ok: false, message: "unused" }),
+    write: async () => ({ ok: false, message: "unused" }),
+    read: async () => ({ ok: false, message: "unused" }),
+    search: async (input) => {
+      seen.push(input);
+      return {
+        hits: [
+          {
+            id: "source:7",
+            type: "conversation",
+            backend: "conversations",
+            snippet: "memo",
+            metadata: { sessionId: "source", seq: 7 },
+          },
+        ],
+        failedBackends: ["conversations"],
+      };
+    },
+  };
+  const tool = createAgentTools({ current: tc }, { surfaceName: "web" }).find((t) => t.name === "sessions")!;
+  assert.match(textOut(await call(tool, { action: "search" })), /requires `query`/);
+  assert.deepEqual(seen, []);
+  const output = JSON.parse(textOut(await call(tool, { action: "search", query: "memo", limit: 3 })));
+  assert.deepEqual(seen, [{ query: "memo", limit: 3 }]);
+  assert.deepEqual(output.hits[0].metadata, { sessionId: "source", seq: 7 });
+  assert.deepEqual(output.failedBackends, ["conversations"]);
+});
+
 test("background read approval cannot authorize process input or termination", async () => {
   let mutations = 0;
   const ref: ToolContextRef = {
