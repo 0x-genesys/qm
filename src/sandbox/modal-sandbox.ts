@@ -556,7 +556,10 @@ export function createModalSandbox(workspace: WorkspaceStore, opts: ModalSandbox
         await client.terminate(id);
       } catch (error) {
         if (error instanceof ModalSandboxGoneError) continue;
-        if (stored) await store.putIfAbsent(scope, stored);
+        if (stored)
+          await store
+            .putIfAbsent(scope, stored)
+            .catch((e: unknown) => reportError("sandbox_teardown", "destroy_restore_failed", errMessage(e), scope));
         throw error;
       }
     }
