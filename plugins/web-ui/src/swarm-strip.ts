@@ -124,6 +124,7 @@ export function createSwarmStrip(redraw: () => void) {
     sessionId: "",
     view: null as SwarmView | null,
     board: [] as SwarmBoardMessage[],
+    boardBusy: false,
     open: false,
     busy: "",
     error: "",
@@ -140,16 +141,23 @@ export function createSwarmStrip(redraw: () => void) {
     }, REFRESH_MS);
   };
   const loadBoard = async (sessionId: string): Promise<void> => {
-    for (let page = 0; page < BOARD_PAGES; page++) {
-      const after = ui.board.at(-1)?.seq ?? 0;
-      const read = await api<{ messages?: SwarmBoardMessage[] }>(
-        `/api/sessions/${encodeURIComponent(sessionId)}/swarm?read=1&after=${after}`,
-      ).catch(() => null);
-      if (ui.sessionId !== sessionId) return;
-      const fresh = (read?.messages ?? []).filter((message) => message.seq > after);
-      if (!fresh.length) return;
-      ui.board = [...ui.board, ...fresh];
-      redraw();
+    // A concurrent pass would still be holding the cursor this one starts from, and append the same page again.
+    if (ui.boardBusy) return;
+    ui.boardBusy = true;
+    try {
+      for (let page = 0; page < BOARD_PAGES; page++) {
+        const after = ui.board.at(-1)?.seq ?? 0;
+        const read = await api<{ messages?: SwarmBoardMessage[] }>(
+          `/api/sessions/${encodeURIComponent(sessionId)}/swarm?read=1&after=${after}`,
+        ).catch(() => null);
+        if (ui.sessionId !== sessionId) return;
+        const fresh = (read?.messages ?? []).filter((message) => message.seq > after);
+        if (!fresh.length) return;
+        ui.board = [...ui.board, ...fresh];
+        redraw();
+      }
+    } finally {
+      ui.boardBusy = false;
     }
   };
   const load = async (sessionId: string): Promise<void> => {

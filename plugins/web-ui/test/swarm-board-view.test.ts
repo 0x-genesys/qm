@@ -211,3 +211,39 @@ test("a collapsed panel reads the board anyway, polling for messages nobody open
     [],
   );
 });
+
+test("two overlapping board loads append the same page twice", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const view = inspected();
+  const board = [message({ id: "m-1", seq: 1, text: "counted once" })];
+  let release = (): void => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let reads = 0;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const query = new URL(String(input), "http://localhost").searchParams;
+    if (query.get("read") !== "1") return jsonResponse(view);
+    if (reads++ === 0) await gate;
+    const after = Number(query.get("after") ?? 0);
+    return jsonResponse({ messages: board.filter((entry) => entry.seq > after) });
+  }) as typeof fetch;
+
+  const host = document.createElement("div");
+  const holder = { draw: (): void => {} };
+  const panel = createSwarmStrip(() => holder.draw());
+  holder.draw = (): void => void render(panel.strip(SESSION), host);
+  holder.draw();
+  await flush();
+  holder.draw();
+  const click = (): void => host.querySelector<HTMLButtonElement>(".bg-activity-strip")!.click();
+  click(); // opens, so the first board pass starts and parks on the gate
+  await flush();
+  click(); // closes
+  click(); // reopens while the first pass is still in flight
+  await flush();
+  release();
+  await flush();
+  holder.draw();
+  assert.equal((host.textContent ?? "").match(/counted once/g)?.length, 1);
+});
