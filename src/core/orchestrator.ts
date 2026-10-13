@@ -3728,6 +3728,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ...(input.clientTools?.length ? { clientTools: input.clientTools } : {}),
             ...(input.surfaceTools && surfaceToolDeps ? { surfaceTools: true } : {}),
             ...(isPollFire ? { pollFire: true } : {}),
+            ...(input.addressed ? { addressed: true } : {}),
             ...(effectiveTurnWallClockMs !== undefined
               ? {
                   turnWallClockMs:
@@ -3966,6 +3967,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           };
           addUsage();
           while (segment.runtimeHandoff && !segment.stopped && !turnAbort.signal.aborted) {
+            if ((segment.modelCalls ?? 0) > 1) runtimeHandoffs = 0;
             if (++runtimeHandoffs > 8) throw new NonRetryableTurnError("Too many runtime changes in one task");
             if (effectiveTurnWallClockMs && Date.now() - turnStart >= effectiveTurnWallClockMs)
               throw new NonRetryableTurnError("The task reached its wall-clock limit during runtime handoff");
@@ -4078,7 +4080,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           !input.cancel?.aborted &&
           spine.surfaceOutboundCount === 0 &&
           !result.silent &&
-          !result.stopped
+          !result.stopped &&
+          !result.pendingApprovals?.length
         ) {
           await latchCoverage();
           // The model already wrote a reply as plain assistant text — deliver that text
@@ -4150,7 +4153,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                   })
               : undefined;
             result = await runHarnessTurn(
-              "[system] You were addressed directly. Reply with the `slack` tool's `post` action, or decline explicitly with finish_silently — ending the turn without either is not allowed here.",
+              "[system] You were addressed directly. Reply with the `slack` tool's `post` action — ending the turn without a reply is not allowed here.",
               nudgeTape?.mode !== "serve" && inbound.images.length ? { images: inbound.images } : {},
               { history: nudgeHistory, ...(nudgeTape ? { tape: nudgeTape } : {}) },
             );
