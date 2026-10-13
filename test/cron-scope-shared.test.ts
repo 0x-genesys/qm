@@ -67,6 +67,19 @@ describe("runTrigger: scopeShared unions the owner's keychain into the scope run
     assert.equal(seen[0]!.ownerKeychainUnion, undefined);
   });
 
+  it("an owner-mode channel cron also unions the owner's keychain", async () => {
+    const { deps, seen } = captureDeps();
+    await runTrigger(deps, {
+      owner: "U-carol",
+      ownerScopeId: scopeId("channel", "C-eng"),
+      input: "x",
+      fireKey: "oc1",
+      surface: "cron",
+      runAs: "owner",
+    });
+    assert.equal(seen[0]!.ownerKeychainUnion, true);
+  });
+
   it("an owner-mode task cannot read a managed group after leaving its current roster", async () => {
     const { deps, seen } = captureDeps();
     deps.currentScopeMembers = async () => [members[1]!];
