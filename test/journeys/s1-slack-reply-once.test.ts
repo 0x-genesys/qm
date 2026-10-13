@@ -165,6 +165,29 @@ test("S1: a Slack mention or DM gets exactly one reply", journeyTestOptions(180_
       const reply = await onlyReply(h, CHANNEL, since, m);
       assert.equal(reply.thread_ts, event.ts);
     });
+
+    await t.test("a mention answered with only a reaction gets that reaction on the message", async () => {
+      h.app.gateway.respond = (req) => {
+        const last = req.messages.at(-1);
+        const answeringUser = last?.role === "user" && !JSON.stringify(last.content).includes('"tool_result"');
+        return answeringUser ? { text: "[[react: eyes]]" } : answer(req);
+      };
+      const m = marker();
+      const since = h.slack.posts.length;
+      const calls = h.slack.calls.length;
+      const event = mention(m);
+      await h.deliver(event);
+      await waitFor(
+        async () =>
+          h.slack.calls
+            .slice(calls)
+            .some((c) => c.method === "reactions.add" && c.args.timestamp === event.ts && c.args.name === "eyes"),
+        `an eyes reaction on ${m}`,
+        90_000,
+      );
+      await sleep(3_000);
+      assert.deepEqual(postsFor(h, CHANNEL, since), []);
+    });
   } finally {
     await h.stop();
   }

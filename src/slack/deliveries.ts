@@ -31,7 +31,7 @@ import {
 import type { SlackCoreClient } from "../api/slack-core-client.ts";
 import type { Delivery } from "../types.ts";
 import type { TurnFlow } from "./turn-flow.ts";
-import { cleanAgentReplyForSlack, stripSlackDirectives } from "./messaging.ts";
+import { applyAndLogReactions, cleanAgentReplyForSlack, stripSlackDirectives } from "./messaging.ts";
 import { cronIdOf } from "../sessions/session-store.ts";
 import { slackErrorCode } from "./payloads.ts";
 
@@ -290,7 +290,11 @@ export function createDeliveryPoller(deps: {
                   editRef = placeholder.ts;
                 }
               }
-              let text = toSlackMrkdwn(runId ? cleanAgentReplyForSlack(d.text).text : stripSlackDirectives(d.text));
+              const agentReply = runId !== undefined || d.provenance?.trigger === "conversation";
+              const cleaned = agentReply ? cleanAgentReplyForSlack(d.text) : undefined;
+              let text = toSlackMrkdwn(cleaned ? cleaned.text : stripSlackDirectives(d.text));
+              if (cleaned?.reactions.length && threadTs)
+                await applyAndLogReactions(client, channel, threadTs, cleaned.reactions);
               const replayAttachments = async (root?: string): Promise<void> => {
                 if (!d.attachments?.length) return;
                 try {
