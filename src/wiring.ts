@@ -279,7 +279,7 @@ import {
   type FeatureFlagRecord,
   type FeatureFlagStore,
 } from "./feature-flags.ts";
-import { makeRefresh, type OAuthClientResolver, type OAuthState } from "./connectors/oauth.ts";
+import { makeRefresh, withPublicOAuthClients, type OAuthClientResolver, type OAuthState } from "./connectors/oauth.ts";
 import {
   createConnectorClientResolver,
   deriveConnectorKey,
@@ -1209,11 +1209,13 @@ export function buildApp(
           createAwsSecretsManagerSource({ prefix: config.secretsPrefix }),
         )
       : createEnvSecretSource();
-  const resolveClient: OAuthClientResolver = createConnectorClientResolver({
-    reader: configStore,
-    orgScopeId: (o) => scopeId("org", o),
-    secrets: secretSource,
-  });
+  const resolveClient: OAuthClientResolver = withPublicOAuthClients(
+    createConnectorClientResolver({
+      reader: configStore,
+      orgScopeId: (o) => scopeId("org", o),
+      secrets: secretSource,
+    }),
+  );
   const keychainKeyMaterial = config.connectorSecretKey;
   const legacyCredentialKey =
     keychainKeyMaterial && config.signingSecret && config.signingSecret !== keychainKeyMaterial
@@ -1277,6 +1279,12 @@ export function buildApp(
     servers: mcpServers,
     audit: auditLog,
     ...(keychain ? { userTokens: keychain } : {}),
+    ...(config.publicWebUrl
+      ? {
+          signInUrl: (id: string) =>
+            `${config.publicWebUrl!.replace(/\/$/, "")}/connect/${encodeURIComponent(id)}/self-connect`,
+        }
+      : {}),
   });
   const mcpTools = () => mcpToolService.toolDefs();
   const browserSessionStore: BrowserSessionStore | undefined = keychainKeyMaterial
