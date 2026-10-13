@@ -246,7 +246,11 @@ export function createSpritesSandbox(workspace: WorkspaceStore, opts: SpritesSan
     const header = (nl < 0 ? r.stdout : r.stdout.subarray(0, nl)).toString("utf8").trim().split(/\s+/);
     if (r.rc !== 0 || nl < 0 || header.length < 3) {
       const detail = r.stderr.toString("utf8").trim() || r.stdout.toString("utf8").slice(0, 120);
-      throw new Error(`sprites exec ${name}: bad envelope (rc=${r.rc}): ${detail}`);
+      const machine = await spriteExists(name).then(
+        (exists) => (exists ? "" : "the sprite no longer exists; "),
+        (e: unknown) => `sprite lookup failed: ${errMessage(e)}; `,
+      );
+      throw new Error(`sprites exec ${name}: ${machine}bad envelope (rc=${r.rc}): ${detail}`);
     }
     const pressure = header.length === 6 ? parsePressure(header[3]!, header[4]!, header[5]!) : undefined;
     if (pressure) notePressure(name, pressure);
