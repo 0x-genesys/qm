@@ -302,3 +302,13 @@ test("webhook secrets are redacted by the route, not the app layer", async () =>
   const out = await app.listScopeResources(U1, channelScope);
   assert.equal(out!.webhooks[0]!.verification.secret, "topsecret");
 });
+
+test("team members belong to their team scope", async () => {
+  const deps = makeDeps();
+  const teams = { isMember: async (principalId: string, teamId: string) => principalId === U1 && teamId === "labs" };
+  const app = createApp({ ...deps, teams } as unknown as AppDeps);
+
+  assert.equal(await app.belongsToScope(U1, scopeId("team", "labs")), true);
+  assert.equal(await app.belongsToScope("U2", scopeId("team", "labs")), false);
+  assert.equal(await app.belongsToScope(U1, scopeId("team", "other")), false);
+});

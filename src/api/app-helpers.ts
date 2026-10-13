@@ -415,6 +415,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
     ...(deps.projects ? { managedGroups: deps.projects } : {}),
     ...(deps.directory ? { directory: deps.directory } : {}),
     ...(deps.identity ? { identity: deps.identity } : {}),
+    ...(deps.teams ? { teams: deps.teams } : {}),
   };
 
   const principalCanReadScope = createCanReadScope(scopeMembershipDeps);
