@@ -307,7 +307,7 @@ export function stageFlyOperatorSecrets(
   const supplied = new Map<string, Map<string, string>>();
   for (const secret of validatedSecrets(config).filter((secret) => secret.managedBy === "operator")) {
     const value = values.get(secret.name);
-    if (value === undefined || (!secret.required && value === "")) continue;
+    if (value === undefined || value.trim() === "") continue;
     if (isInvalidSecret(secret.name, value))
       throw new CliError(`supplied secret ${secret.name} is missing, a placeholder, or too short`);
     for (const [workload, names] of secretDestinations(secret, plugins)) {

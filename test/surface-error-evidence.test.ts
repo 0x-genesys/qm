@@ -10,7 +10,7 @@ for (const operation of ["post", "readFile", "setStandingOrder"] as const) {
   test(`surface ${operation} retains redacted error evidence`, async (t) => {
     const errors = withErrorReporting(createErrorLog());
     const error = Object.assign(
-      new TypeError("upstream failed xoxb-surface-secret-12345", { cause: new Error("socket closed") }),
+      new TypeError("upstream failed sk-surface-secret-12345", { cause: new Error("socket closed") }),
       {
         code: "ECONNRESET",
         status: 503,
