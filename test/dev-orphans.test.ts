@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { sweepSlackTokenOrphans } from "../../scripts/dev/lib/orphans.ts";
+import { sweepSlackTokenOrphans } from "../scripts/dev/lib/orphans.ts";
 
 test(
   "the orphan sweep finds a Linux Slack process whose token was loaded from its working directory",
