@@ -103,7 +103,6 @@ async function openPanel(
   board: SwarmMessage[],
   seen: string[] = [],
   pageSize?: number,
-  open = true,
 ): Promise<HTMLElement> {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   stub(view, board, seen, pageSize);
@@ -114,7 +113,7 @@ async function openPanel(
   holder.draw();
   await flush();
   holder.draw();
-  if (open) host.querySelector<HTMLButtonElement>(".bg-activity-strip")!.click();
+  host.querySelector<HTMLButtonElement>(".bg-activity-strip")!.click();
   await flush();
   holder.draw();
   return host;
@@ -451,4 +450,30 @@ test("one session's board is left on screen under the next session's panel", asy
   const text = host.textContent ?? "";
   assert.doesNotMatch(text, /only the first swarm said this/);
   assert.match(text, /Board · 0 messages/);
+});
+
+test("the open board never reads again, so a running swarm's later messages never arrive", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  // jsdom reports a document as hidden, and the refresh only runs on a visible tab.
+  Object.defineProperty(document, "hidden", { configurable: true, value: false });
+  t.after(() => Object.defineProperty(document, "hidden", { configurable: true, value: true }));
+  const board = [message({ id: "m-1", seq: 1, text: "the first finding" })];
+  stub(inspected(), board);
+  const host = document.createElement("div");
+  const holder = { draw: (): void => {} };
+  const panel = createSwarmStrip(() => holder.draw());
+  holder.draw = (): void => void render(panel.strip(SESSION), host);
+  holder.draw();
+  await flush();
+  holder.draw();
+  host.querySelector<HTMLButtonElement>(".bg-activity-strip")!.click();
+  await flush();
+  holder.draw();
+  assert.match(host.textContent ?? "", /Board · 1 messages/);
+  board.push(message({ id: "m-2", seq: 2, text: "the second finding" }));
+  t.mock.timers.tick(4_000);
+  await flush();
+  holder.draw();
+  assert.match(host.textContent ?? "", /the second finding/);
+  assert.match(host.textContent ?? "", /Board · 2 messages/);
 });

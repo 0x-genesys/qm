@@ -840,11 +840,25 @@ test("the swarm view omits the model the workers run", async () => {
   assert.equal((await service.inspect(caller)).model, "pinned-worker-model");
 });
 
-test("a swarm with no pinned model reports an empty model instead of none at all", async () => {
-  const { service, caller } = await swarmFixture();
+test("the board stops answering the person reviewing it once the work window shuts", async () => {
+  const { service, caller, root, store } = await swarmFixture();
   await service.spawn(caller, { requestId: "one", text: "Work" });
-  const inspected = await service.inspect(caller);
-  assert.equal("model" in inspected, false);
+  await service.sweep();
+  await service.send(caller, { requestId: "finding", audience: "all", text: "what the workers found" });
+  await store.update(root.id, (swarm) => {
+    swarm.expiresAt = Date.now() - 1;
+  });
+  await service.sweep();
+  const reviewer: SwarmCaller = {
+    kind: "human",
+    actorId: caller.kind === "agent" ? caller.claims.actorId : "",
+    sessionId: root.id,
+  };
+  assert.equal((await service.inspect(reviewer)).peers.length, 2);
+  assert.deepEqual(
+    (await service.read(reviewer, {})).map((message) => message.text),
+    ["Work", "what the workers found"],
+  );
 });
 
 test("a broadcast is stored as a plain id list, so it cannot be told from an explicit address", async () => {
