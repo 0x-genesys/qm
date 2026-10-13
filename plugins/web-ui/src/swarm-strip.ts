@@ -141,13 +141,16 @@ export function createSwarmStrip(redraw: () => void) {
         `/api/sessions/${encodeURIComponent(sessionId)}/swarm?read=1&after=${ui.board.at(-1)?.seq ?? 0}`,
       ).catch((error: unknown) => (error instanceof Error ? error : new Error("the request did not complete")));
       if (ui.sessionId !== sessionId) return;
-      const failure = read instanceof Error ? read.message : Array.isArray(read.messages) ? "" : "no messages field";
-      if (failure) {
-        ui.boardNote = `Could not read the board: ${failure}`;
+      if (read instanceof Error) {
+        ui.boardNote = `Could not read the board: ${read.message}`;
+        return redraw();
+      }
+      if (!Array.isArray(read.messages)) {
+        ui.boardNote = "Could not read the board: the reply carried no messages";
         return redraw();
       }
       const after = ui.board.at(-1)?.seq ?? 0;
-      const fresh = (read as { messages: SwarmBoardMessage[] }).messages.filter((message) => message.seq > after);
+      const fresh = read.messages.filter((message) => message.seq > after);
       ui.board = [...ui.board, ...fresh];
       ui.boardNote = ui.board.length ? "" : "No messages yet.";
       redraw();

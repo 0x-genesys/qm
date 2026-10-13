@@ -305,3 +305,25 @@ test("a swarm whose board is genuinely empty says nothing about it", async (t) =
   assert.match(text, /Board · 0 messages/);
   assert.match(text, /No messages yet/);
 });
+
+test("a reply with no messages at all is read as a board with nothing on it", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const view = inspected({ expiresAt: Date.now() - HOUR });
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (new URL(String(input), "http://localhost").searchParams.get("read") !== "1") return jsonResponse(view);
+    return jsonResponse({});
+  }) as typeof fetch;
+  const host = document.createElement("div");
+  const holder = { draw: (): void => {} };
+  const panel = createSwarmStrip(() => holder.draw());
+  holder.draw = (): void => void render(panel.strip(SESSION), host);
+  holder.draw();
+  await flush();
+  holder.draw();
+  host.querySelector<HTMLButtonElement>(".bg-activity-strip")!.click();
+  await flush();
+  holder.draw();
+  const text = host.textContent ?? "";
+  assert.match(text, /Could not read the board: the reply carried no messages/);
+  assert.doesNotMatch(text, /No messages yet/);
+});
