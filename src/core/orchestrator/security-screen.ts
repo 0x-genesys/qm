@@ -67,16 +67,16 @@ export type ChunkedScreener = (input: {
 }) => Promise<ChunkedScreen>;
 
 export function createChunkedScreener(classify: SecurityClassifier): ChunkedScreener {
-  const remembered = new Map<string, ChunkedScreen>();
-  return async function screenChunked({ surface, content, actorId, scopeLabel, context, remember, signal }) {
-    if (content.length > MAX_DOCUMENT_TEXT_CHARS) return { verdict: unscreenedVerdict(), clean: false };
-    const key = remember === undefined ? undefined : hashId([remember, surface, content], 32);
-    const known = key === undefined ? undefined : remembered.get(key);
-    if (known) return known;
+  const remembered = new Map<string, Promise<ChunkedScreen>>();
+  const screen = async (
+    input: Parameters<ChunkedScreener>[0],
+    text: string,
+    truncated: boolean,
+  ): Promise<ChunkedScreen & { complete: boolean }> => {
     const verdicts: Array<SecurityScreenVerdict | undefined> = [];
-    for (const chunk of securityScreenChunks(surface, content)) {
-      signal?.throwIfAborted();
-      const verdict = await classify(chunk, actorId, scopeLabel, undefined, context);
+    for (const chunk of securityScreenChunks(input.surface, text)) {
+      input.signal?.throwIfAborted();
+      const verdict = await classify(chunk, input.actorId, input.scopeLabel, undefined, input.context);
       verdicts.push(verdict);
       if (verdict?.decision === "strict") break;
     }
@@ -84,12 +84,25 @@ export function createChunkedScreener(classify: SecurityClassifier): ChunkedScre
       verdicts.find((value) => value?.decision === "strict") ??
       verdicts.find((value) => !value || value.unscreened) ??
       verdicts[0];
-    const result = { verdict, clean: verdict?.decision === "auto" && !verdict.unscreened };
-    if (key !== undefined && result.clean) {
+    const complete = verdicts.every((value) => value && !value.unscreened);
+    return { verdict, clean: complete && verdict?.decision === "auto" && !truncated, complete };
+  };
+  return async function screenChunked(input) {
+    const text = input.content.slice(0, MAX_DOCUMENT_TEXT_CHARS);
+    const truncated = text.length < input.content.length;
+    const key = input.remember === undefined ? undefined : hashId([input.remember, input.surface, text], 32);
+    const known = key === undefined ? undefined : remembered.get(key);
+    if (known) return known;
+    const pending = screen(input, text, truncated).then(({ complete, ...result }) => {
+      if (key !== undefined && !complete) remembered.delete(key);
+      return result;
+    });
+    if (key !== undefined) {
       if (remembered.size >= REMEMBERED_SCREENS_MAX) remembered.delete(remembered.keys().next().value!);
-      remembered.set(key, result);
+      remembered.set(key, pending);
+      pending.catch(() => remembered.delete(key));
     }
-    return result;
+    return pending;
   };
 }
 
