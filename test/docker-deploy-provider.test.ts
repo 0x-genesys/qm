@@ -11,7 +11,7 @@ test("Docker deployments use isolated networks and remove them on destroy", asyn
     calls.push(args);
     return {
       code: args[1] === "inspect" ? 1 : 0,
-      stdout: args[0] === "inspect" ? "49153\n" : "",
+      stdout: "",
       stderr: args[1] === "inspect" ? "No such network" : "",
     };
   };
@@ -30,7 +30,7 @@ test("Docker deployments use isolated networks and remove them on destroy", asyn
   });
   const provider = createDockerDeployProvider({ dockerExec });
 
-  assert.deepEqual(await provider.apply(first, first.versions[0]!), { host: "127.0.0.1", port: 49153 });
+  await provider.apply(first, first.versions[0]!);
   await provider.apply(second, second.versions[0]!);
   await provider.destroy(first);
 
@@ -107,7 +107,6 @@ test("an unrelated legacy migration failure does not block a new deployment", as
     if (args.join(" ") === "network inspect --format {{range .Containers}}{{println .Name}}{{end}} agent-deploynet") {
       return { code: 0, stdout: "agent-deploy-broken\n", stderr: "" };
     }
-    if (args[0] === "inspect" && args[2]?.includes("HostPort")) return { code: 0, stdout: "49154\n", stderr: "" };
     if (args[0] === "inspect") return { code: 1, stdout: "", stderr: "daemon unavailable" };
     if (args[0] === "network" && args[1] === "inspect") return { code: 1, stdout: "", stderr: "missing" };
     return { code: 0, stdout: "", stderr: "" };
@@ -129,7 +128,6 @@ test("a transient target inspection failure does not report the deployment missi
     if (args.join(" ") === "network inspect --format {{range .Containers}}{{println .Name}}{{end}} agent-deploynet") {
       return { code: 1, stdout: "", stderr: "No such network" };
     }
-    if (args[0] === "inspect" && args[2]?.includes("HostPort")) return { code: 0, stdout: "49154\n", stderr: "" };
     if (args[0] === "inspect") return { code: 1, stdout: "", stderr: "daemon unavailable" };
     return { code: 0, stdout: "", stderr: "" };
   };
@@ -189,4 +187,31 @@ test("the daemon probe reports a hung daemon as a timeout", async () => {
   const dockerExec: DockerExec = async () => ({ code: -1, stdout: "", stderr: "" });
 
   assert.equal(await dockerDaemonFailure({ dockerExec }), "no response within 10s");
+});
+
+test("a Docker app that only answers 5xx fails publish, reports its output and leaves no container", async () => {
+  const calls: string[][] = [];
+  const dockerExec: DockerExec = async (args) => {
+    calls.push(args);
+    const script = args[0] === "exec" ? args.at(-1)! : "";
+    if (script.includes("http_code")) return { code: 96, stdout: "500\n", stderr: "" };
+    if (script.startsWith("tail -c")) return { code: 0, stdout: "boot: database unreachable", stderr: "" };
+    return { code: 0, stdout: "", stderr: "" };
+  };
+  const reported: Array<{ code: string; message: string }> = [];
+  const store = createDeployStore();
+  const d = await store.create({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    entrypoint: "node server.js",
+    snapshotDir: "/snap/broken",
+  });
+  const provider = createDockerDeployProvider({ dockerExec, onError: (e) => reported.push(e) });
+  await assert.rejects(provider.apply(d, d.versions[0]!), /answered HTTP 500 on \/ .*database unreachable/s);
+  assert.deepEqual(
+    reported.map((e) => e.code),
+    ["app_start_failed"],
+  );
+  assert.match(reported[0]!.message, new RegExp(`\\(deployment ${d.id}\\)`), "the record names the deployment");
+  assert.equal(calls.at(-2)!.join(" "), `rm -f agent-deploy-${d.id.slice(0, 12)}`);
 });

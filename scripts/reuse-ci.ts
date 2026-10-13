@@ -2,32 +2,7 @@ import assert from "node:assert/strict";
 import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-export const SANDBOX_JOURNEY_PROVIDERS = [
-  "sprites",
-  "modal",
-  "e2b",
-  "smolmachines",
-  "agent37",
-  "superserve",
-  "do-managed-agents",
-  "aws",
-  "porter",
-];
-export const JOURNEYS = [
-  "c1-cron-delivery",
-  "c2-cron-resume",
-  "w1-long-web-session",
-  "w2-csv-artifact",
-  "w3-google-draft",
-  "w4-publish-app",
-  "w5-status-mid-task",
-  "w6-provider-failure",
-  "s1-slack-reply-once",
-  "s2-approval-card",
-  "x1-sandbox-basics",
-  ...SANDBOX_JOURNEY_PROVIDERS.map((provider) => `x1-sandbox-basics@${provider}`),
-  "x2-security-screen",
-];
+export const JOURNEYS = ["c1-cron-delivery", "c2-cron-resume", "w1-long-web-session", "s1-slack-reply-once"];
 export const CI_JOBS = [
   "Core typecheck",
   ...Array.from({ length: 5 }, (_, i) => `Core tests (${i + 1}/5)`),

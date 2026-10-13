@@ -10,15 +10,15 @@ export async function listSecurityFlags(ctx: ApiCtx): Promise<void> {
   if (!actor) return;
   const requested = Number(ctx.url.searchParams.get("limit") ?? 50);
   const limit = Number.isInteger(requested) && requested > 0 ? Math.min(requested, MAX_FLAGS) : 50;
-  const events = (await ctx.deps.auditLog?.tail({ limit: MAX_FLAGS, action: "security_screen.classify" })) ?? [];
+  const events = (await ctx.deps.auditLog?.tail({ limit: MAX_FLAGS })) ?? [];
   const flags = events
-    .filter((event) => event.status === "block" || event.status === "would_block")
+    .filter((event) => event.action === "security_posture.flagged" || event.action === "security_posture.quarantine")
     .slice(0, limit)
     .map((event) => ({
       at: event.at,
       principal: event.principalId,
       scope: event.scopeLabel,
-      status: event.status,
+      surface: event.resource,
       detail: event.detail,
     }));
   audit(ctx.deps, {

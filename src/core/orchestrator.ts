@@ -137,7 +137,6 @@ import { createTranscriptSource } from "../harness/tape-projection.ts";
 import { defaultPublishAudience } from "../resolution/publish-audience.ts";
 import {
   INBOX_DIR,
-  SHARED_DIR,
   TURN_FILES_DIR,
   environmentNote,
   fileEventPayload,
@@ -1115,7 +1114,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         memoryPolicy,
         useMemory,
         memory: deps.memory,
-        workspace: deps.workspace,
         files: deps.files,
         skills: deps.skills,
         auditLog: deps.auditLog,
@@ -1310,7 +1308,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       const turnSessionDir = `${TURN_FILES_DIR}/${hashId([conversation.threadRef], 24)}`;
       const turnFilesDir = `${turnSessionDir}/${transferId}`;
       const turnInboxDir = `${turnFilesDir}/${INBOX_DIR}`;
-      const turnSharedDir = `${turnFilesDir}/${SHARED_DIR}`;
 
       if (!external && deps.deploymentLayer?.hints.length) {
         systemPrompt += `\n\n## Deployment tool hints\n${deps.deploymentLayer.hints.map((hint) => `- ${hint}`).join("\n")}`;
@@ -2599,11 +2596,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               })
             : undefined;
 
-        const snapshotExcludeDirs = [
-          ...resolution.layers.filter((l) => l.mode === "ro" && l.mountPath).map((l) => l.mountPath),
-          TURN_FILES_DIR,
-        ];
-
         const spine: SpineState = {
           surfaceOutboundCount: 0,
           crossConversationPosts: 0,
@@ -2642,11 +2634,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           seed: input.runId ?? `${session.id}:${Date.now()}`,
           ...(fileGrantees.length
             ? {
-                onRegistered: async ({ ownerScopeId, path }) => {
+                onRegistered: async ({ ownerScopeId, id }) => {
                   for (const granteeScopeId of fileGrantees) {
                     await deps.acl.grant({
                       ownerScopeId,
-                      ref: path,
+                      ref: id,
                       granteeScopeId,
                       permission: "read",
                       grantedBy: actor.id,
@@ -2702,6 +2694,34 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             .then(() => deps.turnStream?.markSurfacePosted(runId))
             .catch(swallowAs("orchestrator: first-block ack", undefined));
         };
+        let readableHandles: Awaited<ReturnType<typeof deps.acl.handlesForAudience>> | undefined;
+        const mayReadArtifact = async (artifact: FileArtifact, fresh = false): Promise<boolean> => {
+          if (
+            conversation.audience.every((principal) =>
+              principalEntitledToScope(principal, artifact.ownerScopeId, scopeId, resolution.orgScopeId),
+            )
+          )
+            return true;
+          let handles = fresh ? undefined : readableHandles;
+          handles ??= await deps.acl.handlesForAudience(
+            conversation.audience,
+            scopeId,
+            resolution.orgScopeId,
+            principalEntitledToScope,
+          );
+          if (!fresh) readableHandles = handles;
+          return handles.some(
+            (handle) => handle.ownerScopeId === artifact.ownerScopeId && handle.fileId === artifact.id,
+          );
+        };
+        const provisionOutbound = (sandboxId?: string) =>
+          sandboxId !== undefined ? provisionResource(sandboxId) : provision();
+        const openStoredOutbound = async (id: string) => {
+          const artifact = await deps.files.get(id);
+          if (!artifact || !(await mayReadArtifact(artifact, true))) return null;
+          const opened = await deps.files.open(id);
+          return opened ? { ...artifact, sizeBytes: opened.sizeBytes, stream: opened.stream } : null;
+        };
         const surfaceToolDeps = createSurfaceToolDeps({
           deps,
           input,
@@ -2713,14 +2733,16 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           defaultDestination,
           blobTransfer,
           fileRegistration,
-          provision,
+          provision: provisionOutbound,
+          openStored: openStoredOutbound,
           postProvenance,
           postKeys,
           spine,
         });
         const attachStaging = createAttachStaging({
           sandbox: deps.sandbox,
-          provision,
+          provision: provisionOutbound,
+          openStored: openStoredOutbound,
           blobTransfer,
           fileRegistration,
         });
@@ -2756,7 +2778,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           authorizeCommand,
           grantedHandles: resolution.grantedHandles,
           context,
-          sharedMaterializeDir: turnSharedDir,
           workspace: deps.workspace,
           deploy: deps.deploy,
           acl: deps.acl,
@@ -2847,9 +2868,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           attempt: input.attempt ?? 1,
           ...(backgroundBroker ? { backgroundBroker } : {}),
           ...(monitorBroker ? { monitorBroker } : {}),
-          ...(scopeProfile.writablePersistence === "resident_disk"
-            ? { persistWritesToStore: { excludeDirs: snapshotExcludeDirs } }
-            : {}),
           onGapWork: (work) => {
             if (work.phase === "exec") {
               execMs += Math.max(0, work.end - work.start);
@@ -2991,24 +3009,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           await deps.harness.turns.resetSession?.(session.id);
         }
         const visibleHistory = filterHistory(forModelContext(rawEntries, { includeSecurityTainted: false }));
-        let readableHandles: Awaited<ReturnType<typeof deps.acl.handlesForAudience>> | undefined;
-        const mayReadArtifact = async (artifact: FileArtifact): Promise<boolean> => {
-          if (
-            conversation.audience.every((principal) =>
-              principalEntitledToScope(principal, artifact.ownerScopeId, scopeId, resolution.orgScopeId),
-            )
-          )
-            return true;
-          readableHandles ??= await deps.acl.handlesForAudience(
-            conversation.audience,
-            scopeId,
-            resolution.orgScopeId,
-            principalEntitledToScope,
-          );
-          return readableHandles.some(
-            (handle) => handle.ownerScopeId === artifact.ownerScopeId && handle.ownerPath === artifact.path,
-          );
-        };
         const rehydrateTape = (messages: readonly unknown[]) => {
           return rehydrateFoldImages(
             messages,
@@ -3967,7 +3967,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           };
           addUsage();
           while (segment.runtimeHandoff && !segment.stopped && !turnAbort.signal.aborted) {
-            if ((segment.modelCalls ?? 0) > 1) runtimeHandoffs = 0;
             if (++runtimeHandoffs > 8) throw new NonRetryableTurnError("Too many runtime changes in one task");
             if (effectiveTurnWallClockMs && Date.now() - turnStart >= effectiveTurnWallClockMs)
               throw new NonRetryableTurnError("The task reached its wall-clock limit during runtime handoff");

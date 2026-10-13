@@ -616,6 +616,7 @@ export function buildApp(
   const acl = createAclStore(config.databaseUrl ? createPostgresGrantStore(config.databaseUrl) : undefined, {
     manages: (principalId, scopeId, authoredBy) =>
       membership.managesArtifactHome!(scopeId, authoredBy ?? "", principalId),
+    resolveFiles: (refs) => files.resolveByIds(refs),
   });
   const pgArtifactMap = config.databaseUrl ? createPostgresMapFactory(config.databaseUrl) : null;
   const artifactMap = <T>(table: string, indexedFields?: readonly Extract<keyof T, string>[]): DurableMap<T> =>
@@ -843,13 +844,19 @@ export function buildApp(
   });
   const mcpServers = createMcpServerStore(artifactMap<McpServer>("mcp_servers"));
   const errors = withErrorReporting(config.databaseUrl ? createPostgresErrorLog(config.databaseUrl) : createErrorLog());
-  const sandboxOnError = (e: { category: string; code: string; message: string; scopeLabel?: string }) =>
-    errors.record({
-      category: e.category,
-      code: e.code,
-      message: e.message,
-      scopeLabel: (e.scopeLabel ?? "unknown") as ScopeId,
-    });
+  const sandboxOnError = (
+    e: { category: string; code: string; message: string; scopeLabel?: string },
+    error?: unknown,
+  ) =>
+    errors.record(
+      {
+        category: e.category,
+        code: e.code,
+        message: e.message,
+        scopeLabel: (e.scopeLabel ?? "unknown") as ScopeId,
+      },
+      error,
+    );
   const buildLocal = (): Sandbox =>
     createLocalSandbox(workspace, {
       ...config.localSandbox,
@@ -1170,18 +1177,8 @@ export function buildApp(
     defaultBackend: config.sandboxBackend,
     lock: advisoryLock,
     beforeRetire: async (record) => {
-      if (
-        (await processes?.liveByScope(record.ownerScopeId))?.some(
-          (process) => !process.sandboxId || process.sandboxId === record.id,
-        )
-      )
+      if ((await processes?.liveByScope(record.ownerScopeId))?.some((process) => process.sandboxId === record.id))
         throw new Error("stop this sandbox's background jobs before retiring it");
-    },
-    beforeDefaultChange: async (scopeId) => {
-      if ((await processes?.liveByScope(scopeId))?.some((process) => !process.sandboxId))
-        throw new Error(
-          "legacy background work has no saved sandbox target; finish or stop it before changing the default",
-        );
     },
     provisionOptions: async (scopeId) => {
       const secret = config.capabilitySecret ?? config.signingSecret;
@@ -1670,6 +1667,7 @@ export function buildApp(
       ...(!config.awsDeploy.dataBucket && config.awsSandbox.s3Bucket ? { dataBucket: config.awsSandbox.s3Bucket } : {}),
       advisoryLock,
       store: artifactMap<StoredDeployBody>("aws_deploy_bodies"),
+      onError: sandboxOnError,
     });
   if (config.deployProvider === "fly" && config.flyDeploy.sharedAppName && !config.flyDeploy.wireguardPeers)
     throw new Error("Fly shared apps require FLY_DEPLOY_WIREGUARD_PEERS for private connectivity");
@@ -1685,19 +1683,21 @@ export function buildApp(
       : undefined;
   const buildDeployProvider: Record<Config["deployProvider"], () => DeployProvider> = {
     aws: buildAwsDeploy,
-    docker: createDockerDeployProvider,
+    docker: () => createDockerDeployProvider({ onError: sandboxOnError }),
     fly: () =>
       createFlyDeployProvider({
         ...config.flyDeploy,
         ...(flyTunnel ? { privateTransport: flyTunnel } : {}),
         configStore: artifactMap<FlyMachineConfig>("fly_deploy_configs"),
         portStore: artifactMap<string>("fly_deploy_ports"),
+        onError: sandboxOnError,
       }),
     porter: () =>
       createPorterDeployProvider({
         ...config.porterDeploy,
         advisoryLock,
         store: artifactMap<StoredPorterDeployBody>("porter_deploy_bodies"),
+        onError: sandboxOnError,
       }),
   };
   if (
