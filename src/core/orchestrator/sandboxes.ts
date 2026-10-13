@@ -5,7 +5,7 @@ import { intersectEgressPolicies } from "../../resolution/egress-policy.ts";
 import { isOpenScopeMember } from "../../resolution/sharing-access.ts";
 import type { GapPhase } from "../../sessions/session-store.ts";
 import { type SandboxHandle, supportsProcessSessions, SandboxProvisionCleanupError } from "../../sandbox/sandbox.ts";
-import type { SandboxAccessPlan } from "../../sandbox/sandbox-resources.ts";
+import { accessConversationSandbox, type SandboxAccessPlan } from "../../sandbox/sandbox-resources.ts";
 import { reconcileProcesses } from "../../processes/reconcile.ts";
 import { leaseLapsed } from "../../runs/run-store.ts";
 import { finishProcessCredentials } from "../../credentials/execute-files.ts";
@@ -264,8 +264,8 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
   const skillsRoot = (r: SkillResolution) =>
     `${SKILLS_ROOT}/${turnSessionDir.split("/").at(-1)}/${hashId([r.skill!.id, String(r.skill!.version)], 16)}`;
   const laidTrees = new Set<string>();
-  const materializeSkillTree = async (handle: SandboxHandle, r: SkillResolution, sandboxId?: string): Promise<void> => {
-    const treeKey = `${sandboxId ?? "default"}:${skillDir(skillsRoot(r), r)}`;
+  const materializeSkillTree = async (handle: SandboxHandle, r: SkillResolution): Promise<void> => {
+    const treeKey = `${handle.resourceId ?? handle.id}:${skillDir(skillsRoot(r), r)}`;
     if (laidTrees.has(treeKey)) return;
     const start = Date.now();
     try {
@@ -316,10 +316,10 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
         ? renderSkillBody(resolution, root)
         : rehomeSkillPaths(resolution, asset!, root ?? skillsRoot(resolution));
     if (!shipsFiles) return { content: render(), sourceScopeId: resolution.skill.scopeId };
-    const access = sandboxId ? await accessResource(sandboxId) : undefined;
+    const access = sandboxId !== undefined ? await accessResource(sandboxId) : undefined;
     if (access?.crossScope) return { content: render(skillsRoot(resolution)), sourceScopeId: resolution.skill.scopeId };
     const handle = access ? await provisionResource(access) : await provision();
-    await materializeSkillTree(handle, resolution, sandboxId);
+    await materializeSkillTree(handle, resolution);
     const root = `${handle.rootDir}/${skillsRoot(resolution)}`;
     const pack = packRoot(root, resolution);
     return {
@@ -351,9 +351,7 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     return true;
   };
   const accessResource = async (id: string): Promise<SandboxAccessPlan> => {
-    const resource = await deps.sandboxResources?.access(actor.id, id);
-    if (!resource || !(await canUseSandboxScope(resource.ownerScopeId)))
-      throw new Error("sandbox access is no longer authorized in this conversation");
+    const resource = await accessConversationSandbox(deps.sandboxResources, actor.id, id, canUseSandboxScope);
     const crossScope = resource.ownerScopeId !== writableScopeId && resource.ownerScopeId !== scopeId;
     if (!crossScope) return { resource, crossScope: false, egress: resolution.egress, commandPolicy: null };
     await deps.config!.refreshSecurity([resource.ownerScopeId]);
