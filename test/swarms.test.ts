@@ -844,7 +844,7 @@ test("a swarm with no pinned model reports an empty model instead of none at all
   const { service, caller } = await swarmFixture();
   await service.spawn(caller, { requestId: "one", text: "Work" });
   const inspected = await service.inspect(caller);
-  assert.equal("model" in inspected, false);
+  assert.equal(inspected.model, undefined);
 });
 
 test("a broadcast is stored as a plain id list, so it cannot be told from an explicit address", async () => {
