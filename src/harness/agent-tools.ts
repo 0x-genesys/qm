@@ -2782,14 +2782,21 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       "relay BOTH to the user verbatim — the `url` is already the full public inbound URL (hand it over as-is) " +
       "and the `secret` — so they can point GitHub/Stripe/etc. at it. Until they do, it never fires.\n" +
       "action=list pages through your webhooks (secrets elided, task text flattened and capped at 2000 chars, " +
-      "25 per page — a footer line names the offset for the next page when there's more); action=disable pauses one by id.",
+      "25 per page — a footer line names the offset for the next page when there's more); action=update replaces one's task in place " +
+      "(same URL and secret, used from the next event; live owner turns only); action=disable pauses one by id.",
     parameters: Type.Object({
-      action: Type.Union([Type.Literal("create"), Type.Literal("list"), Type.Literal("disable")], {
-        description: "create an inbound webhook, list yours, or disable one by id.",
-      }),
-      id: Type.Optional(Type.String({ description: "disable only: the webhook id." })),
+      action: Type.Union(
+        [Type.Literal("create"), Type.Literal("list"), Type.Literal("update"), Type.Literal("disable")],
+        {
+          description:
+            "create an inbound webhook, list yours, update one's task in place by id (URL and secret unchanged), or disable one by id.",
+        },
+      ),
+      id: Type.Optional(Type.String({ description: "update and disable: the webhook id." })),
       task: Type.Optional(
-        Type.String({ description: "create only: what to do on each event (the payload is appended automatically)." }),
+        Type.String({
+          description: "create and update: what to do on each event (the payload is appended automatically).",
+        }),
       ),
       verification: Type.Optional(
         Type.Object(
@@ -2893,6 +2900,26 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           if (!r.ok)
             return recordResult(callId, { tool: "webhook", error: r.code }, text(`[error] ${r.message}`), true);
           return recordResult(callId, { tool: "webhook", id, enabled: false }, text(`Disabled webhook ${id}.`));
+        }
+        case "update": {
+          const id = typeof params.id === "string" && params.id ? params.id : null;
+          const task = typeof params.task === "string" ? params.task : "";
+          if (!id)
+            return recordResult(
+              callId,
+              { tool: "webhook", error: "id required" },
+              text("[error] webhook update requires `id` and the new `task`."),
+              true,
+            );
+          const r = await tc.webhookUpdate(id, task);
+          if (isUnavailable(r)) return unavailable(callId, "webhook");
+          if (!r.ok)
+            return recordResult(callId, { tool: "webhook", error: r.code }, text(`[error] ${r.message}`), true);
+          return recordResult(
+            callId,
+            { tool: "webhook", id, updated: true },
+            text(`Updated webhook ${id}. The next delivery uses the new task; URL and secret are unchanged.`),
+          );
         }
       }
     },

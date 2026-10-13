@@ -318,6 +318,12 @@ export interface ToolContext extends SurfaceToolDeps {
   webhookDisable(
     id: string,
   ): Promise<ControlOk<Record<never, never>> | ControlErr<"not_found" | "forbidden"> | ControlUnavailable>;
+  webhookUpdate(
+    id: string,
+    action: string,
+  ): Promise<
+    ControlOk<{ webhook: Webhook }> | ControlErr<"not_found" | "forbidden" | "bad_request"> | ControlUnavailable
+  >;
   soulRead(): { effectiveSoul: string; soul: string | null; soulVersion: number } | ControlUnavailable;
   soulWrite(
     content: string,
@@ -1403,6 +1409,11 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     webhookDisable: (id) =>
       controlOp(
         (c, cl) => c.disableWebhook(id, cl),
+        (r) => r.ok,
+      ),
+    webhookUpdate: (id, action) =>
+      controlOp(
+        (c, cl) => c.updateWebhook(id, { action }, cl),
         (r) => r.ok,
       ),
     soulRead() {

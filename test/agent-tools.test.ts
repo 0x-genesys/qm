@@ -280,6 +280,9 @@ function fakeToolContext(sink?: { lastExecOpts?: Parameters<ToolContext["execute
         },
       ];
     },
+    async webhookUpdate() {
+      return { ok: false as const, code: "not_found" as const, message: "x" };
+    },
     async webhookDisable() {
       return { ok: true };
     },

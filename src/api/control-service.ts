@@ -170,6 +170,11 @@ export interface ControlService {
     id: string,
     claims: CapabilityClaims,
   ): Promise<ControlOk<Record<never, never>> | ControlErr<"not_found" | "forbidden">>;
+  updateWebhook(
+    id: string,
+    patch: { action: string },
+    claims: CapabilityClaims,
+  ): Promise<ControlOk<{ webhook: Webhook }> | ControlErr<"not_found" | "forbidden" | "bad_request">>;
   readSoul(claims: CapabilityClaims): { effectiveSoul: string; soul: string | null; soulVersion: number };
   writeSoul(
     content: string,
@@ -195,6 +200,21 @@ export async function canAdministerCron(
   if (team && cron.ownerScopeId === callerScopeId) return app.isCurrentSharedScopeMember(actorId, cron.ownerScopeId);
   if (team && (await app.isOpenScopeMember(actorId, cron.ownerScopeId))) return true;
   return app.managesScope(actorId, cron.ownerScopeId);
+}
+
+export async function editWebhookTask(
+  app: App,
+  id: string,
+  action: string,
+  principalId: string,
+): Promise<ControlOk<{ webhook: Webhook }> | ControlErr<"not_found" | "forbidden" | "bad_request">> {
+  if (!action.trim()) return { ok: false, code: "bad_request", message: "task cannot be empty" };
+  const webhook = await app.getWebhook(id);
+  if (!webhook) return { ok: false, code: "not_found", message: `no webhook ${id}` };
+  if (!(await canAdministerWebhook(app, webhook, principalId)))
+    return { ok: false, code: "forbidden", message: "not your webhook" };
+  const updated = await app.updateWebhook(id, { action });
+  return updated ? { ok: true, webhook: updated } : { ok: false, code: "not_found", message: `no webhook ${id}` };
 }
 
 export async function canAdministerWebhook(
@@ -886,6 +906,12 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
         return { ok: false, code: "forbidden", message: "not your webhook" };
       await app.setWebhookEnabled(id, false);
       return { ok: true };
+    },
+
+    async updateWebhook(id, patch, capability) {
+      if (capability.triggered || !livePersonCapability(capability))
+        return { ok: false, code: "forbidden", message: "editing a webhook requires a live turn started by its owner" };
+      return editWebhookTask(app, id, patch.action, capability.actorId);
     },
 
     readSoul(capability) {
