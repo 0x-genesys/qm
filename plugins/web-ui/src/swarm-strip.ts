@@ -162,7 +162,7 @@ export function createSwarmStrip(redraw: () => void) {
       [...status.entries()].some(([id, s]) => id !== ui.view?.id && (s === "active" || s === "starting")),
     );
     redraw();
-    if (ui.open && ui.view) await loadBoard(sessionId);
+    if (ui.open) await loadBoard(sessionId);
   };
   const post = (sessionId: string, memberId: string, state: Control) =>
     api(`/api/sessions/${encodeURIComponent(sessionId)}/swarm`, {

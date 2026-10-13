@@ -93,6 +93,7 @@ async function openPanel(
   board: SwarmMessage[],
   seen: string[] = [],
   pageSize?: number,
+  open = true,
 ): Promise<HTMLElement> {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   stub(view, board, seen, pageSize);
@@ -103,7 +104,7 @@ async function openPanel(
   holder.draw();
   await flush();
   holder.draw();
-  host.querySelector<HTMLButtonElement>(".bg-activity-strip")!.click();
+  if (open) host.querySelector<HTMLButtonElement>(".bg-activity-strip")!.click();
   await flush();
   holder.draw();
   return host;
@@ -200,4 +201,13 @@ test("a second board read restarts from zero instead of the last sequence it hol
     ["0", "1", "2", "3"],
   );
   assert.match(host.textContent ?? "", /Board · 3 messages/);
+});
+
+test("a collapsed panel reads the board anyway, polling for messages nobody opened", async (t) => {
+  const seen: string[] = [];
+  await openPanel(t, inspected(), [message({ id: "m-1", seq: 1 })], seen, undefined, false);
+  assert.deepEqual(
+    seen.filter((url) => url.includes("read=1")),
+    [],
+  );
 });
