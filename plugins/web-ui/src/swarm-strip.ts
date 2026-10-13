@@ -143,7 +143,7 @@ export function createSwarmStrip(redraw: () => void) {
       const read = await api<{ messages?: SwarmBoardMessage[] }>(
         `/api/sessions/${encodeURIComponent(sessionId)}/swarm?read=1&after=${ui.board.at(-1)?.seq ?? 0}`,
       ).catch((error: unknown) => (error instanceof Error ? error : new Error("the request did not complete")));
-      if (ui.sessionId !== sessionId || ui.generation !== generation) return;
+      if (ui.generation !== generation) return;
       if (read instanceof Error) {
         ui.boardNote = `Could not read the board: ${read.message}`;
         return redraw();

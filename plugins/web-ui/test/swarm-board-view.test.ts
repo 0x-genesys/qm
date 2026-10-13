@@ -135,8 +135,10 @@ test("the shared board never renders, so worker cross-talk stays invisible", asy
   assert.doesNotMatch(text, /No messages yet/);
   assert.match(text, /split the audit/);
   assert.match(text, /found a gap/);
-  assert.match(text, /#1 agent root/);
-  assert.match(text, /#2 agent 22222222 · reply to #1/);
+  const commands = [...host.querySelectorAll(".bg-row:not(.swarm-peer) .bg-row-cmd")].map((node) =>
+    (node.textContent ?? "").trim(),
+  );
+  assert.deepEqual(commands, ["#1 agent root", "#2 agent 22222222 · reply to #1"]);
   assert.match(text, /to 22222222/);
   assert.match(text, /to root/);
 });
@@ -165,6 +167,17 @@ test("a worker row hides the session, computer and context it is running with", 
   assert.match(rows[1]!, /session: worker-session/);
   assert.match(rows[1]!, new RegExp(`computer: ${WORKER}`));
   assert.match(rows[1]!, /"role": "auditor"/);
+});
+
+test("a worker with nothing running yet shows a blank session and computer", async (t) => {
+  const peers = [
+    member({ id: ROOT, depth: 0, sessionId: SESSION }),
+    member({ id: LATE, parentId: ROOT, state: "reserved" }),
+  ];
+  const host = await openPanel(t, inspected({ peers }), []);
+  const rows = [...host.querySelectorAll(".swarm-peer .bg-row-output")].map((row) => row.textContent ?? "");
+  assert.match(rows[1]!, /session: not started/);
+  assert.match(rows[1]!, /computer: none/);
 });
 
 test("the panel hides which model the workers run", async (t) => {
@@ -200,38 +213,11 @@ test("a board read that failed is reported without the reason the server gave", 
   assert.doesNotMatch(text, /No messages yet/);
 });
 
-test("a board reply carrying no messages reads exactly like a refused read", async (t) => {
-  const view = inspected();
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
-    const query = new URL(String(input), "http://localhost").searchParams;
-    return jsonResponse(query.get("read") === "1" ? {} : view);
-  }) as typeof fetch;
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  const host = document.createElement("div");
-  const holder = { draw: (): void => {} };
-  const panel = createSwarmStrip(() => holder.draw());
-  holder.draw = (): void => void render(panel.strip(SESSION), host);
-  holder.draw();
-  await flush();
-  holder.draw();
-  host.querySelector<HTMLButtonElement>(".bg-activity-strip")!.click();
-  await flush();
-  holder.draw();
-  assert.match(host.textContent ?? "", /Could not read the board: the reply carried no messages\./);
-});
-
 test("a reply whose target is outside the loaded board reads as a top-level message", async (t) => {
   const host = await openPanel(t, inspected(), [
     message({ id: "m-9", seq: 9, text: "late reply", replyTo: "44444444-dddd-4ddd-8ddd-444444444444" }),
   ]);
   assert.match(host.textContent ?? "", /#9 agent root · reply to 44444444/);
-});
-
-test("a message delivered to every peer is listed as ids instead of all", async (t) => {
-  const host = await openPanel(t, inspected(), [
-    message({ id: "m-1", seq: 1, audience: [ROOT, WORKER], broadcast: true }),
-  ]);
-  assert.match(host.textContent ?? "", /to all/);
 });
 
 test("a broadcast stops reading as all once a later worker joins the swarm", async (t) => {
@@ -247,6 +233,11 @@ test("a broadcast stops reading as all once a later worker joins the swarm", asy
     [message({ id: "m-1", seq: 1, audience: [ROOT, WORKER], broadcast: true })],
   );
   assert.match(host.textContent ?? "", /to all/);
+});
+
+test("a message addressed to several peers lists only the first of them", async (t) => {
+  const host = await openPanel(t, inspected(), [message({ id: "m-1", seq: 1, audience: [ROOT, WORKER] })]);
+  assert.match(host.textContent ?? "", /to root, 22222222/);
 });
 
 test("a message that reached nobody renders a blank audience", async (t) => {
@@ -426,4 +417,38 @@ test("a page read before the board was emptied is appended as the whole board", 
   await flush();
   holder.draw();
   assert.match(host.textContent ?? "", /the first finding/);
+});
+
+test("one session's board is left on screen under the next session's panel", async (t) => {
+  const other = "second-session";
+  const view = inspected();
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const parsed = new URL(String(input), "http://localhost");
+    if (parsed.searchParams.get("read") !== "1") return jsonResponse(view);
+    const owner = parsed.pathname.split("/")[3];
+    return jsonResponse({
+      messages: owner === SESSION ? [message({ id: "m-1", seq: 1, text: "only the first swarm said this" })] : [],
+    });
+  }) as typeof fetch;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const host = document.createElement("div");
+  const holder = { draw: (): void => {} };
+  const panel = createSwarmStrip(() => holder.draw());
+  let showing = SESSION;
+  holder.draw = (): void => void render(panel.strip(showing), host);
+  const open = async (): Promise<void> => {
+    holder.draw();
+    await flush();
+    holder.draw();
+    host.querySelector<HTMLButtonElement>(".bg-activity-strip")!.click();
+    await flush();
+    holder.draw();
+  };
+  await open();
+  assert.match(host.textContent ?? "", /only the first swarm said this/);
+  showing = other;
+  await open();
+  const text = host.textContent ?? "";
+  assert.doesNotMatch(text, /only the first swarm said this/);
+  assert.match(text, /Board · 0 messages/);
 });
