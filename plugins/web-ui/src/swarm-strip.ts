@@ -57,7 +57,7 @@ function detail(peer: SwarmPeer): string {
   return [
     `session: ${peer.sessionId ?? "not started"}`,
     `computer: ${peer.sandboxId ?? "none"}`,
-    ...(peer.error ? [`why it failed: ${peer.error}`] : []),
+    ...(peer.state === "failed" && peer.error ? [`why it failed: ${peer.error}`] : []),
     `context: ${JSON.stringify(peer.context, null, 2)}`,
   ].join("\n");
 }
@@ -161,6 +161,8 @@ export function createSwarmStrip(redraw: () => void) {
       redraw();
       if (!fresh.length) return;
     }
+    ui.boardNote = "More messages remain; reopen the panel to keep loading.";
+    redraw();
   };
   const load = async (sessionId: string): Promise<void> => {
     const view = await api<SwarmView>(`/api/sessions/${encodeURIComponent(sessionId)}/swarm`).catch(() => null);
@@ -328,7 +330,7 @@ export function createSwarmStrip(redraw: () => void) {
                     : nothing
                 }
                 ${tree(view, status)}
-                <div class="bg-panel-note">Board · ${ui.board.length} messages</div>
+                <div class="bg-panel-note">Board · ${ui.board.length} message${ui.board.length === 1 ? "" : "s"}</div>
                 ${ui.board.length ? boardRows(ui.board, view) : nothing}
                 ${ui.boardNote ? html`<div class="bg-panel-note">${ui.boardNote}</div>` : nothing}
               </div>`

@@ -480,7 +480,7 @@ test("the open board never reads again, so a running swarm's later messages neve
   host.querySelector<HTMLButtonElement>(".bg-activity-strip")!.click();
   await flush();
   holder.draw();
-  assert.match(host.textContent ?? "", /Board · 1 messages/);
+  assert.match(host.textContent ?? "", /Board · 1 message(?!s)/);
   board.push(message({ id: "m-2", seq: 2, text: "the second finding" }));
   t.mock.timers.tick(4_000);
   await flush();
@@ -502,4 +502,30 @@ test("a worker that failed never says why, so the row worth diagnosing is the on
   ];
   const host = await openPanel(t, inspected({ peers }), []);
   assert.match(host.textContent ?? "", /why it failed: the local backend needs a running Docker daemon/);
+});
+
+test("a worker that recovered from a failed attempt is still shown as failed", async (t) => {
+  const peers = [
+    member({ id: ROOT, depth: 0, sessionId: SESSION }),
+    member({
+      id: WORKER,
+      parentId: ROOT,
+      sessionId: "worker-session",
+      sandboxId: WORKER,
+      state: "ready",
+      error: "missing sandbox reservation",
+    }),
+  ];
+  const host = await openPanel(t, inspected({ peers }), []);
+  assert.doesNotMatch(host.textContent ?? "", /why it failed/);
+});
+
+test("a board longer than one read stops with nothing to say there is more", async (t) => {
+  const board = Array.from({ length: 20 }, (_, index) =>
+    message({ id: `m-${index + 1}`, seq: index + 1, text: `finding ${index + 1}` }),
+  );
+  const host = await openPanel(t, inspected(), board, [], 1);
+  const text = host.textContent ?? "";
+  assert.match(text, /Board · 16 messages/);
+  assert.match(text, /More messages remain; reopen the panel to keep loading\./);
 });
