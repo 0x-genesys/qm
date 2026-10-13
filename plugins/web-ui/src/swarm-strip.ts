@@ -12,6 +12,7 @@ export interface SwarmPeer {
   context: unknown;
   state: "reserved" | "ready" | "failed";
   control?: "paused" | "stopped";
+  error?: string;
   depth: number;
 }
 
@@ -56,6 +57,7 @@ function detail(peer: SwarmPeer): string {
   return [
     `session: ${peer.sessionId ?? "not started"}`,
     `computer: ${peer.sandboxId ?? "none"}`,
+    ...(peer.error ? [`why it failed: ${peer.error}`] : []),
     `context: ${JSON.stringify(peer.context, null, 2)}`,
   ].join("\n");
 }

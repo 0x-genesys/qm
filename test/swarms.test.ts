@@ -854,11 +854,26 @@ test("the board stops answering the person reviewing it once the work window shu
     actorId: caller.kind === "agent" ? caller.claims.actorId : "",
     sessionId: root.id,
   };
-  assert.equal((await service.inspect(reviewer)).peers.length, 2);
   assert.deepEqual(
     (await service.read(reviewer, {})).map((message) => message.text),
     ["Work", "what the workers found"],
   );
+});
+
+test("the worker tree disappears from the review once the work window shuts", async () => {
+  const { service, caller, root, store } = await swarmFixture();
+  await service.spawn(caller, { requestId: "one", text: "Work" });
+  await service.sweep();
+  await store.update(root.id, (swarm) => {
+    swarm.expiresAt = Date.now() - 1;
+  });
+  await service.sweep();
+  const reviewer: SwarmCaller = {
+    kind: "human",
+    actorId: caller.kind === "agent" ? caller.claims.actorId : "",
+    sessionId: root.id,
+  };
+  assert.equal((await service.inspect(reviewer)).peers.length, 2);
 });
 
 test("a broadcast is stored as a plain id list, so it cannot be told from an explicit address", async () => {
