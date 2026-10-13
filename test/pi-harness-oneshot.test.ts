@@ -915,13 +915,12 @@ test("Pi provider errors are classified once into a typed code from structured f
     [{ providerError: { status: 400, code: "context_length_exceeded" } }, "context_too_long", 400],
     [{ providerError: { status: 529, type: "overloaded_error" } }, "transient", 529],
     [{ rawStopReason: "refusal" }, "refusal", undefined],
-    // Anthropic documents prompt-too-long only as a 400 invalid_request_error, so it is a bad_request, not context_too_long.
     [
       {
         errorMessage: "prompt is too long: 250000 tokens > 200000 maximum",
         providerError: { status: 400, type: "invalid_request_error" },
       },
-      "bad_request",
+      "context_too_long",
       400,
     ],
     [{ errorMessage: "The model refused to complete the request" }, "unknown", undefined],
@@ -1006,4 +1005,12 @@ test("Pi judge uses supported reasoning effort when configured with Astra", asyn
   assert.ok(request);
   assert.equal(request.model, "gpt-6-astra");
   assert.equal(request.reasoning?.effort, "low");
+});
+
+test("model requests are trimmed under the 10 MiB edge limit by default", () => {
+  const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "A".repeat(11_000_000) } };
+  const payload = { messages: [{ role: "user", content: [image, { type: "text", text: "describe" }] }] };
+  const trimmed = trimPayloadToByteBudget(payload);
+  assert.ok(Buffer.byteLength(JSON.stringify(trimmed)) < 10 * 1024 * 1024);
+  assert.match(JSON.stringify(trimmed), /describe/);
 });
