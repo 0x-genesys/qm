@@ -179,7 +179,7 @@ export function createDeliveryPoller(deps: {
     (id: string) =>
     (stage: "post" | "ack", err: unknown, gaveUp: boolean): void => {
       const code = slackErrorCode(err);
-      if (stage === "post" && gaveUp && code && PERMANENT_POST_ERRORS.has(code) && !undeliverableReported.has(id)) {
+      if (stage === "post" && code && PERMANENT_POST_ERRORS.has(code) && !undeliverableReported.has(id)) {
         if (undeliverableReported.size >= 5000) undeliverableReported.clear();
         undeliverableReported.add(id);
         void core

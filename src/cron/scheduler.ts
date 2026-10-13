@@ -28,6 +28,7 @@ import { sleep } from "../util/async.ts";
 
 const TICK_LEASE_KEY = "cron:scheduler:tick";
 const CRON_FIRE_REPLY_MAX_CHARS = 2000;
+const AWAITING_DELIVERY_NOTE = "awaiting delivery";
 const STRANDED_SWEEP_INTERVAL_MS = 10 * 60_000;
 const FIRE_GC_INTERVAL_MS = 6 * 60 * 60_000;
 const BUSY_DEFER_MS = 30_000;
@@ -324,9 +325,10 @@ export function createScheduler(deps: SchedulerDeps): Scheduler {
         fireKey,
         threadRef,
         firedAt: t,
-        endedAt: now(),
+        ...(outcome.delivering ? {} : { endedAt: now() }),
         ...(scheduledAt !== undefined ? { scheduledAt } : {}),
-        status: outcome.status ?? (outcome.authzFailed ? "refused" : "ok"),
+        status: outcome.delivering ? "running" : (outcome.status ?? (outcome.authzFailed ? "refused" : "ok")),
+        ...(outcome.delivering ? { note: AWAITING_DELIVERY_NOTE } : {}),
         ...(outcome.note ? { note: truncate(outcome.note, CRON_FIRE_REPLY_MAX_CHARS) } : {}),
         ...(outcome.reply !== undefined ? { reply: cronFireLogReply(outcome.reply) } : {}),
         ...(outcome.sessionId ? { sessionId: outcome.sessionId } : {}),

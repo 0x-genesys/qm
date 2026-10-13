@@ -71,6 +71,7 @@ export interface TriggerOutcome {
   authzFailed: boolean;
   ran: boolean;
   deferred?: boolean;
+  delivering?: boolean;
   status?: TurnResult["status"];
   note?: string;
   userNote?: string;
@@ -279,6 +280,7 @@ export async function runTrigger(deps: TriggerDeps, spec: TriggerSpec): Promise<
   let userNote: string | undefined;
   let reply: string | undefined;
   let sessionId: string | undefined;
+  let delivering = false;
   const ownerSkipNotice = async () => {
     await deps.deliveries.enqueue({
       destination: principalDestination(spec.owner, spec.owner),
@@ -316,6 +318,7 @@ export async function runTrigger(deps: TriggerDeps, spec: TriggerSpec): Promise<
           ...(attributeAs ? { attributeAs } : {}),
           ...(spec.shadow ? { shadow: true } : {}),
         });
+        delivering = !spec.shadow;
         return;
       }
       if (!homeAccess.ok) {
@@ -383,6 +386,7 @@ export async function runTrigger(deps: TriggerDeps, spec: TriggerSpec): Promise<
           provenance: deliveryProvenance(spec, threadRef, res),
           ...(spec.shadow ? { shadow: true } : {}),
         });
+        delivering = !spec.shadow;
         return;
       }
       if (res.status === "ok") note = "produced no reply";
@@ -401,6 +405,7 @@ export async function runTrigger(deps: TriggerDeps, spec: TriggerSpec): Promise<
     authzFailed: false,
     ran,
     ...(deferred ? { deferred } : {}),
+    ...(delivering ? { delivering } : {}),
     ...(status ? { status } : {}),
     ...(note ? { note } : {}),
     ...(userNote ? { userNote } : {}),
