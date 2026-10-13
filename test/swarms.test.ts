@@ -834,6 +834,19 @@ test("human messages preserve human actor attribution while notifications remain
   assert.equal(message.senderId, root.id);
 });
 
+test("the swarm view omits the model the workers run", async () => {
+  const { service, caller } = await swarmFixture({ runtime: { model: "pinned-worker-model" } });
+  await service.spawn(caller, { requestId: "one", text: "Work" });
+  assert.equal((await service.inspect(caller)).model, "pinned-worker-model");
+});
+
+test("a swarm with no pinned model reports an empty model instead of none at all", async () => {
+  const { service, caller } = await swarmFixture();
+  await service.spawn(caller, { requestId: "one", text: "Work" });
+  const inspected = await service.inspect(caller);
+  assert.equal("model" in inspected, false);
+});
+
 test("expired swarms retain readable history but cannot reserve or wake more work", async () => {
   const { service, caller, root, store, runs } = await swarmFixture();
   await service.spawn(caller, { requestId: "one", text: "Work" });
