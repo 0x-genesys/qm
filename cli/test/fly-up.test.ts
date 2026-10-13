@@ -220,6 +220,8 @@ const fs=require('node:fs'); fs.appendFileSync(${JSON.stringify(calls)}, JSON.st
   assert.deepEqual(actual[0].args, ["secrets", "set", "--stage", "-a", "example-core", "CORE_SIGNING_SECRET=-"]);
   assert.equal(actual[0].input, "x".repeat(40));
   assert.ok(!actual[0].args.join(" ").includes("x".repeat(40)));
+  writeFileSync(envFile, "CORE_SIGNING_SECRET=\n");
+  assert.equal(stageFlyOperatorSecrets(config, dir, new Set(["core"]), { envFile }).size, 0);
   writeFileSync(envFile, "CORE_SIGNING_SECRET=placeholder\n");
   assert.throws(
     () => stageFlyOperatorSecrets(config, dir, new Set(["core"]), { envFile }),
