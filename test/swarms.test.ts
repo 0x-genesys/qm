@@ -844,7 +844,7 @@ test("a swarm with no pinned model reports an empty model instead of none at all
   const { service, caller } = await swarmFixture();
   await service.spawn(caller, { requestId: "one", text: "Work" });
   const inspected = await service.inspect(caller);
-  assert.equal(inspected.model, undefined);
+  assert.equal("model" in inspected, false);
 });
 
 test("expired swarms retain readable history but cannot reserve or wake more work", async () => {
