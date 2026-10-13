@@ -365,3 +365,64 @@ test("a reply with no messages at all is read as a board with nothing on it", as
   assert.match(text, /Could not read the board: the reply carried no messages/);
   assert.doesNotMatch(text, /No messages yet/);
 });
+
+test("a page read before the board was emptied is appended as the whole board", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const view = inspected();
+  const board = [
+    message({ id: "m-1", seq: 1, text: "the first finding" }),
+    message({ id: "m-2", seq: 2, text: "the second finding" }),
+    message({ id: "m-3", seq: 3, text: "the third finding" }),
+  ];
+  let releaseStale = (): void => {};
+  let releaseFresh = (): void => {};
+  const stale = new Promise<void>((resolve) => {
+    releaseStale = resolve;
+  });
+  const fresh = new Promise<void>((resolve) => {
+    releaseFresh = resolve;
+  });
+  let parkedStale = false;
+  let parkedFresh = false;
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    const query = new URL(url, "http://localhost").searchParams;
+    if (query.get("read") !== "1") return jsonResponse(view);
+    if (!url.includes(SESSION)) return jsonResponse({ messages: [] });
+    const after = Number(query.get("after") ?? 0);
+    if (after === 2 && !parkedStale) {
+      parkedStale = true;
+      await stale;
+    }
+    if (after === 0 && parkedStale && !parkedFresh) {
+      parkedFresh = true;
+      await fresh;
+    }
+    return jsonResponse({ messages: board.filter((entry) => entry.seq > after).slice(0, 2) });
+  }) as typeof fetch;
+
+  const host = document.createElement("div");
+  let current = SESSION;
+  const holder = { draw: (): void => {} };
+  const panel = createSwarmStrip(() => holder.draw());
+  holder.draw = (): void => void render(panel.strip(current), host);
+  const openPanelFor = async (): Promise<void> => {
+    holder.draw();
+    await flush();
+    holder.draw();
+    host.querySelector<HTMLButtonElement>(".bg-activity-strip")!.click();
+    await flush();
+    holder.draw();
+  };
+  await openPanelFor();
+  current = "second-session";
+  await openPanelFor();
+  current = SESSION;
+  await openPanelFor();
+  releaseStale();
+  await flush();
+  releaseFresh();
+  await flush();
+  holder.draw();
+  assert.match(host.textContent ?? "", /the first finding/);
+});
