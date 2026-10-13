@@ -125,11 +125,13 @@ The response includes a durable message `id` and monotonic per-swarm `seq`.
 `audience` is either a list of recipient IDs or the string `"all"`. IDs are
 validated against eligible, ready peers. Duplicates collapse into one recipient;
 reordering IDs does not change a retry. `"all"` includes every eligible member,
-including the sender. An empty list records a shared message without waking anyone.
+including the sender, and sets `broadcast` on the stored message, since the
+resolved ID list cannot be told apart from an explicit one once the roster grows.
+An empty list records a shared message without waking anyone.
 
 Messages record intended recipients, author kind, authenticated actor, sender
-agent identity (`senderId`), ordinary QM session (`senderSessionId`), and optional
-`replyTo`. Other authorized swarm members can read
+agent identity (`senderId`), ordinary QM session (`senderSessionId`), optional
+`broadcast`, and optional `replyTo`. Other authorized swarm members can read
 them even if they were not in the intended audience. Root and worker participant
 rosters must remain the original roster; changes fail closed. Current scope and
 identity authorization is rechecked before access and execution.
@@ -254,8 +256,8 @@ a separate schema so migration-reset tests cannot invalidate its state.
 Set `SWARM_TEST_DATABASE_URL` when running `test/swarm-orchestrator.test.ts` to
 exercise the HTTP spawn/reply flow across an application restart with real durable
 state. These tests use deterministic model and sandbox doubles; live provider and
-model acceptance remains a separate deployment check. The agent-board UI is
-intentionally deferred.
+model acceptance remains a separate deployment check. The web UI renders the
+tree and the shared board read-only, from the owning session's swarm panel.
 
 Operators can set `SWARMS_ENABLED=false` to disable the swarm service, API,
 agent discovery, and background reconciliation. Existing swarm records and
