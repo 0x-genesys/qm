@@ -73,7 +73,6 @@ test("the web proxy exposes only swarm controls, not spawn or send", async () =>
   assert.equal(calls.slice(before).filter((call) => call.url.includes("/swarm")).length, 0);
 });
 
-// relayCore stamps a source-auth nonce onto every relayed URL, so compare the parts this route controls.
 const relayed = (url: string) => {
   const parsed = new URL(url, "http://core.invalid");
   const params = parsed.searchParams;
