@@ -847,6 +847,16 @@ test("a swarm with no pinned model reports an empty model instead of none at all
   assert.equal("model" in inspected, false);
 });
 
+test("a broadcast is stored as a plain id list, so it cannot be told from an explicit address", async () => {
+  const { service, caller } = await swarmFixture();
+  const [worker] = await service.spawn(caller, { requestId: "one", text: "Work" });
+  await service.sweep();
+  const everyone = await service.send(caller, { requestId: "everyone", audience: "all", text: "Work" });
+  const named = await service.send(caller, { requestId: "named", audience: [worker!.id], text: "Work" });
+  assert.equal(everyone.broadcast, true);
+  assert.equal("broadcast" in named, false);
+});
+
 test("expired swarms retain readable history but cannot reserve or wake more work", async () => {
   const { service, caller, root, store, runs } = await swarmFixture();
   await service.spawn(caller, { requestId: "one", text: "Work" });

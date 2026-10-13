@@ -31,6 +31,7 @@ interface SwarmBoardMessage {
   author: "agent" | "human";
   text: string;
   audience: string[];
+  broadcast?: true;
   replyTo?: string;
   createdAt: number;
 }
@@ -70,7 +71,7 @@ function peerLabel(id: string, view: SwarmView): string {
 
 function audienceOf(message: SwarmBoardMessage, view: SwarmView): string {
   if (!message.audience.length) return "nobody";
-  if (view.peers.every((peer) => message.audience.includes(peer.id))) return "all";
+  if (message.broadcast) return "all";
   return message.audience.map((id) => peerLabel(id, view)).join(", ");
 }
 

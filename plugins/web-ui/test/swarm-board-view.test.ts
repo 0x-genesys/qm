@@ -24,6 +24,7 @@ type SwarmInspect = Awaited<ReturnType<SwarmService["inspect"]>>;
 
 const ROOT = "11111111-aaaa-4aaa-8aaa-111111111111";
 const WORKER = "22222222-bbbb-4bbb-8bbb-222222222222";
+const LATE = "33333333-cccc-4ccc-8ccc-333333333333";
 const SESSION = "root-session";
 const HOUR = 3_600_000;
 
@@ -196,7 +197,24 @@ test("a reply whose target is outside the loaded board reads as a top-level mess
 });
 
 test("a message delivered to every peer is listed as ids instead of all", async (t) => {
-  const host = await openPanel(t, inspected(), [message({ id: "m-1", seq: 1, audience: [ROOT, WORKER] })]);
+  const host = await openPanel(t, inspected(), [
+    message({ id: "m-1", seq: 1, audience: [ROOT, WORKER], broadcast: true }),
+  ]);
+  assert.match(host.textContent ?? "", /to all/);
+});
+
+test("a broadcast stops reading as all once a later worker joins the swarm", async (t) => {
+  const host = await openPanel(
+    t,
+    inspected({
+      peers: [
+        member({ id: ROOT, depth: 0, sessionId: SESSION }),
+        member({ id: WORKER, parentId: ROOT }),
+        member({ id: LATE, parentId: ROOT }),
+      ],
+    }),
+    [message({ id: "m-1", seq: 1, audience: [ROOT, WORKER], broadcast: true })],
+  );
   assert.match(host.textContent ?? "", /to all/);
 });
 
