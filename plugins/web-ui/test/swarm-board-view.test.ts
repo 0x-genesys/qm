@@ -166,12 +166,12 @@ test("a swarm that pinned no model names one anyway", async (t) => {
   assert.match(host.textContent ?? "", /Workers run the scope default/);
 });
 
-test("a board read that failed is reported as a board with nothing on it", async (t) => {
+test("a board read that failed is reported without the reason the server gave", async (t) => {
   const view = inspected();
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const query = new URL(String(input), "http://localhost").searchParams;
     if (query.get("read") !== "1") return jsonResponse(view);
-    throw new Error("board read failed");
+    throw new Error("session access denied");
   }) as typeof fetch;
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const host = document.createElement("div");
@@ -185,8 +185,28 @@ test("a board read that failed is reported as a board with nothing on it", async
   await flush();
   holder.draw();
   const text = host.textContent ?? "";
-  assert.match(text, /Could not read the board/);
+  assert.match(text, /Could not read the board: session access denied/);
   assert.doesNotMatch(text, /No messages yet/);
+});
+
+test("a board reply carrying no messages reads exactly like a refused read", async (t) => {
+  const view = inspected();
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const query = new URL(String(input), "http://localhost").searchParams;
+    return jsonResponse(query.get("read") === "1" ? {} : view);
+  }) as typeof fetch;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const host = document.createElement("div");
+  const holder = { draw: (): void => {} };
+  const panel = createSwarmStrip(() => holder.draw());
+  holder.draw = (): void => void render(panel.strip(SESSION), host);
+  holder.draw();
+  await flush();
+  holder.draw();
+  host.querySelector<HTMLButtonElement>(".bg-activity-strip")!.click();
+  await flush();
+  holder.draw();
+  assert.match(host.textContent ?? "", /Could not read the board: the reply carried no messages\./);
 });
 
 test("a reply whose target is outside the loaded board reads as a top-level message", async (t) => {

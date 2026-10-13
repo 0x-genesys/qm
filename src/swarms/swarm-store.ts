@@ -42,7 +42,6 @@ export interface SwarmMessage {
   actorId: string;
   text: string;
   audience: string[];
-  /** Set when the sender addressed everyone, which the resolved id list cannot express. */
   broadcast?: true;
   replyTo?: string;
   createdAt: number;
