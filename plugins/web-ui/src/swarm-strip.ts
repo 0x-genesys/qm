@@ -120,6 +120,7 @@ export function createSwarmStrip(redraw: () => void) {
     view: null as SwarmView | null,
     board: [] as SwarmBoardMessage[],
     boardNote: "",
+    generation: 0,
     open: false,
     busy: "",
     error: "",
@@ -136,11 +137,12 @@ export function createSwarmStrip(redraw: () => void) {
     }, REFRESH_MS);
   };
   const loadBoard = async (sessionId: string): Promise<void> => {
+    const generation = ui.generation;
     for (let page = 0; page < BOARD_PAGES; page++) {
       const read = await api<{ messages?: SwarmBoardMessage[] }>(
         `/api/sessions/${encodeURIComponent(sessionId)}/swarm?read=1&after=${ui.board.at(-1)?.seq ?? 0}`,
       ).catch((error: unknown) => (error instanceof Error ? error : new Error("the request did not complete")));
-      if (ui.sessionId !== sessionId) return;
+      if (ui.sessionId !== sessionId || ui.generation !== generation) return;
       if (read instanceof Error) {
         ui.boardNote = `Could not read the board: ${read.message}`;
         return redraw();
@@ -267,6 +269,7 @@ export function createSwarmStrip(redraw: () => void) {
           view: null,
           board: [],
           boardNote: "Reading the board…",
+          generation: ui.generation + 1,
           open: false,
           error: "",
           shown: new Map(),
