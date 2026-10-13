@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { runTrigger, type TriggerDeps } from "../src/triggers/run-trigger.ts";
+import { cronTriggerAuthority } from "../src/cron/authority.ts";
 import { composeCronEditNotice, notifyOwnerOfCronEdit, type CronEditNoticeSink } from "../src/triggers/edit-notice.ts";
 import type { Cron } from "../src/types.ts";
 import { createDeliveryStore } from "../src/delivery/delivery-store.ts";
@@ -67,15 +68,13 @@ describe("runTrigger: scopeShared unions the owner's keychain into the scope run
     assert.equal(seen[0]!.ownerKeychainUnion, undefined);
   });
 
-  it("an owner-mode channel cron also unions the owner's keychain", async () => {
+  it("an owner-mode channel cron, stored without a mode, also unions the owner's keychain", async () => {
     const { deps, seen } = captureDeps();
     await runTrigger(deps, {
-      owner: "U-carol",
-      ownerScopeId: scopeId("channel", "C-eng"),
+      ...cronTriggerAuthority({ owner: "U-carol", ownerScopeId: scopeId("channel", "C-eng") }),
       input: "x",
       fireKey: "oc1",
       surface: "cron",
-      runAs: "owner",
     });
     assert.equal(seen[0]!.ownerKeychainUnion, true);
   });
