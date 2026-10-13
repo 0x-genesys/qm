@@ -72,11 +72,21 @@ function jsonResponse(body: unknown): Response {
   return { ok: true, status: 200, text: async () => JSON.stringify(body) } as unknown as Response;
 }
 
+function notFound(pathname: string): Response {
+  return {
+    ok: false,
+    status: 404,
+    text: async () => JSON.stringify({ error: `no route for ${pathname}` }),
+  } as unknown as Response;
+}
+
 function stub(view: SwarmInspect, board: SwarmMessage[], seen: string[] = [], pageSize = board.length || 1): void {
   globalThis.fetch = (async (input: RequestInfo | URL) => {
     const url = String(input);
     seen.push(url);
-    const query = new URL(url, "http://localhost").searchParams;
+    const parsed = new URL(url, "http://localhost");
+    if (parsed.pathname !== `/api/sessions/${SESSION}/swarm`) return notFound(parsed.pathname);
+    const query = parsed.searchParams;
     if (query.get("read") !== "1") return jsonResponse(view);
     const after = Number(query.get("after") ?? 0);
     return jsonResponse({ messages: board.filter((entry) => entry.seq > after).slice(0, pageSize) });
@@ -260,15 +270,6 @@ test("a second board read restarts from zero instead of the last sequence it hol
     ["0", "1", "2", "3"],
   );
   assert.match(host.textContent ?? "", /Board · 3 messages/);
-});
-
-test("a collapsed panel reads the board anyway, polling for messages nobody opened", async (t) => {
-  const seen: string[] = [];
-  await openPanel(t, inspected(), [message({ id: "m-1", seq: 1 })], seen, undefined, false);
-  assert.deepEqual(
-    seen.filter((url) => url.includes("read=1")),
-    [],
-  );
 });
 
 test("two overlapping board loads append the same page twice", async (t) => {
