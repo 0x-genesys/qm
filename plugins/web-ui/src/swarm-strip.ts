@@ -9,7 +9,7 @@ interface SwarmPeer {
   sessionId?: string;
   sessionUrl?: string;
   sandboxId?: string;
-  context?: unknown;
+  context: unknown;
   state: "reserved" | "ready" | "failed";
   control?: "paused" | "stopped";
   depth: number;
@@ -53,13 +53,11 @@ function short(id: string): string {
 }
 
 function detail(peer: SwarmPeer, view: SwarmView): string {
-  // JSON.stringify yields undefined only when the response carried no context at all.
-  const context = JSON.stringify(peer.context, null, 2);
   return [
     `model: ${view.model ?? "scope default"}`,
     `session: ${peer.sessionId ?? "not started"}`,
     `computer: ${peer.sandboxId ?? "none"}`,
-    `context: ${context ?? "not returned"}`,
+    `context: ${JSON.stringify(peer.context, null, 2)}`,
   ].join("\n");
 }
 

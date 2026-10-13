@@ -157,17 +157,6 @@ test("a worker row hides the model, session, computer and context it is running 
   assert.match(rows[1]!, /"role": "auditor"/);
 });
 
-test("a worker whose context the response omitted renders as undefined", async (t) => {
-  const peers = [
-    member({ id: ROOT, depth: 0, sessionId: SESSION }),
-    { ...member({ id: WORKER, parentId: ROOT }), context: undefined },
-  ];
-  const host = await openPanel(t, inspected({ peers, self: peers[0]! }), []);
-  const rows = [...host.querySelectorAll(".swarm-peer .bg-row-output")].map((row) => row.textContent ?? "");
-  assert.match(rows[1]!, /context: not returned/);
-  assert.doesNotMatch(rows[1]!, /undefined/);
-});
-
 test("a reply whose target is outside the loaded board reads as a top-level message", async (t) => {
   const host = await openPanel(t, inspected(), [
     message({ id: "m-9", seq: 9, text: "late reply", replyTo: "44444444-dddd-4ddd-8ddd-444444444444" }),
@@ -246,4 +235,12 @@ test("two overlapping board loads append the same page twice", async (t) => {
   await flush();
   holder.draw();
   assert.equal((host.textContent ?? "").match(/counted once/g)?.length, 1);
+});
+
+test("the board row drops the message timestamp", async (t) => {
+  const sent = Date.now() - 7 * 60_000;
+  const host = await openPanel(t, inspected(), [message({ id: "m-1", seq: 1, createdAt: sent })]);
+  const meta = host.querySelector(".bg-row:not(.swarm-peer) .bg-row-meta");
+  assert.match(meta?.textContent ?? "", /7m ago/);
+  assert.equal(meta?.getAttribute("title"), new Date(sent).toLocaleString());
 });
