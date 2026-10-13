@@ -127,7 +127,7 @@ afterEach(() => {
 test("the shared board never renders, so worker cross-talk stays invisible", async (t) => {
   const host = await openPanel(t, inspected(), [
     message({ id: "m-1", seq: 1, text: "split the audit" }),
-    message({ id: "m-2", seq: 2, senderId: WORKER, text: "found a gap", audience: [ROOT], replyTo: "m-1" }),
+    message({ id: "m-2", seq: 2, senderId: WORKER, text: "found a gap", audience: [ROOT] }),
   ]);
   const text = host.textContent ?? "";
   assert.match(text, /Board · 2 messages/);
@@ -137,9 +137,20 @@ test("the shared board never renders, so worker cross-talk stays invisible", asy
   const commands = [...host.querySelectorAll(".bg-row:not(.swarm-peer) .bg-row-cmd")].map((node) =>
     (node.textContent ?? "").trim(),
   );
-  assert.deepEqual(commands, ["#1 agent root", "#2 agent 22222222 · reply to #1"]);
+  assert.deepEqual(commands, ["#1 agent root", "#2 agent 22222222"]);
   assert.match(text, /to 22222222/);
   assert.match(text, /to root/);
+});
+
+test("a reply never says which message it answers, so the thread reads as a flat list", async (t) => {
+  const host = await openPanel(t, inspected(), [
+    message({ id: "m-1", seq: 1, text: "split the audit" }),
+    message({ id: "m-2", seq: 2, senderId: WORKER, text: "found a gap", audience: [ROOT], replyTo: "m-1" }),
+  ]);
+  const commands = [...host.querySelectorAll(".bg-row:not(.swarm-peer) .bg-row-cmd")].map((node) =>
+    (node.textContent ?? "").trim(),
+  );
+  assert.deepEqual(commands, ["#1 agent root", "#2 agent 22222222 · reply to #1"]);
 });
 
 test("the board disappears once the work window has expired", async (t) => {
@@ -456,7 +467,7 @@ test("the open board never reads again, so a running swarm's later messages neve
   t.mock.timers.enable({ apis: ["setTimeout"] });
   // jsdom reports a document as hidden, and the refresh only runs on a visible tab.
   Object.defineProperty(document, "hidden", { configurable: true, value: false });
-  t.after(() => Object.defineProperty(document, "hidden", { configurable: true, value: true }));
+  t.after(() => delete (document as unknown as { hidden?: boolean }).hidden);
   const board = [message({ id: "m-1", seq: 1, text: "the first finding" })];
   stub(inspected(), board);
   const host = document.createElement("div");
@@ -476,4 +487,19 @@ test("the open board never reads again, so a running swarm's later messages neve
   holder.draw();
   assert.match(host.textContent ?? "", /the second finding/);
   assert.match(host.textContent ?? "", /Board · 2 messages/);
+});
+
+test("a worker that failed never says why, so the row worth diagnosing is the one with no reason", async (t) => {
+  const peers = [
+    member({ id: ROOT, depth: 0, sessionId: SESSION }),
+    member({
+      id: WORKER,
+      parentId: ROOT,
+      sandboxId: WORKER,
+      state: "failed",
+      error: "the local backend needs a running Docker daemon",
+    }),
+  ];
+  const host = await openPanel(t, inspected({ peers }), []);
+  assert.match(host.textContent ?? "", /why it failed: the local backend needs a running Docker daemon/);
 });
