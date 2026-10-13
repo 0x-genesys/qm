@@ -72,6 +72,7 @@ export interface TriggerOutcome {
   ran: boolean;
   deferred?: boolean;
   delivering?: boolean;
+  handedBack?: boolean;
   status?: TurnResult["status"];
   note?: string;
   userNote?: string;
@@ -82,6 +83,12 @@ export interface TriggerOutcome {
 class FireDeferred extends Error {
   constructor() {
     super("fire deferred: session busy");
+  }
+}
+
+class FireHandedBack extends Error {
+  constructor() {
+    super("fire handed back: this core is shutting down with the run unfinished");
   }
 }
 
@@ -291,6 +298,7 @@ export async function runTrigger(deps: TriggerDeps, spec: TriggerSpec): Promise<
     });
   };
   let deferred = false;
+  let handedBack = false;
   const ran = await deps.idempotency
     .once(spec.fireKey, async () => {
       await spec.onClaimed?.();
@@ -354,6 +362,7 @@ export async function runTrigger(deps: TriggerDeps, spec: TriggerSpec): Promise<
         idempotencyKey: spec.fireKey,
       });
       if (spec.deferWhenBusy && res.refusalKind === "session_busy") throw new FireDeferred();
+      if (res.status === "queued") throw new FireHandedBack();
       status = res.status;
       reply = res.reply;
       sessionId = res.sessionId;
@@ -396,8 +405,9 @@ export async function runTrigger(deps: TriggerDeps, spec: TriggerSpec): Promise<
       }
     })
     .catch((e: unknown) => {
-      if (!(e instanceof FireDeferred)) throw e;
-      deferred = true;
+      if (e instanceof FireHandedBack) handedBack = true;
+      else if (e instanceof FireDeferred) deferred = true;
+      else throw e;
       return false;
     });
 
@@ -406,6 +416,7 @@ export async function runTrigger(deps: TriggerDeps, spec: TriggerSpec): Promise<
     ran,
     ...(deferred ? { deferred } : {}),
     ...(delivering ? { delivering } : {}),
+    ...(handedBack ? { handedBack } : {}),
     ...(status ? { status } : {}),
     ...(note ? { note } : {}),
     ...(userNote ? { userNote } : {}),
