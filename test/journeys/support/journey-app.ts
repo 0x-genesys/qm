@@ -24,10 +24,13 @@ export interface JourneyApp {
   stop(): Promise<void>;
 }
 
-export const journeyTestOptions = (timeout: number) => ({
-  timeout,
-  skip: process.env.DATABASE_URL ? false : "journeys need DATABASE_URL (run them through npm run test:journey)",
-});
+export const journeyTestOptions = (timeout: number) => {
+  if (process.env.CI && !process.env.DATABASE_URL) throw new Error("journeys need DATABASE_URL in CI");
+  return {
+    timeout,
+    skip: process.env.DATABASE_URL ? false : "journeys need DATABASE_URL (run them through npm run test:journey)",
+  };
+};
 
 export async function waitFor<T>(
   probe: () => Promise<T | undefined | false>,
