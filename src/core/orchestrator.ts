@@ -7,6 +7,7 @@ import { memoryBoundedEntries, memoryContextPayload, nextMemoryContext } from ".
 import { isBackendCredential } from "../credentials/keychain.ts";
 import { resolveBrowserModel } from "../model/browser-model.ts";
 import { memoryRecallDelta } from "../memory/recall-delta.ts";
+import { UNTRACKED_PROVENANCE } from "../memory/facts.ts";
 import { requiresDelegation, delegatedAuthorizationOrigin } from "../sessions/session-syscalls.ts";
 import {
   MAX_DOCUMENT_BYTES,
@@ -2096,7 +2097,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           nextContext.throughSeq > (latestMemoryContext ? memoryContextPayload(latestMemoryContext)!.throughSeq : -1);
         const memoryHistoryReset = nextContext.throughSeq >= 0;
         const captureDependencies = () => [
-          ...memoryView.records,
+          ...memoryView.facts,
           ...(!memoryView.complete ||
           memoryBoundedEntries(memoryWindow.entries).length > 0 ||
           toolCalls > 0 ||
@@ -2104,15 +2105,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           input.overheard?.length ||
           input.attachments?.length ||
           input.inboundNotes
-            ? [
-                {
-                  id: "untracked-turn-context",
-                  text: "",
-                  sensitivity: "unknown" as const,
-                  sources: [],
-                  sourceUnknown: true,
-                },
-              ]
+            ? [UNTRACKED_PROVENANCE]
             : []),
         ];
         if (memoryContextChanged) {
@@ -2839,7 +2832,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             : {}),
           ...(strictReadOnly ? {} : { attach: attachStaging.attach }),
           memory: context.memory,
-          memoryCaptureMetadata: () => ({ sessionId: session.id, inheritedRecords: captureDependencies() }),
+          memoryCaptureMetadata: () => ({ sessionId: session.id, inheritedFacts: captureDependencies() }),
           memoryScopeId,
           ...(memoryAccess ? { memoryAccess } : {}),
           ...(!external && deps.mcp ? { mcp: deps.mcp } : {}),
@@ -4267,7 +4260,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               await onTurnEnd({
                 scopeId: memoryScopeId,
                 conversationScopeId: scopeId,
-                inheritedRecords: captureDependencies(),
+                inheritedFacts: captureDependencies(),
                 input: turnInput,
                 reply,
                 actorId: actor.id,
