@@ -101,6 +101,7 @@ test("client-credentials auth mints a token and re-mints after the server revoke
   });
   assert.equal(mcpResultText(await client.callTool("query", {})), "ran query");
   assert.equal(fixture.mints, 1);
+  while (!fixture.requests.some((request) => request.method === "GET")) await new Promise((r) => setTimeout(r, 5));
   fixture.revokeTokens();
   assert.equal(mcpResultText(await client.callTool("query", {})), "ran query");
   assert.equal(fixture.mints, 2);
