@@ -135,8 +135,10 @@ test("the shared board never renders, so worker cross-talk stays invisible", asy
   assert.doesNotMatch(text, /No messages yet/);
   assert.match(text, /split the audit/);
   assert.match(text, /found a gap/);
-  assert.match(text, /#1 agent root/);
-  assert.match(text, /#2 agent 22222222 · reply to #1/);
+  const commands = [...host.querySelectorAll(".bg-row:not(.swarm-peer) .bg-row-cmd")].map((node) =>
+    (node.textContent ?? "").trim(),
+  );
+  assert.deepEqual(commands, ["#1 agent root", "#2 agent 22222222 · reply to #1"]);
   assert.match(text, /to 22222222/);
   assert.match(text, /to root/);
 });
@@ -231,6 +233,11 @@ test("a broadcast stops reading as all once a later worker joins the swarm", asy
     [message({ id: "m-1", seq: 1, audience: [ROOT, WORKER], broadcast: true })],
   );
   assert.match(host.textContent ?? "", /to all/);
+});
+
+test("a message addressed to several peers lists only the first of them", async (t) => {
+  const host = await openPanel(t, inspected(), [message({ id: "m-1", seq: 1, audience: [ROOT, WORKER] })]);
+  assert.match(host.textContent ?? "", /to root, 22222222/);
 });
 
 test("a message that reached nobody renders a blank audience", async (t) => {

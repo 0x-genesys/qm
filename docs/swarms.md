@@ -98,7 +98,8 @@ never retires the existing forum.
 
 ### Identity, peers, and character
 
-`GET /v1/swarm` returns `id`, `self`, `peers`, `backend`, `settings`, and `expiresAt`. Peer
+`GET /v1/swarm` returns `id`, `self`, `peers`, `backend`, `settings`, `expiresAt`, and
+`model` when the swarm pinned one. Peer
 records keep trusted IDs, ancestry, session links, storage selection, and lifecycle
 state separate from arbitrary `context` data. Only this swarm is listed, not every
 session with the same owner, and never all private sessions in the organization.
@@ -215,10 +216,14 @@ pending notifications fail, unstarted queued runs are withdrawn, running turns a
 aborted, and later turns in that worker session are refused. `inspect` reports each
 peer's `control`. The web UI shows a Swarm strip on swarm sessions: a collapsed summary of
 active, starting, paused, stopped, and failed workers; when expanded, workers
-grouped under their parent (20 per group, with "show more"); per-worker Pause,
+grouped under their parent (20 per group, with "show more"), each with its session,
+computer, and `context`; the work window and whether it has expired; the model the
+workers run; the shared board, with each message's sequence, author, sender,
+audience, reply target, and time; per-worker Pause,
 Resume, and Stop; and Pause all, Resume all, and Stop all (with a confirm), which
 apply this action to the root's direct children so it cascades. The strip
 refreshes every few seconds only while workers are active and the tab is visible.
+The board is read-only here and stays readable after the work window expires.
 
 ## Defaults
 
@@ -256,8 +261,7 @@ a separate schema so migration-reset tests cannot invalidate its state.
 Set `SWARM_TEST_DATABASE_URL` when running `test/swarm-orchestrator.test.ts` to
 exercise the HTTP spawn/reply flow across an application restart with real durable
 state. These tests use deterministic model and sandbox doubles; live provider and
-model acceptance remains a separate deployment check. The web UI renders the
-tree and the shared board read-only, from the owning session's swarm panel.
+model acceptance remains a separate deployment check.
 
 Operators can set `SWARMS_ENABLED=false` to disable the swarm service, API,
 agent discovery, and background reconciliation. Existing swarm records and
