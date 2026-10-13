@@ -1963,6 +1963,7 @@ const apiRoutes: readonly WebRoute[] = [
     method: "GET",
     path: "/api/sessions/:id/swarm",
     handle: async (c) => {
+      // Core serves the tree and the shared board on one path, told apart by read=1.
       const qs = new URLSearchParams();
       if (c.url.searchParams.get("read") === "1") {
         qs.set("read", "1");

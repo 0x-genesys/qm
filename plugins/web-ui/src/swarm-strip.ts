@@ -40,6 +40,7 @@ type Status = Control | "starting" | "failed";
 
 const PAGE = 20;
 const REFRESH_MS = 4_000;
+// Core answers each read with a bounded page, so draining a long board takes repeated reads.
 const BOARD_PAGES = 16;
 const BULK: Record<Control, { label: string; from: (peer: SwarmPeer) => boolean }> = {
   paused: { label: "Pause all", from: (peer) => !peer.control },
@@ -77,6 +78,7 @@ function audienceOf(message: SwarmBoardMessage, view: SwarmView): string {
 function boardRows(messages: SwarmBoardMessage[], view: SwarmView): TemplateResult[] {
   const seqById = new Map(messages.map((message) => [message.id, message.seq]));
   return messages.map((message) => {
+    // A reply whose target is outside the loaded page keeps its id rather than reading as a top-level message.
     const target = message.replyTo === undefined ? undefined : (seqById.get(message.replyTo) ?? short(message.replyTo));
     const reply = target === undefined ? "" : ` · reply to ${typeof target === "number" ? `#${target}` : target}`;
     return html`<div class="bg-row" style="padding-left:${message.replyTo ? 12 : 0}px">
@@ -137,6 +139,7 @@ export function createSwarmStrip(redraw: () => void) {
     }, REFRESH_MS);
   };
   const loadBoard = async (sessionId: string): Promise<void> => {
+    // A concurrent pass would still be holding the cursor this one starts from, and append the same page again.
     if (ui.boardBusy) return;
     ui.boardBusy = true;
     try {
@@ -146,6 +149,7 @@ export function createSwarmStrip(redraw: () => void) {
           `/api/sessions/${encodeURIComponent(sessionId)}/swarm?read=1&after=${after}`,
         ).catch(() => null);
         if (ui.sessionId !== sessionId) return;
+        // A read that failed is not a board with nothing on it; reporting it as empty would be a lie.
         if (!Array.isArray(read?.messages)) {
           ui.boardError = "Could not read the board.";
           redraw();
