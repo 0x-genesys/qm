@@ -28,7 +28,7 @@ export type ModelReply = { text: string } | { tool: string; input: Record<string
 export interface FakeGateway {
   url: string;
   requests: ModelRequest[];
-  rejected: Array<{ status: number; reason: string; bytes: number; inputTokens: number; shape?: string[] }>;
+  rejected: Array<{ status: number; reason: string; bytes: number; inputTokens: number }>;
   respond: (req: ModelRequest) => ModelReply;
   close(): Promise<void>;
 }
@@ -176,18 +176,7 @@ export async function startFakeGateway(
     const raw = await readBody(req);
     const bytes = raw.byteLength;
     if (bytes > limits.maxRequestBytes) {
-      const over = JSON.parse(raw.toString("utf8")) as ModelRequest;
-      fake.rejected.push({
-        status: 413,
-        reason: PROVIDER_413,
-        bytes,
-        inputTokens: 0,
-        shape: over.messages.map((m) =>
-          Array.isArray(m.content)
-            ? (m.content as any[]).map((b) => `${b.type}:${(b.text ?? b.source?.data ?? "").length}`).join(",")
-            : "str",
-        ),
-      });
+      fake.rejected.push({ status: 413, reason: PROVIDER_413, bytes, inputTokens: 0 });
       res.writeHead(413, { "content-type": "application/json" });
       res.end(JSON.stringify({ type: "error", error: { type: "request_too_large", message: PROVIDER_413 } }));
       return;

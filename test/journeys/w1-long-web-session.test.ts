@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { journeyTestOptions, startJourneyApp } from "./support/journey-app.ts";
 
 const PROVIDER_REQUEST_BYTES = 10 * 1024 * 1024;
-const PROVIDER_CONTEXT_TOKENS = 1_000_000;
+const PROVIDER_CONTEXT_TOKENS = 200_000;
 const TURNS = 42;
 const CSV_LINES = 25_000;
 const BIG_CSV_LINES = 120_000;
