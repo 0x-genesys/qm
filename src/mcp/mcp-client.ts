@@ -11,14 +11,14 @@ const MAX_LIST_PAGES = 20;
 
 export type McpFetch = FetchLike;
 export type McpToolResult = Pick<CallToolResult, "content" | "structuredContent" | "isError">;
-export type McpRemoteTool = Pick<Tool, "name" | "description" | "inputSchema">;
+type McpRemoteTool = Pick<Tool, "name" | "description" | "inputSchema">;
 
 export type McpAuth =
   | { mode: "none" }
   | { mode: "bearer"; token: string }
   | { mode: "client-credentials"; clientId: string; clientSecret: string };
 
-export interface McpCallOptions {
+interface McpCallOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
 }

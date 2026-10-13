@@ -1608,9 +1608,9 @@ export function createComposerSurface(ctx: ConvCtx, options: ComposerOptions = {
       if (ctx.chat.state.normalStreamFn) agent.streamFn = ctx.chat.state.normalStreamFn;
       ctx.chat.scrollToBottom();
       await agent.prompt(userSendMessage(text, attachments.length ? attachments : undefined));
-      if (sentFromThread) unsentRuntimeThreads.delete(sentFromThread);
       restoreBlockedSend(agent, sentFromThread, text, attachments);
       restoreFailedAttachments(agent, text, attachments);
+      if (sentFromThread) unsentRuntimeThreads.delete(sentFromThread);
     } catch (err) {
       ctx.chat.state.pendingSend = null;
       if (ctx.chat.state.threadRef && ctx.chat.state.sessionId === null) dropPendingSession(ctx.chat.state.threadRef);

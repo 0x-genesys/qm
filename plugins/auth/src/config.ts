@@ -3,7 +3,7 @@ import { parsePasswordHash } from "./password.ts";
 
 type EmailTransportKind = "resend" | "smtp";
 
-export type SmtpTlsMode = "starttls" | "implicit" | "none";
+type SmtpTlsMode = "starttls" | "implicit" | "none";
 
 interface SmtpSettings {
   host: string;

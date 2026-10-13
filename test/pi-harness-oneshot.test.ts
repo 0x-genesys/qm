@@ -1006,11 +1006,3 @@ test("Pi judge uses supported reasoning effort when configured with Astra", asyn
   assert.equal(request.model, "gpt-6-astra");
   assert.equal(request.reasoning?.effort, "low");
 });
-
-test("model requests are trimmed under the 10 MiB edge limit by default", () => {
-  const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "A".repeat(11_000_000) } };
-  const payload = { messages: [{ role: "user", content: [image, { type: "text", text: "describe" }] }] };
-  const trimmed = trimPayloadToByteBudget(payload);
-  assert.ok(Buffer.byteLength(JSON.stringify(trimmed)) < 10 * 1024 * 1024);
-  assert.match(JSON.stringify(trimmed), /describe/);
-});

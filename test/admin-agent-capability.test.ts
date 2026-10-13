@@ -831,12 +831,20 @@ test("native admin tools use the authenticated handler, including its live autho
       { current: { admin: { call, operationsAvailable: true } } as ToolContext },
       { controlTools: true },
     ).find((t) => t.name === "admin")!;
+    const before = await tool.execute(
+      "native-read-before",
+      { action: "memory", scope: target },
+      undefined,
+      undefined,
+      {} as never,
+    );
+    const { revision } = JSON.parse((before.content[0] as { text: string }).text).body as { revision: string };
     const written = await tool.execute(
       "native-write",
       {
         action: "replace_memory",
         scope: target,
-        value: { content: "- synthetic admin tool fixture" },
+        value: { content: "- synthetic admin tool fixture", revision },
       },
       undefined,
       undefined,
