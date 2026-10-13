@@ -122,6 +122,7 @@ test("the shared board never renders, so worker cross-talk stays invisible", asy
   ]);
   const text = host.textContent ?? "";
   assert.match(text, /Board · 2 messages/);
+  assert.doesNotMatch(text, /No messages yet/);
   assert.match(text, /split the audit/);
   assert.match(text, /found a gap/);
   assert.match(text, /#1 agent root/);
@@ -312,4 +313,33 @@ test("the board row drops the message timestamp", async (t) => {
   const meta = host.querySelector(".bg-row:not(.swarm-peer) .bg-row-meta");
   assert.match(meta?.textContent ?? "", /7m ago/);
   assert.equal(meta?.getAttribute("title"), new Date(sent).toLocaleString());
+});
+
+test("a board still being read is reported as a board with nothing on it", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const view = inspected({ expiresAt: Date.now() - HOUR });
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    if (new URL(String(input), "http://localhost").searchParams.get("read") !== "1") return jsonResponse(view);
+    return new Promise<Response>(() => {});
+  }) as typeof fetch;
+  const host = document.createElement("div");
+  const holder = { draw: (): void => {} };
+  const panel = createSwarmStrip(() => holder.draw());
+  holder.draw = (): void => void render(panel.strip(SESSION), host);
+  holder.draw();
+  await flush();
+  holder.draw();
+  host.querySelector<HTMLButtonElement>(".bg-activity-strip")!.click();
+  await flush();
+  holder.draw();
+  const text = host.textContent ?? "";
+  assert.match(text, /Reading the board/);
+  assert.doesNotMatch(text, /No messages yet/);
+});
+
+test("a swarm whose board is genuinely empty says nothing about it", async (t) => {
+  const host = await openPanel(t, inspected(), []);
+  const text = host.textContent ?? "";
+  assert.match(text, /Board · 0 messages/);
+  assert.match(text, /No messages yet/);
 });

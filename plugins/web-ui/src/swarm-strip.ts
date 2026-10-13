@@ -3,7 +3,7 @@ import { Users, ChevronRight } from "lucide";
 import { api } from "./core-bridge.ts";
 import { icon, relTime } from "./ui.ts";
 
-interface SwarmPeer {
+export interface SwarmPeer {
   id: string;
   parentId?: string;
   sessionId?: string;
@@ -15,7 +15,7 @@ interface SwarmPeer {
   depth: number;
 }
 
-interface SwarmView {
+export interface SwarmView {
   id: string;
   self: SwarmPeer;
   peers: SwarmPeer[];
@@ -24,7 +24,7 @@ interface SwarmView {
   expiresAt: number;
 }
 
-interface SwarmBoardMessage {
+export interface SwarmBoardMessage {
   id: string;
   seq: number;
   senderId: string;
@@ -120,8 +120,7 @@ export function createSwarmStrip(redraw: () => void) {
     sessionId: "",
     view: null as SwarmView | null,
     board: [] as SwarmBoardMessage[],
-    boardBusy: false,
-    boardError: "",
+    boardNote: "",
     open: false,
     busy: "",
     error: "",
@@ -138,33 +137,25 @@ export function createSwarmStrip(redraw: () => void) {
     }, REFRESH_MS);
   };
   const loadBoard = async (sessionId: string): Promise<void> => {
-    if (ui.boardBusy) return;
-    ui.boardBusy = true;
-    try {
-      for (let page = 0; page < BOARD_PAGES; page++) {
-        const after = ui.board.at(-1)?.seq ?? 0;
-        const read = await api<{ messages?: SwarmBoardMessage[] }>(
-          `/api/sessions/${encodeURIComponent(sessionId)}/swarm?read=1&after=${after}`,
-        ).catch((error: unknown) => (error instanceof Error ? error : new Error("the request did not complete")));
-        if (ui.sessionId !== sessionId) return;
-        if (read instanceof Error) {
-          ui.boardError = `Could not read the board: ${read.message}`;
-          redraw();
-          return;
-        }
-        if (!Array.isArray(read.messages)) {
-          ui.boardError = "Could not read the board: the reply carried no messages.";
-          redraw();
-          return;
-        }
-        ui.boardError = "";
-        const fresh = read.messages.filter((message) => message.seq > after);
-        if (!fresh.length) return;
-        ui.board = [...ui.board, ...fresh];
-        redraw();
+    for (let page = 0; page < BOARD_PAGES; page++) {
+      const read = await api<{ messages?: SwarmBoardMessage[] }>(
+        `/api/sessions/${encodeURIComponent(sessionId)}/swarm?read=1&after=${ui.board.at(-1)?.seq ?? 0}`,
+      ).catch((error: unknown) => (error instanceof Error ? error : new Error("the request did not complete")));
+      if (ui.sessionId !== sessionId) return;
+      if (read instanceof Error) {
+        ui.boardNote = `Could not read the board: ${read.message}`;
+        return redraw();
       }
-    } finally {
-      ui.boardBusy = false;
+      if (!Array.isArray(read.messages)) {
+        ui.boardNote = "Could not read the board: the reply carried no messages.";
+        return redraw();
+      }
+      const after = ui.board.at(-1)?.seq ?? 0;
+      const fresh = read.messages.filter((message) => message.seq > after);
+      ui.board = [...ui.board, ...fresh];
+      ui.boardNote = ui.board.length ? "" : "No messages yet.";
+      redraw();
+      if (!fresh.length) return;
     }
   };
   const load = async (sessionId: string): Promise<void> => {
@@ -276,7 +267,7 @@ export function createSwarmStrip(redraw: () => void) {
           sessionId,
           view: null,
           board: [],
-          boardError: "",
+          boardNote: "Reading the board…",
           open: false,
           error: "",
           shown: new Map(),
@@ -294,7 +285,6 @@ export function createSwarmStrip(redraw: () => void) {
         .map((key) => `${counts[key]} ${key}`)
         .join(" · ");
       const canBulk = view.self.depth === 0;
-      const boardNote = ui.boardError || (ui.board.length ? "" : "No messages yet.");
       return html`<section class="bg-activity swarm-activity ${ui.open ? "expanded" : ""}">
         <button
           type="button"
@@ -335,7 +325,7 @@ export function createSwarmStrip(redraw: () => void) {
                 ${tree(view, status)}
                 <div class="bg-panel-note">Board · ${ui.board.length} messages</div>
                 ${ui.board.length ? boardRows(ui.board, view) : nothing}
-                ${boardNote ? html`<div class="bg-panel-note">${boardNote}</div>` : nothing}
+                ${ui.boardNote ? html`<div class="bg-panel-note">${ui.boardNote}</div>` : nothing}
               </div>`
             : nothing
         }
