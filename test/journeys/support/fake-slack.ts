@@ -8,6 +8,7 @@ export interface SlackPost {
   thread_ts?: string;
   ts: string;
   metadata?: unknown;
+  blocks?: unknown;
 }
 
 export interface SlackCall {
@@ -23,6 +24,8 @@ export interface FakeSlack {
   users: Map<string, { id: string; name: string; email: string }>;
   dmFor: Map<string, string>;
   errorFor: Map<string, string>;
+  failNext: Array<{ method: string; error: string; status?: number }>;
+  history: Map<string, Array<{ user: string; text: string; ts: string; thread_ts?: string }>>;
   holdPosts: Promise<void> | null;
   close(): Promise<void>;
 }
@@ -49,6 +52,8 @@ export async function startFakeSlack(): Promise<FakeSlack> {
     users: new Map(),
     dmFor: new Map(),
     errorFor: new Map(),
+    failNext: [],
+    history: new Map(),
     holdPosts: null,
     close: async () => {},
   };
@@ -114,7 +119,8 @@ export async function startFakeSlack(): Promise<FakeSlack> {
       case "conversations.history":
       case "conversations.replies": {
         const channel = String(args.channel);
-        const messages = fake.posts
+        const seeded = (fake.history.get(channel) ?? []).map((m) => ({ type: "message", ...m }));
+        const posted = fake.posts
           .filter((p) => p.channel === channel)
           .filter((p) => (method === "conversations.replies" ? p.ts === args.ts || p.thread_ts === args.ts : true))
           .map((p) => ({
@@ -126,6 +132,14 @@ export async function startFakeSlack(): Promise<FakeSlack> {
             ...(p.thread_ts ? { thread_ts: p.thread_ts } : {}),
             metadata: p.metadata,
           }));
+        const messages = [...seeded, ...posted]
+          .filter((m) =>
+            method === "conversations.replies"
+              ? m.ts === args.ts || m.thread_ts === args.ts
+              : !m.thread_ts || m.thread_ts === m.ts,
+          )
+          .sort((a, b) => Number(b.ts) - Number(a.ts))
+          .slice(0, Number(args.limit ?? 100));
         return { ok: true, messages, has_more: false };
       }
       case "chat.postMessage": {
@@ -141,12 +155,19 @@ export async function startFakeSlack(): Promise<FakeSlack> {
           thread_ts: typeof args.thread_ts === "string" ? args.thread_ts : undefined,
           ts: nextTs(),
           metadata: typeof args.metadata === "string" ? JSON.parse(args.metadata) : args.metadata,
+          blocks: typeof args.blocks === "string" ? JSON.parse(args.blocks) : args.blocks,
         };
         fake.posts.push(post);
         return { ok: true, channel: channelId, ts: post.ts, message: { text: post.text, ts: post.ts } };
       }
-      case "chat.update":
+      case "chat.update": {
+        const post = fake.posts.find((p) => p.channel === args.channel && p.ts === args.ts);
+        if (post) {
+          post.text = typeof args.text === "string" ? args.text : post.text;
+          post.blocks = typeof args.blocks === "string" ? JSON.parse(args.blocks) : args.blocks;
+        }
         return { ok: true, channel: args.channel, ts: args.ts };
+      }
       case "chat.delete":
       case "reactions.add":
       case "reactions.remove":
@@ -171,6 +192,16 @@ export async function startFakeSlack(): Promise<FakeSlack> {
     const args =
       req.method === "POST" ? await parseArgs(req) : Object.fromEntries(new URL(req.url!, "http://x").searchParams);
     fake.calls.push({ method, args });
+    const failAt = fake.failNext.findIndex((f) => f.method === method);
+    if (failAt >= 0) {
+      const [fail] = fake.failNext.splice(failAt, 1);
+      res.writeHead(fail!.status ?? 200, {
+        "content-type": "application/json",
+        ...(fail!.status === 429 ? { "retry-after": "1" } : {}),
+      });
+      res.end(JSON.stringify({ ok: false, error: fail!.error }));
+      return;
+    }
     const body = await handle(method, args);
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(body));
