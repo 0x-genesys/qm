@@ -290,8 +290,7 @@ export function createDeliveryPoller(deps: {
                   editRef = placeholder.ts;
                 }
               }
-              const agentReply = runId !== undefined || d.provenance?.trigger === "conversation";
-              const cleaned = agentReply ? cleanAgentReplyForSlack(d.text) : undefined;
+              const cleaned = d.provenance?.trigger === "conversation" ? cleanAgentReplyForSlack(d.text) : undefined;
               let text = toSlackMrkdwn(cleaned ? cleaned.text : stripSlackDirectives(d.text));
               if (cleaned?.reactions.length && threadTs)
                 await applyAndLogReactions(client, channel, threadTs, cleaned.reactions);
