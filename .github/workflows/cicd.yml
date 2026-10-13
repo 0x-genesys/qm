@@ -331,7 +331,30 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        journey: [c1-cron-delivery, w1-long-web-session]
+        journey:
+          [
+            c1-cron-delivery,
+            c2-cron-resume,
+            w1-long-web-session,
+            w2-csv-artifact,
+            w3-google-draft,
+            w4-publish-app,
+            w5-status-mid-task,
+            w6-provider-failure,
+            s1-slack-reply-once,
+            s2-approval-card,
+            x1-sandbox-basics,
+            x1-sandbox-basics@sprites,
+            x1-sandbox-basics@modal,
+            x1-sandbox-basics@e2b,
+            x1-sandbox-basics@smolmachines,
+            x1-sandbox-basics@agent37,
+            x1-sandbox-basics@superserve,
+            x1-sandbox-basics@do-managed-agents,
+            x1-sandbox-basics@aws,
+            x1-sandbox-basics@porter,
+            x2-security-screen,
+          ]
     services:
       postgres:
         image: postgres:16
@@ -363,11 +386,25 @@ jobs:
       - name: Build connector SDK
         if: needs.reuse.outputs.reusable != 'true'
         run: npm run build:connector-sdk
-      - name: Run the journey against real core, Postgres and fake providers
+      - name: Run the journey against real core, Postgres and fake external services
         if: needs.reuse.outputs.reusable != 'true'
         env:
           DATABASE_URL: postgres://postgres:postgres@localhost:5432/qm
-        run: npm run test:journey -- test/journeys/${{ matrix.journey }}.test.ts
+          SPRITES_TOKEN: ${{ secrets.SPRITES_TOKEN }}
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
+          SMOLMACHINES_TOKEN: ${{ secrets.SMOLMACHINES_TOKEN }}
+          AGENT37_API_KEY: ${{ secrets.AGENT37_API_KEY }}
+          SUPERSERVE_API_KEY: ${{ secrets.SUPERSERVE_API_KEY }}
+          SUPERSERVE_TEMPLATE: ${{ secrets.SUPERSERVE_TEMPLATE }}
+          DO_AGENTS_API_TOKEN: ${{ secrets.DO_AGENTS_API_TOKEN }}
+          AWS_SANDBOX_S3_BUCKET: ${{ secrets.AWS_SANDBOX_S3_BUCKET }}
+          PORTER_TOKEN: ${{ secrets.PORTER_TOKEN }}
+        run: |
+          journey='${{ matrix.journey }}'
+          case "$journey" in *@*) export JOURNEY_SANDBOX_PROVIDER="${journey#*@}";; esac
+          npm run test:journey -- "test/journeys/${journey%@*}.test.ts"
 
   admin-plugin:
     name: Admin plugin
