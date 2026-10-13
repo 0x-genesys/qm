@@ -862,11 +862,16 @@ test("the board stops answering the person reviewing it once the work window shu
 });
 
 test("a broadcast is stored as a plain id list, so it cannot be told from an explicit address", async () => {
-  const { service, caller } = await swarmFixture();
+  const { service, caller, root } = await swarmFixture();
   const [worker] = await service.spawn(caller, { requestId: "one", text: "Work" });
   await service.sweep();
   const everyone = await service.send(caller, { requestId: "everyone", audience: "all", text: "Work" });
-  const named = await service.send(caller, { requestId: "named", audience: [worker!.id], text: "Work" });
+  const named = await service.send(caller, {
+    requestId: "named",
+    audience: [root.id, worker!.id],
+    text: "Work",
+  });
+  assert.deepEqual(everyone.audience, named.audience);
   assert.equal(everyone.broadcast, true);
   assert.equal("broadcast" in named, false);
 });
