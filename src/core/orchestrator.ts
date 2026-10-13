@@ -14,7 +14,6 @@ import {
   historicalDocumentMetas,
   isTextDocument,
   loadDocumentInputs,
-  MAX_DOCUMENT_TEXT_CHARS,
 } from "./document-inputs.ts";
 import { recoveredRuntime } from "../harness/runtime-recovery.ts";
 import { createCanWriteScope, withLiveTurnMembership } from "../resolution/scope-membership.ts";
@@ -215,7 +214,7 @@ import {
 } from "./orchestrator/prompt-blocks.ts";
 import { createCompaction } from "./orchestrator/compaction.ts";
 import { startLeaseKeepalive } from "./orchestrator/lease-keepalive.ts";
-import { createSecurityClassifier } from "./orchestrator/security-screen.ts";
+import { createChunkedScreener, createSecurityClassifier } from "./orchestrator/security-screen.ts";
 import { createTurnSandboxes } from "./orchestrator/sandboxes.ts";
 import type { EgressPolicy } from "../types.ts";
 import { isOpenScopeMember } from "../resolution/sharing-access.ts";
@@ -242,7 +241,6 @@ const ACTIVITY_ENTRY_TYPES = new Set<EntryType>([
   "approval_resolved",
 ]);
 
-const DOCUMENT_SCREEN_MEMO_MAX = 2_000;
 const SHARED_CORE_MD = loadProtocolFile("shared-core");
 const USER_REPLY_RULES_MD = loadProtocolFile("user-reply-rules");
 const MODE_CONVERSATION_MD = loadProtocolFile("mode-conversation");
@@ -340,7 +338,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
   }
 
   const classifySecurityData = createSecurityClassifier(deps);
-  const documentScreenVerdicts = new Map<string, Array<SecurityScreenVerdict | undefined>>();
+  const screenChunked = createChunkedScreener(classifySecurityData);
 
   const titles = createSessionTitles({
     sessions: deps.sessions,
@@ -2883,28 +2881,24 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 fileRegistration,
                 turnInboxDir,
                 securityPolicy.screening !== "off" && (deps.securityScreener || deps.harness.models.screenSecurity)
-                  ? async ({ content }) => {
-                      if (content.length > MAX_DOCUMENT_TEXT_CHARS) return undefined;
-                      const verdicts: Array<SecurityScreenVerdict | undefined> = [];
-                      for (const chunk of securityScreenChunks("tool_result:inbound_file", content)) {
-                        turnAbort.signal.throwIfAborted();
-                        const verdict = await classifySecurityData(chunk, actor.id, scopeId, undefined, {
-                          ...screenTrace,
-                          sessionId: session.id,
-                          hook: "tool_response",
-                          request: input.text,
-                          surface: "inbound_file",
-                          origin: input.origin.kind,
-                        });
-                        verdicts.push(verdict);
-                        if (verdict?.decision === "strict") break;
-                      }
-                      return (
-                        verdicts.find((value) => value?.decision === "strict") ??
-                        verdicts.find((value) => !value || value.unscreened) ??
-                        verdicts[0]
-                      );
-                    }
+                  ? async ({ content }) =>
+                      (
+                        await screenChunked({
+                          surface: "tool_result:inbound_file",
+                          content,
+                          actorId: actor.id,
+                          scopeLabel: scopeId,
+                          signal: turnAbort.signal,
+                          context: {
+                            ...screenTrace,
+                            sessionId: session.id,
+                            hook: "tool_response",
+                            request: input.text,
+                            surface: "inbound_file",
+                            origin: input.origin.kind,
+                          },
+                        })
+                      ).verdict
                   : undefined,
               )
             : { metas: [], images: [], tooMany: [], unavailable: [], blocked: [], unscreened: [] };
@@ -3153,44 +3147,28 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 documentsUnscreened = true;
                 continue;
               }
-              const memoKey = hashId([session.id, document.name, document.mimeType, content], 32);
-              let verdicts = documentScreenVerdicts.get(memoKey);
-              if (!verdicts) {
-                verdicts = [];
-                for (const chunk of securityScreenChunks("tool_result:inbound_document", content)) {
-                  turnAbort.signal.throwIfAborted();
-                  const verdict = await classifySecurityData(chunk, actor.id, scopeId, undefined, {
-                    ...screenTrace,
-                    sessionId: session.id,
-                    hook: "tool_response",
-                    request: requestText,
-                    surface: "inbound_file",
-                    origin: input.origin.kind,
-                  });
-                  verdicts.push(verdict);
-                  if (verdict?.decision === "strict") break;
-                }
-                if (verdicts.every((value) => value && !value.unscreened)) {
-                  if (documentScreenVerdicts.size >= DOCUMENT_SCREEN_MEMO_MAX) {
-                    documentScreenVerdicts.delete(documentScreenVerdicts.keys().next().value!);
-                  }
-                  documentScreenVerdicts.set(memoKey, verdicts);
-                }
-              }
-              const verdict =
-                verdicts.find((value) => value?.decision === "strict") ??
-                verdicts.find((value) => value?.unscreened) ??
-                verdicts[0];
+              const { verdict, clean } = await screenChunked({
+                surface: "tool_result:inbound_document",
+                content,
+                actorId: actor.id,
+                scopeLabel: scopeId,
+                remember: session.id,
+                signal: turnAbort.signal,
+                context: {
+                  ...screenTrace,
+                  sessionId: session.id,
+                  hook: "tool_response",
+                  request: requestText,
+                  surface: "inbound_file",
+                  origin: input.origin.kind,
+                },
+              });
               if (verdict?.decision === "strict") {
                 documentInputs.documents.splice(documentInputs.documents.indexOf(document), 1);
                 documentInputs.notices.push(
                   `${document.name}: document withheld by the external-data security screen.`,
                 );
-              } else if (
-                !verdicts.every((value) => value?.decision === "auto" && !value.unscreened) ||
-                content.includes("[Document text truncated")
-              )
-                documentsUnscreened = true;
+              } else if (!clean) documentsUnscreened = true;
             }
           }
           return enforceScreen && documentsUnscreened;
