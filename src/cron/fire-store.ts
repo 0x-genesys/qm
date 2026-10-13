@@ -19,6 +19,7 @@ export interface CronFireStore {
   backfill(cronId: string, entries: readonly CronFireLogEntry[]): Promise<void>;
   listByCron(cronId: string, opts?: { limit?: number }): Promise<{ runs: CronFireLogEntry[]; total: number }>;
   listByThreadRefs(threadRefs: readonly string[]): Promise<CronFireRecord[]>;
+  listRunning(): Promise<CronFireRecord[]>;
   latestForThread(cronId: string, threadRef: string): Promise<CronFireLogEntry | undefined>;
 }
 
@@ -112,6 +113,13 @@ export function createMemoryCronFireStore(): CronFireStore {
         for (const entry of fires.values()) {
           if (wanted.has(entry.threadRef)) records.push({ ...entry, cronId });
         }
+      }
+      return records.sort(fireOrder);
+    },
+    async listRunning() {
+      const records: CronFireRecord[] = [];
+      for (const [cronId, fires] of byCron) {
+        for (const entry of fires.values()) if (entry.status === "running") records.push({ ...entry, cronId });
       }
       return records.sort(fireOrder);
     },
@@ -248,6 +256,12 @@ export function createPostgresCronFireStore(connectionString: string): CronFireS
           `CREATE INDEX IF NOT EXISTS idx_cron_fires_cron_fired_at ON cron_fires (cron_id, fired_at DESC)`,
         ],
       },
+      {
+        id: "cron/fires/0002-running",
+        statements: [
+          `CREATE INDEX IF NOT EXISTS idx_cron_fires_running ON cron_fires (fired_at) WHERE status = 'running'`,
+        ],
+      },
     ],
     [LEGACY_FIRE_MAINTENANCE],
   );
@@ -353,6 +367,13 @@ export function createPostgresCronFireStore(connectionString: string): CronFireS
           WHERE thread_ref = ANY($1)
           ORDER BY fired_at, fire_key`,
         [[...threadRefs]],
+      );
+      return rows.map((r) => ({ ...rowToEntry(r), cronId: r.cron_id as string }));
+    },
+    async listRunning() {
+      const rows = await q(
+        `SELECT ${FIRE_COLUMNS} FROM cron_fires WHERE status = 'running' ORDER BY fired_at, fire_key`,
+        [],
       );
       return rows.map((r) => ({ ...rowToEntry(r), cronId: r.cron_id as string }));
     },
