@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { resolveModalImage } from "./modal-image.ts";
+import { sleep } from "../util/async.ts";
 
 export interface ModalCommandResult {
   stdout: string;
@@ -190,6 +191,10 @@ export function createSdkModalClient(opts: SdkModalClientOptions): ModalClient {
           ...(runOpts?.env && Object.keys(runOpts.env).length ? { env: runOpts.env } : {}),
         });
         const [stdout, stderr, exitCode] = await Promise.all([p.stdout.readText(), p.stderr.readText(), p.wait()]);
+        let ended: number | null = null;
+        for (let i = 0; exitCode === 137 && ended === null && i < 4; i++)
+          ended = await sleep(i * 500).then(() => sbx.poll());
+        if (ended !== null) throw new Error(`modal sandbox ${sbx.sandboxId} stopped (exit ${ended}) mid-command`);
         return { stdout, stderr, exitCode };
       } catch (err) {
         if (isDeadlineError(err)) return { stdout: "", stderr: errText(err), exitCode: 124 };
@@ -229,7 +234,7 @@ export function createSdkModalClient(opts: SdkModalClientOptions): ModalClient {
       await sbx.mountImage("/root", await client.images.fromId(imageId));
     },
     async terminate(): Promise<void> {
-      await sbx.terminate().catch((err) => {
+      await sbx.terminate({ wait: true }).catch((err) => {
         if (!isSandboxGoneError(err)) throw err;
       });
     },
