@@ -581,7 +581,7 @@ export function createSwarmService(deps: {
         peers: swarm.members.map(view),
         ...(swarm.board ? { board: swarm.board } : {}),
         backend: swarm.backend,
-        ...(swarm.template.model ? { model: swarm.template.model } : {}),
+        model: swarm.template.model,
         settings: swarm.settings,
         expiresAt: swarm.expiresAt,
       };
