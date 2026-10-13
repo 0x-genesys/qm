@@ -147,14 +147,46 @@ test("an expired work window still reads as open", async (t) => {
   assert.match(host.textContent ?? "", /Work window expired/);
 });
 
-test("a worker row hides the model, session, computer and context it is running with", async (t) => {
-  const host = await openPanel(t, inspected({ model: "claude-opus-5" }), []);
+test("a worker row hides the session, computer and context it is running with", async (t) => {
+  const host = await openPanel(t, inspected(), []);
   const rows = [...host.querySelectorAll(".swarm-peer .bg-row-output")].map((row) => row.textContent ?? "");
   assert.equal(rows.length, 2);
-  assert.match(rows[1]!, /model: claude-opus-5/);
   assert.match(rows[1]!, /session: worker-session/);
   assert.match(rows[1]!, new RegExp(`computer: ${WORKER}`));
   assert.match(rows[1]!, /"role": "auditor"/);
+});
+
+test("the panel hides which model the workers run", async (t) => {
+  const host = await openPanel(t, inspected({ model: "claude-opus-5" }), []);
+  assert.match(host.textContent ?? "", /Workers run claude-opus-5/);
+});
+
+test("a swarm that pinned no model names one anyway", async (t) => {
+  const host = await openPanel(t, inspected(), []);
+  assert.match(host.textContent ?? "", /Workers run the scope default/);
+});
+
+test("a board read that failed is reported as a board with nothing on it", async (t) => {
+  const view = inspected();
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const query = new URL(String(input), "http://localhost").searchParams;
+    if (query.get("read") !== "1") return jsonResponse(view);
+    throw new Error("board read failed");
+  }) as typeof fetch;
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const host = document.createElement("div");
+  const holder = { draw: (): void => {} };
+  const panel = createSwarmStrip(() => holder.draw());
+  holder.draw = (): void => void render(panel.strip(SESSION), host);
+  holder.draw();
+  await flush();
+  holder.draw();
+  host.querySelector<HTMLButtonElement>(".bg-activity-strip")!.click();
+  await flush();
+  holder.draw();
+  const text = host.textContent ?? "";
+  assert.match(text, /Could not read the board/);
+  assert.doesNotMatch(text, /No messages yet/);
 });
 
 test("a reply whose target is outside the loaded board reads as a top-level message", async (t) => {

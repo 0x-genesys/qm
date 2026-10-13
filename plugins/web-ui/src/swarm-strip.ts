@@ -52,9 +52,8 @@ function short(id: string): string {
   return id.slice(0, 8);
 }
 
-function detail(peer: SwarmPeer, view: SwarmView): string {
+function detail(peer: SwarmPeer): string {
   return [
-    `model: ${view.model ?? "scope default"}`,
     `session: ${peer.sessionId ?? "not started"}`,
     `computer: ${peer.sandboxId ?? "none"}`,
     `context: ${JSON.stringify(peer.context, null, 2)}`,
@@ -123,6 +122,7 @@ export function createSwarmStrip(redraw: () => void) {
     view: null as SwarmView | null,
     board: [] as SwarmBoardMessage[],
     boardBusy: false,
+    boardError: "",
     open: false,
     busy: "",
     error: "",
@@ -149,7 +149,14 @@ export function createSwarmStrip(redraw: () => void) {
           `/api/sessions/${encodeURIComponent(sessionId)}/swarm?read=1&after=${after}`,
         ).catch(() => null);
         if (ui.sessionId !== sessionId) return;
-        const fresh = (read?.messages ?? []).filter((message) => message.seq > after);
+        // A read that failed is not a board with nothing on it; reporting it as empty would be a lie.
+        if (!Array.isArray(read?.messages)) {
+          ui.boardError = "Could not read the board.";
+          redraw();
+          return;
+        }
+        ui.boardError = "";
+        const fresh = read.messages.filter((message) => message.seq > after);
         if (!fresh.length) return;
         ui.board = [...ui.board, ...fresh];
         redraw();
@@ -222,7 +229,7 @@ export function createSwarmStrip(redraw: () => void) {
             : nothing
         }
       </div>
-      <div class="bg-row-output">${detail(peer, view)}</div>
+      <div class="bg-row-output">${detail(peer)}</div>
     </div>`;
   };
   const tree = (view: SwarmView, status: Map<string, Status>): TemplateResult[] => {
@@ -267,6 +274,7 @@ export function createSwarmStrip(redraw: () => void) {
           sessionId,
           view: null,
           board: [],
+          boardError: "",
           open: false,
           error: "",
           shown: new Map(),
@@ -284,6 +292,7 @@ export function createSwarmStrip(redraw: () => void) {
         .map((key) => `${counts[key]} ${key}`)
         .join(" · ");
       const canBulk = view.self.depth === 0;
+      const boardNote = ui.boardError || (ui.board.length ? "" : "No messages yet.");
       return html`<section class="bg-activity swarm-activity ${ui.open ? "expanded" : ""}">
         <button
           type="button"
@@ -303,6 +312,7 @@ export function createSwarmStrip(redraw: () => void) {
             ? html`<div class="bg-panel" role="region" aria-label="Swarm workers and board">
                 ${ui.error ? html`<div class="bg-panel-note">${ui.error}</div>` : nothing}
                 <div class="bg-panel-note">${windowNote(view.expiresAt)}</div>
+                <div class="bg-panel-note">Workers run ${view.model ?? "the scope default"}</div>
                 ${
                   view.board
                     ? html`<div class="bg-panel-note">Shared board computer: ${view.board.sandboxId}</div>`
@@ -322,7 +332,8 @@ export function createSwarmStrip(redraw: () => void) {
                 }
                 ${tree(view, status)}
                 <div class="bg-panel-note">Board · ${ui.board.length} messages</div>
-                ${ui.board.length ? boardRows(ui.board, view) : html`<div class="bg-panel-note">No messages yet.</div>`}
+                ${ui.board.length ? boardRows(ui.board, view) : nothing}
+                ${boardNote ? html`<div class="bg-panel-note">${boardNote}</div>` : nothing}
               </div>`
             : nothing
         }
