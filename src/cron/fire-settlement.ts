@@ -16,7 +16,7 @@ export async function settleCronFire(
   const cronId = cronIdOf(provenance.sourceThreadRef);
   if (!cronId) return;
   const fire = (await fires.listByThreadRefs([provenance.sourceThreadRef])).find(
-    (f) => f.cronId === cronId && f.fireKey === provenance.fireKey && f.status === "running",
+    (f) => f.cronId === cronId && f.fireKey === provenance.fireKey && f.status === "delivering",
   );
   if (!fire) return;
   const { cronId: _cronId, ...entry } = fire;

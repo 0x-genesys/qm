@@ -22,6 +22,8 @@ export interface CronFireStore {
   latestForThread(cronId: string, threadRef: string): Promise<CronFireLogEntry | undefined>;
 }
 
+const UNSETTLED = new Set<CronFireLogEntry["status"]>(["running", "delivering"]);
+
 function fireOrder(a: CronFireLogEntry, b: CronFireLogEntry): number {
   if (a.firedAt !== b.firedAt) return a.firedAt - b.firedAt;
   if (a.fireKey < b.fireKey) return -1;
@@ -63,7 +65,7 @@ export function createMemoryCronFireStore(): CronFireStore {
       let swept = 0;
       for (const fires of byCron.values()) {
         for (const [fireKey, entry] of fires) {
-          if (entry.status !== "running" || now - entry.firedAt < staleRunningMs) continue;
+          if (!UNSETTLED.has(entry.status) || now - entry.firedAt < staleRunningMs) continue;
           fires.set(fireKey, { ...entry, status: "failed", endedAt: now, note });
           swept += 1;
         }
@@ -262,7 +264,7 @@ export function createPostgresCronFireStore(connectionString: string): CronFireS
       const result = await query(
         `UPDATE cron_fires
             SET status = 'failed', ended_at = $1, note = $2
-          WHERE status = 'running' AND fired_at <= $3`,
+          WHERE status IN ('running', 'delivering') AND fired_at <= $3`,
         [now, pgTextSafe(note), now - staleRunningMs],
       );
       return result.rowCount;

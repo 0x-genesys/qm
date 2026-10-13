@@ -96,7 +96,7 @@ async function latestFire(h: Harness, cronId: string): Promise<CronFireLogEntry 
 async function settledFire(h: Harness, cronId: string): Promise<CronFireLogEntry> {
   return waitFor(async () => {
     const fire = await latestFire(h, cronId);
-    return fire && fire.status !== "running" && fire.status !== undefined ? fire : undefined;
+    return fire && fire.status !== "running" && fire.status !== "delivering" ? fire : undefined;
   }, `cron ${cronId} to settle`);
 }
 
@@ -120,7 +120,7 @@ test(
       );
       assert.equal(postAttempt.args.channel, CHANNEL);
       const whileHeld = await latestFire(h, cron.id);
-      assert.equal(whileHeld?.status, "running", "the fire is not ok while the post is still in flight");
+      assert.equal(whileHeld?.status, "delivering", "the fire is not ok while the post is still in flight");
       releasePost();
       const fire = await settledFire(h, cron.id);
       assert.equal(fire.status, "ok", fire.note);
