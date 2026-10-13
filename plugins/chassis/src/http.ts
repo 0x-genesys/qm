@@ -2,9 +2,11 @@ import { createServer, type IncomingMessage, type RequestListener, type Server, 
 import { gzip } from "node:zlib";
 
 const COMPRESS_MIN_BYTES = 1024;
+const EXPECTED_GATEWAY_IDLE_TIMEOUT_MS = 60_000;
+const KEEP_ALIVE_MARGIN_MS = 5_000;
 
 export function createHttpServer(listener: RequestListener): Server {
-  return createServer({ keepAliveTimeout: 65_000 }, listener);
+  return createServer({ keepAliveTimeout: EXPECTED_GATEWAY_IDLE_TIMEOUT_MS + KEEP_ALIVE_MARGIN_MS }, listener);
 }
 
 export class PayloadTooLargeError extends Error {
