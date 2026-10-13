@@ -20,7 +20,6 @@ for (const [key, value] of Object.entries(globals))
 const { render } = await import("lit");
 const { createSwarmStrip } = await import("../src/swarm-strip.ts");
 
-// The panel reads exactly what core's swarm inspect and read return, so the fixtures are typed by those contracts.
 type SwarmInspect = Awaited<ReturnType<SwarmService["inspect"]>>;
 
 const ROOT = "11111111-aaaa-4aaa-8aaa-111111111111";
@@ -258,10 +257,10 @@ test("two overlapping board loads append the same page twice", async (t) => {
   await flush();
   holder.draw();
   const click = (): void => host.querySelector<HTMLButtonElement>(".bg-activity-strip")!.click();
-  click(); // opens, so the first board pass starts and parks on the gate
+  click();
   await flush();
-  click(); // closes
-  click(); // reopens while the first pass is still in flight
+  click();
+  click();
   await flush();
   release();
   await flush();
