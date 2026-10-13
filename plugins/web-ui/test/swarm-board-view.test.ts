@@ -529,3 +529,12 @@ test("a board longer than one read stops with nothing to say there is more", asy
   assert.match(text, /Board · 16 messages/);
   assert.match(text, /More messages remain; reopen the panel to keep loading\./);
 });
+
+test("a failed worker with no recorded reason says the reason is undefined", async (t) => {
+  const peers = [
+    member({ id: ROOT, depth: 0, sessionId: SESSION }),
+    member({ id: WORKER, parentId: ROOT, state: "failed" }),
+  ];
+  const host = await openPanel(t, inspected({ peers }), []);
+  assert.doesNotMatch(host.textContent ?? "", /why it failed/);
+});
