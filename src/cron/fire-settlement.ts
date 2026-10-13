@@ -1,4 +1,4 @@
-import type { CronFireStore } from "./fire-store.ts";
+import { UNSETTLED, type CronFireStore } from "./fire-store.ts";
 import type { DeliveryStore } from "../delivery/delivery-store.ts";
 import type { Delivery, TurnResult } from "../types.ts";
 import { cronIdOf } from "../sessions/session-store.ts";
@@ -16,7 +16,7 @@ export async function settleCronFire(
   const cronId = cronIdOf(provenance.sourceThreadRef);
   if (!cronId) return;
   const fire = (await fires.listByThreadRefs([provenance.sourceThreadRef])).find(
-    (f) => f.cronId === cronId && f.fireKey === provenance.fireKey && f.status === "delivering",
+    (f) => f.cronId === cronId && f.fireKey === provenance.fireKey && UNSETTLED.has(f.status),
   );
   if (!fire) return;
   const { cronId: _cronId, ...entry } = fire;

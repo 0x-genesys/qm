@@ -22,7 +22,7 @@ export interface CronFireStore {
   latestForThread(cronId: string, threadRef: string): Promise<CronFireLogEntry | undefined>;
 }
 
-const UNSETTLED = new Set<CronFireLogEntry["status"]>(["running", "delivering"]);
+export const UNSETTLED = new Set<CronFireLogEntry["status"]>(["running", "delivering"]);
 
 function fireOrder(a: CronFireLogEntry, b: CronFireLogEntry): number {
   if (a.firedAt !== b.firedAt) return a.firedAt - b.firedAt;
@@ -48,7 +48,14 @@ export function createMemoryCronFireStore(): CronFireStore {
   };
   return {
     async record(cronId, entry) {
-      firesOf(cronId).set(entry.fireKey, { ...entry });
+      const fires = firesOf(cronId);
+      const settled = fires.get(entry.fireKey);
+      fires.set(
+        entry.fireKey,
+        entry.status === "delivering" && settled && !UNSETTLED.has(settled.status)
+          ? { ...entry, status: settled.status, endedAt: settled.endedAt }
+          : { ...entry },
+      );
     },
     async beginExclusive(cronId, entry, staleRunningMs) {
       const fires = firesOf(cronId);
@@ -137,7 +144,12 @@ const FIRE_COLUMN_DEFS: readonly FireColumn[] = [
 
 const FIRE_COLUMNS = FIRE_COLUMN_DEFS.map((c) => c.name).join(", ");
 const VALUE_COLUMN_DEFS = FIRE_COLUMN_DEFS.filter((c) => c.name !== "cron_id" && c.name !== "fire_key");
-const UPSERT_SET = VALUE_COLUMN_DEFS.map((c) => `${c.name} = EXCLUDED.${c.name}`).join(", ");
+const KEEPS_SETTLED = `EXCLUDED.status = 'delivering' AND cron_fires.status NOT IN ('running', 'delivering')`;
+const UPSERT_SET = VALUE_COLUMN_DEFS.map((c) =>
+  c.name === "status" || c.name === "ended_at"
+    ? `${c.name} = CASE WHEN ${KEEPS_SETTLED} THEN cron_fires.${c.name} ELSE EXCLUDED.${c.name} END`
+    : `${c.name} = EXCLUDED.${c.name}`,
+).join(", ");
 const ROW_OF = (prefix: string): string => `(${VALUE_COLUMN_DEFS.map((c) => `${prefix}.${c.name}`).join(", ")})`;
 
 const UPSERT_FIRE = `INSERT INTO cron_fires (${FIRE_COLUMNS})
