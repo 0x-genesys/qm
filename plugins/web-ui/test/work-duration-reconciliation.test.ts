@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { entriesToMessages, type AssistantWork, type SessionEntry, type WorkBlock } from "../src/core-bridge.ts";
-import { workSeconds, workedLabel } from "../src/work-duration.ts";
+import { workSeconds, turnDurationLabel } from "../src/work-duration.ts";
 
 const MODEL = { id: "m", api: "anthropic", provider: "anthropic" } as unknown as Parameters<
   typeof entriesToMessages
@@ -83,15 +83,15 @@ test("work duration survives a transcript refresh — persisted turn timing wins
     finishedAt: runFinishedAt,
     activity: [],
   };
-  const liveLabel = workedLabel("Worked", workSeconds(liveWork));
-  assert.equal(liveLabel, "Worked for 13s");
+  const liveLabel = turnDurationLabel(workSeconds(liveWork));
+  assert.equal(liveLabel, "This turn · 13s");
 
   const msgs = entriesToMessages(entries, MODEL);
   const rebuilt = (msgs[1] as AssistantWork).work;
   assert.ok(rebuilt, "the assistant reply carries a work block after refresh");
   assert.equal(rebuilt.startedAt, runStartedAt, "persisted turn start round-trips");
   assert.equal(rebuilt.finishedAt, runFinishedAt, "persisted turn finish round-trips");
-  const refreshedLabel = workedLabel("Worked", workSeconds(rebuilt));
+  const refreshedLabel = turnDurationLabel(workSeconds(rebuilt));
   assert.equal(refreshedLabel, liveLabel, "the duration label is unchanged after refresh");
 });
 
@@ -106,15 +106,15 @@ test("fold expansion does not change the duration — the label derives only fro
     ],
   };
 
-  const before = workedLabel("Worked", workSeconds(work));
-  const after = workedLabel("Worked", workSeconds(work));
-  assert.equal(before, "Worked for 13s");
+  const before = turnDurationLabel(workSeconds(work));
+  const after = turnDurationLabel(workSeconds(work));
+  assert.equal(before, "This turn · 13s");
   assert.equal(after, before, "re-rendering (fold toggle) yields the identical label");
 
   const realNow = Date.now;
   try {
     Date.now = () => realNow() + 3_600_000;
-    assert.equal(workedLabel("Worked", workSeconds(work)), before);
+    assert.equal(turnDurationLabel(workSeconds(work)), before);
   } finally {
     Date.now = realNow;
   }
@@ -132,16 +132,15 @@ test("historical transcripts without persisted timing keep the activity-inferenc
   assert.equal(work?.finishedAt, 130);
 });
 
-test("live and completed work use compact minute and second labels", () => {
-  for (const prefix of ["Working", "Worked"]) {
-    for (const [seconds, duration] of [
-      [7, "7s"],
-      [60, "1m"],
-      [65, "1m 5s"],
-      [365, "6m 5s"],
-    ] as const)
-      assert.equal(workedLabel(prefix, seconds), `${prefix} for ${duration}`);
-  }
+test("turn duration labels identify their scope rather than claiming total work time", () => {
+  for (const [seconds, duration] of [
+    [7, "7s"],
+    [60, "1m"],
+    [65, "1m 5s"],
+    [365, "6m 5s"],
+  ] as const)
+    assert.equal(turnDurationLabel(seconds), `This turn · ${duration}`);
+  assert.equal(turnDurationLabel(0), "This turn");
 });
 
 test("work duration ends at final-answer start while the run stays active and survives history projection", () => {

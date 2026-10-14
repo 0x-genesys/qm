@@ -139,7 +139,13 @@ export interface CoreSession {
   lastActivityAt?: number;
   working?: boolean;
   awaitingInput?: boolean;
-  lastTurnFailed?: boolean;
+  latestRun?: {
+    id: string;
+    status: "pending" | "running" | "done" | "failed";
+    createdAt: number;
+    startedAt: number | null;
+    finishedAt: number | null;
+  };
   canContinue?: boolean;
   backgroundJobs?: number;
   watches?: number;

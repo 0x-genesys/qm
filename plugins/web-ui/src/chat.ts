@@ -194,6 +194,7 @@ import {
   peekLines,
   subagentRows,
   subagentSummary,
+  subagentTiming,
   visibleSubagents,
   type PeekLine,
   type SubagentRow,
@@ -203,7 +204,7 @@ import { newChatDraftKey, saveDraft, storedDraft } from "./drafts";
 import { createForkOriginController, forkOriginView } from "./fork-origin";
 import { base64ToBytes } from "./paste-text";
 import { tip } from "./tooltip";
-import { goalWorked, workSeconds, workedLabel } from "./work-duration";
+import { goalWorked, workSeconds, turnDurationLabel } from "./work-duration";
 import { decorateTextCodeBlocks } from "./text-code";
 
 import { createTranscriptViewport } from "./transcript-viewport";
@@ -2570,15 +2571,15 @@ export function createChatSurface(
   }
 
   const SUBAGENT_STATE_LABEL: Record<SubagentRow["state"], string> = {
-    working: "working",
+    queued: "queued",
+    working: "running",
     waiting: "waiting",
     done: "done",
     failed: "failed",
   };
 
   function subagentRowTpl(row: SubagentRow): TemplateResult {
-    const now = Date.now();
-    const elapsed = goalElapsedLabel(row.startedAt, row.endedAt ?? now);
+    const elapsed = subagentTiming(row);
     const peeking = subagentUi.peekId === row.session.id;
     const approvals = unresolvedApprovals(subagentUi.approvals.get(row.session.id) ?? []);
     const title = row.session.title?.trim() || "Subagent";
@@ -2596,10 +2597,14 @@ export function createChatSurface(
         ${row.state === "waiting" ? html`<span class="awaiting-dot" aria-hidden="true"></span>` : nothing}
         ${row.state === "failed" ? html`<span class="subagent-failed-mark">${icon(TriangleAlert, 12)}</span>` : nothing}
         <span class="subagent-row-title" dir="auto">${title}</span>
-        <span class="subagent-row-meta">${SUBAGENT_STATE_LABEL[row.state]} · ${elapsed}</span>
+        <span
+          class="subagent-row-meta"
+          title="Latest run only; earlier runs or descendants may still be active. Elapsed time includes queue time, not just active work."
+          >${row.session.latestRun ? "Latest run · " : ""}${SUBAGENT_STATE_LABEL[row.state]}${elapsed ? ` · ${elapsed}` : ""}</span
+        >
       </button>
       ${
-        row.state === "failed"
+        row.state === "failed" || row.state === "done"
           ? html`<button type="button" class="subagent-row-action" @click=${() => acknowledgeSubagent(row)}>
               Dismiss
             </button>`
@@ -2639,7 +2644,9 @@ export function createChatSurface(
     const rows = visibleSubagents(subagentRows(sessionsState.list, rootId), subagentUi.acknowledged);
     if (subagentUi.peekId && !rows.some((row) => row.session.id === subagentUi.peekId)) stopSubagentPeek();
     syncSubagentApprovals(rows);
-    subagentUi.ticking = rows.some((row) => row.state === "working" || row.state === "waiting");
+    subagentUi.ticking = rows.some(
+      (row) => row.session.latestRun?.status === "running" || row.session.latestRun?.status === "pending",
+    );
     syncWorkTicker();
     if (!rows.length) return nothing;
     const single = rows.length === 1;
@@ -2815,10 +2822,7 @@ export function createChatSurface(
 
   function workLabel(work: WorkBlock): string {
     if (work.stale && (work.status === "thinking" || work.status === "working")) return "Interrupted, resuming…";
-    if (currentTextPhase(work)?.phase === "final_answer") return workedLabel("Worked", workSeconds(work));
-    if (work.status === "thinking") return "Thinking";
-    const secs = workSeconds(work);
-    return workedLabel(work.status === "working" ? "Working" : "Worked", secs);
+    return turnDurationLabel(workSeconds(work));
   }
 
   function timelineKey(item: TimelineItem): string {
@@ -2853,7 +2857,7 @@ export function createChatSurface(
       const tail = active && last ? streamedAnswer(text, work) : "";
       const stopping = isStreaming && runSlot.stopGeneration === runSlot.generation;
       const animating = active && last && !stopping;
-      let label = last ? workLabel(work) : "Worked";
+      let label = last ? workLabel(work) : "This turn";
       if (stopping && last) label = "Stop requested";
       if (stopped && last) label = `You stopped after ${goalElapsedLabel(0, workSeconds(work) * 1000)}`;
       if (
@@ -2868,7 +2872,10 @@ export function createChatSurface(
               class=${stopped && last ? "stopped-work" : `work work-fold work-${work.status}`}
               ?open=${last && (active || !!work.pendingApprovals?.length)}
             >
-              <summary class=${stopped && last ? "stopped-head" : "work-head"}>
+              <summary
+                class=${stopped && last ? "stopped-head" : "work-head"}
+                title="Time in this turn before the final answer, excluding queue and approval waits. Not a total for delegated work."
+              >
                 ${sheenLabel(label, animating)}<span class="activity-chevron">${icon(ChevronRight, 14)}</span>
               </summary>
               ${stopped && last ? nothing : html`<div class="work-divider"></div>`}

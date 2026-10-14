@@ -83,13 +83,13 @@ test("listSessions flags a subagent whose latest turn failed, and only while it 
   }
 
   const list = await app.listSessions("U1");
-  assert.equal(list.find((s) => s.id === child.sessionId)?.lastTurnFailed, true);
-  assert.ok(!list.find((s) => s.id === loose.sessionId)?.lastTurnFailed, "only subagents carry the flag");
+  assert.equal(list.find((s) => s.id === child.sessionId)?.latestRun?.status, "failed");
+  assert.ok(!list.find((s) => s.id === loose.sessionId)?.latestRun, "only subagents carry the flag");
 
   await runs.enqueue({ sessionId: "web:U1:child", request: enqueueRequest() });
   const retry = await runs.claim("w1", 5_000);
   await runs.complete(retry!.id, retry!.leaseToken ?? "", { status: "ok", reply: "fine" });
-  assert.ok(!(await app.listSessions("U1")).find((s) => s.id === child.sessionId)?.lastTurnFailed);
+  assert.equal((await app.listSessions("U1")).find((s) => s.id === child.sessionId)?.latestRun?.status, "done");
 });
 
 test("sidebar batches visible goals and preserves the lookback boundary and inactive overrides", async () => {
@@ -153,4 +153,34 @@ test("sidebar batches visible goals and preserves the lookback boundary and inac
   assert.equal(list.length, 2);
   assert.equal(list.find((row) => row.id === visible[0])?.goal?.objective, "goal 0");
   assert.equal(list.find((row) => row.id === visible[1])?.goal, undefined);
+});
+
+test("child latest-run timing comes from durable run records through queue, completion and reuse", async () => {
+  const { app, runs, sessions } = freshApp();
+  const parent = await app.turn(dm("parent", "web:U1:timing-parent"));
+  const child = await app.turn(dm("child", "web:U1:timing-child"));
+  await sessions.setParentSession(child.sessionId!, parent.sessionId!);
+  const { run } = await runs.enqueue({ sessionId: "web:U1:timing-child", request: enqueueRequest() });
+  const view = async () => (await app.listSessions("U1")).find((s) => s.id === child.sessionId)!.latestRun;
+  assert.deepEqual(await view(), {
+    id: run.id,
+    status: "pending",
+    createdAt: run.createdAt,
+    startedAt: null,
+    finishedAt: null,
+  });
+  assert.equal((await app.listSessions("U2")).length, 0);
+  const claimed = await runs.claim("w1", 5_000);
+  assert.equal((await view())?.startedAt, claimed!.startedAt);
+  assert.equal((await view())?.status, "running");
+  await runs.complete(claimed!.id, claimed!.leaseToken!, { status: "ok", reply: "done" });
+  const finished = await runs.get(run.id);
+  const completed = await view();
+  assert.equal(completed?.finishedAt, finished?.finishedAt);
+  assert.equal(completed?.status, "done");
+  assert.deepEqual(await view(), completed);
+  const { run: next } = await runs.enqueue({ sessionId: "web:U1:timing-child", request: enqueueRequest() });
+  assert.equal((await view())?.id, next.id);
+  assert.equal((await view())?.createdAt, next.createdAt);
+  assert.equal((await view())?.finishedAt, null);
 });

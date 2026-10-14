@@ -1,12 +1,13 @@
 import type { CoreSession, SessionEntry } from "./core-bridge.ts";
+import { goalElapsedLabel } from "./goal-strip.ts";
 
-type SubagentState = "working" | "waiting" | "done" | "failed";
+type SubagentState = "queued" | "working" | "waiting" | "done" | "failed";
 
 export interface SubagentRow {
   session: CoreSession;
   state: SubagentState;
   depth: number;
-  startedAt: number;
+  startedAt: number | null;
   endedAt: number | null;
 }
 
@@ -46,40 +47,54 @@ export function subagentCounts(
 }
 
 export function subagentRows(list: readonly CoreSession[], rootId: string): SubagentRow[] {
-  return descendantsOf(list, rootId).map(({ session, depth }) => {
-    let state: SubagentState = "done";
-    if (session.awaitingInput) state = "waiting";
-    else if (session.working) state = "working";
-    else if (session.lastTurnFailed) state = "failed";
-    const live = state === "working" || state === "waiting";
-    return {
-      session,
-      state,
-      depth,
-      startedAt: session.createdAt,
-      endedAt: live ? null : (session.lastActivityAt ?? session.createdAt),
-    };
-  });
+  return descendantsOf(list, rootId)
+    .filter(({ session }) => session.latestRun || session.working || session.awaitingInput)
+    .map(({ session, depth }) => {
+      const run = session.latestRun;
+      let state: SubagentState = "done";
+      if (session.awaitingInput) state = "waiting";
+      else if (run?.status === "pending") state = "queued";
+      else if (run?.status === "running" || (!run && session.working)) state = "working";
+      else if (run?.status === "failed") state = "failed";
+      return {
+        session,
+        state,
+        depth,
+        startedAt: run?.createdAt ?? null,
+        endedAt: run?.finishedAt ?? null,
+      };
+    });
 }
 
 export function visibleSubagents(rows: readonly SubagentRow[], acknowledged: ReadonlySet<string>): SubagentRow[] {
-  return rows.filter((row) => row.state !== "done" && !(row.state === "failed" && acknowledged.has(ackKey(row))));
+  return rows.filter((row) => !((row.state === "done" || row.state === "failed") && acknowledged.has(ackKey(row))));
 }
 
-export function ackKey(row: Pick<SubagentRow, "session" | "endedAt">): string {
-  return `${row.session.id}@${row.endedAt ?? 0}`;
+export function ackKey(row: Pick<SubagentRow, "session">): string {
+  return `${row.session.id}@${row.session.latestRun?.id ?? "unknown"}`;
+}
+
+export function subagentTiming(row: SubagentRow, now = Date.now()): string | null {
+  const run = row.session.latestRun;
+  if (row.startedAt === null || !run) return null;
+  if ((run.status === "done" || run.status === "failed") && row.endedAt === null) return null;
+  return `${goalElapsedLabel(row.startedAt, row.endedAt ?? now)} elapsed (incl. queue)`;
 }
 
 export function subagentSummary(rows: readonly SubagentRow[]): string {
   const count = (state: SubagentState) => rows.filter((row) => row.state === state).length;
   const parts: string[] = [];
   const working = count("working");
+  const queued = count("queued");
+  const done = count("done");
   const waiting = count("waiting");
   const failed = count("failed");
-  if (working) parts.push(`${working} subagent${working === 1 ? "" : "s"} running`);
+  if (queued) parts.push(`${queued} queued`);
+  if (done) parts.push(`${done} done`);
+  if (working) parts.push(`${working} running`);
   if (waiting) parts.push(`${waiting} need${waiting === 1 ? "s" : ""} you`);
   if (failed) parts.push(`${failed} failed`);
-  return parts.join(", ");
+  return `Latest runs: ${parts.join(", ")}`;
 }
 
 export interface PeekLine {

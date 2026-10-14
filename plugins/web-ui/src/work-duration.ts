@@ -18,8 +18,8 @@ export function workSeconds(work: WorkBlock): number {
   return Math.max(0, Math.round((end - start) / 1000));
 }
 
-export function workedLabel(prefix: string, secs: number): string {
-  return secs > 0 ? `${prefix} for ${goalElapsedLabel(0, secs * 1000)}` : prefix;
+export function turnDurationLabel(secs: number): string {
+  return secs > 0 ? `This turn · ${goalElapsedLabel(0, secs * 1000)}` : "This turn";
 }
 
 interface GoalTurn {

@@ -8,6 +8,7 @@ import {
   subagentCounts,
   subagentRows,
   subagentSummary,
+  subagentTiming,
   visibleSubagents,
 } from "../src/subagent-activity.ts";
 import { backgroundLabel, conversationBackground, rowIndicators } from "../src/session-list.ts";
@@ -28,7 +29,9 @@ function row(id: string, parentSessionId?: string, extra: Partial<CoreSession> =
 const list = [
   row("root"),
   row("a", "root", { working: true }),
-  row("b", "root", { lastTurnFailed: true }),
+  row("b", "root", {
+    latestRun: { id: "run-b", status: "failed", createdAt: 11_000, startedAt: 21_000, finishedAt: 61_000 },
+  }),
   row("c", "root", { awaitingInput: true }),
   row("a1", "a", { working: true }),
   row("other"),
@@ -65,7 +68,7 @@ test("running and waiting counts feed the sidebar and tab badge", () => {
   assert.equal(backgroundLabel(1, 0, 0, 1)?.label, "1 subagent running · 1 background job running");
 });
 
-test("rows derive working, waiting, done and failed; done folds away, failed stays until acknowledged", () => {
+test("rows retain completed and failed run timings until that run is dismissed", () => {
   const rows = subagentRows(list, "root");
   assert.deepEqual(
     rows.map((r) => [r.session.id, r.state]),
@@ -78,18 +81,22 @@ test("rows derive working, waiting, done and failed; done folds away, failed sta
   );
   assert.equal(rows[0]!.endedAt, null);
   assert.equal(rows[1]!.endedAt, 61_000);
-  assert.equal(subagentSummary(rows), "2 subagents running, 1 needs you, 1 failed");
+  assert.equal(subagentSummary(rows), "Latest runs: 2 running, 1 needs you, 1 failed");
   const failed = rows[1]!;
   assert.deepEqual(
     visibleSubagents(rows, new Set([ackKey(failed)])).map((r) => r.session.id),
     ["a", "c", "a1"],
   );
   const done = subagentRows(
-    list.map((s) => (s.id === "b" ? { ...s, lastTurnFailed: false } : s)),
+    list.map((s) => (s.id === "b" ? { ...s, latestRun: { ...s.latestRun!, status: "done" as const } } : s)),
     "root",
   );
   assert.equal(
     visibleSubagents(done, new Set()).some((r) => r.session.id === "b"),
+    true,
+  );
+  assert.equal(
+    visibleSubagents(done, new Set([ackKey(done[1]!)])).some((r) => r.session.id === "b"),
     false,
   );
 });
@@ -111,4 +118,44 @@ test("peek shows the latest tool steps and message", () => {
     { kind: "text", text: "Tests pass. Opening PR" },
     { kind: "tool", text: "github" },
   ]);
+});
+
+test("latest run elapsed includes queue time and survives reload without counting child lifetime", () => {
+  const session = row("reused", "root", {
+    createdAt: 1,
+    lastActivityAt: 900_000,
+    latestRun: { id: "second-run", status: "pending", createdAt: 100_000, startedAt: null, finishedAt: null },
+  });
+  const [queued] = subagentRows([session], "root");
+  assert.equal(queued!.state, "queued");
+  assert.equal(subagentTiming(queued!, 160_000), "1m elapsed (incl. queue)");
+  assert.equal(subagentSummary([queued!]), "Latest runs: 1 queued");
+  const running = { ...session, latestRun: { ...session.latestRun!, status: "running" as const, startedAt: 160_000 } };
+  assert.equal(subagentTiming(subagentRows([running], "root")[0]!, 180_000), "1m 20s elapsed (incl. queue)");
+  const completed = { ...running, latestRun: { ...running.latestRun, status: "done" as const, finishedAt: 200_000 } };
+  const [done] = subagentRows([completed], "root");
+  const [reloaded] = subagentRows(JSON.parse(JSON.stringify([completed])), "root");
+  assert.equal(subagentTiming(done!, 210_000), "1m 40s elapsed (incl. queue)");
+  assert.equal(subagentTiming(reloaded!, 500_000), subagentTiming(done!, 210_000));
+  assert.equal(subagentSummary([done!]), "Latest runs: 1 done");
+  assert.equal(visibleSubagents([done!], new Set()).length, 1);
+  const dismissed = new Set([ackKey(done!)]);
+  assert.equal(visibleSubagents([reloaded!], dismissed).length, 0);
+  const nextRun = { ...completed, latestRun: { ...completed.latestRun, id: "third-run" } };
+  assert.equal(visibleSubagents(subagentRows([nextRun], "root"), dismissed).length, 1);
+});
+
+test("missing run timestamps never fall back to session lifetime or an indefinitely ticking terminal run", () => {
+  const [working] = subagentRows([row("legacy", "root", { working: true })], "root");
+  assert.equal(subagentTiming(working!, 500_000), null);
+  assert.deepEqual(subagentRows([row("empty", "root")], "root"), []);
+  const [done] = subagentRows(
+    [
+      row("missing-end", "root", {
+        latestRun: { id: "run", status: "done", createdAt: 100_000, startedAt: null, finishedAt: null },
+      }),
+    ],
+    "root",
+  );
+  assert.equal(subagentTiming(done!, 500_000), null);
 });

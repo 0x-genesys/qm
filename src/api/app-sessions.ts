@@ -450,21 +450,14 @@ export function createSessionMethods(
         }
       }
       const working = sessions.filter((s) => workingThreadRefs.has(s.threadRef));
-      const idleChildren = sessions.filter(
-        (s) => s.parentSessionId && !workingThreadRefs.has(s.threadRef) && !waiting.has(s.id),
-      );
+      const children = sessions.filter((s) => s.parentSessionId);
       const [latestRuns, recentEntries] = await Promise.all([
-        deps.runs.latestForThreads([...working, ...idleChildren].map((s) => s.threadRef)),
+        deps.runs.latestForThreads([...working, ...children].map((s) => s.threadRef)),
         deps.sessions.getRecentEntries(
           working.map((s) => s.id),
           GOAL_LOOKBACK_ENTRIES,
         ),
       ]);
-      const failedChildren = new Set<string>();
-      for (const s of idleChildren) {
-        const run = latestRuns.get(s.threadRef);
-        if (run?.status === "failed" || run?.result?.status === "failed") failedChildren.add(s.id);
-      }
       const goals = new Map<
         string,
         { objective: string; activeMs: number; runningSince?: number; floor?: Record<string, number> }
@@ -481,25 +474,29 @@ export function createSessionMethods(
             ...(goal.floor ? { floor: { ...goal.floor } } : {}),
           });
       }
-      if (
-        workingThreadRefs.size === 0 &&
-        waiting.size === 0 &&
-        failedChildren.size === 0 &&
-        jobCounts.size === 0 &&
-        watchCounts.size === 0 &&
-        cronCounts.size === 0
-      )
-        return sessions;
-      return sessions.map((s) => ({
-        ...s,
-        ...(workingThreadRefs.has(s.threadRef) ? { working: true } : {}),
-        ...(waiting.has(s.id) ? { awaitingInput: true } : {}),
-        ...(failedChildren.has(s.id) ? { lastTurnFailed: true } : {}),
-        ...(jobCounts.has(s.threadRef) ? { backgroundJobs: jobCounts.get(s.threadRef)! } : {}),
-        ...(watchCounts.has(s.threadRef) ? { watches: watchCounts.get(s.threadRef)! } : {}),
-        ...(cronCounts.has(s.threadRef) ? { crons: cronCounts.get(s.threadRef)! } : {}),
-        ...(goals.has(s.id) ? { goal: goals.get(s.id)! } : {}),
-      }));
+      return sessions.map((s) => {
+        const run = s.parentSessionId ? latestRuns.get(s.threadRef) : undefined;
+        return {
+          ...s,
+          ...(workingThreadRefs.has(s.threadRef) ? { working: true } : {}),
+          ...(waiting.has(s.id) ? { awaitingInput: true } : {}),
+          ...(run
+            ? {
+                latestRun: {
+                  id: run.id,
+                  status: run.result?.status === "failed" ? ("failed" as const) : run.status,
+                  createdAt: run.createdAt,
+                  startedAt: run.startedAt,
+                  finishedAt: run.finishedAt,
+                },
+              }
+            : {}),
+          ...(jobCounts.has(s.threadRef) ? { backgroundJobs: jobCounts.get(s.threadRef)! } : {}),
+          ...(watchCounts.has(s.threadRef) ? { watches: watchCounts.get(s.threadRef)! } : {}),
+          ...(cronCounts.has(s.threadRef) ? { crons: cronCounts.get(s.threadRef)! } : {}),
+          ...(goals.has(s.id) ? { goal: goals.get(s.id)! } : {}),
+        };
+      });
     },
 
     async searchSessions(principalId, query, limit = SEARCH_HIT_LIMIT): Promise<SessionSearchHit[]> {
