@@ -13,17 +13,19 @@ export function createMemoryVectorIndexer(opts: {
 }) {
   const onError = opts.onError ?? ((error: unknown) => reportFailure("memory vector index", error));
   let pending: Promise<void> | undefined;
+  let active: AbortController | undefined;
   let model: string | undefined;
   let dimensions: number | undefined;
   let afterId: string | undefined;
   let nextProbeAt = 0;
   async function run(): Promise<void> {
+    const controller = (active = new AbortController());
     await opts.leaderLease.hold("memory:vector-index", async (lost) => {
       const current = await opts.resolve();
       if (!current) return;
-      const controller = new AbortController();
       void lost.then(() => controller.abort());
       const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(60_000)]);
+      signal.throwIfAborted();
       const { embedder, store } = current;
       const now = (opts.now ?? Date.now)();
       if (model !== embedder.id || dimensions === undefined || now >= nextProbeAt) {
@@ -36,11 +38,12 @@ export function createMemoryVectorIndexer(opts: {
         dimensions = width;
         nextProbeAt = now + 10 * 60_000;
       }
-      signal.throwIfAborted();
-      const facts = await store.missing(embedder.id, 64, dimensions, signal, afterId);
-      afterId = facts.at(-1)?.factId;
       try {
-        if (facts.length) {
+        do {
+          signal.throwIfAborted();
+          const facts = await store.missing(embedder.id, 64, dimensions, signal, afterId);
+          afterId = facts.at(-1)?.factId;
+          if (!facts.length) break;
           const vectors = await embedder.embed(
             facts.map((fact) => fact.text.slice(0, 8000)),
             signal,
@@ -61,18 +64,24 @@ export function createMemoryVectorIndexer(opts: {
           }
           signal.throwIfAborted();
           await store.put(rows, signal);
-        }
+          if (facts.length < 64) break;
+        } while ((opts.now ?? Date.now)() - now < 20_000);
       } finally {
         if (!signal.aborted) await store.prune(embedder.id, 200, dimensions, signal).catch(onError);
       }
     });
   }
   return {
+    stop(): Promise<void> {
+      active?.abort();
+      return pending ?? Promise.resolve();
+    },
     tick(): Promise<void> {
       pending ??= run()
         .catch(onError)
         .finally(() => {
           pending = undefined;
+          active = undefined;
         });
       return pending;
     },
