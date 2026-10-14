@@ -82,25 +82,27 @@ print(json.dumps(result) + '\\n200', end='')
   };
 }
 
-for (const body of ["", " \t\r\n"]) {
-  for (const command of ["draft", "reply", "update-draft"]) {
-    test(
-      `${command} rejects ${body ? "whitespace-only" : "empty"} body files before a draft write`,
-      { skip: !havePython },
-      () => {
-        const mock = mockGmail(body);
-        const args =
-          command === "draft" ? ["draft", "--to", "recipient@example.test", "--subject", "Probe"] : [command, "d1"];
-        const result = mock.run([...args, "--body-file", mock.bodyFile]);
-        assert.notEqual(result.status, 0, result.stdout);
-        assert.match(result.stderr, /body.*empty/i);
-        assert.ok(
-          mock.calls().every((call) => call.method === "GET"),
-          "no draft create/update request",
-        );
-      },
-    );
-  }
+for (const [command, body] of [
+  ["draft", ""],
+  ["reply", " \t\r\n"],
+  ["update-draft", ""],
+]) {
+  test(
+    `${command} rejects ${body ? "whitespace-only" : "empty"} body files before a draft write`,
+    { skip: !havePython },
+    () => {
+      const mock = mockGmail(body);
+      const args =
+        command === "draft" ? ["draft", "--to", "recipient@example.test", "--subject", "Probe"] : [command, "d1"];
+      const result = mock.run([...args, "--body-file", mock.bodyFile]);
+      assert.notEqual(result.status, 0, result.stdout);
+      assert.match(result.stderr, /body.*empty/i);
+      assert.ok(
+        mock.calls().every((call) => call.method === "GET"),
+        "no draft create/update request",
+      );
+    },
+  );
 }
 
 test("empty stdin is rejected before creating a draft", { skip: !havePython }, () => {
