@@ -33,6 +33,8 @@ export interface FakeManagedAgentsService {
   setStatus(name: string, status: string): void;
   rejectPortForward(body: string | null): void;
   failNextLifecycleCalls(count: number, status: number): void;
+  stallExec(fragment: string | null): void;
+  cancelledExecCount(): number;
   tunnelCount(): number;
   pingCount(): number;
   close(): Promise<void>;
@@ -65,6 +67,8 @@ export async function startFakeManagedAgentsService(): Promise<FakeManagedAgents
   const execScripts: string[] = [];
   let tunnels = 0;
   let pings = 0;
+  let stalledFragment: string | null = null;
+  let cancelledExecs = 0;
   let lifecycleFailures = 0;
   let lifecycleFailureStatus = 403;
 
@@ -76,10 +80,14 @@ export async function startFakeManagedAgentsService(): Promise<FakeManagedAgents
         const argv = frame.start.argv ?? [];
         const script = argv[argv.length - 1] ?? "";
         execScripts.push(script);
+        if (stalledFragment !== null && script.includes(stalledFragment)) {
+          call.on("cancelled", () => cancelledExecs++);
+          return;
+        }
         try {
-          const cwd = (frame.start.workdir || root).replace(/^\/home\/user/, root);
+          const cwd = (frame.start.workdir || root).replace(/^\/workspace\/home/, root);
           mkdirSync(cwd, { recursive: true });
-          const child = spawn("sh", ["-c", script.replace(/\/home\/user/g, root)], {
+          const child = spawn("sh", ["-c", script.replace(/\/workspace\/home/g, root)], {
             cwd,
             env: { ...process.env, ...frame.start.env, HOME: root },
           });
@@ -109,7 +117,7 @@ export async function startFakeManagedAgentsService(): Promise<FakeManagedAgents
         if (frame.chunk?.length) chunks.push(frame.chunk);
       });
       call.on("end", () => {
-        const hostPath = path.replace(/^\/home\/user/, root);
+        const hostPath = path.replace(/^\/workspace\/home/, root);
         mkdirSync(dirname(hostPath), { recursive: true });
         const body = Buffer.concat(chunks);
         writeFileSync(hostPath, body);
@@ -117,7 +125,7 @@ export async function startFakeManagedAgentsService(): Promise<FakeManagedAgents
       });
     },
     Download: (call: grpc.ServerWritableStream<{ path?: string }, unknown>) => {
-      const hostPath = (call.request.path ?? "").replace(/^\/home\/user/, root);
+      const hostPath = (call.request.path ?? "").replace(/^\/workspace\/home/, root);
       let body: Buffer;
       try {
         body = readFileSync(hostPath);
@@ -334,6 +342,10 @@ export async function startFakeManagedAgentsService(): Promise<FakeManagedAgents
       lifecycleFailures = count;
       lifecycleFailureStatus = status;
     },
+    stallExec: (fragment) => {
+      stalledFragment = fragment;
+    },
+    cancelledExecCount: () => cancelledExecs,
     tunnelCount: () => tunnels,
     pingCount: () => pings,
     close: async () => {
