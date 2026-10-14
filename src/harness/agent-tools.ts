@@ -134,16 +134,12 @@ const MAX_TOOL_RESULT_CHARS = 100_000;
 const PRESSURE_WARN_FULL60 = 50;
 const TRUNCATED_TAIL_CHARS = 10_000;
 
-function capResultText(t: string, recovery?: string): string {
-  if (t.length <= MAX_TOOL_RESULT_CHARS) return t;
+function capResultText(t: string, recovery?: string, maxChars = MAX_TOOL_RESULT_CHARS): string {
+  if (t.length <= maxChars) return t;
   const notice =
     `\n…[truncated — full result was ${t.length} chars and the middle was dropped; ` +
     `${recovery ?? "full captured result was not stored; do not rerun side-effecting work just to recover output"}]…\n`;
-  return (
-    headSlice(t, MAX_TOOL_RESULT_CHARS - TRUNCATED_TAIL_CHARS - notice.length) +
-    notice +
-    tailSlice(t, TRUNCATED_TAIL_CHARS)
-  );
+  return headSlice(t, maxChars - TRUNCATED_TAIL_CHARS - notice.length) + notice + tailSlice(t, TRUNCATED_TAIL_CHARS);
 }
 
 function capPayloadStrings(v: unknown): unknown {
@@ -502,7 +498,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       if (resultTruncated && !persistedSummary.quarantined) {
         let recovery: string | undefined;
         try {
-          const saved = await ref.current?.storeToolResult?.(callId, t);
+          const saved = await ref.current?.storeToolResult?.(callId, resultPrefix + t, sourceScopeId);
           if (saved) {
             persistedSummary = { ...persistedSummary, fullResult: saved };
             recovery = `${saved.sizeBytes} UTF-8 bytes saved in Files ${saved.fileId}; download GET $AGENT_API_URL/v1/files/${saved.fileId}/content with header x-agent-capability: $AGENT_API_TOKEN to a file, then read ranges locally without rerunning the original work`;
@@ -512,7 +508,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           recovery =
             "full-output storage failed; no retrieval reference is available; do not rerun side-effecting work just to recover output";
         }
-        result = resultPrefix + capResultText(t, recovery);
+        result = resultPrefix + capResultText(t, recovery, MAX_TOOL_RESULT_CHARS - resultPrefix.length);
         ret.content = ret.content.map((part) => (part.type === "text" ? { ...part, text: result } : part));
       }
       const delivered: string[] = [];

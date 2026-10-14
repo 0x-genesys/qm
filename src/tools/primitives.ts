@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { AdminToolAccess } from "./admin.ts";
 import { rankedSkills } from "../skills/materialize.ts";
 import type { SkillResolution } from "../skills/skill-store.ts";
@@ -195,7 +194,11 @@ export interface ToolContext extends SurfaceToolDeps {
   admin?: AdminToolAccess;
   runtime?(request: RuntimeRequest, signal?: AbortSignal): Promise<RuntimeResult>;
   attach: AttachFiles;
-  storeToolResult?(callId: string, content: string): Promise<{ fileId: string; sizeBytes: number } | null>;
+  storeToolResult?(
+    callId: string,
+    content: string,
+    sourceScopeId?: ScopeId | null,
+  ): Promise<{ fileId: string; sizeBytes: number } | null>;
   sessionSyscalls?: SessionSyscalls;
   /** True when a person's own message started this turn (not a cron, webhook, ambient or delegated wake). */
   humanTurn?: boolean;
@@ -951,9 +954,9 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       });
     },
 
-    async storeToolResult(callId, content) {
-      if (!deps.files || !writableScopeId) return null;
-      const id = fileArtifactId(`${writableScopeId}:${deps.runId ?? randomUUID()}:${callId}`, "out", 0);
+    async storeToolResult(callId, content, sourceScopeId) {
+      if (!deps.files || !writableScopeId || (sourceScopeId && sourceScopeId !== writableScopeId)) return null;
+      const id = fileArtifactId(`${writableScopeId}:${deps.runId ?? ""}:${callId}:${content}`, "out", 0);
       const name = "tool-result.txt";
       const { artifact } = await deps.files.put({
         id,

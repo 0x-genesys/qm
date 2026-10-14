@@ -38,6 +38,7 @@ function fixture(stdout: string, screenToolResult?: ToolContextRef["screenToolRe
   }).find((tool) => tool.name === "execute")!;
   return {
     files,
+    context,
     emitted,
     run: async () => {
       const invoke = execute.execute as unknown as (
@@ -105,4 +106,48 @@ test("storage failure reports missing recovery without changing the command resu
   assert.equal(f.emitted[0]!.outputStorageError, "storage unavailable");
   assert.equal(f.emitted[0]!.isError, false);
   assert.equal(f.emitted[0]!.fullResult, undefined);
+});
+
+test("unscreened output retains its warning in the saved copy and bounded preview", async () => {
+  const f = fixture("x".repeat(100_050), async () => ({ outcome: "unscreened" }));
+  const seen = await f.run();
+  assert.ok(seen.length <= 100_000);
+  assert.match(seen, /^\[NOT security-screened/);
+  const saved = f.emitted[0]!.fullResult as { fileId: string; sizeBytes: number };
+  const opened = await f.files.open(saved.fileId);
+  const { data } = await collectBytes(opened!.stream);
+  const warning = seen.slice(0, seen.indexOf("\n") + 1);
+  assert.equal(data.toString("utf8"), warning + "x".repeat(100_050) + "\n[exit 0]");
+  assert.equal(saved.sizeBytes, data.length);
+});
+
+test("file reads preserve same-scope output without re-owning a foreign result", async () => {
+  const f = fixture("");
+  const foreign = scopeId("personal", "other");
+  const text = "shared source".repeat(10_000);
+  f.context.read = async () => ({ content: text, sourceScopeId: foreign });
+  const read = createAgentTools({ current: f.context, scopeLabel: owner }).find((tool) => tool.name === "files")!;
+  const invoke = read.execute as unknown as (
+    id: string,
+    params: unknown,
+  ) => Promise<{ content: Array<{ text?: string }> }>;
+  const result = await invoke("foreign-read", { action: "read", path: "shared/note.txt" });
+  assert.match(result.content[0]!.text!, /shared source/);
+  assert.match(result.content[0]!.text!, /full captured result was not stored/);
+  assert.equal((await f.files.listOwnedByScopes([owner])).files.length, 0);
+  f.context.read = async () => ({ content: text, sourceScopeId: owner });
+  const local = await invoke("local-read", { action: "read", path: "note.txt" });
+  const saved = (await f.files.listOwnedByScopes([owner])).files;
+  assert.equal(saved.length, 1);
+  assert.match(local.content[0]!.text!, new RegExp(saved[0]!.id));
+});
+
+test("reused call ids cannot return a saved file containing different output", async () => {
+  const f = fixture("");
+  const first = await f.context.storeToolResult!("reused", "first");
+  const second = await f.context.storeToolResult!("reused", "second");
+  assert.notEqual(first!.fileId, second!.fileId);
+  const opened = await f.files.open(second!.fileId);
+  assert.equal((await collectBytes(opened!.stream)).data.toString(), "second");
+  assert.equal((await f.context.storeToolResult!("reused", "second"))!.fileId, second!.fileId);
 });
