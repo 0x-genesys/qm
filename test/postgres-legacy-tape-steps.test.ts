@@ -203,3 +203,130 @@ test(
     });
   },
 );
+
+test("pg legacy tape step preparation skips oversized payloads and sessions it cannot parse", { skip }, async () => {
+  await withSchema(async (raw) => {
+    await seedSession(
+      raw,
+      "huge",
+      [message([{ type: "toolCall", id: "call-huge", name: "execute", arguments: {} }])],
+      [["tool_call", { tool: "execute", callId: "call-huge" }]],
+    );
+    await raw.query(
+      `INSERT INTO session_tape(session_id, seq, kind, harness, payload, scope_label, created_at)
+       VALUES ('huge', 1, 'message', 'pi', '{"role":"assistant","content":[{"type":"text","text":"' || repeat('x', 16 * 1024 * 1024) || '"}]}', $1, 1)`,
+      [scope],
+    );
+    await seedSession(
+      raw,
+      "nested",
+      [message([{ type: "toolCall", id: "call-nested", name: "execute", arguments: {} }])],
+      [["tool_call", { tool: "execute", callId: "call-nested" }]],
+    );
+    await raw.query(
+      `INSERT INTO session_tape(session_id, seq, kind, harness, payload, scope_label, created_at)
+       VALUES ('nested', 1, 'message', 'pi', '{"role":"assistant","content":' || repeat('[', 200000) || repeat(']', 200000) || '}', $1, 1)`,
+      [scope],
+    );
+    await seedSession(
+      raw,
+      "plain",
+      [message([{ type: "toolCall", id: "call-plain", name: "execute", arguments: {} }])],
+      [["tool_call", { tool: "execute", callId: "call-plain" }]],
+    );
+
+    await raw.query("CALL prepare_legacy_tape_steps(50)");
+
+    assert.deepEqual(
+      (await raw.query("SELECT session_id FROM legacy_tape_steps ORDER BY session_id")).rows.map((r) => r.session_id),
+      ["huge", "plain"],
+    );
+    const skipped = (await raw.query("SELECT session_id, error FROM legacy_tape_skipped")).rows;
+    assert.deepEqual(
+      skipped.map((r) => r.session_id),
+      ["nested"],
+    );
+    assert.match(skipped[0].error, /^54001: stack depth limit exceeded/);
+    assert.deepEqual(
+      {
+        ...(await progress(raw)),
+        skipped: (await raw.query("SELECT skipped_sessions::int AS n FROM legacy_tape_steps_progress")).rows[0].n,
+      },
+      {
+        last_session: "plain",
+        done: true,
+        invalid_messages: 1,
+        keyed_blocks: 2,
+        copied_steps: 2,
+        copied_turns: 0,
+        skipped: 1,
+      },
+    );
+  });
+});
+
+test(
+  "pg legacy tape step preparation stops instead of skipping when every session in a batch fails",
+  { skip },
+  async () => {
+    await withSchema(async (raw) => {
+      for (const id of ["a", "b"])
+        await seedSession(
+          raw,
+          id,
+          [message([{ type: "toolCall", id: `call-${id}`, name: "execute", arguments: {} }])],
+          [["tool_call", { tool: "execute", callId: `call-${id}` }]],
+        );
+      await raw.query("ALTER TABLE legacy_tape_steps ADD CONSTRAINT refuse_all CHECK (false) NOT VALID");
+
+      await assert.rejects(
+        raw.query("CALL prepare_legacy_tape_steps(50)"),
+        /every session in the batch after \(start\) failed, so the failure is not in the data: 23514/,
+      );
+
+      assert.deepEqual(await progress(raw), {
+        last_session: null,
+        done: false,
+        invalid_messages: 0,
+        keyed_blocks: 0,
+        copied_steps: 0,
+        copied_turns: 0,
+      });
+      assert.equal((await raw.query("SELECT count(*)::int AS n FROM legacy_tape_skipped")).rows[0].n, 0);
+    });
+  },
+);
+
+test("pg legacy tape step preparation stops once more than 100 sessions have been skipped", { skip }, async () => {
+  await withSchema(async (raw) => {
+    await raw.query(
+      `INSERT INTO sessions(id, type, scope_id, thread_ref, created_at)
+       SELECT 's' || lpad(g::text, 3, '0'), 'dm', $1, 'web:s' || g, 1 FROM generate_series(1, 202) g`,
+      [scope],
+    );
+    await raw.query(
+      `INSERT INTO session_tape(session_id, seq, kind, harness, payload, scope_label, created_at)
+       SELECT 's' || lpad(g::text, 3, '0'), 0, 'message', 'pi',
+              '{"role":"assistant","content":[{"type":"toolCall","id":"call-' || g || '","name":"execute","arguments":{}}]}', $1, 1
+         FROM generate_series(1, 202, 2) g`,
+      [scope],
+    );
+    await raw.query(
+      `INSERT INTO session_entries(session_id, seq, parent_seq, type, payload, scope_label, created_at)
+       SELECT 's' || lpad(g::text, 3, '0'), 0, NULL, 'tool_call', '{"tool":"execute","callId":"call-' || g || '"}', $1, 0
+         FROM generate_series(1, 202, 2) g`,
+      [scope],
+    );
+    await raw.query("ALTER TABLE legacy_tape_steps ADD CONSTRAINT refuse_all CHECK (false) NOT VALID");
+
+    await assert.rejects(
+      raw.query("CALL prepare_legacy_tape_steps(50)"),
+      /more than 100 sessions could not be prepared, so the failure is unlikely to be in the data: 23514/,
+    );
+
+    const state = (await raw.query("SELECT done, skipped_sessions::int AS skipped FROM legacy_tape_steps_progress"))
+      .rows[0];
+    assert.equal(state.done, false);
+    assert.ok(state.skipped <= 100, `skipped ${state.skipped}`);
+  });
+});
