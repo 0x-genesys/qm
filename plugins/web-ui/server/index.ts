@@ -1,5 +1,5 @@
 import "./instrument.ts";
-import { handleVoiceRoute } from "./voice-routes.ts";
+import { handleVoiceRoute, sweepDictationSpool } from "./voice-routes.ts";
 import { browserErrorConfig } from "./browser-error-config.ts";
 import { flushErrorReporting, reportBackendError } from "../../chassis/src/error-reporting.ts";
 import { appEditSlug } from "../src/app-edit.ts";
@@ -3304,8 +3304,6 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
     if (!user) return unauthorized(res, req);
     if (["/api/dictation", "/api/voice", "/api/voice/sessions"].includes(path)) {
       return handleVoiceRoute(req, res, path, resolveIdentity(req)!, {
-        core: CORE,
-        secret: CORE_SIGNING_SECRET,
         org: ORG,
         publicUrl: PUBLIC_URL,
       });
@@ -3424,6 +3422,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
         t.unref?.();
         void runStateFeed();
         void runInboxFeed();
+        void sweepDictationSpool();
       });
     })
     .catch(async (err: unknown) => {

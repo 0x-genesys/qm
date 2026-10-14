@@ -1,13 +1,17 @@
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import { chmod, mkdir, readdir, rm, stat } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pipeline } from "node:stream/promises";
 import { json, readBodyBytes, PayloadTooLargeError } from "../../chassis/src/http.ts";
-import { coreClaimStore, withinRateLimit } from "../../chassis/src/claims.ts";
 import { reportBackendError } from "../../chassis/src/error-reporting.ts";
 import { errChain } from "../../chassis/src/errors.ts";
 import {
   createLiveVoice,
   dictationFormats,
   LIVE_MODEL,
-  MAX_DICTATION_BYTES,
   openaiKey,
   transcribe,
   voiceEnabled,
@@ -15,7 +19,36 @@ import {
   VoiceProviderError,
 } from "./voice.ts";
 
-const BODY_READ_TIMEOUT_MS = 30_000;
+const TRANSCRIBE_TIMEOUT_MS = 600_000;
+const LIVE_SESSION_TIMEOUT_MS = 25_000;
+const MAX_RETRY_AFTER_S = 3600;
+const REJECTED_STATUSES = new Set([400, 401, 403, 404, 422]);
+
+const SPOOL_DIR = join(tmpdir(), "qm-dictation");
+const STALE_SPOOL_MS = 3_600_000;
+
+export async function sweepDictationSpool(nowMs = Date.now()): Promise<void> {
+  const names = await readdir(SPOOL_DIR).catch(() => []);
+  for (const name of names) {
+    const file = join(SPOOL_DIR, name);
+    const info = await stat(file).catch(() => null);
+    if (info && nowMs - info.mtimeMs > STALE_SPOOL_MS) await rm(file, { force: true }).catch(() => undefined);
+  }
+}
+
+async function spool(req: IncomingMessage, signal: AbortSignal): Promise<{ file: string; size: number }> {
+  await mkdir(SPOOL_DIR, { recursive: true, mode: 0o700 });
+  await chmod(SPOOL_DIR, 0o700);
+  const file = join(SPOOL_DIR, randomUUID());
+  const out = fs.createWriteStream(file, { mode: 0o600 });
+  try {
+    await pipeline(req, out, { signal });
+  } catch (error) {
+    await rm(file, { force: true }).catch(() => undefined);
+    throw error;
+  }
+  return { file, size: out.bytesWritten };
+}
 
 function reportVoiceError(error: unknown, code: string, aborted = false): void {
   const detail = { ...(error instanceof VoiceProviderError ? error.detail : {}), aborted };
@@ -28,7 +61,7 @@ export async function handleVoiceRoute(
   res: ServerResponse,
   path: string,
   identity: { user: string; impersonator: string | null; portalVerified: boolean },
-  config: { core: string; secret: string | undefined; org: string; publicUrl: string },
+  config: { org: string; publicUrl: string },
 ): Promise<void> {
   const { user } = identity;
   const enabled = voiceEnabled(user) && !identity.impersonator;
@@ -66,57 +99,60 @@ export async function handleVoiceRoute(
   }
 
   const controller = new AbortController();
+  const finished = new AbortController();
   const disconnect = () => {
     if (!res.writableEnded) controller.abort();
   };
   res.once("close", disconnect);
   try {
-    let allowed: boolean;
-    try {
-      allowed = await withinRateLimit(coreClaimStore(config.core, config.secret, dictation ? "dictation" : "voice"), {
-        secret: config.secret!,
-        kind: dictation ? "dictation" : "voice-session",
-        value: `${config.org}:${user}`,
-        limit: dictation ? 60 : 6,
-        windowS: 3600,
-        nowMs: Date.now(),
-      });
-    } catch (error) {
-      reportVoiceError(error, dictation ? "dictation_rate_limit_store" : "voice_rate_limit_store");
-      res.setHeader("retry-after", "30");
-      return json(res, 503, { error: "rate_limit_unavailable", message: "Voice is temporarily unavailable." });
-    }
-    if (!allowed)
-      return dictation
-        ? json(res, 429, { error: "dictation_rate_limit", message: "Dictation limit reached. Try again next hour." })
-        : json(res, 429, { error: "voice_rate_limit", message: "Voice session limit reached. Try again next hour." });
-
-    const caller = {
+    const caller = (timeoutMs: number) => ({
       user,
       org: config.org,
       apiKey: openaiKey()!,
-      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(dictation ? 60_000 : 25_000)]),
-    };
-    if (!dictation) return json(res, 201, await createLiveVoice(sdp, caller));
-    const readTimer = setTimeout(() => req.destroy(), BODY_READ_TIMEOUT_MS);
-    let audio: Buffer;
+      signal: AbortSignal.any([controller.signal, finished.signal, AbortSignal.timeout(timeoutMs)]),
+    });
+    if (!dictation) return json(res, 201, await createLiveVoice(sdp, caller(LIVE_SESSION_TIMEOUT_MS)));
+    let audio: { file: string; size: number };
     try {
-      audio = await readBodyBytes(req, MAX_DICTATION_BYTES);
+      audio = await spool(req, controller.signal);
     } catch (error) {
-      if (error instanceof PayloadTooLargeError) {
-        res.setHeader("connection", "close");
-        return json(res, 413, { error: "audio_too_large" });
-      }
-      if (!controller.signal.aborted) reportVoiceError(error, "dictation_upload");
-      return controller.signal.aborted ? undefined : json(res, 400, { error: "upload_failed" });
-    } finally {
-      clearTimeout(readTimer);
+      const clientGone = controller.signal.aborted;
+      reportVoiceError(error, "dictation_upload", clientGone);
+      if (clientGone) return;
+      return json(res, 503, { error: "dictation_unavailable", message: "The server could not store the recording." });
     }
-    if (!audio.byteLength) return json(res, 400, { error: "empty_audio" });
-    return json(res, 200, { text: await transcribe(audio, mimeType, caller) });
+    let text: string | null = null;
+    try {
+      if (audio.size) text = await transcribe(audio.file, audio.size, mimeType, caller(TRANSCRIBE_TIMEOUT_MS));
+    } finally {
+      await rm(audio.file, { force: true }).catch((error: unknown) => reportVoiceError(error, "dictation_cleanup"));
+    }
+    return text === null ? json(res, 400, { error: "empty_audio" }) : json(res, 200, { text });
   } catch (error) {
     reportVoiceError(error, dictation ? "dictation_provider" : "voice_provider", controller.signal.aborted);
     if (controller.signal.aborted) return;
+    const provider = error instanceof VoiceProviderError ? error : undefined;
+    if (provider?.status === 429 && provider.code !== "insufficient_quota") {
+      if (provider.retryAfterS !== undefined)
+        res.setHeader("retry-after", String(Math.min(provider.retryAfterS, MAX_RETRY_AFTER_S)));
+      return json(res, 429, {
+        error: "provider_rate_limit",
+        message: "OpenAI is rate limiting requests. Try again shortly.",
+      });
+    }
+    if (dictation && provider?.status === 413)
+      return json(res, 413, { error: "audio_too_large", message: "OpenAI says this recording is too large." });
+    if (
+      dictation &&
+      provider?.status === 400 &&
+      (provider.code === "unsupported_format" || (provider.code === "invalid_value" && provider.param === "file"))
+    )
+      return json(res, 400, { error: "invalid_audio", message: "OpenAI could not read this recording." });
+    if (provider?.status !== undefined && REJECTED_STATUSES.has(provider.status))
+      return json(res, 502, {
+        error: dictation ? "dictation_rejected" : "voice_rejected",
+        message: "OpenAI rejected the request. Retrying will not help.",
+      });
     return dictation
       ? json(res, 503, {
           error: "dictation_unavailable",
@@ -124,6 +160,7 @@ export async function handleVoiceRoute(
         })
       : json(res, 503, { error: "voice_unavailable", message: "Voice could not connect. Please try again." });
   } finally {
+    finished.abort();
     res.off("close", disconnect);
   }
 }
