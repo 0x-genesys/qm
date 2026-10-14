@@ -21,7 +21,7 @@ import { fromJSONSchema, type ZodObject } from "zod";
 import { contentText, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { CONFIG_DEFAULTS, type Config } from "../config.ts";
 import { isDeliveryNote } from "../core/attachments.ts";
-import { NonRetryableTurnError } from "../core/turn-error.ts";
+import { MODEL_OUTPUT_LIMIT_TEXT, NonRetryableTurnError } from "../core/turn-error.ts";
 import {
   contextTokenBudgetForModel,
   getRequiredModel,
@@ -685,6 +685,12 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
           await flushThinking();
           if (interrupted) break;
           const terminal = ref.runtimeHandoff || ref.silentRequested || ref.pausedOnApproval;
+          if (toolsEnabled && !terminal && message.subtype === "success" && message.stop_reason === "max_tokens") {
+            if (message.result) {
+              await turn.emit({ type: "text", payload: { text: message.result }, scopeLabel: turn.scopeLabel });
+            }
+            throw new NonRetryableTurnError(MODEL_OUTPUT_LIMIT_TEXT);
+          }
           const text = message.subtype === "success" && !terminal ? message.result.trim() : "";
           if (text) {
             await turn.emit({ type: "assistant", payload: { text }, scopeLabel: turn.scopeLabel });

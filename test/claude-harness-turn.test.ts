@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { test, mock } from "node:test";
 import assert from "node:assert/strict";
+import { isNonRetryable, turnFailureMessage } from "../src/core/turn-error.ts";
 import { createMemoryRunSignalStore } from "../src/runs/run-signal-store.ts";
 import type { HarnessLlmRequestRecord, HarnessTurnInput } from "../src/harness/harness.ts";
 import type { NewEntry } from "../src/sessions/session-store.ts";
@@ -808,3 +809,31 @@ for (const shutdown of [false, true]) {
     }
   });
 }
+
+test("a token-limited Claude turn fails visibly instead of persisting an incomplete final", async () => {
+  currentScript = async function* (prompts) {
+    await prompts[Symbol.asyncIterator]().next();
+    yield resultMessage("an unfinished sentence abo", { stop_reason: "max_tokens" });
+  };
+  const { turn, entries } = harnessTurn({ readOnly: false });
+  await assert.rejects(createClaudeHarness({}).turns.runTurn(turn), (error: unknown) => {
+    assert.equal(isNonRetryable(error), true);
+    assert.match(turnFailureMessage(error), /output limit.*incomplete/i);
+    return true;
+  });
+  assert.equal(
+    entries.some((entry) => entry.type === "assistant"),
+    false,
+  );
+});
+
+test("Claude still accepts successful stop-sequence and pause results", async () => {
+  for (const stopReason of ["stop_sequence", "pause_turn"]) {
+    currentScript = async function* (prompts) {
+      await prompts[Symbol.asyncIterator]().next();
+      yield resultMessage("complete result", { stop_reason: stopReason });
+    };
+    const result = await createClaudeHarness({}).turns.runTurn(harnessTurn({ readOnly: false }).turn);
+    assert.equal(result.reply, "complete result");
+  }
+});
