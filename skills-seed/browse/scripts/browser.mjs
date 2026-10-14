@@ -1,8 +1,4 @@
 #!/usr/bin/env node
-// Drive a Browser Use Cloud browser from the shell, keeping one Playwright page alive across
-// commands. `open` creates the cloud browser and starts a small local daemon that holds the CDP
-// connection; `eval`, `screenshot` and `stop` talk to it over a unix socket. The daemon stops
-// the cloud browser on `stop`, on idle timeout, on signal, or if the connection drops.
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, openSync } from "node:fs";
 import { request, createServer } from "node:http";
@@ -15,8 +11,6 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
 
-// Node's fetch ignores HTTPS_PROXY unless NODE_USE_ENV_PROXY is set at startup; sandboxes egress
-// through a proxy, so re-exec once with it on.
 if ((process.env.HTTPS_PROXY || process.env.https_proxy) && !process.env.NODE_USE_ENV_PROXY) {
   const r = spawnSync(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
     stdio: "inherit",
@@ -52,11 +46,11 @@ async function api(method, path, body) {
   }
   const res = await fetch(API + path, init);
   const text = await res.text();
-  let json = text;
+  let json;
   try {
     json = JSON.parse(text);
   } catch {
-    // keep text
+    json = text;
   }
   return { status: res.status, json };
 }
@@ -82,8 +76,6 @@ async function preflight() {
   };
 }
 
-// Playwright's websocket client ignores HTTPS_PROXY. When an egress proxy applies, connect
-// Playwright to a loopback relay that tunnels each websocket through the proxy with CONNECT.
 function proxyFor(host) {
   const raw = process.env.HTTPS_PROXY || process.env.https_proxy;
   if (!raw) return null;
@@ -158,7 +150,14 @@ async function cdpEndpoint(cdpUrl) {
   return `ws://127.0.0.1:${relay.address().port}${target.pathname}${target.search}`;
 }
 
-const stopBrowser = (id) => api("PATCH", `/api/v4/browsers/${encodeURIComponent(id)}`, { action: "stop" });
+async function stopBrowser(id) {
+  try {
+    const r = await api("PATCH", `/api/v4/browsers/${encodeURIComponent(id)}`, { action: "stop" });
+    return { stopped: (r.status >= 200 && r.status < 300) || r.status === 404, status: r.status, detail: r.json };
+  } catch (err) {
+    return { stopped: false, error: String(err?.cause?.message ?? err?.message ?? err) };
+  }
+}
 
 function loadPlaywright() {
   const req = createRequire(join(CACHE, "package.json"));
@@ -210,21 +209,22 @@ async function open(session, values) {
   const p = paths(session);
   mkdirSync(DIR, { recursive: true, mode: 0o700 });
   if (existsSync(p.sock)) {
-    try {
-      const live = await call(p.sock, "/health", {}, 5_000);
-      if (live.ok) fail({ error: `session "${session}" is already open; stop it first`, liveUrl: live.liveUrl });
-    } catch {
-      // stale socket from a dead daemon
-    }
+    const live = await call(p.sock, "/health", {}, 5_000).catch(() => null);
+    if (live?.ok) fail({ error: `session "${session}" is already open; stop it first`, liveUrl: live.liveUrl });
   }
   const pre = await preflight();
   if (!pre.ok) fail(pre, 2);
-  loadPlaywright(); // install before the billed browser exists
+  if (existsSync(p.state)) {
+    const stale = JSON.parse(readFileSync(p.state, "utf8"));
+    const s = await stopBrowser(stale.id);
+    if (!s.stopped) fail({ reason: "stale_browser_not_stopped", browserId: stale.id, ...s });
+    rmSync(p.state, { force: true });
+  }
+  loadPlaywright();
 
   const country = values.country ?? "us";
   const body = { proxyCountryCode: country === "none" ? null : country };
   if (values.profile) body.profileId = values.profile;
-  if (values.timeout) body.timeout = Number(values.timeout);
   const created = await api("POST", "/api/v4/browsers", body);
   if (created.status !== 200 && created.status !== 201) {
     fail({ reason: "create_failed", status: created.status, detail: created.json }, created.status === 402 ? 2 : 1);
@@ -250,15 +250,11 @@ async function open(session, values) {
     }
     if (child.exitCode !== null) break;
   }
-  try {
-    process.kill(child.pid, "SIGTERM");
-  } catch {
-    // already gone
-  }
-  await stopBrowser(id).catch(() => {});
-  rmSync(p.state, { force: true });
+  if (child.exitCode === null) process.kill(child.pid, "SIGTERM");
+  const s = await stopBrowser(id);
+  if (s.stopped) rmSync(p.state, { force: true });
   const tail = existsSync(p.log) ? readFileSync(p.log, "utf8").slice(-2000) : "";
-  fail({ reason: "connect_failed", browserId: id, stopped: true, log: tail });
+  fail({ reason: "connect_failed", browserId: id, stop: s, log: tail });
 }
 
 async function daemon(session) {
@@ -268,9 +264,11 @@ async function daemon(session) {
   const shutdown = (why) =>
     (stopping ??= (async () => {
       console.error(`stopping browser ${id}: ${why}`);
-      await stopBrowser(id).catch((err) => console.error(`stop failed: ${err.message}`));
+      const s = await stopBrowser(id);
+      if (!s.stopped) console.error(`stop failed: ${JSON.stringify(s)}`);
       rmSync(p.sock, { force: true });
-      rmSync(p.state, { force: true });
+      if (s.stopped) rmSync(p.state, { force: true });
+      return s;
     })());
 
   for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(sig, () => shutdown(sig).then(() => process.exit(0)));
@@ -284,7 +282,6 @@ async function daemon(session) {
     process.exit(1);
   }
   browser.on("disconnected", () => shutdown("disconnected").then(() => process.exit(0)));
-  // Use the browser's existing context so profile cookies apply.
   const context = browser.contexts()[0] ?? (await browser.newContext());
   if (context.pages().length === 0) await context.newPage();
   const page = () => context.pages().at(-1);
@@ -313,15 +310,15 @@ async function daemon(session) {
       const truncated = text.length > MAX_OUTPUT;
       return { ok: true, result: truncated ? text.slice(0, MAX_OUTPUT) : text, truncated, url: page()?.url() };
     },
-    "/screenshot": async ({ path, fullPage }) => {
+    "/screenshot": async ({ path }) => {
       const out = path || join(DIR, `${session}-${Date.now()}.png`);
-      await page().screenshot({ path: out, fullPage: Boolean(fullPage) });
+      await page().screenshot({ path: out });
       return { ok: true, path: out, url: page()?.url() };
     },
     "/stop": async () => {
-      await shutdown("stop requested");
+      const s = await shutdown("stop requested");
       setImmediate(() => process.exit(0));
-      return { ok: true, stopped: true, browserId: id };
+      return { ok: s.stopped, browserId: id, ...s };
     },
   };
 
@@ -353,8 +350,6 @@ async function main() {
       session: { type: "string", default: "default" },
       profile: { type: "string" },
       country: { type: "string" },
-      timeout: { type: "string" },
-      "full-page": { type: "boolean" },
     },
   });
   const [cmd, arg] = positionals;
@@ -383,7 +378,7 @@ async function main() {
       break;
     }
     case "screenshot": {
-      const r = await call(p.sock, "/screenshot", { path: arg, fullPage: values["full-page"] }).catch((err) =>
+      const r = await call(p.sock, "/screenshot", { path: arg }).catch((err) =>
         fail({ error: `no open browser: ${err.message}` }),
       );
       print(r);
@@ -393,19 +388,20 @@ async function main() {
     case "stop": {
       const r = await call(p.sock, "/stop", {}, 30_000).catch(() => null);
       if (r?.ok) return print(r);
-      // Daemon gone: stop the cloud browser directly from the saved id.
+      if (r) console.error(`daemon stop failed: ${JSON.stringify(r)}`);
       if (!existsSync(p.state)) return print({ ok: true, stopped: false, note: "no open browser" });
       const { id } = JSON.parse(readFileSync(p.state, "utf8"));
       const s = await stopBrowser(id);
-      rmSync(p.state, { force: true });
       rmSync(p.sock, { force: true });
-      print({ ok: s.status < 300, stopped: s.status < 300, browserId: id, status: s.status });
+      if (s.stopped) rmSync(p.state, { force: true });
+      print({ ok: s.stopped, browserId: id, ...s });
+      process.exit(s.stopped ? 0 : 1);
       break;
     }
     default:
       fail({
         error:
-          "usage: browser.mjs preflight | open [--profile ID] [--country us|none] | eval CODE|- | screenshot [PATH] [--full-page] | stop  (all accept --session NAME)",
+          "usage: browser.mjs preflight | open [--profile ID] [--country us|none] | eval CODE|- | screenshot [PATH] | stop  (all accept --session NAME)",
       });
   }
 }

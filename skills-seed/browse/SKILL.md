@@ -31,8 +31,8 @@ Act on `reason` and tell the person once, plainly; don't retry in a loop or re-r
 
 - `missing_key` — browsing isn't set up for them. If the keychain lists a
   `BROWSER_USE_API_KEY` credential you lack a grant for, use the `request-access` skill.
-  Otherwise point them to https://qm.ycinside.com/keychain to add or grant a
-  `BROWSER_USE_API_KEY`.
+  Otherwise point them to the keychain page (the connection page named in your context) to
+  add or grant a `BROWSER_USE_API_KEY`.
 - `key_rejected` — Browser Use rejected the key (401/403); it needs replacing in the keychain.
 - `no_credits` — the Browser Use account is out of credits (402 or a zero balance); someone
   must top it up at cloud.browser-use.com.

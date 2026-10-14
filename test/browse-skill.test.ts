@@ -13,7 +13,7 @@ const SCRIPT = fileURLToPath(new URL("../skills-seed/browse/scripts/browser.mjs"
 
 type Call = { method: string; url: string; key: string | undefined; body: unknown };
 
-async function fakeApi(billing: { status: number; body?: unknown }) {
+async function fakeApi(billing: { status: number; body?: unknown }, patchStatus = 200) {
   const calls: Call[] = [];
   const server: Server = createServer((req: IncomingMessage, res) => {
     let text = "";
@@ -35,7 +35,8 @@ async function fakeApi(billing: { status: number; body?: unknown }) {
         res.end(
           JSON.stringify({ id: "b1", cdpUrl: "ws://fake-cdp/devtools/browser/x", liveUrl: "https://live.test/b1" }),
         );
-      } else if (call.method === "PATCH" && call.url === "/api/v4/browsers/b1") {
+      } else if (call.method === "PATCH" && call.url.startsWith("/api/v4/browsers/")) {
+        res.statusCode = patchStatus;
         res.end(JSON.stringify({ id: "b1", status: "stopped" }));
       } else {
         res.statusCode = 404;
@@ -48,7 +49,6 @@ async function fakeApi(billing: { status: number; body?: unknown }) {
   return { calls, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => server.close() };
 }
 
-// A stand-in playwright-core so the daemon can run without a real browser.
 function fakePlaywright(dir: string) {
   const mod = join(dir, "node_modules", "playwright-core");
   mkdirSync(mod, { recursive: true });
@@ -191,6 +191,37 @@ test("an idle browser is stopped by the daemon", async () => {
     for (let i = 0; i < 80 && !api.calls.some((c) => c.method === "PATCH"); i++) await sleep(100);
     assert.ok(api.calls.some((c) => c.method === "PATCH" && c.url === "/api/v4/browsers/b1"));
   } finally {
+    api.close();
+    box.cleanup();
+  }
+});
+
+test("a failed stop keeps the browser id so a later stop can retry", async () => {
+  const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } }, 500);
+  const box = sandbox(api);
+  try {
+    assert.equal((await run(["open"], box.env)).out.ok, true);
+    const first = await run(["stop"], box.env);
+    assert.equal(first.code, 1);
+    assert.deepEqual([first.out.stopped, first.out.status], [false, 500]);
+    assert.ok(existsSync(join(box.env.QM_BROWSE_DIR, "default.json")));
+  } finally {
+    api.close();
+    box.cleanup();
+  }
+});
+
+test("open stops a browser left behind by a dead daemon before creating another", async () => {
+  const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
+  const box = sandbox(api);
+  try {
+    mkdirSync(box.env.QM_BROWSE_DIR, { recursive: true });
+    writeFileSync(join(box.env.QM_BROWSE_DIR, "default.json"), JSON.stringify({ id: "old" }));
+    assert.equal((await run(["open"], box.env)).out.ok, true);
+    const order = api.calls.filter((c) => c.method !== "GET").map((c) => `${c.method} ${c.url}`);
+    assert.deepEqual(order.slice(0, 2), ["PATCH /api/v4/browsers/old", "POST /api/v4/browsers"]);
+  } finally {
+    await run(["stop"], box.env);
     api.close();
     box.cleanup();
   }
