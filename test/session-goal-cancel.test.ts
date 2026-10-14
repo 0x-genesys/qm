@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildApp } from "../src/wiring.ts";
 import { createGoalRecord, goalSnapshotPayload, latestGoalRecord, rehydrateOpenGoal } from "../src/harness/goal.ts";
-import { appendEntryOutsideTurn } from "../src/sessions/session-store.ts";
+import { reconstructMessagesFromHistory } from "../src/harness/replay.ts";
 import type { Principal } from "../src/types.ts";
 import type { OrchestratorInput } from "../src/core/orchestrator.ts";
 import { testConfig } from "./support/test-config.ts";
@@ -34,7 +34,7 @@ async function sessionWithGoal(built: ReturnType<typeof freshApp>, ref: string, 
   goal.status = status;
   const { lease } = await sessions.acquireLease(session.id);
   assert.ok(lease);
-  await appendEntryOutsideTurn(sessions, lease, {
+  await sessions.append(lease, {
     type: "system",
     payload: goalSnapshotPayload(goal),
     scopeLabel: session.scopeId,
@@ -66,8 +66,11 @@ for (const status of ["active", "paused"] as const) {
     assert.equal(latestGoalRecord(entries)?.status, "cancelled");
     assert.equal(latestGoalRecord(entries)?.completionNote, undefined, "cancelling is not completing");
     assert.equal(rehydrateOpenGoal(entries), null, "later turns start with no goal to enforce");
-    const tape = JSON.stringify(await built.sessions.getTape(session.id));
-    assert.match(tape, /The user cancelled this goal/, "the model is told the goal was cancelled");
+    assert.match(
+      JSON.stringify(reconstructMessagesFromHistory(entries)),
+      /The user cancelled this goal/,
+      "the model is told the goal was cancelled",
+    );
     assert.ok(!(await built.app.listSessions("U1")).find((s) => s.id === session.id)?.goal);
     assert.deepEqual(await built.app.cancelSessionGoal(session.id, "U1"), {
       cancelled: false,
@@ -99,7 +102,7 @@ for (const status of ["active", "paused"] as const) {
 
     const final = latestGoalRecord(await built.sessions.getEntries(session.id))!;
     final.status = "paused";
-    await appendEntryOutsideTurn(built.sessions, lease, {
+    await built.sessions.append(lease, {
       type: "system",
       payload: goalSnapshotPayload(final),
       scopeLabel: session.scopeId,

@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { scoredMemoryIndex } from "./support/scored-memory-index.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { createMemoryService } from "../src/memory/memory-service.ts";
-import { createSemanticMemoryService, type MemoryVector } from "../src/memory/semantic-recall.ts";
+import { createSemanticMemoryService } from "../src/memory/semantic-recall.ts";
 import { createRoutedMemoryService } from "../src/memory/provider-router.ts";
 import { recallAcrossScopes, renderRecall, searchAcrossScopes } from "../src/memory/cross-scope.ts";
 
@@ -30,7 +30,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
         });
       },
     }),
-    createMemoryMap<MemoryVector>(),
+    scoredMemoryIndex(base, (text) => Number(text.split(" ")[0])),
   );
   return { base, memory, calls, workspace };
 }

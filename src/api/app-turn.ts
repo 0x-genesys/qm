@@ -18,6 +18,7 @@ import { isProjectGroupRef, projectIdFromGroupRef } from "../projects/project-st
 import { samePerson } from "../directory/person.ts";
 import {
   defaultModelForHarness,
+  harnessIdOrPi,
   isHarnessId,
   modelProviderAvailabilityFor,
   modelServiceable,
@@ -252,7 +253,7 @@ export function createTurnMethods(
         }
         const org = scopeId("org", orgIdOf());
         const targetScope = conversationScope(req.conversation, actor.id);
-        const fallbackHarness = isHarnessId(deps.harnessId) ? deps.harnessId : "pi";
+        const fallbackHarness = harnessIdOrPi(deps.harnessId);
         const runtimeFallback = deps.runtimeFallback ?? {
           harnessId: fallbackHarness,
           modelId: defaultModelForHarness(fallbackHarness),
@@ -725,7 +726,6 @@ export function createTurnMethods(
       const replying = deps.turnStream?.replying(runId) ?? false;
       const replyComplete = deps.turnStream?.isReplyDone(runId) ?? false;
       const activity = await deps.runActivity?.list(runId);
-      const tasks = await deps.tasks?.list({ originRunId: runId });
       const stale =
         run.status === "pending" ? run.attempts > 0 : !alive && leaseLapsed(run, Date.now() - STALE_LEASE_GRACE_MS);
       return {
@@ -765,7 +765,6 @@ export function createTurnMethods(
         ...(stale ? { stale: true } : {}),
         ...(replying ? { replying: true } : {}),
         ...(replyComplete ? { replyComplete: true } : {}),
-        ...(tasks?.length ? { tasks: tasks.map(({ id, title, status }) => ({ id, title, status })) } : {}),
         ...(activity && activity.length ? { activity } : {}),
       };
     },
