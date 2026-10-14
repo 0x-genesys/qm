@@ -7461,10 +7461,6 @@ h3.ambient-field-label {
   font-family: var(--app-font);
 }
 
-.dockview-theme-qm .dv-groupview.dv-active-group .dv-tabs-and-actions-container {
-  --split-strip-line: color-mix(in srgb, var(--brand-accent) 20%, var(--border));
-}
-
 /* Empty auxiliary action containers must not occupy a flex-gap slot. */
 .dockview-theme-qm .dv-pre-actions-container:empty,
 .dockview-theme-qm .dv-left-actions-container:empty {
@@ -12520,4 +12516,15 @@ body.app-edit-embed .custom-chat-shell.app-edit-chat > .chat-bottom-dock {
   padding: 6px 10px;
   white-space: pre-wrap;
   min-width: 80px;
+}
+
+.split-canvas:not(.single-pane) .dv-groupview:not(.dv-active-group) .composer-wrap {
+  display: none;
+}
+
+.split-canvas:not(.single-pane)
+  .dv-groupview:not(.dv-active-group):not(:hover):not(:focus-within)
+  :is(.dv-right-actions-container, .split-tab-actions) {
+  opacity: 0;
+  pointer-events: none;
 }
