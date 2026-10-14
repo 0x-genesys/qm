@@ -108,6 +108,7 @@ export interface ChatSurface {
   notePendingSessionOnSend(): void;
   syncPaneState(): void;
   onDelivery(threadRef: string): void;
+  applyTranscript(s: CoreSession, page: import("./core-bridge").TranscriptPage, approvals: PendingApproval[]): void;
   resumeIfIdle(): void;
   redraw(): void;
   dispose(): void;
