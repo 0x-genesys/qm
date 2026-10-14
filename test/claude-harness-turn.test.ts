@@ -147,14 +147,14 @@ test("Claude notices use each turn's timezone without leaking it into later turn
   assert.equal((capturedOptions.env as NodeJS.ProcessEnv).TZ, undefined);
 });
 
-test("a steered turn persists every reply, not only the last result's", async () => {
+test("a steered turn persists and delivers every reply, not only the last result's", async () => {
   const signals = createMemoryRunSignalStore();
   const runId = "run-steer";
   currentScript = async function* (prompts) {
     const iterator = prompts[Symbol.asyncIterator]();
     yield (await iterator.next()).value as unknown as FakeSdkMessage;
     await signals.send(runId, { kind: "steer", text: "now do the other three", ts: "123.456" });
-    yield (await iterator.next()).value as unknown as FakeSdkMessage;
+    const steer = (await iterator.next()).value as unknown as FakeSdkMessage;
     yield assistantMessage("msg_A", "The capital of France is Paris.", {
       input_tokens: 3,
       output_tokens: 8,
@@ -162,6 +162,7 @@ test("a steered turn persists every reply, not only the last result's", async ()
       cache_creation_input_tokens: 0,
     });
     yield resultMessage("The capital of France is Paris.");
+    yield steer;
     yield assistantMessage("msg_B", "All four done.", {
       input_tokens: 4,
       output_tokens: 5,
@@ -175,7 +176,7 @@ test("a steered turn persists every reply, not only the last result's", async ()
   const { turn, entries } = harnessTurn({ runId });
   const result = await harness.turns.runTurn(turn);
 
-  assert.equal(result.reply, "All four done.");
+  assert.equal(result.reply, "The capital of France is Paris.\n\nAll four done.");
   const assistantTexts = entries
     .filter((entry) => entry.type === "assistant")
     .map((entry) => (entry.payload as { text: string }).text);
@@ -415,6 +416,67 @@ test("recorded LLM requests carry real timing and usage instead of a hardcoded t
   });
 });
 
+function commandLifecycle(commandUuid: unknown, state: "queued" | "started" | "completed"): FakeSdkMessage {
+  return { type: "command_lifecycle", command_uuid: commandUuid, state, uuid: `lifecycle-${state}`, session_id: "" };
+}
+
+test("a steer folded into the running turn ends the turn at that turn's result", { timeout: 5_000 }, async () => {
+  const signals = createMemoryRunSignalStore();
+  const runId = "run-steer-folded";
+  currentScript = async function* (prompts) {
+    const iterator = prompts[Symbol.asyncIterator]();
+    const initial = (await iterator.next()).value as unknown as FakeSdkMessage;
+    await signals.send(runId, { kind: "steer", text: "and what approval?", ts: "123.457" });
+    const steer = (await iterator.next()).value as unknown as FakeSdkMessage;
+    yield commandLifecycle(steer.uuid, "queued");
+    yield steer;
+    yield commandLifecycle(steer.uuid, "started");
+    yield assistantMessage("msg_A", "Done, and there was no approval pending.", {});
+    yield commandLifecycle(steer.uuid, "completed");
+    yield resultMessage("Done, and there was no approval pending.");
+    yield commandLifecycle(initial.uuid, "completed");
+    await iterator.next();
+  };
+
+  const harness = createClaudeHarness({ signals });
+  const { turn, entries } = harnessTurn({ runId });
+  const result = await harness.turns.runTurn(turn);
+
+  assert.equal(result.reply, "Done, and there was no approval pending.");
+  assert.deepEqual(
+    entries.filter((entry) => entry.type === "user").map((entry) => (entry.payload as { text: string }).text),
+    ["what is the capital of france?", "and what approval?"],
+  );
+  assert.equal((await signals.pending(runId)).length, 0, "an echoed steer is acknowledged, not left to replay");
+});
+
+test("a stop after a finished answer still delivers that answer once", { timeout: 5_000 }, async () => {
+  const signals = createMemoryRunSignalStore();
+  const runId = "run-stop-after-answer";
+  currentScript = async function* (prompts) {
+    const iterator = prompts[Symbol.asyncIterator]();
+    const initial = (await iterator.next()).value as unknown as FakeSdkMessage;
+    yield initial;
+    await signals.send(runId, { kind: "steer", text: "and one more thing", ts: "123.461" });
+    await iterator.next();
+    yield assistantMessage("msg_A", "Here is the answer.", {});
+    yield resultMessage("Here is the answer.");
+    await signals.send(runId, { kind: "abort" });
+    await iterator.next();
+  };
+
+  const harness = createClaudeHarness({ signals });
+  const { turn, entries } = harnessTurn({ runId });
+  const result = await harness.turns.runTurn(turn);
+
+  assert.equal(result.stopped, true);
+  assert.equal(result.reply, "Here is the answer.");
+  assert.deepEqual(
+    entries.filter((entry) => entry.type === "assistant").map((entry) => (entry.payload as { text: string }).text),
+    ["Here is the answer."],
+  );
+});
+
 test("each steered prompt gets its own LLM request record", async () => {
   const signals = createMemoryRunSignalStore();
   const runId = "run-steps";
@@ -422,7 +484,7 @@ test("each steered prompt gets its own LLM request record", async () => {
     const iterator = prompts[Symbol.asyncIterator]();
     await iterator.next();
     await signals.send(runId, { kind: "steer", text: "and another thing" });
-    await iterator.next();
+    const steer = (await iterator.next()).value as unknown as FakeSdkMessage;
     yield assistantMessage("msg_A", "first", {
       input_tokens: 5,
       output_tokens: 2,
@@ -430,6 +492,7 @@ test("each steered prompt gets its own LLM request record", async () => {
       cache_creation_input_tokens: 0,
     });
     yield resultMessage("first", { ttft_ms: 10, duration_ms: 20, total_cost_usd: 0.1 });
+    yield steer;
     yield assistantMessage("msg_B", "second", {
       input_tokens: 9,
       output_tokens: 3,
