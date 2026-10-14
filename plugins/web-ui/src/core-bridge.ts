@@ -3,7 +3,7 @@ import { captureMessage, stopAnalytics } from "./product-analytics.ts";
 import { streamedAnswer } from "./timeline.ts";
 import { fetchServerSentEvents } from "@tanstack/ai-client";
 import { postCallText, postResultOk } from "./surface-post.ts";
-import type { ModelMetadata } from "./pi-models.ts";
+import type { RuntimeChange, RuntimeConfig } from "./runtime-config-cache.ts";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import type { Attachment } from "@earendil-works/pi-web-ui";
 import type { Api, AssistantMessage, AssistantMessageEventStream, Context, Model, Usage } from "@earendil-works/pi-ai";
@@ -775,26 +775,6 @@ export async function api<T = unknown>(path: string, init?: RequestInit): Promis
   return body as T;
 }
 
-export interface RuntimeConfig {
-  interactiveFastMode?: boolean;
-  unavailableReason?: string;
-  scopeId: string;
-  approvedHarnesses: string[];
-  modelsByHarness: Record<string, string[]>;
-  modelCatalog: Record<string, ModelMetadata>;
-  orgDefault: { harnessId: string; modelId: string; effortLevel?: string; fastMode?: boolean; revision: number };
-  scopeOverride: {
-    harnessId: string;
-    modelId: string;
-    effortLevel?: string;
-    fastMode?: boolean;
-    orgRevision: number;
-  } | null;
-  effective: { harnessId: string; modelId: string; effortLevel?: string; fastMode?: boolean };
-  upgradeAvailable: boolean;
-  fastModeModelIds?: string[];
-}
-
 export async function fetchRuntimeConfig(scopeId?: string | null, account?: "company"): Promise<RuntimeConfig | null> {
   try {
     const params = new URLSearchParams();
@@ -808,17 +788,7 @@ export async function fetchRuntimeConfig(scopeId?: string | null, account?: "com
   }
 }
 
-export async function updateRuntimeConfig(
-  scopeId: string | null,
-  change: {
-    harnessId?: string;
-    modelId?: string;
-    effortLevel?: string;
-    fastMode?: boolean;
-    inherit?: boolean;
-    keep?: boolean;
-  },
-): Promise<RuntimeConfig> {
+export async function updateRuntimeConfig(scopeId: string | null, change: RuntimeChange): Promise<RuntimeConfig> {
   return api<RuntimeConfig>("/api/runtime-config", {
     method: "PUT",
     body: JSON.stringify({ ...change, ...(scopeId ? { scopeId } : {}) }),
