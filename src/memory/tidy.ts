@@ -1,6 +1,6 @@
 import type { DurableMap } from "../persistence/durable-map.ts";
 import type { CronStore } from "../cron/cron-store.ts";
-import { claimManagedCron, nightlyAt, type ManagedCronClaim } from "../cron/managed.ts";
+import { claimManagedCron, nightlyAt, refreshManagedAction, type ManagedCronClaim } from "../cron/managed.ts";
 import type { Scheduler } from "../cron/scheduler.ts";
 import { DEFAULT_CRON_TIMEZONE } from "../cron/schedule.ts";
 import { reportFailure } from "../util/errors.ts";
@@ -15,7 +15,7 @@ const MEMORY_TIDY_TASK = `Tidy this conversation's memory notebook. Read it with
 - Add no new information and leave every other notebook alone.
 Batch your edits and deletes into list calls; each call changes everything or nothing. If nothing needs changing, change nothing. Do not message anyone; end with finish_silently.`;
 
-export type MemoryTidyProfile = ManagedCronClaim & { action?: string };
+export type MemoryTidyProfile = ManagedCronClaim;
 
 export function createMemoryTidyService(deps: {
   store: DurableMap<MemoryTidyProfile>;
@@ -24,12 +24,10 @@ export function createMemoryTidyService(deps: {
   crons: CronStore;
   scheduler: Pick<Scheduler, "notifyChanged">;
 }) {
-  async function refreshTask(scope: ScopeId, cronId: string, written: string | undefined): Promise<void> {
-    if (written === MEMORY_TIDY_TASK) return;
+  async function refreshTask(scope: ScopeId, cronId: string, recorded: string | undefined): Promise<void> {
+    if (recorded === MEMORY_TIDY_TASK) return;
     const cron = await deps.crons.get(cronId);
-    if (!cron || (written !== undefined && cron.action !== written)) return;
-    await deps.crons.update(cronId, { action: MEMORY_TIDY_TASK });
-    await deps.store.update?.(scope, (value) => ({ ...value, action: MEMORY_TIDY_TASK }));
+    if (cron) await refreshManagedAction(deps, scope, cron, recorded ?? cron.action, MEMORY_TIDY_TASK);
   }
 
   return {
@@ -37,7 +35,7 @@ export function createMemoryTidyService(deps: {
       const { kind, ref } = parseScopeId(scope);
       if (kind !== "personal" && kind !== "channel" && kind !== "group") return;
       const claimed = await deps.store.get(scope);
-      if (claimed?.cronId && !claimed.arming) return refreshTask(scope, claimed.cronId, claimed.action);
+      if (claimed?.cronId && !claimed.arming) return refreshTask(scope, claimed.cronId, claimed.managedAction);
       const owner = kind === "personal" ? ref : scopeActor(scope);
       await claimManagedCron(
         deps,
@@ -54,7 +52,7 @@ export function createMemoryTidyService(deps: {
           },
           action: MEMORY_TIDY_TASK,
         },
-        () => ({ action: MEMORY_TIDY_TASK }),
+        (cron) => ({ managedAction: cron.action! }),
       );
     },
 
