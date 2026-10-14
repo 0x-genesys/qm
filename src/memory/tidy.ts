@@ -15,7 +15,7 @@ const MEMORY_TIDY_TASK = `Tidy this conversation's memory notebook. Read it with
 - Add no new information and leave every other notebook alone.
 Batch your edits and deletes into list calls; each call changes everything or nothing. If nothing needs changing, change nothing. Do not message anyone; end with finish_silently.`;
 
-export type MemoryTidyProfile = ManagedCronClaim;
+export type MemoryTidyProfile = ManagedCronClaim & { action?: string };
 
 export function createMemoryTidyService(deps: {
   store: DurableMap<MemoryTidyProfile>;
@@ -24,12 +24,20 @@ export function createMemoryTidyService(deps: {
   crons: CronStore;
   scheduler: Pick<Scheduler, "notifyChanged">;
 }) {
+  async function refreshTask(scope: ScopeId, cronId: string, written: string | undefined): Promise<void> {
+    if (written === MEMORY_TIDY_TASK) return;
+    const cron = await deps.crons.get(cronId);
+    if (!cron || (written !== undefined && cron.action !== written)) return;
+    await deps.crons.update(cronId, { action: MEMORY_TIDY_TASK });
+    await deps.store.update?.(scope, (value) => ({ ...value, action: MEMORY_TIDY_TASK }));
+  }
+
   return {
     async ensure(scope: ScopeId): Promise<void> {
       const { kind, ref } = parseScopeId(scope);
       if (kind !== "personal" && kind !== "channel" && kind !== "group") return;
       const claimed = await deps.store.get(scope);
-      if (claimed?.cronId && !claimed.arming) return;
+      if (claimed?.cronId && !claimed.arming) return refreshTask(scope, claimed.cronId, claimed.action);
       const owner = kind === "personal" ? ref : scopeActor(scope);
       await claimManagedCron(
         deps,
@@ -46,6 +54,7 @@ export function createMemoryTidyService(deps: {
           },
           action: MEMORY_TIDY_TASK,
         },
+        () => ({ action: MEMORY_TIDY_TASK }),
       );
     },
 

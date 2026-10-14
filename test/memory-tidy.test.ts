@@ -164,3 +164,18 @@ test("never overrides the owner's edits or recreates a deleted tidy cron", async
   await createMemoryTidyService(f.deps).ensure(alice);
   assert.equal((await f.crons.list()).length, 0);
 });
+
+test("a tidy cron still on older platform instructions picks up the current ones, unless someone rewrote them", async () => {
+  const f = fixture();
+  await f.service.ensure(alice);
+  const current = (await f.cronOf(alice)).action;
+  const id = (await f.cronOf(alice)).id;
+  await f.crons.update(id, { action: "older platform instructions" });
+  await f.store.put(alice, { cronId: id });
+  await f.service.ensure(alice);
+  assert.equal((await f.crons.get(id))!.action, current);
+
+  await f.crons.update(id, { action: "Only merge exact duplicates." });
+  await f.service.ensure(alice);
+  assert.equal((await f.crons.get(id))!.action, "Only merge exact duplicates.");
+});
