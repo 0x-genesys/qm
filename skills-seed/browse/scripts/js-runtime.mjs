@@ -32,7 +32,7 @@ function complete(error, result, failed = error !== null && error !== undefined)
   send({
     type: "result",
     id,
-    error: failed ? (error?.message ?? inspect(error)) : undefined,
+    error: failed ? error?.stack || error?.message || inspect(error) : undefined,
     result:
       result === undefined
         ? null
@@ -47,7 +47,7 @@ process.on("message", (message) => {
   if (message.type === "reply") {
     const request = pending.get(message.id);
     pending.delete(message.id);
-    if (message.error) request?.reject(new Error(message.error));
+    if (message.error !== undefined) request?.reject(new Error(message.error));
     else request?.resolve(message.result);
   } else if (message.type === "js") {
     output = "";

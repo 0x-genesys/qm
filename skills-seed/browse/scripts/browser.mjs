@@ -278,12 +278,13 @@ async function daemon(session) {
       if (typeof code !== "string" || code.length > 50_000)
         throw new Error("code must be a string under 50,000 characters");
       const { result, output, error } = await runJs(code);
+      const failed = error !== undefined;
       const text = String(error ?? result ?? "undefined");
       const resultText = text.slice(0, MAX_OUTPUT);
       const consoleText = (output ?? "").slice(0, MAX_OUTPUT - resultText.length);
       return {
-        ok: !error,
-        ...(error ? { error: resultText } : { result: resultText }),
+        ok: !failed,
+        ...(failed ? { error: resultText } : { result: resultText }),
         output: consoleText,
         truncated: text.length + (output?.length ?? 0) > MAX_OUTPUT,
       };
@@ -291,7 +292,7 @@ async function daemon(session) {
     "/screenshot": async ({ path }) => {
       const out = path || join(DIR, `${session}-${Date.now()}.png`);
       const { result, error } = await runJs(`await tab.screenshot(${JSON.stringify(out)})`);
-      if (error) throw new Error(error);
+      if (error !== undefined) throw new Error(error);
       return { ok: true, path: result };
     },
     "/stop": async () => {

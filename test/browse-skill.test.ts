@@ -452,7 +452,14 @@ test("structured tabs API persists references and rejects missing tabs without l
     const thrown = await run(["js", "throw new Error('sync failure')"], box.env);
     assert.equal(thrown.out.ok, false);
     assert.match(String(thrown.out.error), /sync failure/);
-    for (const code of ["throw 'boom'", "await Promise.reject({ code: 42 })", "throw null", "throw undefined"]) {
+    for (const code of [
+      "throw 'boom'",
+      "await Promise.reject({ code: 42 })",
+      "throw null",
+      "throw undefined",
+      "throw new Error()",
+      "throw ''",
+    ]) {
       const primitive = await run(["js", code], box.env);
       assert.equal(primitive.code, 1, code);
       assert.equal(primitive.out.ok, false, code);
