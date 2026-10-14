@@ -68,7 +68,10 @@ print(json.dumps(result) + '\\n200', end='')
       return spawnSync("python3", [SCRIPT, ...args], {
         encoding: "utf8",
         input,
-        env: { PATH: `${dir}:/usr/bin:/bin`, VAULT_TOKEN_GMAIL_GOOGLEAPIS_COM: "test-token-not-a-credential" },
+        env: {
+          PATH: `${dir}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+          VAULT_TOKEN_GMAIL_GOOGLEAPIS_COM: "test-token-not-a-credential",
+        },
       });
     },
     calls(): Array<{ method: string; path: string; body: unknown }> {
