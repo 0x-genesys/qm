@@ -1,25 +1,16 @@
-import type { PendingApproval, TranscriptPage } from "./core-bridge";
+import { LRUCache } from "lru-cache";
+import type { TranscriptPage } from "./core-bridge";
 
-export interface CachedTranscript {
-  page: TranscriptPage;
-  approvals: PendingApproval[] | null;
+export const TRANSCRIPT_CACHE_MAX = 40;
+
+const cache = new LRUCache<string, TranscriptPage>({ max: TRANSCRIPT_CACHE_MAX });
+
+export function cachedTranscript(id: string): TranscriptPage | undefined {
+  return cache.get(id);
 }
 
-const CAPACITY = 40;
-const cache = new Map<string, CachedTranscript>();
-
-export function cachedTranscript(id: string): CachedTranscript | undefined {
-  const hit = cache.get(id);
-  if (!hit) return undefined;
-  cache.delete(id);
-  cache.set(id, hit);
-  return hit;
-}
-
-export function storeTranscript(id: string, page: TranscriptPage, approvals: PendingApproval[] | null = null): void {
-  cache.delete(id);
-  cache.set(id, { page, approvals });
-  while (cache.size > CAPACITY) cache.delete(cache.keys().next().value!);
+export function storeTranscript(id: string, page: TranscriptPage): void {
+  cache.set(id, page);
 }
 
 export function dropTranscript(id: string): void {
@@ -28,6 +19,10 @@ export function dropTranscript(id: string): void {
 
 export function clearTranscriptCache(): void {
   cache.clear();
+}
+
+export function pageAnchor(page: TranscriptPage): number | null {
+  return (page.earlierEntries ?? 0) > 0 ? (page.entries?.[0]?.seq ?? null) : null;
 }
 
 export function lastSeq(page: TranscriptPage): number {

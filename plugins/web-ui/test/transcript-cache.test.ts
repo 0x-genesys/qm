@@ -16,11 +16,14 @@ const pin = (id: string) => ({ id, addedBy: "tester", createdAt: 1 });
 
 const transcripts = new Map<string, ReturnType<typeof entry>[]>();
 const requests: string[] = [];
+const failing = new Set<string>();
 const env = await browserEnv({
   fetch: async (input) => {
-    const path = String(input);
+    const url = new URL(String(input), "http://localhost");
+    const path = `${url.pathname}${url.search}`;
     requests.push(path);
-    if (path.startsWith("/api/runtime-config"))
+    if (failing.has(path)) return Response.json({ error: "boom" }, { status: 500 });
+    if (url.pathname === "/api/runtime-config")
       return Response.json({
         scopeId: "personal:tester",
         approvedHarnesses: [],
@@ -28,12 +31,12 @@ const env = await browserEnv({
         modelCatalog: {},
         effective: { harnessId: "pi", modelId: "m" },
       });
-    if (path.endsWith("/approvals")) return Response.json({ approvals: [] });
-    if (path === "/api/sessions") return Response.json({ sessions: [...transcripts.keys()].map(session) });
-    const match = path.match(/^\/api\/sessions\/([^/?]+)(?:\?(.*))?$/);
-    if (match) {
-      const since = Number(new URLSearchParams(match[2] ?? "").get("sinceSeq") ?? 0);
-      const entries = (transcripts.get(match[1]!) ?? []).filter((e) => e.seq >= since);
+    if (url.pathname.endsWith("/approvals")) return Response.json({ approvals: [] });
+    if (url.pathname === "/api/sessions") return Response.json({ sessions: [...transcripts.keys()].map(session) });
+    const id = url.pathname.match(/^\/api\/sessions\/([^/]+)$/)?.[1];
+    if (id) {
+      const since = Number(url.searchParams.get("sinceSeq") ?? 0);
+      const entries = (transcripts.get(decodeURIComponent(id)) ?? []).filter((e) => e.seq >= since);
       return Response.json({ entries, ...(since > 0 ? { earlierEntries: since } : {}) });
     }
     return Response.json({ contexts: [], items: [], crons: [] });
@@ -59,6 +62,7 @@ beforeEach(async () => {
   shell.appState.mainEl = document.querySelector("main");
   requests.length = 0;
   transcripts.clear();
+  failing.clear();
 });
 
 const settle = async () => {
@@ -80,10 +84,11 @@ const mounted = () =>
   );
 
 test("the cache evicts the least recently used session past its capacity", () => {
-  for (let i = 0; i < 41; i++) cache.storeTranscript(`s${i}`, page(i));
+  const max = cache.TRANSCRIPT_CACHE_MAX;
+  for (let i = 0; i <= max; i++) cache.storeTranscript(`s${i}`, page(i));
   assert.equal(cache.cachedTranscript("s0"), undefined);
   assert.ok(cache.cachedTranscript("s1"));
-  cache.storeTranscript("s41", page(41));
+  cache.storeTranscript(`s${max + 1}`, page(max + 1));
   assert.ok(cache.cachedTranscript("s1"), "a read refreshes recency");
   assert.equal(cache.cachedTranscript("s2"), undefined);
 });
@@ -111,17 +116,6 @@ test("an empty delta returns the cached page unchanged", () => {
   assert.notEqual(cache.mergeTranscriptDelta(base, page()), base, "dropped pins are a change");
 });
 
-test("a first open stores the fetched transcript", async () => {
-  transcripts.set("a", [entry(0, "hello there"), entry(1, "hi back")]);
-  await sessions.openSession(session("a"));
-  const stored = cache.cachedTranscript("a");
-  assert.deepEqual(
-    stored.page.entries.map((e: { seq: number }) => e.seq),
-    [0, 1],
-  );
-  assert.deepEqual(stored.approvals, []);
-});
-
 test("revisiting a session mounts from cache at once, then reconciles new entries from the last seq", async () => {
   transcripts.set("a", [entry(0, "first question"), entry(1, "first answer")]);
   transcripts.set("b", [entry(0, "other chat")]);
@@ -143,7 +137,33 @@ test("revisiting a session mounts from cache at once, then reconciles new entrie
   assert.match(mounted(), /fresh answer/);
   assert.match(mounted(), /first answer/);
   assert.deepEqual(
-    cache.cachedTranscript("a").page.entries.map((e: { seq: number }) => e.seq),
+    cache.cachedTranscript("a").entries.map((e: { seq: number }) => e.seq),
+    [0, 1, 2, 3],
+  );
+});
+
+test("a failed catch-up drops the cached page and falls back to a full fetch", async () => {
+  transcripts.set("a", [entry(0, "first question"), entry(1, "first answer")]);
+  transcripts.set("b", [entry(0, "other chat")]);
+  await sessions.openSession(session("a"));
+  await sessions.openSession(session("b"));
+  await settle();
+  transcripts.get("a")!.push(entry(2, "follow up question"), entry(3, "fresh answer"));
+  failing.add("/api/sessions/a?sinceSeq=2");
+  requests.length = 0;
+
+  await sessions.openSession(session("a"));
+  assert.match(mounted(), /first answer/);
+  await settle();
+
+  assert.ok(requests.includes("/api/sessions/a?sinceSeq=2"), requests.join(", "));
+  assert.ok(
+    requests.some((path) => path.startsWith("/api/sessions/a?tailTurns")),
+    requests.join(", "),
+  );
+  assert.match(mounted(), /fresh answer/);
+  assert.deepEqual(
+    cache.cachedTranscript("a").entries.map((e: { seq: number }) => e.seq),
     [0, 1, 2, 3],
   );
 });

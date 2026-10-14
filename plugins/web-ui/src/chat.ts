@@ -202,7 +202,7 @@ import { createSwarmStrip } from "./swarm-strip.ts";
 import { newChatDraftKey, saveDraft, storedDraft } from "./drafts";
 import { createForkOriginController, forkOriginView } from "./fork-origin";
 import { base64ToBytes } from "./paste-text";
-import { storeTranscript } from "./transcript-cache";
+import { pageAnchor, storeTranscript } from "./transcript-cache";
 import { tip } from "./tooltip";
 import { goalWorked, workSeconds, workedLabel } from "./work-duration";
 import { decorateTextCodeBlocks } from "./text-code";
@@ -705,18 +705,9 @@ export function createChatSurface(
         .then((page) => {
           if (readOnlyView?.id !== ro.id) return;
           storeTranscript(ro.id, page);
-          const split = inheritedTranscript(ro.session, page.entries ?? []);
-          const rawEarlier = page.earlierEntries ?? 0;
-          const earlier = currentEarlierCount(ro.session, rawEarlier);
-          mountReadOnly(
-            readOnlyView.session,
-            entriesToMessages(split.current, transcriptModel()),
-            earlier,
-            rawEarlier > 0 ? (page.entries?.[0]?.seq ?? null) : null,
-            entriesToMessages(split.inherited, transcriptModel()),
-          );
+          mountReadOnlyPage(ro.session, page);
         })
-        .catch(() => {});
+        .catch((error: unknown) => reportHandledError("web:transcript_refresh", error));
       return;
     }
     const agent = chatState.agent;
@@ -853,26 +844,23 @@ export function createChatSurface(
     chatState.pins = page.pins ?? [];
     const rawEarlier = page.earlierEntries ?? 0;
     chatState.earlierCount = currentEarlierCount(fork, rawEarlier);
-    chatState.transcriptAnchorSeq = rawEarlier > 0 ? (page.entries?.[0]?.seq ?? null) : null;
+    chatState.transcriptAnchorSeq = pageAnchor(page);
   }
 
-  function applyTranscript(s: CoreSession, page: TranscriptPage, approvals: PendingApproval[]): void {
-    if (chatState.sessionId !== s.id) return;
-    if (readOnlyView?.id === s.id) {
-      const split = inheritedTranscript(s, page.entries ?? []);
-      const rawEarlier = page.earlierEntries ?? 0;
-      mountReadOnly(
-        readOnlyView.session,
-        entriesToMessages(split.current, transcriptModel()),
-        currentEarlierCount(s, rawEarlier),
-        rawEarlier > 0 ? (page.entries?.[0]?.seq ?? null) : null,
-        entriesToMessages(split.inherited, transcriptModel()),
-      );
-      setPins(page.pins ?? []);
-      return;
-    }
+  function transcriptAnchor(): number | null {
+    return readOnlyView ? readOnlyView.anchorSeq : chatState.transcriptAnchorSeq;
+  }
+
+  function applyTranscript(
+    s: CoreSession,
+    page: TranscriptPage,
+    approvals: PendingApproval[] | null,
+    mountedAnchor: number | null,
+  ): void {
+    if (chatState.sessionId !== s.id || chatState.loadingEarlier || transcriptAnchor() !== mountedAnchor) return;
+    if (readOnlyView?.id === s.id) return mountReadOnlyPage(s, page);
     const agent = chatState.agent;
-    if (!agent || agent.state.isStreaming || chatState.loadingEarlier) return;
+    if (!agent || agent.state.isStreaming) return;
     transcriptRefreshGeneration++;
     applyTranscriptPage(agent, page, approvals);
     drawActiveChat(agent);
@@ -914,7 +902,7 @@ export function createChatSurface(
       const approvals = (await fetchSessionApprovals(sessionId))?.approvals ?? null;
       if (!isCurrent()) return;
       applyTranscriptPage(agent, page, approvals);
-      storeTranscript(sessionId, page, approvals);
+      storeTranscript(sessionId, page);
     } catch (error) {
       reportHandledError("web:transcript_refresh", error);
     }
@@ -1270,6 +1258,18 @@ export function createChatSurface(
     readOnlyView = { id: s.id, threadRef: s.threadRef, session: s, anchorSeq };
     ctx.ensureDeliveryStream();
     consumeBackgroundPanelRequest();
+  }
+
+  function mountReadOnlyPage(s: CoreSession, page: TranscriptPage): void {
+    const split = inheritedTranscript(s, page.entries ?? []);
+    mountReadOnly(
+      s,
+      entriesToMessages(split.current, transcriptModel()),
+      currentEarlierCount(s, page.earlierEntries ?? 0),
+      page.entries?.[0]?.seq ?? null,
+      entriesToMessages(split.inherited, transcriptModel()),
+    );
+    setPins(page.pins ?? []);
   }
 
   let startingIdeas = false;
@@ -3481,6 +3481,8 @@ export function createChatSurface(
     syncPaneState: postCurrentPaneState,
     onDelivery,
     applyTranscript,
+    mountReadOnlyPage,
+    transcriptAnchor,
     resumeIfIdle,
     redraw: () => drawActiveChat(),
     dispose,
