@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { AdminToolAccess } from "./admin.ts";
 import { rankedSkills } from "../skills/materialize.ts";
 import type { SkillResolution } from "../skills/skill-store.ts";
@@ -956,7 +957,9 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
 
     async storeToolResult(callId, content, sourceScopeId) {
       if (!deps.files || !writableScopeId || (sourceScopeId && sourceScopeId !== writableScopeId)) return null;
-      const id = fileArtifactId(`${writableScopeId}:${deps.runId ?? ""}:${callId}:${content}`, "out", 0);
+      const data = Buffer.from(content, "utf8");
+      const digest = createHash("sha256").update(data).digest("hex");
+      const id = fileArtifactId(`${writableScopeId}:${deps.runId ?? ""}:${callId}:${digest}`, "out", 0);
       const name = "tool-result.txt";
       const { artifact } = await deps.files.put({
         id,
@@ -966,7 +969,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         name,
         path: artifactPath(id, name),
         mimetype: "text/plain",
-        data: Buffer.from(content, "utf8"),
+        data,
         direction: "out",
       });
       return { fileId: artifact.id, sizeBytes: artifact.sizeBytes };
