@@ -593,20 +593,6 @@ export function createSessionSyscalls(deps: SessionSyscallDeps): SessionSyscalls
                   )
                     continue;
                 }
-                if (message.sourceEntrySeq !== undefined) {
-                  const viewers = new Set([
-                    caller.actor.id,
-                    ...caller.conversation.audience.map((person) => person.id),
-                  ]);
-                  const readable = await Promise.all(
-                    [...viewers].map(async (id) =>
-                      (await deps.sessions.visibleEntries(sender.id, id)).some(
-                        (entry) => entry.seq === message.sourceEntrySeq && entry.scopeLabel === binding.scopeId,
-                      ),
-                    ),
-                  );
-                  if (!readable.every(Boolean)) continue;
-                }
                 visible.push(message);
                 if (visible.length >= 4) break;
               } catch {
@@ -1162,13 +1148,6 @@ export async function deliverSubagentMail(deps: SubagentMailDeps, run: Run): Pro
   if (!originalParent) request.addressed = false;
   const prepared = deps.prepareRequest ? await deps.prepareRequest(request) : request;
   const outputSeq = run.result?.sourceAssistantEntrySeq ?? run.turnUserSeq ?? run.result?.sourceUserSeq;
-  if (outputSeq !== undefined && outputSeq !== null) {
-    for (const id of new Set([prepared.actor.id, ...prepared.conversation.audience.map((person) => person.id)])) {
-      const visible = await deps.sessions.visibleEntries(child.id, id);
-      if (!visible.some((entry) => entry.seq === outputSeq && entry.scopeLabel === child.scopeId))
-        throw new Error("the current parent audience cannot read this child result");
-    }
-  }
   if (result?.attachments?.length && deps.deliveries) {
     const delivery = deliveryCandidatesFor(meta.surface, meta.deliveryTarget, meta.deliveryCandidates, parent.scopeId);
     const candidate = delivery.candidates.find((item) => item.key === delivery.defaultKey);
