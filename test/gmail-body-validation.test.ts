@@ -14,20 +14,26 @@ function mockGmail(body: string, attachment = false) {
   const bodyFile = join(dir, "body.txt");
   const curl = join(dir, "curl");
   writeFileSync(bodyFile, body);
+  const parts = [
+    { mimeType: "text/plain", body: { data: Buffer.from(body).toString("base64url") } },
+    { mimeType: "text/html", body: { data: Buffer.from('<div dir="ltr"></div>').toString("base64url") } },
+  ];
   const payload = {
-    mimeType: "multipart/alternative",
+    mimeType: attachment ? "multipart/mixed" : "multipart/alternative",
     headers: [
       { name: "From", value: "sender@example.test" },
       { name: "Subject", value: "Existing subject" },
     ],
-    parts: [
-      {
-        mimeType: "text/plain",
-        filename: attachment ? "notes.txt" : "",
-        body: { data: Buffer.from(attachment ? "Attachment bytes" : body).toString("base64url") },
-      },
-      { mimeType: "text/html", body: { data: Buffer.from('<div dir="ltr"></div>').toString("base64url") } },
-    ],
+    parts: attachment
+      ? [
+          { mimeType: "multipart/alternative", parts },
+          {
+            mimeType: "text/plain",
+            filename: "notes.txt",
+            body: { data: Buffer.from("Attachment bytes").toString("base64url") },
+          },
+        ]
+      : parts,
   };
   writeFileSync(
     curl,
