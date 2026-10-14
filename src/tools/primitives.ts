@@ -16,6 +16,7 @@ import { type TurnContext } from "../resolution/turn-context.ts";
 import { canReadNotebook, readNotebook, searchNotebooks } from "../memory/cross-scope.ts";
 import type { SandboxAccessPlan, SandboxResource, SandboxResources } from "../sandbox/sandbox-resources.ts";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { interpolateSplitEnv } from "../deployment/deployment-layer.ts";
 import type { CredentialPathSpec } from "../credentials/resident-paths.ts";
 import type { ComputerStatus, ExecResult, Sandbox, SandboxHandle } from "../sandbox/sandbox.ts";
@@ -56,9 +57,9 @@ import { publicUrlOf } from "../deploy/deploy-store.ts";
 import { carriesGitMetadata } from "../deploy/deploy-fs.ts";
 import type { AclStore } from "../acl/acl-store.ts";
 import type { AuditLog } from "../audit/audit-log.ts";
-import { TURN_FILES_DIR, type OutboundFile } from "../core/attachments.ts";
+import { TURN_FILES_DIR, mimeFromName, type OutboundFile } from "../core/attachments.ts";
 import { errMessage, withCleanup } from "../util/errors.ts";
-import type { FileArtifactStore } from "../files/file-artifact-store.ts";
+import { fileArtifactId, type FileArtifactStore } from "../files/file-artifact-store.ts";
 import type { ScopedConfigStore } from "../resolution/config-store.ts";
 import { MEMORY_FILE, type MemoryEdit, type MemoryService } from "../memory/memory-service.ts";
 import type { McpToolService, McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
@@ -231,7 +232,8 @@ export interface ToolContext extends SurfaceToolDeps {
     name: string,
     opts?: { path?: string; sandboxId?: string; source?: string; signal?: AbortSignal },
   ): Promise<SkillResult>;
-  write(path: string, data: string, sandboxId?: string): Promise<void>;
+  /** Saves to the sandbox (when `data` is given) and publishes the file to durable Files; returns its Files ID. */
+  write(path: string, data: string | undefined, sandboxId?: string): Promise<WriteFileResult>;
   publish(input: PublishInput): Promise<PublishResult>;
   setDeploymentPublic(id: string, isPublic: boolean): Promise<{ id: string; name?: string; public: boolean }>;
   createPlayground(input: { title: string; html: string }): Promise<PlaygroundArtifact>;
@@ -1031,7 +1033,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       );
     },
 
-    async write(path: string, data: string, sandboxId?: string): Promise<void> {
+    async write(path: string, data: string | undefined, sandboxId?: string): Promise<WriteFileResult> {
       if (deps.memory && deps.memoryScopeId && isUnderAnyDir(path, ["memory"])) {
         throw new Error(
           `your durable memory isn't a file — use the \`memory\` tool instead (actions "add", "edit" and "delete")`,
@@ -1040,11 +1042,38 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       const { handle, resource, crossScope, durableRef } = await machine(sandboxId);
       if (crossScope) throw new Error("files write needs a computer owned by this conversation");
       const ownerScopeId = resource?.ownerScopeId ?? writableScopeId;
-      await once(() =>
+      return once(() =>
         timed("file_op", async () => {
-          await deps.sandbox.writeFile(handle, path, data);
-          if (ownerScopeId && !isUnderAnyDir(path, persistExclude))
-            await deps.workspace.write(ownerScopeId, durableRef(path), data);
+          if (data !== undefined) {
+            await deps.sandbox.writeFile(handle, path, data);
+            if (ownerScopeId && !isUnderAnyDir(path, persistExclude))
+              await deps.workspace.write(ownerScopeId, durableRef(path), data);
+          }
+          if (!deps.files || !ownerScopeId) {
+            if (data === undefined) throw new Error("publishing to Files needs a writable scope and a Files store");
+            return {};
+          }
+          const bytes = data !== undefined ? Buffer.from(data, "utf8") : await deps.sandbox.readFileBytes(handle, path);
+          if (bytes === null) throw new Error(`no such file in the sandbox: ${path}`);
+          if (bytes.byteLength > MAX_WRITE_PUBLISH_BYTES)
+            throw new Error(
+              `${path} is ${bytes.byteLength} bytes, over the ${MAX_WRITE_PUBLISH_BYTES / 1024 ** 2} MiB limit for files write; use the Files upload helper (GET /v1/files/upload-client) for larger files`,
+            );
+          const sha256 = createHash("sha256").update(bytes).digest("hex");
+          const name = path.split(/[\\/]/).pop() || path;
+          const { artifact } = await deps.files.put({
+            // Same scope + path + bytes → same record, so retries and unchanged rewrites don't pile up copies.
+            id: fileArtifactId(`${ownerScopeId}:${path}:${sha256}`, "out", 0),
+            ownerScopeId,
+            createdBy: deps.createdBy,
+            name,
+            path,
+            mimetype: mimeFromName(name),
+            data: bytes,
+            direction: "out",
+            createdInScope: writableScopeId ?? ownerScopeId,
+          });
+          return { fileId: artifact.id, bytes: bytes.byteLength };
         }),
       );
     },
@@ -1500,6 +1529,15 @@ async function collectTree(
   }
   return out;
 }
+
+export interface WriteFileResult {
+  /** Files record ID, present when the file was published to durable Files. */
+  fileId?: string;
+  bytes?: number;
+}
+
+/** files write reads the whole file into core memory; larger files go through the direct upload helper. */
+export const MAX_WRITE_PUBLISH_BYTES = 100 * 1024 ** 2;
 
 function isUnderAnyDir(path: string, dirs: readonly string[]): boolean {
   const p = path.replace(/^\.?\/+/, "").replace(/\/+$/, "");
