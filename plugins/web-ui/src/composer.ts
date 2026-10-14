@@ -856,7 +856,14 @@ export function createComposerSurface(ctx: ConvCtx, options: ComposerOptions = {
       return "Nothing running can take this. It will go out as its own turn";
     };
     return html`
-      <div class="queued-strip" role="list" aria-label="Queued messages">
+      ${
+        refusal !== undefined && queued.length
+          ? html`<div class="queued-note" role="status">
+              Couldn't steer. ${steerRefusalText(refusal)} Queued messages go out after this turn.
+            </div>`
+          : nothing
+      }
+      <div class="queued-strip" role="list" aria-label="Queued messages" aria-live="polite">
         ${steering.map(
           (q) => html`
             <div class="queued-chip queued-steering" role="listitem" aria-busy="true">
@@ -864,7 +871,8 @@ export function createComposerSurface(ctx: ConvCtx, options: ComposerOptions = {
               <span class="queued-text" dir="auto" ${tip(q.text || "Files, no text")}
                 >${q.text || (q.hasAttachments ? "(files)" : "")}</span
               >
-              <span class="queued-hint">Stop to send now</span>
+              <span class="queued-hint" aria-hidden="true">Stop to send now</span>
+              <span class="sr-only">. Waiting for the running task to take it. Stop sends it now as its own turn.</span>
             </div>
           `,
         )}
@@ -914,11 +922,7 @@ export function createComposerSurface(ctx: ConvCtx, options: ComposerOptions = {
               </div>`
             : html`
                 <div class="queued-chip" role="listitem">
-                  <span
-                    class="queued-tag"
-                    ${refusal !== undefined ? tip(`${steerRefusalText(refusal)} It will go out as its own turn`) : nothing}
-                    >${refusal !== undefined ? "After this turn" : "Queued"}</span
-                  >
+                  <span class="queued-tag">${refusal !== undefined ? "After this turn" : "Queued"}</span>
                   <span class="queued-text" dir="auto" ${tip(q.text || "Files, no text")}
                     >${q.text || (q.hasAttachments ? "(files)" : "")}</span
                   >

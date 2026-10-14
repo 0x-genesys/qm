@@ -2248,6 +2248,13 @@ qm-markdown .tok-in {
   width: min(calc(var(--content-w) - 24px), calc(100% - 56px));
   margin: 0 auto -10px;
 }
+.queued-note {
+  width: min(calc(var(--content-w) - 24px), calc(100% - 56px));
+  margin: 0 auto 4px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.35;
+}
 .queued-chip {
   display: flex;
   align-items: center;
@@ -11995,6 +12002,12 @@ body.app-edit-embed .custom-chat-shell.app-edit-chat > .chat-bottom-dock {
     width: 34px;
     padding: 0;
     justify-content: center;
+  }
+}
+
+@media (max-width: 480px) {
+  .composer-wrap .composer-toolbar:has(.queue-btn) .loadout-button {
+    display: none;
   }
 }
 

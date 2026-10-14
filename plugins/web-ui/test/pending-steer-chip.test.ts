@@ -118,6 +118,12 @@ test("a steered queued message stays visible as Steering until model intake or t
         tag: chip.querySelector(".queued-tag")?.textContent?.trim(),
         text: chip.querySelector(".queued-text")?.textContent?.trim(),
       }));
+    const spoken = (): string[] =>
+      [...host.querySelectorAll(".queued-chip")].map((chip) => {
+        const copy = chip.cloneNode(true) as Element;
+        for (const hidden of copy.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+        return (copy.textContent ?? "").replace(/\s+/g, " ").trim();
+      });
     const steer = async (runId: string): Promise<void> => {
       composer!.setQueuedRuns(threadRef, [{ runId, text: "same text" }]);
       draw();
@@ -194,6 +200,11 @@ test("a steered queued message stays visible as Steering until model intake or t
       assert.deepEqual(signalled.slice(sent), [`typed${turnPosts}`]);
       assert.deepEqual(composer!.queuedRunsFor(threadRef), []);
       assert.ok(chips().some((chip) => chip.tag === "Steering" && chip.text === "use the smaller change"));
+      assert.ok(
+        spoken().some(
+          (text) => text.includes("use the smaller change") && text.includes("Stop sends it now as its own turn."),
+        ),
+      );
     });
 
     await t.test("Queue leaves the message for after the turn without steering", async () => {
@@ -222,6 +233,10 @@ test("a steered queued message stays visible as Steering until model intake or t
           .every((b) => b.disabled),
       );
       assert.equal(host.querySelector('[aria-label="Steer the running task"]'), null);
+      assert.equal(
+        host.querySelector('.queued-note[role="status"]')?.textContent?.replace(/\s+/g, " ").trim(),
+        "Couldn't steer. The running task uses a different AI account. Queued messages go out after this turn.",
+      );
       assert.equal(composer!.state.error, "");
     });
 
