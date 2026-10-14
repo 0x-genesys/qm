@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { domSnapshot } from "./browser-snapshot.mjs";
+import { withBrowserCleanup as withCleanup } from "./browser-errors.mjs";
 
 const keyAliases = {
   CTRL: "Control",
@@ -72,19 +73,16 @@ function coordinateInput(page) {
           .map(keyName)
           .reduce((mask, key) => mask | ({ Alt: 1, Control: 2, Meta: 4, Shift: 8 }[key] || 0), 0);
         const event = { x, y, button: button === 4 ? "back" : "forward", clickCount: 1, modifiers };
-        try {
-          await session.send("Input.dispatchMouseEvent", {
-            ...event,
-            type: "mousePressed",
-            buttons: button === 4 ? 8 : 16,
-          });
-        } finally {
-          try {
-            await session.send("Input.dispatchMouseEvent", { ...event, type: "mouseReleased", buttons: 0 });
-          } finally {
-            await session.detach();
-          }
-        }
+        return withCleanup(
+          () =>
+            session.send("Input.dispatchMouseEvent", {
+              ...event,
+              type: "mousePressed",
+              buttons: button === 4 ? 8 : 16,
+            }),
+          () => session.send("Input.dispatchMouseEvent", { ...event, type: "mouseReleased", buttons: 0 }),
+          () => session.detach(),
+        );
       }),
     double_click: ({ x, y, keypress = [] }) => withKeys(page, keypress, () => page.mouse.dblclick(x, y)),
     move: ({ x, y, keys = [] }) => withKeys(page, keys, () => page.mouse.move(x, y)),
@@ -92,12 +90,13 @@ function coordinateInput(page) {
       withKeys(page, keys, async () => {
         if (!path?.length) throw new Error("drag requires a nonempty path");
         await page.mouse.move(path[0].x, path[0].y);
-        try {
-          await page.mouse.down();
-          for (const point of path.slice(1)) await page.mouse.move(point.x, point.y);
-        } finally {
-          await page.mouse.up();
-        }
+        return withCleanup(
+          async () => {
+            await page.mouse.down();
+            for (const point of path.slice(1)) await page.mouse.move(point.x, point.y);
+          },
+          () => page.mouse.up(),
+        );
       }),
     scroll: ({ x, y, scrollX = 0, scrollY = 0, keypress = [] }) =>
       withKeys(page, keypress, async () => {

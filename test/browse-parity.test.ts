@@ -35,7 +35,12 @@ test("full browser protocol behavioral parity", { skip: !endpoint, timeout: 6000
   const { chromium } = await import(pathToFileURL(await ensurePlaywright()).href);
   const native = await chromium.connect(service.endpoint);
   t.after(() => native.close());
-  const context = await native.newContext({ acceptDownloads: true, viewport: { width: 1100, height: 800 } });
+  const requestedDeviceScaleFactor = 2;
+  const context = await native.newContext({
+    acceptDownloads: true,
+    viewport: { width: 1100, height: 800 },
+    deviceScaleFactor: requestedDeviceScaleFactor,
+  });
   t.after(() => context.close());
   const { createBrowserClient } = await load("browser-client.mjs");
   const client = createBrowserClient(native, { context });
@@ -380,10 +385,9 @@ test("full browser protocol behavioral parity", { skip: !endpoint, timeout: 6000
         width: 900,
         height: 700,
       });
-      const pixelRatio = await page.evaluate("window.devicePixelRatio");
       assert.deepEqual(pngSize(await page.screenshot()), {
-        width: Math.round(900 * pixelRatio),
-        height: Math.round(700 * pixelRatio),
+        width: Math.round(900 * requestedDeviceScaleFactor),
+        height: Math.round(700 * requestedDeviceScaleFactor),
       });
       assert.deepEqual(pngSize(await page.screenshot({ scale: "css" })), { width: 900, height: 700 });
       await page.locator("body").evaluate((element: any) => {

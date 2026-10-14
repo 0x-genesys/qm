@@ -332,3 +332,32 @@ test("artifact failures retain diagnostic causes while redacting private values"
     await dispose();
   }
 });
+
+test("artifact read and context cleanup failures survive while partial bytes are removed", async () => {
+  await temporary(async (dir) => {
+    const browser = remoteReader(Buffer.from([1, 2, 3]), true);
+    const createContext = browser.newContext;
+    let closed = 0;
+    browser.newContext = async () => ({
+      ...(await createContext()),
+      close: async () => {
+        closed++;
+        throw new Error("context cleanup failed");
+      },
+    });
+    const destination = join(dir, "saved");
+    await assert.rejects(
+      copyBrowserArtifact(browser, { path: "/downloads/a", size: 3, destination }),
+      (error: unknown) => {
+        assert(error instanceof AggregateError);
+        assert.equal(error.errors.length, 2);
+        assert.match(error.errors[0].message, /unreadable/);
+        assert.match(error.errors[1].message, /context cleanup failed/);
+        return true;
+      },
+    );
+    assert.equal(closed, 1);
+    await assert.rejects(stat(destination), { code: "ENOENT" });
+    await assert.rejects(stat(destination + ".part"), { code: "ENOENT" });
+  });
+});

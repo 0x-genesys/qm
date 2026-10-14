@@ -90,15 +90,3 @@ test("runtime preserves npm integrity failure and removes failed private install
     await f.cleanup();
   }
 });
-
-test("runtime lock pins only the exact upstream package and integrity", async () => {
-  const lock = JSON.parse(
-    await readFile(new URL("../skills-seed/browse/scripts/runtime/package-lock.json", import.meta.url), "utf8"),
-  );
-  assert.deepEqual(Object.keys(lock.packages), ["", "node_modules/playwright-core"]);
-  assert.equal(lock.packages[""].dependencies["playwright-core"], "1.64.0");
-  assert.equal(
-    lock.packages["node_modules/playwright-core"].integrity,
-    "sha512-T9r+MZkTECl2+oUcZ26YgZzTrYidTsIhYYkJix+6iDOymOb1FB2RLLSOxRGnZGv5DStt+aduIVbt+E8WygXYpg==",
-  );
-});

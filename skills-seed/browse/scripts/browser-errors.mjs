@@ -28,3 +28,23 @@ export function formatBrowserError(error, privateValues = []) {
     text = text.replaceAll(secret, "<private browser value>");
   return text;
 }
+
+export async function withBrowserCleanup(action, ...cleanups) {
+  const errors = [];
+  let result;
+  try {
+    result = await action();
+  } catch (error) {
+    errors.push(error);
+  }
+  for (const cleanup of cleanups) {
+    try {
+      await cleanup();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length) throw new AggregateError(errors, "Browser operation and cleanup failed");
+  return result;
+}

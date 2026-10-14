@@ -48,3 +48,46 @@ test("browser error formatting preserves thrown primitives and does not invoke i
     }).includes("detail"),
   );
 });
+
+test("browser cleanup preserves the primary failure and attempts every release", async () => {
+  const { withBrowserCleanup } = await import(
+    new URL("../skills-seed/browse/scripts/browser-errors.mjs", import.meta.url).href
+  );
+  const primary = new Error("transfer failed");
+  const release = new Error("release failed");
+  let closed = false;
+  await assert.rejects(
+    withBrowserCleanup(
+      async () => {
+        throw primary;
+      },
+      async () => {
+        throw release;
+      },
+      async () => {
+        closed = true;
+      },
+    ),
+    (error: AggregateError) => {
+      assert.deepEqual(error.errors, [primary, release]);
+      return true;
+    },
+  );
+  assert.equal(closed, true);
+  await assert.rejects(
+    withBrowserCleanup(
+      async () => 42,
+      async () => {
+        throw release;
+      },
+    ),
+    (error: Error) => error === release,
+  );
+  assert.equal(
+    await withBrowserCleanup(
+      async () => 42,
+      async () => {},
+    ),
+    42,
+  );
+});

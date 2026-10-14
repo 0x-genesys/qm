@@ -7,8 +7,8 @@ function frameMetadata() {
     const control = ["input", "textarea"].includes(element.localName);
     const rich = Boolean(element.isContentEditable || parent?.rich);
     const linked = element.hasAttribute("aria-labelledby");
-    const flat = rich || control;
-    const bad = control || rich || linked;
+    const flat = rich || control || element.localName === "slot";
+    const bad = flat || linked;
     const record = {
       element,
       parent,

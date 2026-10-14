@@ -47,7 +47,7 @@ Never quietly narrow the task to what works without a browser; say what is block
 use `npm ci --ignore-scripts` installs a locked `playwright-core` runtime in a private
 per-process directory, using npm’s shared integrity-checked cache. This installs browser-control
 code, not Chromium, and runs no package lifecycle hooks. Preparation finishes before paid
-browser time starts. Use Node 24+, the absolute skill directory reported by the skill read, and the
+browser time starts. Use Linux and Node 24+, the absolute skill directory reported by the skill read, and the
 same `sandbox_id` throughout. Choose a unique `--session` name.
 
 Run `open` with **`execute background:true`**, a 3,600-second job lifetime, the chosen

@@ -12,8 +12,8 @@ async function fixture() {
     join(dir, "browser-service.mjs"),
   );
   const files: Record<string, string> = {
-    "state.mjs": `export const calls=[]; export const failures=new Set(); export function call(name) { calls.push(name); if(failures.has(name)) throw new Error(name); }
-      export const browser={bind:async(title,options)=>{call('bind'); if(options.host!=='127.0.0.1') throw Error('not local'); return {endpoint:'ws://local/secret'}},unbind:async()=>call('unbind'),close:async()=>call('close'),on(){}};`,
+    "state.mjs": `import {EventEmitter} from "node:events";export const calls=[]; export const failures=new Set(); export function call(name) { calls.push(name); if(failures.has(name)) throw new Error(name); }
+      export const browser=Object.assign(new EventEmitter(),{bind:async(title,options)=>{call('bind'); if(options.host!=='127.0.0.1') throw Error('not local'); return {endpoint:'ws://local/secret'}},unbind:async()=>call('unbind'),close:async()=>call('close')});`,
     "runtime.mjs": `import {browser,call} from './state.mjs'; export const chromium={connectOverCDP:async(endpoint,options)=>{call('connect');if(endpoint!=='ws://proxy/secret'||options.noDefaults)throw Error('wrong connection');return browser}};`,
     "playwright-runtime.mjs": `import {call} from './state.mjs';import {fileURLToPath}from'node:url';export async function ensurePlaywright(){call('runtime');return fileURLToPath(new URL('./runtime.mjs',import.meta.url))}`,
     "browser-proxy.mjs": `import {call,failures}from'./state.mjs';export async function startBrowserProxy(){call('proxy');return {endpoint:'ws://proxy/secret',getError:()=>failures.has('transport')?new Error('Browser WebSocket transport failed: HTTP 403'):undefined,close:async()=>call('proxyDispose')}}`,
@@ -139,6 +139,23 @@ test("browser service preserves sanitized proxy failure instead of generic closu
       return true;
     });
   } finally {
+    await f.remove();
+  }
+});
+
+test("browser service exposes post-start transport failure to disconnect listeners", async () => {
+  const f = await fixture();
+  let service: any;
+  try {
+    service = await f.start();
+    assert.equal(service.getError(), undefined);
+    const disconnected = new Promise<Error | undefined>((resolve) => service.on("disconnected", resolve));
+    f.failures.add("transport");
+    f.browser.emit("disconnected");
+    assert.equal((await disconnected)?.message, "Browser WebSocket transport failed: HTTP 403");
+    assert.equal(service.getError(new Error("Target closed")).message, "Browser WebSocket transport failed: HTTP 403");
+  } finally {
+    await service?.close();
     await f.remove();
   }
 });

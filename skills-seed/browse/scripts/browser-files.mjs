@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, open, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
-import { formatBrowserError } from "./browser-errors.mjs";
+import { formatBrowserError, withBrowserCleanup } from "./browser-errors.mjs";
 
 export async function copyBrowserArtifact(browser, { path, size, destination, signal, timeoutMs = 120000 }) {
   const deadline = AbortSignal.timeout(timeoutMs);
@@ -10,65 +10,73 @@ export async function copyBrowserArtifact(browser, { path, size, destination, si
   const partial = `${destination}.part`;
   let context;
   let file;
-  const abort = () => context?.close().catch(() => {});
+  let closing;
+  const closeContext = () => context && (closing ??= context.close());
+  const abort = () => closeContext()?.catch(() => {});
   active.addEventListener("abort", abort, { once: true });
-  try {
-    active.throwIfAborted();
-    context = await browser.newContext({ acceptDownloads: false });
-    active.throwIfAborted();
-    const page = await context.newPage();
-    await page.goto('data:text/html,<input type="file">', { waitUntil: "commit", timeout: timeoutMs });
-    const session = await context.newCDPSession(page);
-    const input = await session.send("Runtime.evaluate", { expression: 'document.querySelector("input")' });
-    if (!input.result?.objectId) throw new Error("Browser artifact reader could not initialize");
-    await session.send("DOM.setFileInputFiles", { objectId: input.result.objectId, files: [path] });
-    const remote = await session.send("Runtime.evaluate", { expression: 'document.querySelector("input").files[0]' });
-    if (!remote.result?.objectId) throw new Error("Browser artifact file is missing");
-    const metadata = await session.send("Runtime.callFunctionOn", {
-      objectId: remote.result.objectId,
-      functionDeclaration: "function() { return { size: this.size }; }",
-      returnByValue: true,
-    });
-    if (metadata.result?.value?.size !== size) throw new Error("Browser artifact size differs from completed download");
-    file = await open(partial, "wx", 0o600);
-    for (let offset = 0; offset < size; offset += 1024 * 1024) {
-      active.throwIfAborted();
-      const length = Math.min(1024 * 1024, size - offset);
-      const chunk = await session.send("Runtime.callFunctionOn", {
-        objectId: remote.result.objectId,
-        functionDeclaration: `async function(offset, length) {
+  return withBrowserCleanup(
+    async () => {
+      try {
+        active.throwIfAborted();
+        context = await browser.newContext({ acceptDownloads: false });
+        active.throwIfAborted();
+        const page = await context.newPage();
+        await page.goto('data:text/html,<input type="file">', { waitUntil: "commit", timeout: timeoutMs });
+        const session = await context.newCDPSession(page);
+        const input = await session.send("Runtime.evaluate", { expression: 'document.querySelector("input")' });
+        if (!input.result?.objectId) throw new Error("Browser artifact reader could not initialize");
+        await session.send("DOM.setFileInputFiles", { objectId: input.result.objectId, files: [path] });
+        const remote = await session.send("Runtime.evaluate", {
+          expression: 'document.querySelector("input").files[0]',
+        });
+        if (!remote.result?.objectId) throw new Error("Browser artifact file is missing");
+        const metadata = await session.send("Runtime.callFunctionOn", {
+          objectId: remote.result.objectId,
+          functionDeclaration: "function() { return { size: this.size }; }",
+          returnByValue: true,
+        });
+        if (metadata.result?.value?.size !== size)
+          throw new Error("Browser artifact size differs from completed download");
+        file = await open(partial, "wx", 0o600);
+        for (let offset = 0; offset < size; offset += 1024 * 1024) {
+          active.throwIfAborted();
+          const length = Math.min(1024 * 1024, size - offset);
+          const chunk = await session.send("Runtime.callFunctionOn", {
+            objectId: remote.result.objectId,
+            functionDeclaration: `async function(offset, length) {
           const bytes = new Uint8Array(await this.slice(offset, offset + length).arrayBuffer());
           let text = "";
           for (let i = 0; i < bytes.length; i += 32768) text += String.fromCharCode(...bytes.subarray(i, i + 32768));
           return btoa(text);
         }`,
-        arguments: [{ value: offset }, { value: length }],
-        awaitPromise: true,
-        returnByValue: true,
-      });
-      if (chunk.exceptionDetails || typeof chunk.result?.value !== "string")
-        throw new Error("Browser artifact changed or became unreadable during transfer", {
-          cause: chunk.exceptionDetails,
-        });
-      const bytes = Buffer.from(chunk.result.value, "base64");
-      if (bytes.length !== length) throw new Error("Browser artifact was truncated during transfer");
-      await file.writeFile(bytes);
-    }
-    active.throwIfAborted();
-    await file.close();
-    file = undefined;
-    await rename(partial, destination);
-  } catch (error) {
-    if (deadline.aborted) throw new Error("Browser artifact transfer exceeded its deadline", { cause: error });
-    if (signal?.aborted) throw new Error("Browser artifact transfer stopped", { cause: error });
-    if (error?.message?.startsWith("Browser artifact")) throw error;
-    throw new Error("Browser artifact transfer failed", { cause: error });
-  } finally {
-    active.removeEventListener("abort", abort);
-    await file?.close();
-    await context?.close().catch(() => {});
-    await rm(partial, { force: true });
-  }
+            arguments: [{ value: offset }, { value: length }],
+            awaitPromise: true,
+            returnByValue: true,
+          });
+          if (chunk.exceptionDetails || typeof chunk.result?.value !== "string")
+            throw new Error("Browser artifact changed or became unreadable during transfer", {
+              cause: chunk.exceptionDetails,
+            });
+          const bytes = Buffer.from(chunk.result.value, "base64");
+          if (bytes.length !== length) throw new Error("Browser artifact was truncated during transfer");
+          await file.writeFile(bytes);
+        }
+        active.throwIfAborted();
+        await file.close();
+        file = undefined;
+        await rename(partial, destination);
+      } catch (error) {
+        if (deadline.aborted) throw new Error("Browser artifact transfer exceeded its deadline", { cause: error });
+        if (signal?.aborted) throw new Error("Browser artifact transfer stopped", { cause: error });
+        if (error?.message?.startsWith("Browser artifact")) throw error;
+        throw new Error("Browser artifact transfer failed", { cause: error });
+      }
+    },
+    () => active.removeEventListener("abort", abort),
+    () => file?.close(),
+    closeContext,
+    () => rm(partial, { force: true }),
+  );
 }
 
 export async function installBrowserFiles(browser, { timeoutMs = 120000, privateValues = [] } = {}) {

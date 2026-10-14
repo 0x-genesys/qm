@@ -2,6 +2,7 @@ import { createReadStream } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { createRequire } from "node:module";
+import { withBrowserCleanup } from "./browser-errors.mjs";
 
 const CHUNK_BYTES = 256 * 1024;
 const NATIVE_INLINE_LIMIT = 50 * 1024 * 1024;
@@ -33,55 +34,57 @@ async function assignFiles(progress, input, files, mime) {
   const state = await progress.race(
     input.evaluateHandle((node) => ({ node, parts: [], transfer: new globalThis.DataTransfer() })),
   );
-  try {
-    for (const file of files) {
-      const stream = createReadStream(file.path, { highWaterMark: CHUNK_BYTES, signal: progress.signal });
-      let total = 0;
-      try {
-        for await (const bytes of stream) {
-          progress.signal.throwIfAborted();
-          total += bytes.length;
-          await progress.race(
-            state.evaluate((value, base64) => {
-              const binary = atob(base64);
-              const bytes = new Uint8Array(binary.length);
-              for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-              value.parts.push(new Blob([bytes]));
-            }, bytes.toString("base64")),
-          );
-        }
-      } finally {
-        stream.destroy();
+  return withBrowserCleanup(
+    async () => {
+      for (const file of files) {
+        const stream = createReadStream(file.path, { highWaterMark: CHUNK_BYTES, signal: progress.signal });
+        let total = 0;
+        await withBrowserCleanup(
+          async () => {
+            for await (const bytes of stream) {
+              progress.signal.throwIfAborted();
+              total += bytes.length;
+              await progress.race(
+                state.evaluate((value, base64) => {
+                  const binary = atob(base64);
+                  const bytes = new Uint8Array(binary.length);
+                  for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
+                  value.parts.push(new Blob([bytes]));
+                }, bytes.toString("base64")),
+              );
+            }
+          },
+          () => stream.destroy(),
+        );
+        if (total !== file.size) throw new Error(`Upload source changed size during transfer: ${file.name}`);
+        await progress.race(
+          state.evaluate(
+            (value, metadata) => {
+              value.transfer.items.add(
+                new File(value.parts, metadata.name, { type: metadata.type, lastModified: metadata.lastModified }),
+              );
+              value.parts = [];
+            },
+            {
+              name: file.name,
+              type: mime.getType(file.name) || "application/octet-stream",
+              lastModified: file.lastModified,
+            },
+          ),
+        );
       }
-      if (total !== file.size) throw new Error(`Upload source changed size during transfer: ${file.name}`);
-      await progress.race(
-        state.evaluate(
-          (value, metadata) => {
-            value.transfer.items.add(
-              new File(value.parts, metadata.name, { type: metadata.type, lastModified: metadata.lastModified }),
-            );
-            value.parts = [];
-          },
-          {
-            name: file.name,
-            type: mime.getType(file.name) || "application/octet-stream",
-            lastModified: file.lastModified,
-          },
-        ),
+      return await progress.race(
+        state.evaluate(({ node, transfer }) => {
+          if (!node.isConnected) return "error:notconnected";
+          node.files = transfer.files;
+          node.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
+          node.dispatchEvent(new Event("change", { bubbles: true }));
+          return "done";
+        }),
       );
-    }
-    return await progress.race(
-      state.evaluate(({ node, transfer }) => {
-        if (!node.isConnected) return "error:notconnected";
-        node.files = transfer.files;
-        node.dispatchEvent(new Event("input", { bubbles: true, composed: true }));
-        node.dispatchEvent(new Event("change", { bubbles: true }));
-        return "done";
-      }),
-    );
-  } finally {
-    await state.dispose();
-  }
+    },
+    () => state.dispose(),
+  );
 }
 
 export async function installBrowserUploads(browser, modulePath) {
@@ -107,13 +110,14 @@ export async function installBrowserUploads(browser, modulePath) {
       }, files.length > 1),
     );
     if (input === "error:notconnected") return input;
-    try {
-      if (!input.asElement()) return "error:notconnected";
-      await handle.instrumentation.onBeforeInputAction(progress, handle, undefined, box);
-      return await assignFiles(progress, input.asElement(), files, mime);
-    } finally {
-      await input.dispose();
-    }
+    return withBrowserCleanup(
+      async () => {
+        if (!input.asElement()) return "error:notconnected";
+        await handle.instrumentation.onBeforeInputAction(progress, handle, undefined, box);
+        return await assignFiles(progress, input.asElement(), files, mime);
+      },
+      () => input.dispose(),
+    );
   };
   const listener = {
     onBeforeCall(progress, object) {

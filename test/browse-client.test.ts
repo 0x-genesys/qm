@@ -197,6 +197,58 @@ test("CUA releases held keys and mouse after failures, preserving cleanup failur
   assert.deepEqual(calls.at(-1), ["mouseUp"]);
 });
 
+test("CUA retains primary and cleanup errors while attempting every release", async () => {
+  const { native, context } = mockBrowser();
+  const page = await context.newPage();
+  const cua = createBrowserClient(native).tabs.get(page._guid).cua;
+  const failures = [new Error("press failed"), new Error("release failed"), new Error("detach failed")];
+  for (const failAt of [[0, 1, 2], [0], [1, 2]]) {
+    const calls: number[] = [];
+    const step = async (index: number) => {
+      calls.push(index);
+      if (failAt.includes(index)) throw failures[index];
+    };
+    Object.assign(context, {
+      newCDPSession: async () => ({
+        send: async (_method: string, params: { type: string }) => step(params.type === "mousePressed" ? 0 : 1),
+        detach: async () => step(2),
+      }),
+    });
+    await assert.rejects(cua.click({ x: 1, y: 2, button: 4 }), (error: unknown) => {
+      if (failAt.length === 1) assert.equal(error, failures[failAt[0]!]);
+      else {
+        assert.ok(error instanceof AggregateError);
+        assert.deepEqual(
+          error.errors,
+          failAt.map((index) => failures[index]),
+        );
+      }
+      return true;
+    });
+    assert.deepEqual(calls, [0, 1, 2]);
+  }
+  let moves = 0;
+  page.mouse.move = async () => {
+    if (++moves === 2) throw failures[0];
+  };
+  page.mouse.up = async () => {
+    throw failures[1];
+  };
+  await assert.rejects(
+    cua.drag({
+      path: [
+        { x: 0, y: 0 },
+        { x: 1, y: 1 },
+      ],
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors, failures.slice(0, 2));
+      return true;
+    },
+  );
+});
+
 function snapshotSession(read: () => unknown) {
   return {
     send: async (method: string) => {
@@ -411,6 +463,29 @@ test(
       const safeLabels = await page.domSnapshot();
       assert.equal(safeLabels.includes("secret-"), false);
       assert.equal(safeLabels.includes('"name": "Clean label"'), true);
+      for (const { slot, role, prefix } of [
+        { slot: "<slot></slot>", role: "", prefix: "Account " },
+        { slot: "<span><slot></slot></span>", role: "", prefix: "Account " },
+        { slot: "<slot></slot>", role: 'role="generic"', prefix: "" },
+        { slot: "<span><slot></slot></span>", role: 'role="generic"', prefix: "" },
+      ]) {
+        await page.setContent(`<div id="host"><input ${role} value="SLOT_SECRET"></div>`);
+        await page.evaluate(
+          ({ slot, prefix }: { slot: string; prefix: string }) => {
+            const host = (globalThis as any).document.getElementById("host");
+            host.attachShadow({ mode: "open" }).innerHTML =
+              `<span id="label">${prefix}${slot}</span><input aria-labelledby="label" value="TARGET_SECRET"><span id="static">Static shadow label</span><input aria-labelledby="static" value="STATIC_SECRET">`;
+          },
+          { slot, prefix },
+        );
+        const raw = JSON.stringify(await page.ariaSnapshotJSON({ mode: "ai" }));
+        assert.equal(raw.includes("SLOT_SECRET"), true);
+        if (prefix) assert.equal(raw.includes(`"name":"${prefix}SLOT_SECRET"`), true);
+        const safe = await page.domSnapshot();
+        for (const secret of ["SLOT_SECRET", "TARGET_SECRET", "STATIC_SECRET"])
+          assert.equal(safe.includes(secret), false, secret);
+        assert.equal(safe.includes('"name": "Static shadow label"'), true);
+      }
       await page.setContent('<p>Public label</p><textarea disabled role="none">disabled-secret</textarea>');
       assert.equal((await page.domSnapshot()).includes("disabled-secret"), false);
       await page.setContent(

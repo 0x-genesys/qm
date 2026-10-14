@@ -62,7 +62,7 @@ test("browser proxy leaves direct CDP endpoints untouched", async () =>
     }
   }));
 
-test("browser proxy uses maintained CONNECT routing, preserves messages, and closes sockets", async () =>
+test("browser proxy uses maintained CONNECT routing and retains faults after message relay", async () =>
   withCleanProxy(async () => {
     const fixture = await bundle();
     const upstream = new WebSocketServer({ host: "127.0.0.1", port: 0 });
@@ -121,9 +121,15 @@ test("browser proxy uses maintained CONNECT routing, preserves messages, and clo
         assert.equal(actualBinary, binary);
       }
       assert.equal(tunnelCount, 1);
+      assert.equal(proxy.getError(), undefined);
       const closed = once(client, "close");
-      await Promise.all([proxy.close(), proxy.close()]);
+      const remote = [...upstream.clients][0] as unknown as { _socket: { write(data: Buffer): void } };
+      remote._socket.write(Buffer.from([0x83, 0x00]));
       await closed;
+      assert.match(proxy.getError()?.message, /WS_ERR_INVALID_OPCODE/);
+      assert.match(proxy.getError()?.message, /Invalid WebSocket frame/);
+      assert.doesNotMatch(String(proxy.getError()?.stack), /unresolvable.browser.invalid|fixed-browser/);
+      await Promise.all([proxy.close(), proxy.close()]);
     } finally {
       client?.terminate();
       await proxy?.close();

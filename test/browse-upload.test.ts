@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mkdtemp, writeFile, utimes, stat, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, utimes, stat, rm, truncate } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -75,6 +75,78 @@ test("upload adapter restores instance methods and leaves other browsers alone",
   dispose();
   assert.equal(owned.setInputFiles, original);
   assert.equal(fixture.listeners.size, 0);
+});
+
+test("upload failures retain transfer and every handle cleanup error", async (t) => {
+  const { ensurePlaywright } = await import(new URL("playwright-runtime.mjs", scripts).href);
+  const modulePath = await ensurePlaywright();
+  const dir = await mkdtemp(join(tmpdir(), "upload-cleanup-"));
+  const path = join(dir, "large.bin");
+  try {
+    await writeFile(path, "");
+    await truncate(path, 51 * 1024 * 1024);
+    for (const failBeforeTransfer of [false, true]) {
+      await t.test(failBeforeTransfer ? "input action failure" : "chunk transfer failure", async () => {
+        const fixture = fixtureBrowser();
+        const primary = new Error("original upload failure");
+        const stateCleanup = new Error("state disposal failure");
+        const inputCleanup = new Error("input disposal failure");
+        const cleanups: string[] = [];
+        const input = {
+          asElement: (): unknown => input,
+          evaluateHandle: async () => ({
+            evaluate: async () => {
+              throw primary;
+            },
+            dispose: async () => {
+              cleanups.push("state");
+              throw stateCleanup;
+            },
+          }),
+          dispose: async () => {
+            cleanups.push("input");
+            throw inputCleanup;
+          },
+        };
+        const handle = {
+          attribution: { browser: fixture.server },
+          _frame: { attribution: { playwright: { options: { isClientCollocatedWithServer: true } } } },
+          _markAsTargetElement: async () => {},
+          _evaluateHandleInUtility: async () => input,
+          instrumentation: {
+            onBeforeInputAction: async () => {
+              if (failBeforeTransfer) throw primary;
+            },
+          },
+          setInputFiles: async (..._args: any[]) => {},
+        };
+        const progress = {
+          metadata: { method: "setInputFiles" },
+          race: (promise: any) => promise,
+          signal: new AbortController().signal,
+        };
+        const dispose = await installBrowserUploads(fixture.browser, modulePath);
+        try {
+          for (const listener of fixture.listeners) listener.onBeforeCall(progress, handle);
+          const flatten = (error: unknown): unknown[] =>
+            error instanceof AggregateError ? error.errors.flatMap(flatten) : [error];
+          await assert.rejects(handle.setInputFiles(progress, { localPaths: [path] }), (error: unknown) => {
+            assert.ok(error instanceof AggregateError);
+            assert.deepEqual(
+              flatten(error),
+              failBeforeTransfer ? [primary, inputCleanup] : [primary, stateCleanup, inputCleanup],
+            );
+            return true;
+          });
+          assert.deepEqual(cleanups, failBeforeTransfer ? ["input"] : ["state", "input"]);
+        } finally {
+          dispose();
+        }
+      });
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test(

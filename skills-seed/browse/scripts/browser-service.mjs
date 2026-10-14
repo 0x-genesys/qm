@@ -14,6 +14,7 @@ export async function startBrowserService(cdpUrl, options = {}) {
   const disposers = [];
   let browser;
   let stopping;
+  const getError = (error) => proxy.getError?.(error);
   const close = () =>
     (stopping ??= (async () => {
       const errors = [];
@@ -42,7 +43,15 @@ export async function startBrowserService(cdpUrl, options = {}) {
       disposers.push(await installBrowserUploads(browser, modulePath));
     }
     const { endpoint } = await browser.bind(options.title || "qm-browse", { host: "127.0.0.1", port: 0 });
-    return { endpoint, browser, modulePath, capabilities, close, on: browser.on.bind(browser) };
+    return {
+      endpoint,
+      browser,
+      modulePath,
+      capabilities,
+      close,
+      getError,
+      on: (event, listener) => browser.on(event, event === "disconnected" ? () => listener(getError()) : listener),
+    };
   } catch (error) {
     const startupError = proxy.getError?.(browser ? undefined : error) || error;
     try {

@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createServer, request, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -25,7 +34,7 @@ async function fakeApi(
   patchStatus = 200,
 ) {
   const calls: Call[] = [];
-  const state = { patchStatus, createStatus: 201, lifetimeMinutes: 60 };
+  const state = { patchStatus, createStatus: 201, lifetimeMinutes: 60, holdPreflight: false };
   const server: Server = createServer((req: IncomingMessage, res) => {
     let text = "";
     req.on("data", (c) => (text += c));
@@ -39,6 +48,7 @@ async function fakeApi(
       calls.push(call);
       res.setHeader("content-type", "application/json");
       if (call.url === "/api/v2/billing/account") {
+        if (state.holdPreflight) return;
         res.statusCode = billing.status;
         res.end(JSON.stringify(billing.body ?? { detail: "nope" }));
       } else if (call.method === "POST" && call.url === "/api/v4/browsers") {
@@ -817,5 +827,89 @@ test("open stops allocations whose provider deadline does not confirm the lifeti
       api.close();
       box.cleanup();
     }
+  }
+});
+
+test("legacy empty and invalid PID lock files cannot wedge browser startup", async () => {
+  for (const contents of ["", "not-a-pid", "0", "-1"]) {
+    const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
+    const box = sandbox(api);
+    try {
+      mkdirSync(box.env.QM_BROWSE_DIR, { recursive: true });
+      const legacyLock = join(box.env.QM_BROWSE_DIR, "default.lock");
+      writeFileSync(legacyLock, contents);
+      const opened = await run(["open"], box.env);
+      assert.equal(opened.out.ok, true, JSON.stringify(opened.out));
+      assert.equal(readFileSync(legacyLock, "utf8"), contents, "legacy PID files are not reinterpreted or removed");
+      assert.equal(api.calls.filter((call) => call.method === "POST").length, 1);
+    } finally {
+      await run(["stop"], box.env).catch(() => {});
+      api.close();
+      box.cleanup();
+    }
+  }
+});
+
+test("startup ownership excludes contenders and releases automatically when the initializer is killed", async () => {
+  const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
+  const box = sandbox(api);
+  api.state.holdPreflight = true;
+  const initializing = run(["open"], box.env).catch((error: unknown) => error);
+  try {
+    for (let i = 0; i < 200 && !api.calls.length; i++) await sleep(10);
+    assert.equal(api.calls.length, 1, "first initializer reached the held preflight");
+    const alias = join(box.env.FIXTURE_DIR, "same-directory");
+    symlinkSync(box.env.QM_BROWSE_DIR, alias);
+    const contender = await run(["open"], { ...box.env, QM_BROWSE_DIR: alias });
+    assert.equal(contender.code, 1);
+    assert.match(String(contender.out.error), /is opening/);
+    assert.equal(api.calls.length, 1, "contender never reached the provider");
+    const owner = [...(openProcesses.get(box.env.FIXTURE_DIR) ?? [])][0];
+    assert.ok(owner, "the initializer is still running");
+    owner.kill("SIGKILL");
+    await initializing;
+    api.state.holdPreflight = false;
+    const replacement = await run(["open"], box.env);
+    assert.equal(replacement.out.ok, true, JSON.stringify(replacement.out));
+    assert.equal(api.calls.filter((call) => call.method === "POST").length, 1);
+  } finally {
+    api.state.holdPreflight = false;
+    for (const child of openProcesses.get(box.env.FIXTURE_DIR) ?? []) child.kill("SIGTERM");
+    await initializing;
+    await run(["stop"], box.env).catch(() => {});
+    api.close();
+    box.cleanup();
+  }
+});
+
+test("post-start transport failure reaches the pending script and shutdown log without private connection values", async () => {
+  const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
+  const box = sandbox(api, {}, { disconnectError: "malformed upstream frame" });
+  let pending: ReturnType<typeof run> | undefined;
+  try {
+    const opened = await run(["open"], box.env);
+    assert.equal(opened.out.ok, true);
+    let log = "";
+    opened.child.stderr?.on("data", (chunk) => (log += chunk.toString()));
+    pending = run(["js", "await tab.goto('https://pending.test'); await new Promise(() => {})"], box.env);
+    for (let i = 0; i < 100 && !box.events().some((event) => event.url === "https://pending.test"); i++)
+      await sleep(10);
+    assert.ok(box.events().some((event) => event.url === "https://pending.test"));
+    box.disconnect();
+    const result = await pending;
+    assert.equal(result.code, 1);
+    assert.equal(await Promise.race([opened.exited, sleep(2000).then(() => "still running")]), 0);
+    for (const text of [String(result.out.error), log]) {
+      assert.match(text, /WS_ERR_INVALID_OPCODE/);
+      assert.match(text, /inner wire failure/);
+      assert.equal(text.includes("fixture.invalid"), false);
+      assert.equal(text.includes("bu_test"), false);
+    }
+    assert.ok(api.calls.some((call) => call.method === "PATCH"));
+  } finally {
+    await run(["stop"], box.env).catch(() => {});
+    if (pending) await pending;
+    api.close();
+    box.cleanup();
   }
 });

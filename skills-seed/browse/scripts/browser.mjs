@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { fork } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, openSync, closeSync, chmodSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { createServer as createLockServer } from "node:net";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, realpathSync, chmodSync } from "node:fs";
 import { request, createServer, setGlobalProxyFromEnv } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,7 +26,6 @@ function fail(obj, code = 1) {
 const paths = (session) => ({
   sock: join(DIR, `${session}.sock`),
   state: join(DIR, `${session}.json`),
-  lock: join(DIR, `${session}.lock`),
 });
 async function api(method, path, body) {
   const init = { method, headers: { "X-Browser-Use-API-Key": KEY ?? "" } };
@@ -102,32 +103,25 @@ function readStdin() {
   });
 }
 async function open(session, values) {
+  if (process.platform !== "linux") fail({ error: "Browser service requires a Linux sandbox" });
   mkdirSync(DIR, { recursive: true, mode: 0o700 });
-  const lock = paths(session).lock;
+  const key = createHash("sha256")
+    .update(join(realpathSync(DIR), session))
+    .digest("hex");
+  const lock = createLockServer((socket) => socket.destroy());
   try {
-    const fd = openSync(lock, "wx", 0o600);
-    writeFileSync(fd, String(process.pid));
-    closeSync(fd);
-  } catch (err) {
-    if (err.code !== "EEXIST") throw err;
-    const pid = Number(readFileSync(lock, "utf8"));
-    try {
-      process.kill(pid, 0);
-    } catch (alive) {
-      if (alive.code === "ESRCH") {
-        rmSync(lock);
-        return open(session, values);
-      }
-    }
+    await new Promise((resolve, reject) => {
+      lock.once("error", reject);
+      lock.listen(`\0qm-browse-open-${key}`, resolve);
+    });
+  } catch (error) {
+    if (error.code !== "EADDRINUSE") throw error;
     fail({ error: `session "${session}" is opening; wait for that command to finish` });
   }
-  const release = () => rmSync(lock, { force: true });
-  process.once("exit", release);
   try {
     return await openLocked(session, values);
   } finally {
-    process.off("exit", release);
-    release();
+    lock.close();
   }
 }
 async function openLocked(session, values) {
@@ -175,6 +169,15 @@ async function daemon(session, created) {
   let stopping = null;
   let worker;
   let browser;
+  let pendingJs;
+  const finishJs = (message) => {
+    if (!pendingJs) return;
+    clearTimeout(pendingJs.timer);
+    const { resolve } = pendingJs;
+    pendingJs = null;
+    const cause = browser.getError();
+    resolve(cause ? { ...message, error: privateError(cause) } : message);
+  };
   const shutdown = (why) =>
     (stopping ??= Promise.resolve().then(async () => {
       worker?.kill("SIGKILL");
@@ -183,7 +186,8 @@ async function daemon(session, created) {
       } catch (error) {
         console.error(`browser disconnect failed: ${privateError(error)}`);
       }
-      console.error(`stopping browser ${id}: ${why}`);
+      const cause = browser?.getError();
+      console.error(`stopping browser ${id}: ${why}${cause ? `: ${privateError(cause)}` : ""}`);
       const s = await stopBrowser(id);
       if (!s.stopped) console.error(`stop failed: ${JSON.stringify(s)}`);
       rmSync(p.sock, { force: true });
@@ -198,8 +202,10 @@ async function daemon(session, created) {
       throw new Error("Provider did not confirm a browser lifetime bounded to 60 minutes");
     browser = await startBrowserService(cdpUrl, { provider: true, browserId: id, api });
     endpoints.push(browser.endpoint);
-    browser.on("disconnected", () => {
-      if (!stopping) shutdown("disconnected").then(() => process.exit(0));
+    browser.on("disconnected", (error) => {
+      if (stopping) return;
+      finishJs({ error: error ? privateError(error) : "Browser disconnected; browser stopped" });
+      shutdown("disconnected").then(() => process.exit(0));
     });
     const listTabs = () =>
       browser.browser
@@ -220,7 +226,6 @@ async function daemon(session, created) {
       execArgv: [...process.execArgv, "--unhandled-rejections=strict"],
       stdio: ["ignore", "ignore", "inherit", "ipc"],
     });
-    let pendingJs;
     let initialized = false;
     let readyResolve, readyReject;
     const ready = new Promise((resolve, reject) => {
@@ -237,28 +242,17 @@ async function daemon(session, created) {
         readyResolve();
       } else if (message.type === "fatal") {
         if (!initialized) return readyReject(new Error(message.error));
-        if (pendingJs) {
-          clearTimeout(pendingJs.timer);
-          pendingJs.resolve({ error: message.error });
-          pendingJs = null;
-        }
+        finishJs({ error: message.error });
         shutdown("unhandled asynchronous error").then(() => process.exit(1));
       } else if (message.type === "result" && pendingJs?.id === message.id) {
-        clearTimeout(pendingJs.timer);
-        const { resolve } = pendingJs;
-        pendingJs = null;
-        resolve(message);
+        finishJs(message);
       }
     });
     worker.on("exit", () => {
       clearTimeout(readyTimer);
       readyReject(new Error("JavaScript browser client exited during initialization"));
       if (stopping || !initialized) return;
-      if (pendingJs) {
-        clearTimeout(pendingJs.timer);
-        pendingJs.resolve({ error: "JavaScript process exited; browser stopped" });
-        pendingJs = null;
-      }
+      finishJs({ error: "JavaScript process exited; browser stopped" });
       shutdown("JavaScript process exited").then(() => process.exit(1));
     });
     await ready;
