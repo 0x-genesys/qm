@@ -1,16 +1,17 @@
 #!/usr/bin/env node
-import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, openSync } from "node:fs";
+import { spawn, spawnSync, fork } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, openSync, closeSync, chmodSync } from "node:fs";
 import { request, createServer } from "node:http";
 import { connect as netConnect } from "node:net";
 import { connect as tlsConnect } from "node:tls";
 import { once } from "node:events";
-import { createRequire } from "node:module";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { connectBrowser } from "./cdp.mjs";
+import { loadInjectedSource } from "./injected-engine.mjs";
 import { parseArgs } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
-
 if ((process.env.HTTPS_PROXY || process.env.https_proxy) && !process.env.NODE_USE_ENV_PROXY) {
   const r = spawnSync(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
     stdio: "inherit",
@@ -18,15 +19,11 @@ if ((process.env.HTTPS_PROXY || process.env.https_proxy) && !process.env.NODE_US
   });
   process.exit(r.status ?? 1);
 }
-
 const API = (process.env.BROWSER_USE_API_BASE ?? "https://api.browser-use.com").replace(/\/+$/, "");
 const KEY = process.env.BROWSER_USE_API_KEY;
 const DIR = process.env.QM_BROWSE_DIR ?? join(tmpdir(), "qm-browse");
-const CACHE = process.env.QM_BROWSE_CACHE ?? join(homedir(), ".cache", "qm-browse");
-const PLAYWRIGHT = "playwright-core@1.64.0";
-const IDLE_MS = Number(process.env.QM_BROWSE_IDLE_MS ?? 15 * 60_000);
-const MAX_OUTPUT = 50_000;
-
+const IDLE_MS = Number(process.env.QM_BROWSE_IDLE_MS ?? 15 * 60000);
+const MAX_OUTPUT = 50000;
 const print = (obj) => console.log(JSON.stringify(obj));
 function fail(obj, code = 1) {
   print({ ok: false, ...obj });
@@ -36,15 +33,15 @@ const paths = (session) => ({
   sock: join(DIR, `${session}.sock`),
   state: join(DIR, `${session}.json`),
   log: join(DIR, `${session}.log`),
+  lock: join(DIR, `${session}.lock`),
 });
-
 async function api(method, path, body) {
   const init = { method, headers: { "X-Browser-Use-API-Key": KEY ?? "" } };
   if (body) {
     init.headers["content-type"] = "application/json";
     init.body = JSON.stringify(body);
   }
-  const res = await fetch(API + path, init);
+  const res = await fetch(API + path, { ...init, signal: AbortSignal.timeout(20000) });
   const text = await res.text();
   let json;
   try {
@@ -54,7 +51,6 @@ async function api(method, path, body) {
   }
   return { status: res.status, json };
 }
-
 async function preflight() {
   if (!KEY) return { ok: false, reason: "missing_key" };
   let r;
@@ -76,7 +72,6 @@ async function preflight() {
     sessionLimit: r.json?.concurrentSessionLimit,
   };
 }
-
 function proxyFor(host) {
   const raw = process.env.HTTPS_PROXY || process.env.https_proxy;
   if (!raw) return null;
@@ -84,7 +79,6 @@ function proxyFor(host) {
   const bypass = skip.some((n) => n === "*" || host === n || `.${host}`.endsWith(n.startsWith(".") ? n : `.${n}`));
   return bypass ? null : new URL(raw);
 }
-
 async function tunnel(proxy, host, port) {
   const secure = proxy.protocol === "https:";
   const sock = secure
@@ -114,7 +108,6 @@ async function tunnel(proxy, host, port) {
   await once(upstream, "secureConnect");
   return upstream;
 }
-
 async function cdpEndpoint(cdpUrl) {
   let ws = cdpUrl;
   if (new URL(cdpUrl).protocol.startsWith("http")) {
@@ -154,7 +147,6 @@ async function cdpEndpoint(cdpUrl) {
   relay.unref();
   return `ws://127.0.0.1:${relay.address().port}${target.pathname}${target.search}`;
 }
-
 async function stopBrowser(id) {
   try {
     const r = await api("PATCH", `/api/v4/browsers/${encodeURIComponent(id)}`, { action: "stop" });
@@ -163,22 +155,7 @@ async function stopBrowser(id) {
     return { stopped: false, error: String(err?.cause?.message ?? err?.message ?? err) };
   }
 }
-
-function loadPlaywright() {
-  const req = createRequire(join(CACHE, "package.json"));
-  try {
-    return req("playwright-core");
-  } catch {
-    mkdirSync(CACHE, { recursive: true });
-    if (!existsSync(join(CACHE, "package.json"))) writeFileSync(join(CACHE, "package.json"), "{}\n");
-    execFileSync("npm", ["install", "--prefix", CACHE, "--no-audit", "--no-fund", "--silent", PLAYWRIGHT], {
-      stdio: ["ignore", "ignore", "inherit"],
-    });
-    return req("playwright-core");
-  }
-}
-
-function call(sock, path, body, timeoutMs = 120_000) {
+function call(sock, path, body, timeoutMs = 120000) {
   return new Promise((resolve, reject) => {
     const data = JSON.stringify(body ?? {});
     const req = request(
@@ -200,7 +177,6 @@ function call(sock, path, body, timeoutMs = 120_000) {
     req.end(data);
   });
 }
-
 function readStdin() {
   return new Promise((resolve) => {
     let text = "";
@@ -209,12 +185,40 @@ function readStdin() {
     process.stdin.on("end", () => resolve(text));
   });
 }
-
 async function open(session, values) {
+  mkdirSync(DIR, { recursive: true, mode: 0o700 });
+  const lock = paths(session).lock;
+  try {
+    const fd = openSync(lock, "wx", 0o600);
+    writeFileSync(fd, String(process.pid));
+    closeSync(fd);
+  } catch (err) {
+    if (err.code !== "EEXIST") throw err;
+    const pid = Number(readFileSync(lock, "utf8"));
+    try {
+      process.kill(pid, 0);
+    } catch (alive) {
+      if (alive.code === "ESRCH") {
+        rmSync(lock);
+        return open(session, values);
+      }
+    }
+    fail({ error: `session "${session}" is opening; wait for that command to finish` });
+  }
+  const release = () => rmSync(lock, { force: true });
+  process.once("exit", release);
+  try {
+    return await openLocked(session, values);
+  } finally {
+    process.off("exit", release);
+    release();
+  }
+}
+async function openLocked(session, values) {
   const p = paths(session);
   mkdirSync(DIR, { recursive: true, mode: 0o700 });
   if (existsSync(p.sock)) {
-    const live = await call(p.sock, "/health", {}, 5_000).catch(() => null);
+    const live = await call(p.sock, "/health", {}, 5000).catch(() => null);
     if (live?.ok) fail({ error: `session "${session}" is already open; stop it first`, liveUrl: live.liveUrl });
   }
   const pre = await preflight();
@@ -225,8 +229,7 @@ async function open(session, values) {
     if (!s.stopped) fail({ reason: "stale_browser_not_stopped", browserId: stale.id, ...s });
     rmSync(p.state, { force: true });
   }
-  loadPlaywright();
-
+  await loadInjectedSource();
   const country = values.country ?? "us";
   const body = { proxyCountryCode: country === "none" ? null : country };
   if (values.profile) body.profileId = values.profile;
@@ -243,13 +246,14 @@ async function open(session, values) {
     stdio: ["ignore", log, log],
     env: process.env,
   });
+  closeSync(log);
   child.unref();
   for (let i = 0; i < 120; i++) {
     await sleep(500);
     if (existsSync(p.sock)) {
-      const h = await call(p.sock, "/health", {}, 5_000).catch(() => null);
+      const h = await call(p.sock, "/health", {}, 5000).catch(() => null);
       if (h?.ok) {
-        print({ ok: true, session, browserId: id, liveUrl, url: h.url });
+        print({ ok: true, session, browserId: id, liveUrl, tabs: h.tabs });
         return;
       }
     }
@@ -261,64 +265,100 @@ async function open(session, values) {
   const tail = existsSync(p.log) ? readFileSync(p.log, "utf8").slice(-2000) : "";
   fail({ reason: "connect_failed", browserId: id, stop: s, log: tail });
 }
-
 async function daemon(session) {
   const p = paths(session);
   const { id, cdpUrl, liveUrl } = JSON.parse(readFileSync(p.state, "utf8"));
   let stopping = null;
+  let worker;
+  let browser;
   const shutdown = (why) =>
-    (stopping ??= (async () => {
+    (stopping ??= Promise.resolve().then(async () => {
+      worker?.kill("SIGKILL");
+      browser?.close();
       console.error(`stopping browser ${id}: ${why}`);
       const s = await stopBrowser(id);
       if (!s.stopped) console.error(`stop failed: ${JSON.stringify(s)}`);
       rmSync(p.sock, { force: true });
       if (s.stopped) rmSync(p.state, { force: true });
       return s;
-    })());
-
+    }));
   for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(sig, () => shutdown(sig).then(() => process.exit(0)));
-  let browser;
   try {
-    const { chromium } = loadPlaywright();
-    browser = await chromium.connectOverCDP(await cdpEndpoint(cdpUrl));
+    browser = await connectBrowser(await cdpEndpoint(cdpUrl));
   } catch (err) {
     console.error(`connect failed: ${err.message}`);
     await shutdown("connect failed");
     process.exit(1);
   }
-  browser.on("disconnected", () => shutdown("disconnected").then(() => process.exit(0)));
-  const context = browser.contexts()[0] ?? (await browser.newContext());
-  if (context.pages().length === 0) await context.newPage();
-  const page = () => context.pages().at(-1);
-  const state = {};
-  const AsyncFunction = (async () => {}).constructor;
-
+  browser.on("disconnected", () => {
+    if (!stopping) shutdown("disconnected").then(() => process.exit(0));
+  });
+  let tabs = await browser.execute({ method: "tabs.list" });
+  if (!tabs.length) tabs = [await browser.execute({ method: "tabs.new", params: {} })];
+  const initialTab = tabs.at(-1).id;
+  worker = fork(fileURLToPath(new URL("./js-runtime.mjs", import.meta.url)), [initialTab], {
+    env: { PATH: process.env.PATH, HOME: process.env.HOME },
+    stdio: ["ignore", "ignore", "inherit", "ipc"],
+  });
+  let pendingJs;
+  worker.on("message", async (message) => {
+    if (message.type === "command") {
+      try {
+        const result = await browser.execute(message.command);
+        if (worker.connected) worker.send({ type: "reply", id: message.id, result });
+      } catch (err) {
+        if (worker.connected) worker.send({ type: "reply", id: message.id, error: err.message });
+      }
+    } else if (message.type === "result" && pendingJs?.id === message.id) {
+      clearTimeout(pendingJs.timer);
+      const { resolve } = pendingJs;
+      pendingJs = null;
+      resolve(message);
+    }
+  });
+  worker.on("exit", () => {
+    if (stopping) return;
+    if (pendingJs) {
+      clearTimeout(pendingJs.timer);
+      pendingJs.resolve({ error: "JavaScript process exited; browser stopped" });
+      pendingJs = null;
+    }
+    shutdown("JavaScript process exited").then(() => process.exit(1));
+  });
+  let sequence = 0;
+  const runJs = (code) =>
+    new Promise((resolve) => {
+      const id = ++sequence;
+      const timer = setTimeout(() => {
+        pendingJs = null;
+        resolve({ error: "JavaScript exceeded 90 seconds; browser stopped. Inspect before retrying any action." });
+        worker.kill("SIGKILL");
+      }, 90000);
+      pendingJs = { id, resolve, timer };
+      worker.send({ type: "js", id, code });
+    });
   let idle;
   const touch = () => {
     clearTimeout(idle);
     idle = setTimeout(() => shutdown("idle").then(() => process.exit(0)), IDLE_MS);
   };
   touch();
-
   const handlers = {
-    "/health": async () => ({ ok: true, browserId: id, liveUrl, url: page()?.url() }),
-    "/eval": async ({ code }) => {
-      let fn;
-      try {
-        fn = new AsyncFunction("page", "context", "browser", "state", `return (${code}\n);`);
-      } catch {
-        fn = new AsyncFunction("page", "context", "browser", "state", code);
-      }
-      const value = await fn(page(), context, browser, state);
-      let text = typeof value === "string" ? value : JSON.stringify(value ?? null);
-      if (text === undefined) text = String(value);
-      const truncated = text.length > MAX_OUTPUT;
-      return { ok: true, result: truncated ? text.slice(0, MAX_OUTPUT) : text, truncated, url: page()?.url() };
+    "/health": async () => ({ ok: true, browserId: id, liveUrl, tabs: await browser.execute({ method: "tabs.list" }) }),
+    "/js": async ({ code }) => {
+      if (typeof code !== "string" || code.length > MAX_OUTPUT)
+        throw new Error("code must be a string under 50,000 characters");
+      const { result, output, error } = await runJs(code);
+      if (error) return { ok: false, error, output };
+      const text = result ?? "undefined";
+      return { ok: true, result: text.slice(0, MAX_OUTPUT), output, truncated: text.length > MAX_OUTPUT };
     },
     "/screenshot": async ({ path }) => {
       const out = path || join(DIR, `${session}-${Date.now()}.png`);
-      await page().screenshot({ path: out });
-      return { ok: true, path: out, url: page()?.url() };
+      const { result, error } = await runJs("await tab.screenshot()");
+      if (error) throw new Error(error);
+      writeFileSync(out, Buffer.from(result, "base64"));
+      return { ok: true, path: out };
     },
     "/stop": async () => {
       const s = await shutdown("stop requested");
@@ -326,28 +366,41 @@ async function daemon(session) {
       return { ok: s.stopped, browserId: id, ...s };
     },
   };
-
+  let queue = Promise.resolve();
   const server = createServer((req, res) => {
     let text = "";
-    req.on("data", (c) => (text += c));
-    req.on("end", async () => {
-      touch();
-      let body;
-      try {
-        const handler = handlers[req.url];
-        if (!handler) throw new Error(`unknown command ${req.url}`);
-        body = await handler(JSON.parse(text || "{}"));
-      } catch (err) {
-        body = { ok: false, error: String(err?.stack ?? err) };
-      }
-      res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify(body));
+    req.on("data", (c) => {
+      text += c;
+      if (text.length > 100000) req.destroy();
+    });
+    req.on("end", () => {
+      const handle = async () => {
+        if (res.destroyed || stopping) return res.destroy();
+        clearTimeout(idle);
+        let body;
+        try {
+          const handler = handlers[req.url];
+          if (!handler) throw new Error(`unknown command ${req.url}`);
+          body = await handler(JSON.parse(text || "{}"));
+        } catch (err) {
+          body = { ok: false, error: String(err?.stack ?? err) };
+        }
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify(body));
+        touch();
+      };
+      if (req.url === "/stop") void handle();
+      else
+        queue = queue.then(handle).catch((err) => {
+          console.error(err.message);
+          res.destroy();
+          touch();
+        });
     });
   });
   rmSync(p.sock, { force: true });
-  server.listen(p.sock);
+  server.listen(p.sock, () => chmodSync(p.sock, 0o600));
 }
-
 async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -361,7 +414,6 @@ async function main() {
   const session = values.session;
   if (!/^[\w-]{1,64}$/.test(session)) fail({ error: "session must be letters, digits, - or _" });
   const p = paths(session);
-
   switch (cmd) {
     case "preflight": {
       const r = await preflight();
@@ -373,9 +425,9 @@ async function main() {
       return open(session, values);
     case "__daemon":
       return daemon(session);
-    case "eval": {
+    case "js": {
       const code = arg === undefined || arg === "-" ? await readStdin() : arg;
-      const r = await call(p.sock, "/eval", { code }).catch((err) =>
+      const r = await call(p.sock, "/js", { code }).catch((err) =>
         fail({ error: existsSync(p.sock) ? `daemon call failed: ${err.message}` : `no open browser: ${err.message}` }),
       );
       print(r);
@@ -391,7 +443,7 @@ async function main() {
       break;
     }
     case "stop": {
-      const r = await call(p.sock, "/stop", {}, 30_000).catch((err) => {
+      const r = await call(p.sock, "/stop", {}, 30000).catch((err) => {
         if (existsSync(p.sock)) console.error(`daemon unreachable, stopping directly: ${err.message}`);
         return null;
       });
@@ -409,9 +461,8 @@ async function main() {
     default:
       fail({
         error:
-          "usage: browser.mjs preflight | open [--profile ID] [--country us|none] | eval CODE|- | screenshot [PATH] | stop  (all accept --session NAME)",
+          "usage: browser.mjs preflight | open [--profile ID] [--country us|none] | js CODE|- | screenshot [PATH] | stop  (all accept --session NAME)",
       });
   }
 }
-
 await main();
