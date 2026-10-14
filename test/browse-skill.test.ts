@@ -15,6 +15,7 @@ type Call = { method: string; url: string; key: string | undefined; body: unknow
 
 async function fakeApi(billing: { status: number; body?: unknown }, patchStatus = 200) {
   const calls: Call[] = [];
+  const state = { patchStatus };
   const server: Server = createServer((req: IncomingMessage, res) => {
     let text = "";
     req.on("data", (c) => (text += c));
@@ -36,7 +37,7 @@ async function fakeApi(billing: { status: number; body?: unknown }, patchStatus 
           JSON.stringify({ id: "b1", cdpUrl: "ws://fake-cdp/devtools/browser/x", liveUrl: "https://live.test/b1" }),
         );
       } else if (call.method === "PATCH" && call.url.startsWith("/api/v4/browsers/")) {
-        res.statusCode = patchStatus;
+        res.statusCode = state.patchStatus;
         res.end(JSON.stringify({ id: "b1", status: "stopped" }));
       } else {
         res.statusCode = 404;
@@ -46,7 +47,12 @@ async function fakeApi(billing: { status: number; body?: unknown }, patchStatus 
   });
   server.listen(0, "127.0.0.1");
   await new Promise((r) => server.once("listening", r));
-  return { calls, base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => server.close() };
+  return {
+    calls,
+    state,
+    base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+    close: () => server.close(),
+  };
 }
 
 function fakePlaywright(dir: string) {
@@ -205,6 +211,10 @@ test("a failed stop keeps the browser id so a later stop can retry", async () =>
     assert.equal(first.code, 1);
     assert.deepEqual([first.out.stopped, first.out.status], [false, 500]);
     assert.ok(existsSync(join(box.env.QM_BROWSE_DIR, "default.json")));
+    api.state.patchStatus = 200;
+    const retry = await run(["stop"], box.env);
+    assert.deepEqual([retry.code, retry.out.stopped], [0, true]);
+    assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.json")), false);
   } finally {
     api.close();
     box.cleanup();

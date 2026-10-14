@@ -11,7 +11,7 @@ CDP, act, and stop it. No second model is involved — you read the page and dec
 ## First: do you need a browser at all?
 
 Never use the browser when another platform tool can do the job. Check, in order: a connected
-app or connector, a shared credential or API (`use-shared-credential`), a CLI (`gh`, `ycli`,
+app or connector, a shared credential or API (`use-shared-credential`), a CLI (`gh`,
 `aws` …), and plain `curl`/`wget` for reading a page. Browse only to _act_ on a site with no
 other way in, or when a plain fetch is genuinely blocked by heavy JS or a bot wall. To check a
 site on your own localhost, use local headless Chromium; a cloud browser can't reach your

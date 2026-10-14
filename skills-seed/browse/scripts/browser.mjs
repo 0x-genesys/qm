@@ -63,8 +63,9 @@ async function preflight() {
   } catch (err) {
     return { ok: false, reason: "unreachable", error: String(err?.cause?.message ?? err?.message ?? err) };
   }
-  if (r.status === 401 || r.status === 403) return { ok: false, reason: "key_rejected", status: r.status };
-  if (r.status === 402) return { ok: false, reason: "no_credits", status: r.status };
+  if (r.status === 401 || r.status === 403)
+    return { ok: false, reason: "key_rejected", status: r.status, detail: r.json };
+  if (r.status === 402) return { ok: false, reason: "no_credits", status: r.status, detail: r.json };
   if (r.status !== 200) return { ok: false, reason: "api_error", status: r.status, detail: r.json };
   const balanceUsd = r.json?.totalCreditsBalanceUsd;
   if (typeof balanceUsd === "number" && balanceUsd <= 0) return { ok: false, reason: "no_credits", balanceUsd };
@@ -80,9 +81,7 @@ function proxyFor(host) {
   const raw = process.env.HTTPS_PROXY || process.env.https_proxy;
   if (!raw) return null;
   const skip = (process.env.NO_PROXY || process.env.no_proxy || "").split(/[,\s]+/).filter(Boolean);
-  const bypass = skip.some(
-    (n) => n === "*" || host === n.replace(/^\./, "") || host.endsWith(`.${n.replace(/^\./, "")}`),
-  );
+  const bypass = skip.some((n) => n === "*" || host === n || `.${host}`.endsWith(n.startsWith(".") ? n : `.${n}`));
   return bypass ? null : new URL(raw);
 }
 
@@ -109,7 +108,8 @@ async function tunnel(proxy, host, port) {
     sock.on("data", onData);
     sock.once("error", reject);
   });
-  if (!/^HTTP\/1\.[01] 200/.test(head)) throw new Error(`proxy CONNECT failed: ${head.split("\r\n")[0]}`);
+  const status = head.split("\r\n")[0];
+  if (status.split(" ")[1] !== "200") throw new Error(`proxy CONNECT ${host}:${port} failed: ${status}`);
   const upstream = tlsConnect({ socket: sock, servername: host });
   await once(upstream, "secureConnect");
   return upstream;
@@ -117,7 +117,7 @@ async function tunnel(proxy, host, port) {
 
 async function cdpEndpoint(cdpUrl) {
   let ws = cdpUrl;
-  if (/^https?:/.test(cdpUrl)) {
+  if (new URL(cdpUrl).protocol.startsWith("http")) {
     const res = await fetch(new URL("/json/version", cdpUrl));
     ws = (await res.json()).webSocketDebuggerUrl;
   }
@@ -135,10 +135,15 @@ async function cdpEndpoint(cdpUrl) {
       }
       upstream.write(`${lines.join("\r\n")}\r\n\r\n`);
       if (head.length) upstream.write(head);
-      upstream.pipe(client).on("error", () => upstream.destroy());
-      client.pipe(upstream).on("error", () => client.destroy());
-      upstream.on("error", () => client.destroy());
-      client.on("error", () => upstream.destroy());
+      const drop = (side) => (err) => {
+        console.error(`relay ${side} error: ${err.message}`);
+        upstream.destroy();
+        client.destroy();
+      };
+      upstream.on("error", drop("upstream"));
+      client.on("error", drop("client"));
+      upstream.pipe(client);
+      client.pipe(upstream);
     } catch (err) {
       console.error(`relay failed: ${err.message}`);
       client.destroy();
@@ -371,7 +376,7 @@ async function main() {
     case "eval": {
       const code = arg === undefined || arg === "-" ? await readStdin() : arg;
       const r = await call(p.sock, "/eval", { code }).catch((err) =>
-        fail({ error: `no open browser: ${err.message}` }),
+        fail({ error: existsSync(p.sock) ? `daemon call failed: ${err.message}` : `no open browser: ${err.message}` }),
       );
       print(r);
       process.exit(r.ok ? 0 : 1);
@@ -379,14 +384,17 @@ async function main() {
     }
     case "screenshot": {
       const r = await call(p.sock, "/screenshot", { path: arg }).catch((err) =>
-        fail({ error: `no open browser: ${err.message}` }),
+        fail({ error: existsSync(p.sock) ? `daemon call failed: ${err.message}` : `no open browser: ${err.message}` }),
       );
       print(r);
       process.exit(r.ok ? 0 : 1);
       break;
     }
     case "stop": {
-      const r = await call(p.sock, "/stop", {}, 30_000).catch(() => null);
+      const r = await call(p.sock, "/stop", {}, 30_000).catch((err) => {
+        if (existsSync(p.sock)) console.error(`daemon unreachable, stopping directly: ${err.message}`);
+        return null;
+      });
       if (r?.ok) return print(r);
       if (r) console.error(`daemon stop failed: ${JSON.stringify(r)}`);
       if (!existsSync(p.state)) return print({ ok: true, stopped: false, note: "no open browser" });
