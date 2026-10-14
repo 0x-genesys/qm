@@ -50,10 +50,7 @@ async function inPage(operation, selector, value, timeoutMs) {
         Object.defineProperty(proto, "value", {
           ...descriptor,
           get() {
-            const kind = `${this.type} ${this.autocomplete} ${this.name} ${this.id}`.toLowerCase();
-            if (/password|passwd|one-time-code|otp|email|username|phone|(?:^|[ _-])tel(?:$|[ _-])/.test(kind))
-              return "<redacted>";
-            return descriptor.get.call(this);
+            return descriptor.get.call(this) ? "<redacted>" : "";
           },
         });
       }
@@ -424,11 +421,7 @@ export async function connectBrowser(endpoint) {
           `Click was intercepted: ${typeof hit === "string" ? hit : hit.hitTargetDescription}; not retried`,
         );
     } catch (error) {
-      if (
-        dispatched &&
-        /Cannot find context|Execution context was destroyed|Inspected target navigated/.test(error.message)
-      )
-        return null;
+      if (dispatched && !session.contexts.has(contextId)) return null;
       throw error;
     } finally {
       if (pressAttempted && !dispatched && !closed)

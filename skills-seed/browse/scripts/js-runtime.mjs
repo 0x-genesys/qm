@@ -16,7 +16,7 @@ const browser = createBrowserClient(
 let output = "";
 const stream = new Writable({
   write(chunk, _encoding, done) {
-    output = (output + chunk.toString()).slice(0, 50000);
+    output = (output + chunk.toString()).slice(0, 10_000);
     done();
   },
 });
@@ -25,24 +25,24 @@ repl.context.browser = browser;
 repl.context.tab = browser.tabs.get(process.argv[2]);
 repl.context.console = new console.Console(stream, stream);
 let active;
-function complete(error, result) {
+function complete(error, result, failed = error !== null && error !== undefined) {
   if (!active) return;
   const id = active;
   active = null;
   send({
     type: "result",
     id,
-    error: error?.message,
+    error: failed ? (error?.message ?? inspect(error)) : undefined,
     result:
       result === undefined
         ? null
         : typeof result === "string"
           ? result
-          : inspect(result, { depth: 6, maxArrayLength: 100, maxStringLength: 50000 }),
+          : inspect(result, { depth: 6, maxArrayLength: 100, maxStringLength: 10_000 }),
     output,
   });
 }
-repl._domain.on("error", (error) => complete(error));
+repl._domain.on("error", (error) => complete(error, undefined, true));
 process.on("message", (message) => {
   if (message.type === "reply") {
     const request = pending.get(message.id);

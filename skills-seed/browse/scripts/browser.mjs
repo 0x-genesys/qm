@@ -2,9 +2,6 @@
 import { spawn, spawnSync, fork } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, openSync, closeSync, chmodSync } from "node:fs";
 import { request, createServer } from "node:http";
-import { connect as netConnect } from "node:net";
-import { connect as tlsConnect } from "node:tls";
-import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,7 +20,7 @@ const API = (process.env.BROWSER_USE_API_BASE ?? "https://api.browser-use.com").
 const KEY = process.env.BROWSER_USE_API_KEY;
 const DIR = process.env.QM_BROWSE_DIR ?? join(tmpdir(), "qm-browse");
 const IDLE_MS = Number(process.env.QM_BROWSE_IDLE_MS ?? 15 * 60000);
-const MAX_OUTPUT = 50000;
+const MAX_OUTPUT = 10_000;
 const print = (obj) => console.log(JSON.stringify(obj));
 function fail(obj, code = 1) {
   print({ ok: false, ...obj });
@@ -72,81 +69,13 @@ async function preflight() {
     sessionLimit: r.json?.concurrentSessionLimit,
   };
 }
-function proxyFor(host) {
-  const raw = process.env.HTTPS_PROXY || process.env.https_proxy;
-  if (!raw) return null;
-  const skip = (process.env.NO_PROXY || process.env.no_proxy || "").split(/[,\s]+/).filter(Boolean);
-  const bypass = skip.some((n) => n === "*" || host === n || `.${host}`.endsWith(n.startsWith(".") ? n : `.${n}`));
-  return bypass ? null : new URL(raw);
-}
-async function tunnel(proxy, host, port) {
-  const secure = proxy.protocol === "https:";
-  const sock = secure
-    ? tlsConnect({ host: proxy.hostname, port: Number(proxy.port || 443), servername: proxy.hostname })
-    : netConnect({ host: proxy.hostname, port: Number(proxy.port || 80) });
-  await once(sock, secure ? "secureConnect" : "connect");
-  const user = decodeURIComponent(proxy.username);
-  const auth = user
-    ? `Proxy-Authorization: Basic ${Buffer.from(`${user}:${decodeURIComponent(proxy.password)}`).toString("base64")}\r\n`
-    : "";
-  sock.write(`CONNECT ${host}:${port} HTTP/1.1\r\nHost: ${host}:${port}\r\n${auth}\r\n`);
-  const head = await new Promise((resolve, reject) => {
-    let buf = "";
-    const onData = (chunk) => {
-      buf += chunk.toString("latin1");
-      if (!buf.includes("\r\n\r\n")) return;
-      sock.off("data", onData);
-      sock.pause();
-      resolve(buf);
-    };
-    sock.on("data", onData);
-    sock.once("error", reject);
-  });
-  const status = head.split("\r\n")[0];
-  if (status.split(" ")[1] !== "200") throw new Error(`proxy CONNECT ${host}:${port} failed: ${status}`);
-  const upstream = tlsConnect({ socket: sock, servername: host });
-  await once(upstream, "secureConnect");
-  return upstream;
-}
 async function cdpEndpoint(cdpUrl) {
-  let ws = cdpUrl;
-  if (new URL(cdpUrl).protocol.startsWith("http")) {
-    const res = await fetch(new URL("/json/version", cdpUrl));
-    ws = (await res.json()).webSocketDebuggerUrl;
-  }
-  const target = new URL(ws);
-  const proxy = proxyFor(target.hostname);
-  if (!proxy) return ws;
-  const relay = createServer((_req, res) => res.writeHead(404).end());
-  relay.on("upgrade", async (req, client, head) => {
-    try {
-      const upstream = await tunnel(proxy, target.hostname, Number(target.port || 443));
-      const lines = [`${req.method} ${req.url} HTTP/1.1`];
-      for (let i = 0; i < req.rawHeaders.length; i += 2) {
-        const name = req.rawHeaders[i];
-        lines.push(`${name}: ${name.toLowerCase() === "host" ? target.host : req.rawHeaders[i + 1]}`);
-      }
-      upstream.write(`${lines.join("\r\n")}\r\n\r\n`);
-      if (head.length) upstream.write(head);
-      const drop = (side) => (err) => {
-        console.error(`relay ${side} error: ${err.message}`);
-        upstream.destroy();
-        client.destroy();
-      };
-      upstream.on("error", drop("upstream"));
-      client.on("error", drop("client"));
-      upstream.pipe(client);
-      client.pipe(upstream);
-    } catch (err) {
-      console.error(`relay failed: ${err.message}`);
-      client.destroy();
-    }
-  });
-  relay.listen(0, "127.0.0.1");
-  await once(relay, "listening");
-  relay.unref();
-  return `ws://127.0.0.1:${relay.address().port}${target.pathname}${target.search}`;
+  if (!new URL(cdpUrl).protocol.startsWith("http")) return cdpUrl;
+  const res = await fetch(new URL("/json/version", cdpUrl), { signal: AbortSignal.timeout(15_000) });
+  if (!res.ok) throw new Error(`CDP discovery failed: HTTP ${res.status}`);
+  return (await res.json()).webSocketDebuggerUrl;
 }
+
 async function stopBrowser(id) {
   try {
     const r = await api("PATCH", `/api/v4/browsers/${encodeURIComponent(id)}`, { action: "stop" });
@@ -346,19 +275,24 @@ async function daemon(session) {
   const handlers = {
     "/health": async () => ({ ok: true, browserId: id, liveUrl, tabs: await browser.execute({ method: "tabs.list" }) }),
     "/js": async ({ code }) => {
-      if (typeof code !== "string" || code.length > MAX_OUTPUT)
+      if (typeof code !== "string" || code.length > 50_000)
         throw new Error("code must be a string under 50,000 characters");
       const { result, output, error } = await runJs(code);
-      if (error) return { ok: false, error, output };
-      const text = result ?? "undefined";
-      return { ok: true, result: text.slice(0, MAX_OUTPUT), output, truncated: text.length > MAX_OUTPUT };
+      const text = String(error ?? result ?? "undefined");
+      const resultText = text.slice(0, MAX_OUTPUT);
+      const consoleText = (output ?? "").slice(0, MAX_OUTPUT - resultText.length);
+      return {
+        ok: !error,
+        ...(error ? { error: resultText } : { result: resultText }),
+        output: consoleText,
+        truncated: text.length + (output?.length ?? 0) > MAX_OUTPUT,
+      };
     },
     "/screenshot": async ({ path }) => {
       const out = path || join(DIR, `${session}-${Date.now()}.png`);
-      const { result, error } = await runJs("await tab.screenshot()");
+      const { result, error } = await runJs(`await tab.screenshot(${JSON.stringify(out)})`);
       if (error) throw new Error(error);
-      writeFileSync(out, Buffer.from(result, "base64"));
-      return { ok: true, path: out };
+      return { ok: true, path: result };
     },
     "/stop": async () => {
       const s = await shutdown("stop requested");

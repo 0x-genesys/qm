@@ -52,7 +52,7 @@ throughout. Choose a unique `--session` name for this task and pass it to every 
 
 ```bash
 B="<skill dir>/scripts/browser.mjs"
-node "$B" open --session research    # prints browserId, tabs, and private liveUrl
+node "$B" open --session research
 node "$B" js --session research "await tab.goto('https://example.com'); await tab.title()"
 node "$B" js --session research - <<'JS'
 var link = tab.playwright.getByRole('link', { name: 'More information', exact: true });
@@ -60,11 +60,12 @@ await link.click();
 await tab.playwright.domSnapshot();
 JS
 node "$B" screenshot --session research /tmp/shot.png
-node "$B" stop --session research    # ALWAYS, even after a failure
+node "$B" stop --session research
 ```
 
 - `js` is a persistent Node REPL with top-level `await`: variables survive across calls. Use
-  `var` for reusable bindings. The last expression is returned; do not write top-level `return`.
+  `var` for reusable bindings. The last expression is returned; do not write top-level `return`. Result plus console output
+  is capped at 10,000 characters; keep large data in files.
   `browser` is the client, and `tab` initially refers to the open tab. Always `await` actions.
 - Inspect first: `await tab.playwright.domSnapshot()` or `await tab.title()`. Use selectors
   grounded in the observed page, not guessed coordinates. `getByRole(role, {name, exact})`,
@@ -75,9 +76,9 @@ node "$B" stop --session research    # ALWAYS, even after a failure
   are not supported yet and must not be worked around with synthetic clicks.
 - Use `await browser.tabs.list()`, `browser.tabs.get(id)`, `await browser.tabs.new(url)`, and
   `await tab.close()` to manage tabs. A tab also supports `goto(url)`, `url()`, `title()`,
-  `evaluate("document.body.innerText")`, and `screenshot()` (base64 PNG). `evaluate` accepts a
+  `evaluate("document.body.innerText")`, and `screenshot(path?)` (writes a PNG and returns its path). `evaluate` accepts a
   page expression string, not a Node function. Keep results short; slice text or pick fields.
-- Snapshots redact credential-like field values (passwords, sign-in identifiers and one-time codes).
+- Snapshots redact all nonempty input and textarea values.
   Screenshots and explicit page evaluation are not redacted; handle their output accordingly.
 - `fill()` uses Chromium’s native DOM editing in one page task, so a focus change between
   commands cannot send text to a different field. It fires input events, not a keyboard
@@ -134,7 +135,6 @@ H="X-Browser-Use-API-Key: $BROWSER_USE_API_KEY"
 run=$(curl -fsS https://api.browser-use.com/api/v4/runs -H "$H" -H 'content-type: application/json' \
   -d '{"task":"<the task>","browserSettings":{"proxyCountryCode":"us"}}')
 id=$(echo "$run" | jq -r .id)
-# poll until completed | failed | cancelled, then read the result
 curl -fsS "https://api.browser-use.com/api/v4/runs/$id/status" -H "$H"
 curl -fsS "https://api.browser-use.com/api/v4/runs/$id" -H "$H"
 ```

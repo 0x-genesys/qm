@@ -1,3 +1,7 @@
+import { writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 export function createBrowserClient(send) {
   const command = (method, tabId, params = {}) => send({ method, tabId, params });
   const textSelector = (text, exact = false) => `${JSON.stringify(String(text))}${exact ? "s" : "i"}`;
@@ -38,7 +42,12 @@ export function createBrowserClient(send) {
       url: () => command("tab.url", id),
       title: () => command("tab.title", id),
       close: () => command("tabs.close", id),
-      screenshot: () => command("tab.screenshot", id),
+      screenshot: async (path = join(tmpdir(), `browser-${randomUUID()}.png`)) => {
+        if (typeof path !== "string") throw new Error("screenshot path must be a string");
+        const data = await command("tab.screenshot", id);
+        await writeFile(path, Buffer.from(data, "base64"));
+        return path;
+      },
       evaluate: (expression) => {
         if (typeof expression !== "string") throw new Error("evaluate expects a JavaScript expression string");
         return command("tab.evaluate", id, { expression });
