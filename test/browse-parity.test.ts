@@ -120,10 +120,16 @@ test("full browser protocol behavioral parity", { skip: !endpoint, timeout: 2400
     const frame = page.frameLocator("#cross-frame");
     await frame.getByRole("button", { name: "Click target", exact: true }).click();
     const owner = page.locator("#cross-frame");
-    await owner.evaluate((element: any) => {
-      element.src += "&reload=1";
-    });
-    await frame.locator("body").filter({ hasText: "Parity cross" }).waitFor();
+    const beforeReload = page
+      .frames()
+      .find((candidate: any) => new URL(candidate.url()).searchParams.get("label") === "cross");
+    assert.ok(beforeReload);
+    await Promise.all([
+      beforeReload.waitForURL("**&reload=1"),
+      owner.evaluate((element: any) => {
+        element.src += "&reload=1";
+      }),
+    ]);
     await frame.getByLabel("Text", { exact: true }).fill("after reload");
     assert.equal(await frame.locator("#text-input").inputValue(), "after reload");
     await owner.evaluate((element: any) => {
@@ -269,6 +275,14 @@ test("full browser protocol behavioral parity", { skip: !endpoint, timeout: 2400
     assert.equal(new URL(page.url()).pathname, "/");
     await tab.forward();
     assert.equal(new URL(page.url()).pathname, "/navigation");
+    await Promise.all([
+      page.waitForURL((url: URL) => url.pathname === "/"),
+      tab.cua.click({ x: 20, y: 20, button: 4 }),
+    ]);
+    assert.equal(await page.title(), "Parity main");
+    assert.equal(page.frames().length, 7);
+    await Promise.all([page.waitForURL("**/navigation?step=arrived"), tab.cua.click({ x: 20, y: 20, button: 5 })]);
+    assert.equal(await page.title(), "Parity navigation");
     await tab.reload();
     await page.waitForLoadState("load");
     await Promise.all([page.waitForURL("**?step=1"), page.locator("#history-push").click()]);
@@ -300,6 +314,16 @@ test("full browser protocol behavioral parity", { skip: !endpoint, timeout: 2400
         page.locator("#dialog-alert").click(),
       ]);
       assert.equal((await state(page)).dialogs.alert, "closed");
+      await page.locator("#beforeunload").check();
+      await Promise.all([
+        page.waitForEvent("dialog").then(async (dialog: any) => {
+          assert.equal(dialog.type(), "beforeunload");
+          await dialog.dismiss();
+        }),
+        page.close({ runBeforeUnload: true }),
+      ]);
+      assert.equal(page.isClosed(), false);
+      await page.locator("#beforeunload").uncheck();
     },
   );
 
@@ -421,6 +445,106 @@ test("full browser protocol behavioral parity", { skip: !endpoint, timeout: 2400
     },
   );
 
+  await scenario("input types, semantic builders and disabled/hidden/detached actionability", async (_tab, page) => {
+    const input = page.locator("#text-input");
+    await input.evaluate((element: any) => {
+      element.placeholder = "Type a value";
+      element.dataset.testid = "semantic-input";
+      element.title = "Input details";
+    });
+    assert.equal(await page.getByPlaceholder(/Type a/).count(), 1);
+    assert.equal(await page.getByTestId("semantic-input").count(), 1);
+    assert.equal(await page.getByTitle("Input details").count(), 1);
+    for (const [type, value] of [
+      ["password", "private value"],
+      ["date", "2026-10-14"],
+      ["number", "12.5"],
+      ["text", "normal value"],
+    ]) {
+      await input.evaluate((element: any, type: string) => {
+        element.type = type;
+      }, type);
+      await input.fill(value);
+      assert.equal(await input.inputValue(), value);
+    }
+    await input.evaluate((element: any) => {
+      element.disabled = true;
+    });
+    assert.equal(await input.isDisabled(), true);
+    await assert.rejects(input.fill("must not write", { timeout: 150 }), /not enabled|Timeout/);
+    assert.equal(await input.inputValue(), "normal value");
+    await input.evaluate((element: any) => {
+      element.disabled = false;
+      element.readOnly = true;
+    });
+    assert.equal(await input.isEditable(), false);
+    await input.evaluate((element: any) => {
+      element.readOnly = false;
+      element.hidden = true;
+    });
+    await input.waitFor({ state: "hidden" });
+    assert.equal(await input.isVisible(), false);
+    await input.evaluate((element: any) => {
+      element.remove();
+    });
+    await input.waitFor({ state: "detached" });
+    assert.equal(await input.count(), 0);
+  });
+
+  await scenario("coordinate movement, drag, scroll and held-key cleanup are native", async (tab, page) => {
+    const hover = await center(page.locator("#hover-target"));
+    await tab.cua.move(hover);
+    assert.equal(await page.locator("#hover-action").isVisible(), true);
+    await page.locator("#drag-source").scrollIntoViewIfNeeded();
+    const source = await center(page.locator("#drag-source"));
+    const target = await center(page.locator("#drop-target"));
+    await tab.cua.drag({ path: [source, { x: source.x + 10, y: source.y }, target, target], keys: ["SHIFT"] });
+    assert.equal((await state(page)).values.drop, "parity-payload");
+    const scroll = await center(page.locator("#scroll-container"));
+    await tab.cua.scroll({ ...scroll, scrollX: 100, scrollY: 250 });
+    await page.waitForFunction("document.querySelector('#scroll-container').scrollTop > 0");
+    await assert.rejects(tab.cua.click({ x: "invalid", y: 0, keypress: ["SHIFT"] }), /number|float|x/);
+    await page.locator("#text-input").click();
+    await page.keyboard.type("a");
+    assert.equal(await page.locator("#text-input").inputValue(), "a");
+    const events = (await state(page)).events;
+    assert.ok(
+      events.some((event: any) => event.type === "keydown" && event.key === "a" && !event.shiftKey && event.trusted),
+    );
+  });
+
+  await scenario("nested cross-origin uploads and downloads use actual byte payloads", async (_tab, page) => {
+    const frame = page.frameLocator("#cross-frame").frameLocator("#nested-same-frame");
+    await frame.locator("body").evaluate((body: any) => {
+      const input = body.ownerDocument.createElement("input");
+      input.type = "file";
+      input.id = "frame-file";
+      body.prepend(input);
+      const anchor = body.ownerDocument.createElement("a");
+      anchor.id = "frame-download";
+      anchor.href = "/download";
+      anchor.download = "frame.txt";
+      anchor.textContent = "Frame download";
+      body.prepend(anchor);
+    });
+    const bytes = Buffer.from([0, 1, 2, 127, 128, 255]);
+    await frame
+      .locator("#frame-file")
+      .setInputFiles({ name: "frame.bin", mimeType: "application/octet-stream", buffer: bytes });
+    assert.deepEqual(
+      await frame
+        .locator("#frame-file")
+        .evaluate(async (element: any) => Array.from(new Uint8Array(await element.files[0].arrayBuffer()))),
+      [...bytes],
+    );
+    const [download] = await Promise.all([page.waitForEvent("download"), frame.locator("#frame-download").click()]);
+    const stream = await download.createReadStream();
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    assert.equal(Buffer.concat(chunks).toString(), "parity get download\n");
+    await download.delete();
+  });
+
   await scenario("CUA, all-frame redacted snapshots, native references, DOM-CUA and clipboard", async (tab, page) => {
     const point = await center(page.locator("#click-target"));
     await tab.cua.click({ ...point, button: 3, keypress: ["SHIFT"] });
@@ -449,11 +573,13 @@ test("full browser protocol behavioral parity", { skip: !endpoint, timeout: 2400
       }
     };
     visit(JSON.parse(await tab.dom_cua.get_visible_dom()));
-    const target = nodes.find((node) => node.role === "button" && node.name === "Click target" && node.ref);
-    assert.ok(target, "snapshot must expose a native actionable reference");
-    assert.equal(await tab.dom_cua.locator(target.ref).innerText(), "Click target");
-    await tab.dom_cua.click({ node_id: target.ref });
-    await tab.dom_cua.double_click({ node_id: target.ref });
+    const targets = nodes.filter((node) => node.role === "button" && node.name === "Click target" && node.ref);
+    assert.equal(targets.length, 7, "snapshot must expose actionable references from all seven frames");
+    for (const target of targets) {
+      assert.equal(await tab.dom_cua.locator(target.ref).innerText(), "Click target");
+      await tab.dom_cua.click({ node_id: target.ref });
+      await tab.dom_cua.double_click({ node_id: target.ref });
+    }
     await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: base });
     await page.bringToFront();
     await tab.clipboard.writeText("clipboard 世界");

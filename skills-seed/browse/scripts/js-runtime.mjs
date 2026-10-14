@@ -1,4 +1,5 @@
 import { start } from "node:repl";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { PassThrough, Writable } from "node:stream";
 import { inspect } from "node:util";
 import { createBrowserClient } from "./browser-client.mjs";
@@ -19,29 +20,40 @@ const tabs = await browser.tabs.list();
 repl.context.tab = tabs.length ? await browser.tabs.get(tabs.at(-1).id) : await browser.tabs.new();
 repl.context.console = new console.Console(stream, stream);
 let active;
-function complete(error, result, failed = error !== null && error !== undefined) {
-  if (!active) return;
-  const id = active;
+const invocation = new AsyncLocalStorage();
+function fatal(error) {
+  send({ type: "fatal", error: `Unhandled asynchronous error; browser stopped: ${error?.stack || inspect(error)}` });
+  process.exit(1);
+}
+process.on("uncaughtExceptionMonitor", fatal);
+function complete(id, error, result, failed = error !== null && error !== undefined) {
+  if (active !== id) return;
   active = null;
+  let rendered = null;
+  if (typeof result === "string") rendered = result;
+  else if (result !== undefined) rendered = inspect(result, { depth: 6, maxArrayLength: 100, maxStringLength: 10_000 });
   send({
     type: "result",
     id,
     error: failed ? error?.stack || error?.message || inspect(error) : undefined,
-    result:
-      result === undefined
-        ? null
-        : typeof result === "string"
-          ? result
-          : inspect(result, { depth: 6, maxArrayLength: 100, maxStringLength: 10_000 }),
+    result: rendered,
     output,
   });
 }
-repl._domain.on("error", (error) => complete(error, undefined, true));
+repl._domain.prependListener("error", (error) => {
+  const id = invocation.getStore();
+  if (!id || id !== active || error?.domainThrown || error?.domainEmitter) return fatal(error);
+  complete(id, error, undefined, true);
+});
 process.on("message", (message) => {
   if (message.type === "js") {
     output = "";
     active = message.id;
-    repl.eval(message.code + "\n", repl.context, "browser-js", complete);
+    invocation.run(message.id, () =>
+      repl.eval(message.code + "\n", repl.context, "browser-js", (error, result) =>
+        complete(message.id, error, result),
+      ),
+    );
   }
 });
 process.on("disconnect", () => process.exit(0));

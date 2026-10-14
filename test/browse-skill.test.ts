@@ -292,6 +292,7 @@ test("structured tabs API persists references and rejects missing tabs without l
     for (const code of [
       "throw 'boom'",
       "await Promise.reject({ code: 42 })",
+      "await new Promise((_, reject) => setTimeout(() => reject(new Error('delayed rejection')), 20))",
       "throw null",
       "throw undefined",
       "throw new Error()",
@@ -301,6 +302,7 @@ test("structured tabs API persists references and rejects missing tabs without l
       assert.equal(primitive.code, 1, code);
       assert.equal(primitive.out.ok, false, code);
       assert.ok(primitive.out.error, code);
+      assert.equal((await run(["js", "await restored.url()"], box.env)).out.result, "https://second.test", code);
     }
     assert.equal((await run(["js", "null"], box.env)).out.result, "null");
     assert.equal((await run(["js", "undefined"], box.env)).out.result, "undefined");
@@ -548,6 +550,159 @@ test("an explicit JavaScript deadline stops the session and reports the timeout"
     for (let i = 0; i < 100 && existsSync(join(box.env.QM_BROWSE_DIR, "default.json")); i++) await sleep(20);
     assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.json")), false);
     assert.ok(api.calls.some((call) => call.method === "PATCH"));
+  } finally {
+    await run(["stop"], box.env).catch(() => {});
+    api.close();
+    box.cleanup();
+  }
+});
+
+test("open rejects an already-open session promptly while long JavaScript keeps running", async () => {
+  const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
+  const box = sandbox(api);
+  let active: ReturnType<typeof run> | undefined;
+  try {
+    assert.equal((await run(["open"], box.env)).out.ok, true);
+    active = run(
+      [
+        "js",
+        "await tab.goto('https://busy.test'); await new Promise(resolve => setTimeout(resolve, 6500)); 'original completed'",
+      ],
+      box.env,
+    );
+    for (let i = 0; i < 100 && !box.events().some((event) => event.url === "https://busy.test"); i++) await sleep(10);
+    assert.ok(
+      box.events().some((event) => event.url === "https://busy.test"),
+      "long-running script has started",
+    );
+    const started = performance.now();
+    const reopened = await run(["open"], box.env);
+    assert.ok(performance.now() - started < 2000, "health must not wait for the active JavaScript call");
+    assert.equal(reopened.code, 1);
+    assert.equal(reopened.out.ok, false);
+    assert.match(String(reopened.out.error), /already open/);
+    assert.equal(api.calls.filter((call) => call.method === "POST").length, 1);
+    assert.equal(api.calls.filter((call) => call.method === "PATCH").length, 0);
+    const completed = await active;
+    assert.deepEqual([completed.code, completed.out.result], [0, "original completed"]);
+    assert.equal((await run(["js", "tab.url()"], box.env)).out.result, "https://busy.test");
+    assert.equal(api.calls.filter((call) => call.method === "POST").length, 1);
+    assert.equal(api.calls.filter((call) => call.method === "PATCH").length, 0);
+  } finally {
+    await run(["stop"], box.env).catch(() => {});
+    await active?.catch(() => {});
+    api.close();
+    box.cleanup();
+  }
+});
+
+test("an unanswered or reset health request cannot replace a possibly live browser", async () => {
+  for (const reset of [false, true]) {
+    const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
+    const box = sandbox(api);
+    api.state.createStatus = 503;
+    const paths: string[] = [];
+    const daemon = createServer((req) => {
+      paths.push(req.url ?? "");
+      req.resume();
+      if (reset) req.socket.destroy();
+    });
+    try {
+      mkdirSync(box.env.QM_BROWSE_DIR, { recursive: true });
+      const statePath = join(box.env.QM_BROWSE_DIR, "default.json");
+      const state = JSON.stringify({ id: "possibly-live", cdpUrl: "ws://fixture.invalid/browser" });
+      writeFileSync(statePath, state);
+      const socketPath = join(box.env.QM_BROWSE_DIR, "default.sock");
+      daemon.listen(socketPath);
+      await new Promise<void>((resolve) => daemon.once("listening", resolve));
+      const reopened = await run(["open"], box.env);
+      assert.equal(reopened.code, 1, JSON.stringify(reopened.out));
+      assert.equal(reopened.out.ok, false);
+      assert.deepEqual(paths, ["/health"]);
+      assert.equal(
+        api.calls.some((call) => call.method === "POST" || call.method === "PATCH"),
+        false,
+      );
+      assert.equal(readFileSync(statePath, "utf8"), state);
+      assert.equal(existsSync(socketPath), true);
+      assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.lock")), false);
+    } finally {
+      daemon.closeAllConnections();
+      await new Promise<void>((resolve) => daemon.close(() => resolve()));
+      api.close();
+      box.cleanup();
+    }
+  }
+});
+
+test("a late asynchronous error stops the runtime without attributing earlier results to queued scripts", async () => {
+  for (const failure of ["throw new Error('late throw')", "Promise.reject(new Error('late rejection'))"]) {
+    const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
+    const box = sandbox(api);
+    const pending: Array<ReturnType<typeof run>> = [];
+    try {
+      assert.equal((await run(["open"], box.env)).out.ok, true);
+      const armed = await run(["js", `setTimeout(() => { ${failure} }, 1000); 'armed'`], box.env);
+      assert.deepEqual([armed.code, armed.out.result], [0, "armed"]);
+      const second = run(
+        [
+          "js",
+          "await tab.goto('https://second-running.test'); await new Promise(resolve => setTimeout(resolve, 1500)); 'second result'",
+        ],
+        box.env,
+      );
+      pending.push(second);
+      for (let i = 0; i < 100 && !box.events().some((event) => event.url === "https://second-running.test"); i++)
+        await sleep(10);
+      assert.ok(
+        box.events().some((event) => event.url === "https://second-running.test"),
+        "second script has started",
+      );
+      const third = run(
+        [
+          "js",
+          "await tab.goto('https://must-not-run.test'); await new Promise(resolve => setTimeout(resolve, 2000)); 'third result'",
+        ],
+        box.env,
+      );
+      pending.push(third);
+      const results = await Promise.all(pending);
+      for (const result of results) {
+        assert.equal(result.code, 1, JSON.stringify(result.out));
+        assert.equal(result.out.ok, false);
+        assert.equal(result.out.result, undefined, "no script may receive another script's successful result");
+      }
+      assert.equal(
+        box.events().some((event) => event.url === "https://must-not-run.test"),
+        false,
+      );
+      for (let i = 0; i < 100 && existsSync(join(box.env.QM_BROWSE_DIR, "default.json")); i++) await sleep(20);
+      assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.json")), false);
+      assert.ok(api.calls.some((call) => call.method === "PATCH"));
+      assert.equal((await run(["js", "'must stay stopped'"], box.env)).code, 1);
+    } finally {
+      await run(["stop"], box.env).catch(() => {});
+      await Promise.allSettled(pending);
+      api.close();
+      box.cleanup();
+    }
+  }
+});
+
+test("a late asynchronous error with no active script stops the session rather than being ignored", async () => {
+  const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
+  const box = sandbox(api);
+  try {
+    assert.equal((await run(["open"], box.env)).out.ok, true);
+    assert.equal(
+      (await run(["js", "setTimeout(() => { throw new Error('idle late error'); }, 200); 'armed'"], box.env)).out
+        .result,
+      "armed",
+    );
+    for (let i = 0; i < 100 && existsSync(join(box.env.QM_BROWSE_DIR, "default.json")); i++) await sleep(20);
+    assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.json")), false);
+    assert.ok(api.calls.some((call) => call.method === "PATCH"));
+    assert.equal((await run(["js", "'must stay stopped'"], box.env)).code, 1);
   } finally {
     await run(["stop"], box.env).catch(() => {});
     api.close();

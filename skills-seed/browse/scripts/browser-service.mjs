@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
 import { ensurePlaywright } from "./playwright-runtime.mjs";
+import { installBrowserHistory } from "./browser-history.mjs";
 import { startBrowserProxy } from "./browser-proxy.mjs";
 import { installBrowserCompatibility } from "./browser-compat.mjs";
 import { installBrowserFiles } from "./browser-files.mjs";
@@ -30,6 +31,7 @@ export async function startBrowserService(cdpUrl, options = {}) {
       timeout: 30000,
       noDefaults: options.provider === true,
     });
+    disposers.push(await installBrowserHistory(browser, modulePath));
     let capabilities = {};
     if (options.provider) {
       const { dispose, ...details } = await installBrowserCompatibility(browser, modulePath);
@@ -44,7 +46,9 @@ export async function startBrowserService(cdpUrl, options = {}) {
     try {
       await close();
     } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], "Browser service startup and cleanup failed", { cause: error });
+      throw new AggregateError([error, cleanupError], "Browser service startup and cleanup failed", {
+        cause: cleanupError,
+      });
     }
     throw error;
   }

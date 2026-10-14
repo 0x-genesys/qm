@@ -147,8 +147,14 @@ async function openLocked(session, values) {
   const p = paths(session);
   mkdirSync(DIR, { recursive: true, mode: 0o700 });
   if (existsSync(p.sock)) {
-    const live = await call(p.sock, "/health", {}, 5000).catch(() => null);
-    if (live?.ok) fail({ error: `session "${session}" is already open; stop it first`, liveUrl: live.liveUrl });
+    const live = await call(p.sock, "/health", {}, 5000).catch((error) => {
+      if (["ECONNREFUSED", "ENOENT"].includes(error.code)) return null;
+      fail({
+        reason: "daemon_health_unknown",
+        error: `Existing browser did not answer; it was not stopped or replaced: ${error.message}`,
+      });
+    });
+    if (live) fail({ error: `session "${session}" is already open; stop it first`, liveUrl: live.liveUrl });
   }
   const pre = await preflight();
   if (!pre.ok) fail(pre, 2);
@@ -198,6 +204,16 @@ async function daemon(session) {
   process.umask(0o077);
   const p = paths(session);
   const { id, cdpUrl, liveUrl } = JSON.parse(readFileSync(p.state, "utf8"));
+  const endpoints = [cdpUrl];
+  const privateError = (error) => {
+    let message = String(error?.message ?? error);
+    for (const endpoint of endpoints) {
+      const url = new URL(endpoint);
+      for (const secret of [endpoint, `${url.origin}${url.pathname}`, url.hostname].filter(Boolean))
+        message = message.replaceAll(secret, "<browser endpoint>");
+    }
+    return message;
+  };
   let stopping = null;
   let worker;
   let browser;
@@ -207,7 +223,7 @@ async function daemon(session) {
       try {
         await browser?.close();
       } catch (error) {
-        console.error(`browser disconnect failed: ${error.message}`);
+        console.error(`browser disconnect failed: ${privateError(error)}`);
       }
       console.error(`stopping browser ${id}: ${why}`);
       const s = await stopBrowser(id);
@@ -218,33 +234,35 @@ async function daemon(session) {
     }));
   for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(sig, () => shutdown(sig).then(() => process.exit(0)));
   try {
-    browser = await startBrowserService(await cdpEndpoint(cdpUrl), { provider: true, browserId: id, api });
+    const endpoint = await cdpEndpoint(cdpUrl);
+    endpoints.push(endpoint);
+    browser = await startBrowserService(endpoint, { provider: true, browserId: id, api });
+    endpoints.push(browser.endpoint);
   } catch (err) {
-    console.error(`connect failed: ${err.message}`);
+    console.error(`connect failed: ${privateError(err)}`);
     await shutdown("connect failed");
     process.exit(1);
   }
   browser.on("disconnected", () => {
     if (!stopping) shutdown("disconnected").then(() => process.exit(0));
   });
-  const listTabs = async () =>
-    Promise.all(
-      browser.browser
-        .contexts()
-        .flatMap((context) => context.pages())
-        .map(async (page) => ({
-          id: page._guid,
-          url: page.url(),
-          title: await page.title().catch(() => ""),
-        })),
-    );
-  if (!(await listTabs()).length) {
+  const listTabs = () =>
+    browser.browser
+      .contexts()
+      .flatMap((context) => context.pages())
+      .map((page) => ({
+        id: page._guid,
+        url: page.url(),
+        title: "",
+      }));
+  if (!listTabs().length) {
     const context = browser.browser.contexts()[0] ?? (await browser.browser.newContext());
     await context.newPage();
   }
   const modulePath = await ensurePlaywright();
   worker = fork(fileURLToPath(new URL("./js-runtime.mjs", import.meta.url)), [browser.endpoint, modulePath], {
     env: { PATH: process.env.PATH, HOME: process.env.HOME },
+    execArgv: [...process.execArgv, "--unhandled-rejections=strict"],
     stdio: ["ignore", "ignore", "inherit", "ipc"],
   });
   let pendingJs;
@@ -261,6 +279,13 @@ async function daemon(session) {
     if (message.type === "ready") {
       clearTimeout(readyTimer);
       readyResolve();
+    } else if (message.type === "fatal") {
+      if (pendingJs) {
+        clearTimeout(pendingJs.timer);
+        pendingJs.resolve({ error: message.error });
+        pendingJs = null;
+      }
+      shutdown("unhandled asynchronous error").then(() => process.exit(1));
     } else if (message.type === "result" && pendingJs?.id === message.id) {
       clearTimeout(pendingJs.timer);
       const { resolve } = pendingJs;
@@ -282,7 +307,7 @@ async function daemon(session) {
   try {
     await ready;
   } catch (error) {
-    console.error(error.message);
+    console.error(privateError(error));
     await shutdown("JavaScript browser client initialization failed");
     process.exit(1);
   }
@@ -310,7 +335,7 @@ async function daemon(session) {
   };
   touch();
   const handlers = {
-    "/health": async () => ({ ok: true, browserId: id, liveUrl, tabs: await listTabs(), capabilities: browser.capabilities }),
+    "/health": async () => ({ ok: true, browserId: id, liveUrl, tabs: listTabs(), capabilities: browser.capabilities }),
     "/js": async ({ code, timeoutMs = 90_000 }) => {
       if (typeof code !== "string" || code.length > 50_000)
         throw new Error("code must be a string under 50,000 characters");
@@ -350,7 +375,8 @@ async function daemon(session) {
     req.on("end", () => {
       const handle = async () => {
         if (res.destroyed || stopping) return res.destroy();
-        clearTimeout(idle);
+        const activity = req.url !== "/health";
+        if (activity) clearTimeout(idle);
         let body;
         try {
           const handler = handlers[req.url];
@@ -361,9 +387,9 @@ async function daemon(session) {
         }
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify(body));
-        touch();
+        if (activity) touch();
       };
-      if (req.url === "/stop") void handle();
+      if (["/stop", "/health"].includes(req.url)) void handle();
       else
         queue = queue.then(handle).catch((err) => {
           console.error(err.message);

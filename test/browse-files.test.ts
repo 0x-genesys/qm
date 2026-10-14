@@ -168,6 +168,7 @@ test("unidentified and traversing completed paths fail without filesystem access
         filePath: path,
         totalBytes: 3,
       });
+      assert(completed[0]);
       assert.match(completed[0].error, /did not identify/);
       assert.equal(browser.calls.length, 0);
     } finally {
@@ -181,6 +182,7 @@ test("native cancellation bypasses transfer and cleanup restores hooks", async (
   const dispose = await installBrowserFiles(browser);
   impl.downloadCreated(null, "one", "blob:one", "a");
   impl.downloadFinished("one", "canceled");
+  assert(completed[0]);
   assert.equal(completed[0].error, "canceled");
   await dispose();
   assert.equal(impl.downloadFinished, original);
@@ -210,7 +212,9 @@ test(
     let dispose: any;
     try {
       const created = await api("POST", "/browsers", { proxyCountryCode: null, timeout: 5 });
+      assert(created && typeof created === "object" && "id" in created && typeof created.id === "string");
       id = created.id;
+      assert("cdpUrl" in created && typeof created.cdpUrl === "string");
       daemon = await chromium.connectOverCDP(created.cdpUrl, { noDefaults: true });
       dispose = await installBrowserFiles(daemon);
       const { endpoint } = await daemon.bind("files-test", { host: "127.0.0.1", port: 0 });
@@ -238,11 +242,7 @@ test(
         for (const index of [0, 1]) {
           const contents = Buffer.alloc(1024 * 1024 + 3, index + 7);
           await page.evaluate(
-            ({ value, size }: any) => {
-              const a = document.querySelector("a")!;
-              a.href = URL.createObjectURL(new Blob([new Uint8Array(size).fill(value)]));
-            },
-            { value: index + 7, size: contents.length },
+            `document.querySelector("a").href = URL.createObjectURL(new Blob([new Uint8Array(${contents.length}).fill(${index + 7})]));`,
           );
           const downloading = page.waitForEvent("download");
           await page.locator("a").click();
@@ -288,9 +288,9 @@ test(
         }
         assert.deepEqual(requests, ["GET", "GET", "POST"]);
         await page.goto('data:text/html,<a download="cancel.bin">Cancel</a>');
-        await page.evaluate(() => {
-          document.querySelector("a")!.href = URL.createObjectURL(new Blob([new Uint8Array(64 * 1024 * 1024)]));
-        });
+        await page.evaluate(
+          'document.querySelector("a").href = URL.createObjectURL(new Blob([new Uint8Array(64 * 1024 * 1024)]));',
+        );
         const cancelling = page.waitForEvent("download");
         const clicking = page.locator("a").click();
         const cancelled = await cancelling;

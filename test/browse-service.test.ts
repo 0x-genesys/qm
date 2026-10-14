@@ -17,6 +17,7 @@ async function fixture() {
     "runtime.mjs": `import {browser,call} from './state.mjs'; export const chromium={connectOverCDP:async(endpoint,options)=>{call('connect');if(endpoint!=='ws://proxy/secret'||!options.noDefaults)throw Error('wrong connection');return browser}};`,
     "playwright-runtime.mjs": `import {call} from './state.mjs';import {fileURLToPath}from'node:url';export async function ensurePlaywright(){call('runtime');return fileURLToPath(new URL('./runtime.mjs',import.meta.url))}`,
     "browser-proxy.mjs": `import {call}from'./state.mjs';export async function startBrowserProxy(){call('proxy');return {endpoint:'ws://proxy/secret',close:async()=>call('proxyDispose')}}`,
+    "browser-history.mjs": `import {call}from'./state.mjs';export async function installBrowserHistory(){call('history');return async()=>call('historyDispose')}`,
     "browser-compat.mjs": `import {call}from'./state.mjs';export async function installBrowserCompatibility(){call('compat');return {consoleSource:'Console.messageAdded',consoleArguments:false,dispose:async()=>call('compatDispose')}}`,
     "browser-files.mjs": `import {call}from'./state.mjs';export async function installBrowserFiles(browser,options){call('files');if(options.browserId!=='browser-id'||typeof options.api!=='function')throw Error('missing provider');return async()=>call('filesDispose')}`,
     "browser-upload.mjs": `import {call}from'./state.mjs';export async function installBrowserUploads(){call('uploads');return async()=>call('uploadsDispose')}`,
@@ -36,15 +37,16 @@ test("browser service installs provider adapters before binding and closes exact
   const f = await fixture();
   try {
     const service = await f.start();
-    assert.deepEqual(f.calls, ["runtime", "proxy", "connect", "compat", "files", "uploads", "bind"]);
+    assert.deepEqual(f.calls, ["runtime", "proxy", "connect", "history", "compat", "files", "uploads", "bind"]);
     assert.deepEqual(service.capabilities, { consoleSource: "Console.messageAdded", consoleArguments: false });
     await Promise.all([service.close(), service.close()]);
-    assert.deepEqual(f.calls.slice(7), [
+    assert.deepEqual(f.calls.slice(8), [
       "unbind",
       "close",
       "uploadsDispose",
       "filesDispose",
       "compatDispose",
+      "historyDispose",
       "proxyDispose",
     ]);
   } finally {
@@ -62,12 +64,13 @@ test("browser service closes all resources even when unbind and a disposer fail"
       service.close(),
       (error: AggregateError) => error instanceof AggregateError && error.errors.length === 2,
     );
-    assert.deepEqual(f.calls.slice(7), [
+    assert.deepEqual(f.calls.slice(8), [
       "unbind",
       "close",
       "uploadsDispose",
       "filesDispose",
       "compatDispose",
+      "historyDispose",
       "proxyDispose",
     ]);
   } finally {
@@ -84,6 +87,7 @@ test("browser service disposes completed adapters after setup failure", async ()
       "runtime",
       "proxy",
       "connect",
+      "history",
       "compat",
       "files",
       "uploads",
@@ -91,6 +95,7 @@ test("browser service disposes completed adapters after setup failure", async ()
       "close",
       "filesDispose",
       "compatDispose",
+      "historyDispose",
       "proxyDispose",
     ]);
   } finally {

@@ -9,6 +9,10 @@ const { createBrowserClient } = await import(
   new URL("../skills-seed/browse/scripts/browser-client.mjs", import.meta.url).href
 );
 
+const { domSnapshot } = await import(
+  new URL("../skills-seed/browse/scripts/browser-snapshot.mjs", import.meta.url).href
+);
+
 function mockBrowser() {
   const calls: unknown[][] = [];
   const pages: any[] = [];
@@ -205,6 +209,9 @@ test("snapshots mask editable values structurally without changing labels, refer
   ];
   Object.assign(page, {
     ariaSnapshotJSON: async () => original,
+    getByRef: (ref: string) => ({
+      evaluate: async () => ({ editable: ["e1", "e2", "f1e1"].includes(ref), labeled: ref === "e1" }),
+    }),
     evaluate: async () => {
       throw new Error("must not modify page");
     },
@@ -219,6 +226,44 @@ test("snapshots mask editable values structurally without changing labels, refer
   assert.equal(snapshot[4].children[0].ref, "f1e1");
   assert.equal(snapshot[4].children[0].text, "<redacted>");
   assert.equal(original[0]?.text, "a");
+});
+
+test("snapshot metadata is concurrent and stale references fail closed", async () => {
+  const { native, context } = mockBrowser();
+  const page = await context.newPage();
+  const refs = Array.from({ length: 200 }, (_, index) => `e${index}`);
+  let calls = 0;
+  let release: (value?: unknown) => void = () => {};
+  const barrier = new Promise((resolve) => {
+    release = resolve;
+  });
+  Object.assign(page, {
+    ariaSnapshotJSON: async () => refs.map((ref) => ({ ref, role: "generic", text: "private value" })),
+    getByRef: () => ({
+      evaluate: async () => {
+        calls++;
+        await barrier;
+        return { editable: true };
+      },
+    }),
+  });
+  const tab = createBrowserClient(native).tabs.get(page._guid);
+  const pending = tab.dom_cua.get_visible_dom();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 200);
+  release();
+  assert.equal((await pending).includes("private value"), false);
+  Object.assign(page, {
+    getByRef: () => ({
+      evaluate: async () => {
+        throw new Error("detached private value");
+      },
+    }),
+  });
+  await assert.rejects(
+    tab.dom_cua.get_visible_dom(),
+    (error: Error) => error.message === "Snapshot redaction failed: a referenced element could not be verified",
+  );
 });
 
 test("dev logs use native stored messages and filter mapped warning levels", async () => {
@@ -322,6 +367,48 @@ test(
       ]);
       const clipboard = await tab.clipboard.read();
       assert.equal(clipboard[0].entries.find((entry: any) => entry.mimeType === "text/plain").text, "rich clipboard");
+      await page.setContent('<p>Public label</p><textarea disabled role="none">disabled-secret</textarea>');
+      assert.equal((await page.domSnapshot()).includes("disabled-secret"), false);
+      await page.setContent(
+        '<p>Public label</p><label>Account name<input value="account-secret"></label><input type="password" role="generic" value="password-secret"><textarea role="generic">textarea-secret</textarea><input type="text" role="button" value="button-secret"><input type="submit" value="submit-secret" title="Public tooltip" placeholder="Public placeholder"><input type="submit" id="self-label" aria-labelledby="self-label" value="self-secret"><span id="static-label">Linked label</span><input aria-labelledby="static-label" value="linked-secret"><div contenteditable="true" role="button">rich-secret<b>bold-secret</b><a href="https://example.test/secret">link-secret</a></div><div contenteditable="true" aria-label="Rich editor"><p>paragraph-secret</p></div><div contenteditable="true" role="none">flattened-secret</div><select aria-label="Ordinary choices"><option>Public option</option></select>',
+      );
+      await page.evaluate(() => {
+        const host = (globalThis as any).document.createElement("div");
+        (globalThis as any).document.body.append(host);
+        host.attachShadow({ mode: "open" }).innerHTML = '<div contenteditable role="none">shadow-secret</div>';
+      });
+      const raw = JSON.stringify(await page.ariaSnapshotJSON({ mode: "ai" }));
+      assert.equal(raw.includes("password-secret"), true);
+      const redacted = await page.domSnapshot();
+      assert.equal(redacted.includes("-secret"), false);
+      for (const label of [
+        "Public label",
+        "Account name",
+        "Linked label",
+        "Rich editor",
+        "Ordinary choices",
+        "Public option",
+      ])
+        assert.equal(redacted.includes(label), true, label);
+      assert.equal(await page.locator('input[type="password"]').inputValue(), "password-secret");
+      assert.equal(await page.locator("textarea").inputValue(), "textarea-secret");
+      await assert.rejects(
+        domSnapshot(
+          {
+            ariaSnapshotJSON: async (options: unknown) => {
+              const snapshot = await page.ariaSnapshotJSON(options);
+              await page
+                .locator("input")
+                .first()
+                .evaluate((element: any) => element.remove());
+              return snapshot;
+            },
+            getByRef: page.getByRef.bind(page),
+          },
+          { timeout: 100 },
+        ),
+        /Snapshot redaction failed: a referenced element could not be verified/,
+      );
       const png = await page.screenshot();
       await tab.clipboard.write([{ entries: [{ mimeType: "image/png", base64: png.toString("base64") }] }]);
       const image = (await tab.clipboard.read())[0].entries.find((entry: any) => entry.mimeType === "image/png");
