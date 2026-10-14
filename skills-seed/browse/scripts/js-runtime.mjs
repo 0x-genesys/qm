@@ -2,17 +2,10 @@ import { start } from "node:repl";
 import { PassThrough, Writable } from "node:stream";
 import { inspect } from "node:util";
 import { createBrowserClient } from "./browser-client.mjs";
-let sequence = 0;
-const pending = new Map();
 const send = (message) => process.send?.(message);
-const browser = createBrowserClient(
-  (command) =>
-    new Promise((resolve, reject) => {
-      const id = ++sequence;
-      pending.set(id, { resolve, reject });
-      send({ type: "command", id, command });
-    }),
-);
+const { chromium } = await import(process.argv[3]);
+const connection = await chromium.connect(process.argv[2]);
+const browser = await createBrowserClient(connection);
 let output = "";
 const stream = new Writable({
   write(chunk, _encoding, done) {
@@ -22,7 +15,8 @@ const stream = new Writable({
 });
 const repl = start({ input: new PassThrough(), output: stream, terminal: false, prompt: "", useGlobal: false });
 repl.context.browser = browser;
-repl.context.tab = browser.tabs.get(process.argv[2]);
+const tabs = await browser.tabs.list();
+repl.context.tab = tabs.length ? await browser.tabs.get(tabs.at(-1).id) : await browser.tabs.new();
 repl.context.console = new console.Console(stream, stream);
 let active;
 function complete(error, result, failed = error !== null && error !== undefined) {
@@ -44,15 +38,12 @@ function complete(error, result, failed = error !== null && error !== undefined)
 }
 repl._domain.on("error", (error) => complete(error, undefined, true));
 process.on("message", (message) => {
-  if (message.type === "reply") {
-    const request = pending.get(message.id);
-    pending.delete(message.id);
-    if (message.error !== undefined) request?.reject(new Error(message.error));
-    else request?.resolve(message.result);
-  } else if (message.type === "js") {
+  if (message.type === "js") {
     output = "";
     active = message.id;
     repl.eval(message.code + "\n", repl.context, "browser-js", complete);
   }
 });
 process.on("disconnect", () => process.exit(0));
+
+send({ type: "ready" });

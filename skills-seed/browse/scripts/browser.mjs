@@ -5,8 +5,8 @@ import { request, createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { connectBrowser } from "./cdp.mjs";
-import { loadInjectedSource } from "./injected-engine.mjs";
+import { startBrowserService } from "./browser-service.mjs";
+import { ensurePlaywright } from "./playwright-runtime.mjs";
 import { parseArgs } from "node:util";
 import { setTimeout as sleep } from "node:timers/promises";
 if ((process.env.HTTPS_PROXY || process.env.https_proxy) && !process.env.NODE_USE_ENV_PROXY) {
@@ -158,7 +158,7 @@ async function openLocked(session, values) {
     if (!s.stopped) fail({ reason: "stale_browser_not_stopped", browserId: stale.id, ...s });
     rmSync(p.state, { force: true });
   }
-  await loadInjectedSource();
+  await ensurePlaywright();
   const country = values.country ?? "us";
   const body = { proxyCountryCode: country === "none" ? null : country };
   if (values.profile) body.profileId = values.profile;
@@ -182,7 +182,7 @@ async function openLocked(session, values) {
     if (existsSync(p.sock)) {
       const h = await call(p.sock, "/health", {}, 5000).catch(() => null);
       if (h?.ok) {
-        print({ ok: true, session, browserId: id, liveUrl, tabs: h.tabs });
+        print({ ok: true, session, browserId: id, liveUrl, tabs: h.tabs, capabilities: h.capabilities });
         return;
       }
     }
@@ -195,6 +195,7 @@ async function openLocked(session, values) {
   fail({ reason: "connect_failed", browserId: id, stop: s, log: tail });
 }
 async function daemon(session) {
+  process.umask(0o077);
   const p = paths(session);
   const { id, cdpUrl, liveUrl } = JSON.parse(readFileSync(p.state, "utf8"));
   let stopping = null;
@@ -203,7 +204,11 @@ async function daemon(session) {
   const shutdown = (why) =>
     (stopping ??= Promise.resolve().then(async () => {
       worker?.kill("SIGKILL");
-      browser?.close();
+      try {
+        await browser?.close();
+      } catch (error) {
+        console.error(`browser disconnect failed: ${error.message}`);
+      }
       console.error(`stopping browser ${id}: ${why}`);
       const s = await stopBrowser(id);
       if (!s.stopped) console.error(`stop failed: ${JSON.stringify(s)}`);
@@ -213,7 +218,7 @@ async function daemon(session) {
     }));
   for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(sig, () => shutdown(sig).then(() => process.exit(0)));
   try {
-    browser = await connectBrowser(await cdpEndpoint(cdpUrl));
+    browser = await startBrowserService(await cdpEndpoint(cdpUrl), { provider: true, browserId: id, api });
   } catch (err) {
     console.error(`connect failed: ${err.message}`);
     await shutdown("connect failed");
@@ -222,22 +227,40 @@ async function daemon(session) {
   browser.on("disconnected", () => {
     if (!stopping) shutdown("disconnected").then(() => process.exit(0));
   });
-  let tabs = await browser.execute({ method: "tabs.list" });
-  if (!tabs.length) tabs = [await browser.execute({ method: "tabs.new", params: {} })];
-  const initialTab = tabs.at(-1).id;
-  worker = fork(fileURLToPath(new URL("./js-runtime.mjs", import.meta.url)), [initialTab], {
+  const listTabs = async () =>
+    Promise.all(
+      browser.browser
+        .contexts()
+        .flatMap((context) => context.pages())
+        .map(async (page) => ({
+          id: page._guid,
+          url: page.url(),
+          title: await page.title().catch(() => ""),
+        })),
+    );
+  if (!(await listTabs()).length) {
+    const context = browser.browser.contexts()[0] ?? (await browser.browser.newContext());
+    await context.newPage();
+  }
+  const modulePath = await ensurePlaywright();
+  worker = fork(fileURLToPath(new URL("./js-runtime.mjs", import.meta.url)), [browser.endpoint, modulePath], {
     env: { PATH: process.env.PATH, HOME: process.env.HOME },
     stdio: ["ignore", "ignore", "inherit", "ipc"],
   });
   let pendingJs;
-  worker.on("message", async (message) => {
-    if (message.type === "command") {
-      try {
-        const result = await browser.execute(message.command);
-        if (worker.connected) worker.send({ type: "reply", id: message.id, result });
-      } catch (err) {
-        if (worker.connected) worker.send({ type: "reply", id: message.id, error: err.message });
-      }
+  let readyResolve, readyReject;
+  const ready = new Promise((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+  const readyTimer = setTimeout(
+    () => readyReject(new Error("JavaScript browser client initialization timed out")),
+    30_000,
+  );
+  worker.on("message", (message) => {
+    if (message.type === "ready") {
+      clearTimeout(readyTimer);
+      readyResolve();
     } else if (message.type === "result" && pendingJs?.id === message.id) {
       clearTimeout(pendingJs.timer);
       const { resolve } = pendingJs;
@@ -246,6 +269,8 @@ async function daemon(session) {
     }
   });
   worker.on("exit", () => {
+    clearTimeout(readyTimer);
+    readyReject(new Error("JavaScript browser client exited during initialization"));
     if (stopping) return;
     if (pendingJs) {
       clearTimeout(pendingJs.timer);
@@ -254,15 +279,27 @@ async function daemon(session) {
     }
     shutdown("JavaScript process exited").then(() => process.exit(1));
   });
+  try {
+    await ready;
+  } catch (error) {
+    console.error(error.message);
+    await shutdown("JavaScript browser client initialization failed");
+    process.exit(1);
+  }
   let sequence = 0;
-  const runJs = (code) =>
+  const runJs = (code, timeoutMs = 90_000) =>
     new Promise((resolve) => {
       const id = ++sequence;
-      const timer = setTimeout(() => {
-        pendingJs = null;
-        resolve({ error: "JavaScript exceeded 90 seconds; browser stopped. Inspect before retrying any action." });
-        worker.kill("SIGKILL");
-      }, 90000);
+      const timer =
+        timeoutMs === 0
+          ? null
+          : setTimeout(() => {
+              pendingJs = null;
+              resolve({
+                error: `JavaScript exceeded ${timeoutMs / 1000} seconds; browser stopped. Inspect before retrying any action.`,
+              });
+              worker.kill("SIGKILL");
+            }, timeoutMs);
       pendingJs = { id, resolve, timer };
       worker.send({ type: "js", id, code });
     });
@@ -273,11 +310,13 @@ async function daemon(session) {
   };
   touch();
   const handlers = {
-    "/health": async () => ({ ok: true, browserId: id, liveUrl, tabs: await browser.execute({ method: "tabs.list" }) }),
-    "/js": async ({ code }) => {
+    "/health": async () => ({ ok: true, browserId: id, liveUrl, tabs: await listTabs(), capabilities: browser.capabilities }),
+    "/js": async ({ code, timeoutMs = 90_000 }) => {
       if (typeof code !== "string" || code.length > 50_000)
         throw new Error("code must be a string under 50,000 characters");
-      const { result, output, error } = await runJs(code);
+      if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 2_147_483_647)
+        throw new Error("timeoutMs must be an integer from 0 to 2147483647");
+      const { result, output, error } = await runJs(code, timeoutMs);
       const failed = error !== undefined;
       const text = String(error ?? result ?? "undefined");
       const resultText = text.slice(0, MAX_OUTPUT);
@@ -343,6 +382,7 @@ async function main() {
       session: { type: "string", default: "default" },
       profile: { type: "string" },
       country: { type: "string" },
+      "timeout-ms": { type: "string" },
     },
   });
   const [cmd, arg] = positionals;
@@ -362,7 +402,15 @@ async function main() {
       return daemon(session);
     case "js": {
       const code = arg === undefined || arg === "-" ? await readStdin() : arg;
-      const r = await call(p.sock, "/js", { code }).catch((err) =>
+      const timeoutMs = Number(values["timeout-ms"] ?? 90_000);
+      if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 2_147_483_647)
+        fail({ error: "timeout-ms must be an integer from 0 to 2147483647" });
+      const r = await call(
+        p.sock,
+        "/js",
+        { code, timeoutMs },
+        timeoutMs === 0 ? 0 : Math.min(timeoutMs + 30_000, 2_147_483_647),
+      ).catch((err) =>
         fail({ error: existsSync(p.sock) ? `daemon call failed: ${err.message}` : `no open browser: ${err.message}` }),
       );
       print(r);
