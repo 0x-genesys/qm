@@ -13,7 +13,9 @@ export {
 import { mountProviders } from "./settings-providers.ts";
 export { configureProviders, openProvider, loadProviders } from "./settings-providers.ts";
 import { mountFlags } from "./settings-flags.ts";
+import { mountDecisions } from "./settings-decisions.ts";
 export { configureFlags, loadFlags } from "./settings-flags.ts";
+export { configureDecisions, loadDecisions } from "./settings-decisions.ts";
 import { brandingCard } from "./settings-branding.ts";
 import { mountRuntimes } from "./settings-runtimes.ts";
 export { configureRuntimes } from "./settings-runtimes.ts";
@@ -206,6 +208,7 @@ function card(s: SettingsState) {
 }
 export function mountCards() {
   mountFlags();
+  mountDecisions();
   mountProviders();
   mountCredentials();
   mountRuntimes();

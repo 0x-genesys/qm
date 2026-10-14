@@ -1,4 +1,5 @@
 import type { TeamChange } from "../../teams/teams.ts";
+import { decisionsResource } from "./decisions-resource.ts";
 import { parseAckEmoji } from "../../slack/config.ts";
 import { orgId as configOrgId } from "../../config.ts";
 import type { ServerDeps } from "../deps.ts";
@@ -211,6 +212,7 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
       return { ok: true };
     },
   },
+  decisionsResource,
   {
     id: "approval-grant-modes",
     kind: "custom",
