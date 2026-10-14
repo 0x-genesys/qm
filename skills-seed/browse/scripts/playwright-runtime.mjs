@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { withBrowserCleanup } from "./browser-errors.mjs";
 let pending;
 export function ensurePlaywright() {
   return (pending ??= load());
@@ -32,7 +33,11 @@ async function load() {
     return join(dir, "node_modules", "playwright-core", "index.mjs");
   } catch (error) {
     process.off("exit", cleanup);
-    await rm(dir, { recursive: true, force: true });
-    throw new Error(`Playwright runtime npm ci failed: ${error.stderr?.trim() || error.message}`, { cause: error });
+    return withBrowserCleanup(
+      () => {
+        throw new Error(`Playwright runtime npm ci failed: ${error.stderr?.trim() || error.message}`, { cause: error });
+      },
+      () => rm(dir, { recursive: true, force: true }),
+    );
   }
 }

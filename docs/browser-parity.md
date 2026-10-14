@@ -40,9 +40,12 @@ inherits the versioned API; it does not establish that every provider behavior w
 | Proxy-restricted sandboxes                                  | Fixed-target relay using maintained WebSocket/proxy libraries                     | Proxy tests: CONNECT, binary payload, backpressure and cleanup; actual Sprite end-to-end proof                                          |
 
 The native test suites are opt-in where they require a browser. A skipped test is not a
-successful browser run. Run them with their documented `BROWSE_TEST_CDP` endpoint and, for
-the full hosted fixture, `BROWSE_TEST_BASE` and `BROWSE_TEST_CROSS_ORIGIN`. Those origins must
-serve the synthetic fixture over HTTPS and produce actual separate renderer targets.
+successful browser run. `BROWSE_TEST_CHROMIUM=1` runs the convenience-layer tests in their
+own installed test Chromium; `BROWSE_HISTORY_CDP` selects a real BFCache-capable browser.
+`BROWSE_TEST_CDP` selects the remaining native suites. For the full hosted fixture, also set
+`BROWSE_TEST_BASE` and `BROWSE_TEST_CROSS_ORIGIN` to HTTPS origins serving the synthetic
+fixture with actual separate renderer targets. `BROWSE_TEST_PROVIDER_FILES=1` enables the
+separate paid file suite, which requires `BROWSER_USE_API_KEY`.
 
 ## Known provider boundaries
 

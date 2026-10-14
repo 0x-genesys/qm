@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { withBrowserCleanup } from "./browser-errors.mjs";
 
 export async function installBrowserCompatibility(browser, modulePath) {
   const { version } = JSON.parse(await readFile(join(dirname(modulePath), "package.json"), "utf8"));
@@ -9,17 +10,19 @@ export async function installBrowserCompatibility(browser, modulePath) {
     throw new Error("Browser compatibility requires the pinned in-process Chromium server");
   const probe = await browser.contexts()[0].newPage();
   let hasRuntimeConsole = false;
-  try {
-    const session = await probe.context().newCDPSession(probe);
-    session.on("Runtime.consoleAPICalled", () => {
-      hasRuntimeConsole = true;
-    });
-    await session.send("Runtime.enable");
-    await session.send("Runtime.evaluate", { expression: "console.debug('qm console capability probe')" });
-    await session.detach();
-  } finally {
-    await probe.close();
-  }
+  let session;
+  await withBrowserCleanup(
+    async () => {
+      session = await probe.context().newCDPSession(probe);
+      session.on("Runtime.consoleAPICalled", () => {
+        hasRuntimeConsole = true;
+      });
+      await session.send("Runtime.enable");
+      await session.send("Runtime.evaluate", { expression: "console.debug('qm console capability probe')" });
+    },
+    () => session?.detach(),
+    () => probe.close(),
+  );
   if (hasRuntimeConsole) return { consoleSource: "Runtime.consoleAPICalled", consoleArguments: true, dispose() {} };
   const sessions = new Map();
   const prepare = () => {

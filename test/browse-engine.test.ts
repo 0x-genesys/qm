@@ -90,3 +90,24 @@ test("runtime preserves npm integrity failure and removes failed private install
     await f.cleanup();
   }
 });
+
+test("runtime retains installation and cleanup errors together", async () => {
+  const f = await fixture();
+  try {
+    const { stdout } = await run(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import fs from 'node:fs/promises';import {syncBuiltinESMExports} from 'node:module';fs.rm=async()=>{throw Object.assign(new Error('cleanup denied'),{code:'EACCES'})};syncBuiltinESMExports();const {ensurePlaywright}=await import(${JSON.stringify(runtime)});try{await ensurePlaywright()}catch(error){console.log(JSON.stringify(error.errors.map(e=>({message:e.message,code:e.code}))))}`,
+      ],
+      { env: { ...f.env, NPM_TEST_FAIL: "1" } },
+    );
+    const errors = JSON.parse(stdout);
+    assert.equal(errors.length, 2);
+    assert.match(errors[0].message, /npm ci failed: npm ERR! code EINTEGRITY/);
+    assert.equal(errors[1].code, "EACCES");
+  } finally {
+    await f.cleanup();
+  }
+});

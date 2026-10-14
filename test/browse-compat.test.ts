@@ -26,15 +26,48 @@ test(
     const before = await daemon.contexts()[0].newPage();
     let baselineSucceeded = false;
     try {
-      await before.setContent("<title>baseline</title>", { timeout: 1000 });
-      baselineSucceeded = true;
-    } catch (error: any) {
-      assert.match(error.message, /Timeout/);
-      assert.equal(await before.title(), "baseline");
+      await before.locator("html").waitFor({ state: "attached", timeout: 6000 });
+      try {
+        await before.setContent("<title>baseline</title>", { timeout: 1000 });
+        baselineSucceeded = true;
+      } catch (error: any) {
+        assert.match(error.message, /Timeout/);
+        assert.equal(await before.title(), "baseline");
+      }
     } finally {
       await before.close();
     }
     const { installBrowserCompatibility } = await load("browser-compat.mjs");
+    await t.test("probe preserves its failure and attempts both cleanup operations", async (t) => {
+      const context = daemon.contexts()[0];
+      const probe = await context.newPage();
+      const session = await context.newCDPSession(probe);
+      const primary = new Error("console probe failed");
+      const detachFailure = new Error("probe detach failed");
+      const closeFailure = new Error("probe close failed");
+      const send = session.send.bind(session);
+      const detach = session.detach.bind(session);
+      const close = probe.close.bind(probe);
+      t.mock.method(context, "newPage", async () => probe);
+      t.mock.method(context, "newCDPSession", async () => session);
+      t.mock.method(session, "send", async (method: string, params: unknown) => {
+        if (method === "Runtime.evaluate") throw primary;
+        return send(method, params);
+      });
+      t.mock.method(session, "detach", async () => {
+        await detach();
+        throw detachFailure;
+      });
+      t.mock.method(probe, "close", async () => {
+        await close();
+        throw closeFailure;
+      });
+      await assert.rejects(installBrowserCompatibility(daemon, modulePath), (error: AggregateError) => {
+        assert.deepEqual(error.errors, [primary, detachFailure, closeFailure]);
+        return true;
+      });
+      assert.equal(probe.isClosed(), true);
+    });
     const compatibility = await installBrowserCompatibility(daemon, modulePath);
     cleanup.push(() => compatibility.dispose());
     assert.equal(compatibility.consoleArguments, baselineSucceeded);
