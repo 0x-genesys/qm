@@ -32,15 +32,9 @@ test(
       if (req.url === "/stream") {
         res.writeHead(200, { "content-type": "text/plain" });
         res.write("start\n");
-        const interval = setInterval(() => res.write("chunk\n"), 4_000);
-        const timer = setTimeout(() => {
-          clearInterval(interval);
-          res.end("finish\n");
-        }, 16_500);
-        res.once("close", () => {
-          clearInterval(interval);
-          clearTimeout(timer);
-        });
+        const timers = [4_000, 8_000, 12_000].map((ms) => setTimeout(() => res.write("chunk\n"), ms));
+        timers.push(setTimeout(() => res.end("finish\n"), 16_500));
+        res.once("close", () => timers.forEach(clearTimeout));
       } else {
         const timer = setTimeout(() => res.end("complete\n"), req.url === "/fast" ? 0 : 16_500);
         res.once("close", () => {
@@ -121,7 +115,7 @@ test(
     assert.deepEqual([delayed.status, delayed.body, delayed.complete], [200, "complete\n", true]);
     assert.deepEqual(
       [streamed.status, streamed.body, streamed.complete],
-      [200, "start\nchunk\nchunk\nchunk\nchunk\nfinish\n", true],
+      [200, "start\nchunk\nchunk\nchunk\nfinish\n", true],
     );
     const reused = await get("/fast");
     assert.deepEqual([reused.status, reused.body, reused.complete, reused.reused], [200, "complete\n", true, true]);
