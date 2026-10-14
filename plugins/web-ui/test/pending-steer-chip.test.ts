@@ -5,6 +5,8 @@ import { JSDOM } from "jsdom";
 import { createServer } from "vite";
 import type { ComposerSurface, ConvCtx } from "../src/conv-types.ts";
 
+let turnPosts = 0;
+
 test("a steered queued message stays visible as Steering until model intake or the run ends", async (t) => {
   const dom = new JSDOM('<!doctype html><div id="app"></div><div id="composer"></div>', {
     url: "http://localhost/",
@@ -30,7 +32,13 @@ test("a steered queued message stays visible as Steering until model intake or t
     getComputedStyle: dom.window.getComputedStyle.bind(dom.window),
     requestAnimationFrame: dom.window.requestAnimationFrame.bind(dom.window),
     cancelAnimationFrame: dom.window.cancelAnimationFrame.bind(dom.window),
-    fetch: async () => Response.json({ sessions: [] }),
+    fetch: async (input: string) => {
+      if (input.endsWith("/api/turn")) {
+        turnPosts++;
+        return Response.json({ runId: `typed${turnPosts}` });
+      }
+      return Response.json({ sessions: [] });
+    },
   };
   const descriptors = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of Object.entries(globals)) {
@@ -73,17 +81,30 @@ test("a steered queued message stays visible as Steering until model intake or t
     const agentState = { isStreaming: true, model, messages: [] as unknown[] };
     const agent = { state: agentState } as unknown as Agent;
     let live = true;
+    let liveRunId = "r1";
     const signalled: string[] = [];
-    const draw = (): void => render(composer!.queuedStrip(agent), host);
+    let signalOutcome: { ok: boolean; reason?: string } = { ok: true };
+    const draw = (): void => render([composer!.queuedStrip(agent), composer!.composerForm(agent)], host);
     const ctx = {
       pane: false,
       chat: {
-        state: { agent, host, threadRef, sessionId: "s", scopeId: "personal:tester" },
+        state: {
+          agent,
+          host,
+          threadRef,
+          sessionId: "s",
+          scopeId: "personal:tester",
+          resolvingApprovals: new Set<string>(),
+        },
+        activePendingApprovals: () => [],
+        hasUnresolvedApproval: () => false,
         isStopping: () => false,
         hasLiveRun: () => live,
+        liveRunId: () => (live ? liveRunId : null),
+        currentTurnOptions: () => ({}),
         signalLiveRun: async (_kind: string, _text: string, queuedRunId: string) => {
           signalled.push(queuedRunId);
-          return { ok: true };
+          return signalOutcome;
         },
         drawActiveChat: draw,
         resumeIfIdle() {},
@@ -91,6 +112,7 @@ test("a steered queued message stays visible as Steering until model intake or t
     } as unknown as ConvCtx;
     composer = createComposerSurface(ctx);
     ctx.composer = composer!;
+    await composer!.refreshRuntimeSelection("personal:tester", agent);
     const chips = () =>
       [...host.querySelectorAll(".queued-chip")].map((chip) => ({
         tag: chip.querySelector(".queued-tag")?.textContent?.trim(),
@@ -140,6 +162,72 @@ test("a steered queued message stays visible as Steering until model intake or t
       agentState.messages.push({ role: "user", content: "same text", steered: true, entrySeq: 6, ts: "other" });
       draw();
       assert.deepEqual(chips(), [{ tag: "Steering", text: "same text" }]);
+    });
+
+    const typeAndSend = async (text: string, how: "enter" | "queue"): Promise<void> => {
+      const input = host.querySelector<HTMLTextAreaElement>("textarea")!;
+      input.value = text;
+      input.dispatchEvent(new dom.window.InputEvent("input", { bubbles: true }));
+      if (how === "enter")
+        host
+          .querySelector<HTMLTextAreaElement>("textarea")!
+          .dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      else host.querySelector<HTMLButtonElement>('[aria-label="Queue for after this turn"]')!.click();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      draw();
+    };
+    const queuedChips = () => chips().filter((chip) => chip.tag !== "Steering");
+
+    await t.test("Enter during a run queues once and steers that message", async () => {
+      const posts = turnPosts;
+      const sent = signalled.length;
+      await typeAndSend("use the smaller change", "enter");
+      assert.equal(turnPosts, posts + 1);
+      assert.deepEqual(signalled.slice(sent), [`typed${turnPosts}`]);
+      assert.deepEqual(composer!.queuedRunsFor(threadRef), []);
+      assert.ok(chips().some((chip) => chip.tag === "Steering" && chip.text === "use the smaller change"));
+    });
+
+    await t.test("Queue leaves the message for after the turn without steering", async () => {
+      const sent = signalled.length;
+      await typeAndSend("then write the tests", "queue");
+      assert.equal(signalled.length, sent);
+      assert.deepEqual(queuedChips(), [{ tag: "Queued", text: "then write the tests" }]);
+      composer!.setQueuedRuns(threadRef, []);
+    });
+
+    await t.test("a refused steer stays as After this turn and is not retried during the run", async () => {
+      signalOutcome = { ok: false, reason: "account_changed: send a new message to use your selected AI account" };
+      const sent = signalled.length;
+      await typeAndSend("first refused", "enter");
+      assert.equal(signalled.length, sent + 1);
+      assert.deepEqual(queuedChips(), [{ tag: "After this turn", text: "first refused" }]);
+      await typeAndSend("second message", "enter");
+      assert.equal(signalled.length, sent + 1);
+      assert.deepEqual(queuedChips(), [
+        { tag: "After this turn", text: "first refused" },
+        { tag: "After this turn", text: "second message" },
+      ]);
+      assert.ok(
+        [...host.querySelectorAll<HTMLButtonElement>(".queued-steer")]
+          .filter((b) => b.textContent?.includes("Steer"))
+          .every((b) => b.disabled),
+      );
+      assert.equal(host.querySelector('[aria-label="Steer the running task"]'), null);
+      assert.equal(composer!.state.error, "");
+    });
+
+    await t.test("the next run can be steered again", async () => {
+      signalOutcome = { ok: true };
+      liveRunId = "r2";
+      draw();
+      assert.deepEqual(queuedChips(), [
+        { tag: "Queued", text: "first refused" },
+        { tag: "Queued", text: "second message" },
+      ]);
+      assert.ok(host.querySelector('[aria-label="Steer the running task"]'));
+      composer!.setQueuedRuns(threadRef, []);
+      draw();
     });
 
     await t.test("the chip goes when the run ends without intake", async () => {

@@ -2308,6 +2308,11 @@ qm-markdown .tok-in {
   cursor: pointer;
   transition: background 0.12s ease;
 }
+.queued-hint {
+  flex: none;
+  font-size: 10px;
+  opacity: 0.75;
+}
 .queued-steer:hover:not(:disabled) {
   background: var(--secondary);
 }
@@ -3887,6 +3892,31 @@ qm-markdown .tok-in {
   cursor: not-allowed;
 }
 
+.queue-btn {
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--background);
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.queue-btn:hover:not(:disabled) {
+  background: var(--secondary);
+  color: var(--foreground);
+}
+.queue-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--foreground) 35%, transparent);
+  outline-offset: 3px;
+}
+.queue-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 .stop-btn {
   width: 34px;
   height: 34px;
@@ -10384,7 +10414,8 @@ h3.ambient-field-label {
   .inbox-chat-composer .composer-wrap .composer-toolbar {
     grid-column: 1 / -1;
   }
-  .composer-toolbar .stop-btn {
+  .composer-toolbar .stop-btn,
+  .composer-toolbar .queue-btn {
     width: 44px;
     height: 44px;
   }
@@ -11992,7 +12023,8 @@ body.app-edit-embed .custom-chat-shell.app-edit-chat > .chat-bottom-dock {
   .composer-wrap .composer-toolbar .icon-btn,
   .composer-wrap .composer-toolbar .menu-button.loadout-button,
   .composer-wrap .composer-toolbar .send-btn,
-  .composer-wrap .composer-toolbar .stop-btn {
+  .composer-wrap .composer-toolbar .stop-btn,
+  .composer-wrap .composer-toolbar .queue-btn {
     width: 28px;
     height: 28px;
     min-height: 28px;

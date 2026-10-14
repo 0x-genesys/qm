@@ -1031,3 +1031,72 @@ test("subagent orphan replay drops a late client_result instead of starting a tu
   await settleNoReplay(threadRef);
   assert.deepEqual(await built.signals.pending(run.id), [], "the late answer is acknowledged");
 });
+
+test("a steered queued message the run never took is replayed once after Stop", async () => {
+  const threadRef = `web:U1:steer-stop-${crypto.randomUUID()}`;
+  const submit = async (text: string) => {
+    const res = await fetch(
+      `${webBase}/api/turn`,
+      asUser("U1", { method: "POST", body: JSON.stringify({ text, threadRef }) }),
+    );
+    return ((await res.json()) as { runId: string }).runId;
+  };
+  const signal = (runId: string, body: Record<string, unknown>) =>
+    fetch(`${webBase}/api/runs/${runId}/signal`, asUser("U1", { method: "POST", body: JSON.stringify(body) }));
+  const runId = await submit("working");
+  const claimed = await built.runs.claimById(runId, "test-worker", 5_000);
+  assert.ok(claimed);
+  const queuedRunId = await submit("use the smaller change");
+  for (let i = 0; i < 2; i++) {
+    const response = await signal(runId, { kind: "steer", text: "use the smaller change", threadRef, queuedRunId });
+    assert.equal(response.status, 200, await response.text());
+  }
+  assert.equal(await built.runs.get(queuedRunId), null, "the queued turn became the steer");
+  assert.equal((await signal(runId, { kind: "abort" })).status, 200);
+  await built.runs.complete(runId, claimed!.leaseToken!, { status: "ok", reply: "", stopped: true });
+  await built.app.replayOrphanedRunSignals(runId);
+  await built.app.replayOrphanedRunSignals(runId);
+  let replayed = await built.runs.activeForThread(threadRef);
+  for (let i = 0; !replayed && i < 50; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    replayed = await built.runs.activeForThread(threadRef);
+  }
+  assert.ok(replayed, "the untaken steer starts its own turn");
+  assert.equal(replayed!.request.text, "use the smaller change");
+  const replayClaim = await built.runs.claimById(replayed!.id, "test-worker", 5_000);
+  await built.runs.complete(replayed!.id, replayClaim!.leaseToken!, { status: "ok", reply: "done" });
+  await built.app.replayOrphanedRunSignals(runId);
+  assert.equal(await built.runs.activeForThread(threadRef), null, "the steer is replayed exactly once");
+});
+
+test("a steer refused because the AI account changed leaves the queued turn to run after the current one", async () => {
+  const threadRef = `web:U7:steer-refused-${crypto.randomUUID()}`;
+  const submit = async (text: string) => {
+    const res = await fetch(
+      `${webBase}/api/turn`,
+      asUser("U7", { method: "POST", body: JSON.stringify({ text, threadRef }) }),
+    );
+    return ((await res.json()) as { runId: string }).runId;
+  };
+  const runId = await submit("working");
+  const claimed = await built.runs.claimById(runId, "test-worker", 5_000);
+  assert.ok(claimed);
+  const queuedRunId = await submit("then write the tests");
+  await built.config.setPersonalModelAuth("U7", true, "anthropic");
+  try {
+    const response = await fetch(
+      `${webBase}/api/runs/${runId}/signal`,
+      asUser("U7", {
+        method: "POST",
+        body: JSON.stringify({ kind: "steer", text: "then write the tests", threadRef, queuedRunId }),
+      }),
+    );
+    assert.equal(response.status, 409);
+    assert.match(((await response.json()) as { reason: string }).reason, /^account_changed/);
+    assert.equal((await built.runs.get(queuedRunId))?.status, "pending", "the message is still queued");
+    assert.deepEqual(await built.signals.takePending(runId), [], "nothing reached the running task");
+  } finally {
+    await built.config.setPersonalModelAuth("U7", false);
+    await built.runs.complete(runId, claimed!.leaseToken!, { status: "ok", reply: "done" });
+  }
+});

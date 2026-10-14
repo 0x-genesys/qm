@@ -179,6 +179,5 @@ export {
   effortLabel,
   harnessSupportsEffort,
   harnessSupportsFastMode,
-  harnessSupportsSteer,
   type EffortLevel,
 } from "./runtime-capabilities.ts";
