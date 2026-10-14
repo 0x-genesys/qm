@@ -339,53 +339,65 @@ test("a garbage push body that git rejects early fails the request without crash
   }
 });
 
-test("view sharing exposes rendered-app metadata, not source history or runtime logs", async () => {
+async function viewFixture() {
   const f = fixture();
+  const d = await f.app.deploy({
+    ownerScopeId: scopeId("personal", "U1"),
+    createdBy: "U1",
+    name: "private-fixture",
+    entrypoint: "node server.js",
+    files: [{ path: "server.js", data: "const privateNote = 'owner-only-fixture';" }],
+  });
+  await f.app.shareDeployment(d.id, scopeId("personal", "U2"), "read", { createdBy: "U1" });
+  return { ...f, d };
+}
+
+test("viewers keep app listings without source URLs or server logs", async () => {
+  const f = await viewFixture();
   try {
-    const d = await f.app.deploy({
-      ownerScopeId: scopeId("personal", "U1"),
-      createdBy: "U1",
-      name: "private-fixture",
-      entrypoint: "node server.js",
-      files: [{ path: "server.js", data: "const privateNote = 'owner-only-fixture';" }],
-    });
-    await f.app.shareDeployment(d.id, scopeId("personal", "U2"), "read", { createdBy: "U1" });
     const headers = { "x-agent-capability": await capFor("U2") };
-    for (const path of ["/v1/deployments", `/v1/deployments/${d.id}`]) {
+    for (const path of ["/v1/deployments", `/v1/deployments/${f.d.id}`]) {
       const response = await fetch(f.base + path, { headers });
       assert.equal(response.status, 200);
       const body = (await response.json()) as {
         deployment?: { gitUrl?: string };
         deployments?: { id: string; gitUrl?: string }[];
       };
-      const view = body.deployment ?? body.deployments?.find((row) => row.id === d.id);
+      const view = body.deployment ?? body.deployments?.find((row) => row.id === f.d.id);
       assert.ok(view);
       assert.equal(view.gitUrl, undefined);
     }
-    assert.equal(await f.app.deploymentGitPermissionFor(d.id, "U2"), null);
-    assert.equal((await fetch(`${f.base}/v1/deployments/${d.id}/logs`, { headers })).status, 404);
-    const token = await mintDeployGitAccess(SECRET, {
-      deploymentId: d.id,
+    assert.equal(await f.app.deploymentGitPermissionFor(f.d.id, "U2"), null);
+    assert.equal((await fetch(`${f.base}/v1/deployments/${f.d.id}/logs`, { headers })).status, 404);
+    assert.deepEqual(await f.app.deploymentLogsFor(f.d.id, "U1", { tailLines: 10 }), {
+      status: "ok",
+      logs: "private-server-output",
+    });
+  } finally {
+    await f.close();
+  }
+});
+
+test("Git reads require current management authority even with a previously issued token", async () => {
+  const f = await viewFixture();
+  try {
+    const url = new URL(`/v1/deployments/${f.d.id}/git`, f.base);
+    url.username = "deployment";
+    url.password = await mintDeployGitAccess(SECRET, {
+      deploymentId: f.d.id,
       permission: "read",
       principalId: "U2",
       exp: Date.now() + 60_000,
     });
-    const url = new URL(`/v1/deployments/${d.id}/git`, f.base);
-    url.username = "deployment";
-    url.password = token;
     await assert.rejects(execFileP("git", ["ls-remote", url.toString()], { env: GIT_ENV }), /403|forbidden/i);
-    await f.app.shareDeployment(d.id, scopeId("personal", "U2"), "write", { createdBy: "U1" });
-    const manager = await f.app.deploymentGitUrlFor(d.id, "U2", { secret: SECRET, baseUrl: f.base });
+    await f.app.shareDeployment(f.d.id, scopeId("personal", "U2"), "write", { createdBy: "U1" });
+    const manager = await f.app.deploymentGitUrlFor(f.d.id, "U2", { secret: SECRET, baseUrl: f.base });
     assert.ok(manager);
     await execFileP("git", ["ls-remote", manager.url], { env: GIT_ENV });
-    assert.deepEqual(await f.app.deploymentLogsFor(d.id, "U2", { tailLines: 10 }), {
-      status: "ok",
-      logs: "private-server-output",
-    });
-    await f.app.shareDeployment(d.id, scopeId("personal", "U2"), "read", { createdBy: "U1" });
+    await f.app.shareDeployment(f.d.id, scopeId("personal", "U2"), "read", { createdBy: "U1" });
     await assert.rejects(execFileP("git", ["ls-remote", manager.url], { env: GIT_ENV }), /403|forbidden/i);
     url.password = await mintDeployGitAccess(SECRET, {
-      deploymentId: d.id,
+      deploymentId: f.d.id,
       permission: "read",
       exp: Date.now() + 60_000,
     });
