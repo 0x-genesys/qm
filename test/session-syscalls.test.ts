@@ -862,7 +862,6 @@ test("mailbox survives recreation and rejects acknowledgements for another recip
     senderId: "sender",
     recipientId: "recipient",
     actor,
-    audience: [actor],
     text: "data",
     createdAt: 1,
   };
