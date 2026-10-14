@@ -522,3 +522,73 @@ test("pg map: an indexed select plans both branches through their indexes", { sk
     await factory.pool.close();
   }
 });
+
+test(
+  "worker coordination mailbox and wake dispatch survive store recreation without duplicate runs",
+  { skip },
+  async () => {
+    const { createSessionMailbox } = await import("../src/sessions/session-mailbox.ts");
+    const { createMemorySessionStore } = await import("../src/sessions/memory-session-store.ts");
+    const { createPostgresRunStore } = await import("../src/runs/postgres-run-store.ts");
+    const { createPostgresRunSignalStore } = await import("../src/runs/postgres-run-signal-store.ts");
+    const { createSessionSyscalls, wakeSessionMessages } = await import("../src/sessions/session-syscalls.ts");
+    type Message = import("../src/sessions/session-mailbox.ts").SessionMessage;
+    const sessions = createMemorySessionStore();
+    const actor = { id: "coord-user", type: "internal" as const };
+    const scope = scopeId("personal", actor.id);
+    const parent = await sessions.getOrCreateByThread("coord-parent", "dm", scope);
+    await sessions.addParticipant(parent.id, actor.id);
+    const conversation = { kind: "dm" as const, threadRef: parent.threadRef, audience: [actor] };
+    let factory = createPostgresMapFactory(URL!);
+    let runtime = createPostgresRunStore(URL!);
+    let signals = createPostgresRunSignalStore(URL!);
+    let mailbox = createSessionMailbox(factory.map<Message>("map_coord_messages", ["recipientId", "wakePending"]));
+    const { run } = await runtime.runs.enqueue({
+      sessionId: parent.threadRef,
+      request: {
+        actor,
+        conversation,
+        origin: { kind: "human" },
+        text: "investigate",
+      },
+    });
+    const active = await runtime.runs.claimById(run.id, "parent-worker", 60_000);
+    const api = createSessionSyscalls({ sessions, runs: runtime.runs, signals, mailbox, maxAttempts: 3 }).forTurn({
+      session: parent,
+      scopeId: scope,
+      request: { actor, conversation },
+    });
+    const opened = await api.open({ task: "investigate" });
+    assert.ok(opened.ok);
+    const child = (await sessions.get(opened.sessionId))!;
+    const childApi = createSessionSyscalls({ sessions, runs: runtime.runs, signals, mailbox, maxAttempts: 3 }).forTurn({
+      session: child,
+      scopeId: scope,
+      request: { actor, conversation },
+    });
+    assert.equal(
+      (await childApi.write({ target: "parent", text: "important blocker", requestId: "blocker" })).ok,
+      true,
+    );
+    assert.equal((await mailbox.wakeable()).length, 1);
+    await runtime.runs.complete(active!.id, active!.leaseToken!, { status: "ok", reply: "busy response" });
+    await Promise.all([factory.pool.close(), runtime.close(), signals.close!()]);
+    factory = createPostgresMapFactory(URL!);
+    runtime = createPostgresRunStore(URL!);
+    signals = createPostgresRunSignalStore(URL!);
+    mailbox = createSessionMailbox(factory.map<Message>("map_coord_messages", ["recipientId", "wakePending"]));
+    try {
+      const deps = { sessions, runs: runtime.runs, signals, mailbox, maxAttempts: 3 };
+      await Promise.all([wakeSessionMessages(deps), wakeSessionMessages(deps)]);
+      assert.equal((await runtime.runs.inFlightForThread(parent.threadRef)).length, 1);
+      const [message] = await mailbox.pending(parent.id);
+      assert.match(message!.text, /important blocker/);
+      await mailbox.acknowledge(parent.id, [message!.id]);
+      await wakeSessionMessages(deps);
+      assert.deepEqual(await runtime.runs.inFlightForThread(parent.threadRef), []);
+      assert.deepEqual(await mailbox.wakeable(), []);
+    } finally {
+      await Promise.all([factory.pool.close(), runtime.close(), signals.close!()]);
+    }
+  },
+);

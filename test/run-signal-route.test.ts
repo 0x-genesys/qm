@@ -1031,3 +1031,28 @@ test("subagent orphan replay drops a late client_result instead of starting a tu
   await settleNoReplay(threadRef);
   assert.deepEqual(await built.signals.pending(run.id), [], "the late answer is acknowledged");
 });
+
+test("delegated signal orphan replay and mailbox fallback share one durable wake key", async () => {
+  const threadRef = `agent:main:subagent:${crypto.randomUUID()}`;
+  const { run } = await built.runs.enqueue({ sessionId: threadRef, request: request("original task", threadRef) });
+  const dedupeKey = `session-message:${crypto.randomUUID()}`;
+  const wakeRequest = request("Read pending internal messages", threadRef);
+  await built.signals.send(run.id, {
+    kind: "steer",
+    text: wakeRequest.text,
+    sessionRequest: wakeRequest,
+    dedupeKey,
+  });
+  const active = await built.runs.claimById(run.id, "worker", 60_000);
+  await built.runs.complete(run.id, active!.leaseToken!, { status: "ok", reply: "done" });
+  const [fallback] = await Promise.all([
+    built.runs.enqueue({ sessionId: threadRef, request: wakeRequest, dedupKey: dedupeKey }),
+    built.app.replayOrphanedRunSignals(run.id),
+    built.app.replayOrphanedRunSignals(run.id),
+  ]);
+  const wakes = await built.runs.inFlightForThread(threadRef);
+  assert.equal(wakes.length, 1);
+  assert.equal(wakes[0]!.id, fallback.run.id);
+  assert.equal(wakes[0]!.dedupKey, dedupeKey);
+  assert.deepEqual(await built.signals.pending(run.id), []);
+});

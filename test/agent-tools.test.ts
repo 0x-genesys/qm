@@ -3470,6 +3470,7 @@ test("a coordination signal reaches the real mailbox tool path, which acknowledg
   };
   const ref: ToolContextRef = {
     current: tc,
+    scopeLabel: "personal:U1",
     emit: async (entry) => {
       if (entry.type === "tool_result") committed = true;
     },
@@ -3490,7 +3491,7 @@ test("a coordination signal reaches the real mailbox tool path, which acknowledg
   const stop = startSignalPoll(signals, "worker", {
     onAbort: async () => {},
     onSteer: async () => {
-      received = textOut(await call(tool, { action: "wait", timeoutMs: 0 }));
+      received = JSON.stringify(await call(tool, { action: "wait", timeoutMs: 0 }));
     },
   });
   try {

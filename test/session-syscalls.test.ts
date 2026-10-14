@@ -2073,3 +2073,35 @@ test("reparenting before deferred notification dispatch does not wake the former
   assert.deepEqual(await r.runs.inFlightForThread(r.room.threadRef), []);
   assert.deepEqual(await r.mailbox.wakeable(), []);
 });
+
+test("steering chooses the running lease regardless of in-flight result order", async () => {
+  const r = await coordinationRig();
+  const pending = await r.runs.enqueue({ sessionId: r.child.threadRef, request: r.active.request });
+  const api = createSessionSyscalls({
+    ...r,
+    maxAttempts: 3,
+    runs: {
+      ...r.runs,
+      inFlightForThread: async (thread) => (await r.runs.inFlightForThread(thread)).reverse(),
+    },
+  }).forTurn({ session: r.room, scopeId: scope, request: { actor, conversation } });
+  const result = await api.write({ target: r.child.id, text: "correction", steer: true });
+  assert.equal(result.ok, true);
+  assert.equal((await r.signals.pending(r.active.id)).length, 1);
+  assert.deepEqual(await r.signals.pending(pending.run.id), []);
+});
+
+test("notification depth preserves the private-message reply limit", async () => {
+  const r = await coordinationRig();
+  const api = createSessionSyscalls({ ...r, maxAttempts: 3 }).forTurn({
+    session: r.child,
+    scopeId: scope,
+    request: { actor, conversation, sessionMessageDepth: 8 },
+  });
+  const result = await api.write({ target: "parent", text: "context only" });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.message, /reply limit/);
+  assert.deepEqual(await r.mailbox.pending(r.room.id), []);
+  assert.deepEqual(await r.runs.inFlightForThread(r.room.threadRef), []);
+  assert.deepEqual(await r.mailbox.wakeable(), []);
+});
