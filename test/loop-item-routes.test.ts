@@ -1200,7 +1200,7 @@ test("an owner cannot trigger Slack avatar enrichment through item detail when I
   assert.deepEqual(await w.loops.items.get(item!.id), before);
 });
 
-test("Gmail sync cannot retarget an existing conversation through a mismatched source key", async (t) => {
+test("Gmail sync rejects mismatched new and existing source keys without retargeting", async (t) => {
   const w = world();
   const mail = (threadId: string, address: string) => ({
     source: "gmail",
@@ -1218,6 +1218,14 @@ test("Gmail sync cannot retarget an existing conversation through a mismatched s
   const path = `/v1/loops/${loop.id}/items`;
   assert.equal((await call(w, { method: "POST", path, body: { items: [second] } })).status, 200);
   const original = await w.loops.items.get(item.id);
+  const originalItems = await w.loops.items.byLoop(loop.id);
+  const newItem = await call(w, {
+    method: "POST",
+    path,
+    body: { items: [{ ...second, sourceKey: "unseen-source-key" }] },
+  });
+  assert.equal(newItem.status, 400);
+  assert.deepEqual(await w.loops.items.byLoop(loop.id), originalItems);
   const result = await call(w, {
     method: "POST",
     path,
