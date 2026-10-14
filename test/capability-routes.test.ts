@@ -293,9 +293,7 @@ describe("capability-token control plane (crons + webhooks + SOUL)", () => {
           patch(
             path,
             body,
-            auth === "capability"
-              ? headers
-              : signedRequestHeaders(SECRET, "PATCH", path, JSON.stringify(body)),
+            auth === "capability" ? headers : signedRequestHeaders(SECRET, "PATCH", path, JSON.stringify(body)),
           );
         try {
           const updated = await edit({ [field]: "edited reminder" });
