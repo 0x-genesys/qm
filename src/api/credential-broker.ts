@@ -1,3 +1,4 @@
+import { createExactSecretValueMasker } from "../security/secret-masking.ts";
 import { isComposioHost } from "../credentials/keychain.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { ScopeId } from "../types.ts";
@@ -236,7 +237,12 @@ export async function brokerCredentialCall(opts: {
     };
   }
 
-  let text = await resp.text();
+  const mask = createExactSecretValueMasker([
+    rec.secret,
+    JSON.stringify(rec.secret).slice(1, -1),
+    encodeURIComponent(rec.secret),
+  ]);
+  let text = mask(await resp.text());
   let truncated = false;
   if (text.length > MAX_RESPONSE_BYTES) {
     text = text.slice(0, MAX_RESPONSE_BYTES);
@@ -262,7 +268,7 @@ export async function brokerCredentialCall(opts: {
     status: 200,
     json: {
       status: resp.status,
-      ...(resp.contentType ? { contentType: resp.contentType } : {}),
+      ...(resp.contentType ? { contentType: mask(resp.contentType) } : {}),
       body: text,
       ...(truncated ? { truncated: true } : {}),
     },
