@@ -268,6 +268,54 @@ test("turn provisioning follows durable default changes while explicit handles k
   assert.deepEqual(released.sort(), [a.backingScopeId, b.backingScopeId].sort());
 });
 
+test("turn cleanup waits for durable target selection before reclaiming eager provisioning", async () => {
+  const { resources, router, layers, backend } = fixture();
+  const selected = await resources.create("alice", "personal:alice", "local");
+  await resources.setDefault("alice", "personal:alice", selected.id);
+  const entered = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  const resolve = resources.resolve.bind(resources);
+  resources.resolve = async (scope) => {
+    entered.resolve();
+    await resume.promise;
+    return resolve(scope);
+  };
+  const released: string[] = [];
+  backend.teardown = async (handle) => {
+    released.push(handle.id);
+  };
+  const turn = createTurnSandboxes({
+    deps: { sandbox: router, sandboxResources: resources },
+    input: { origin: { kind: "user" } },
+    actor: { id: "alice", type: "internal" },
+    session: { id: "s" },
+    resolution: { layers },
+    scopeId: "personal:alice",
+    memoryScopeId: "personal:alice",
+    transferId: "t",
+    turnSessionDir: "turn/s",
+    turnFilesDir: "turn/s/t",
+    connectorEnv: {},
+    ownerAuthAvailable: false,
+    visibleSkillsForTurn: async () => [],
+    emitGapWork: () => {},
+  } as unknown as TurnSandboxContext);
+  const pending = turn.provision(true);
+  await entered.promise;
+  let cleaned = false;
+  const cleanup = turn.reclaimBox().then(() => {
+    cleaned = true;
+  });
+  await new Promise<void>((done) => setImmediate(done));
+  try {
+    assert.equal(cleaned, false);
+  } finally {
+    resume.resolve();
+    await Promise.all([pending, cleanup]);
+  }
+  assert.deepEqual(released, [selected.backingScopeId]);
+});
+
 test("a swarm computer stays pinned across durable default changes", async () => {
   const { resources, router, layers, provisioned } = fixture();
   const pinned = await resources.create("alice", "personal:alice", "local");
@@ -275,11 +323,8 @@ test("a swarm computer stays pinned across durable default changes", async () =>
   await resources.setDefault("alice", "personal:alice", pinned.id);
   provisioned.length = 0;
   const turn = createTurnSandboxes({
-    deps: {
-      sandbox: router,
-      sandboxResources: resources,
-      swarms: { binding: async () => ({ sandboxId: pinned.id }) },
-    },
+    deps: { sandbox: router, sandboxResources: resources },
+    swarmSandboxId: pinned.id,
     input: { origin: { kind: "user" } },
     actor: { id: "alice", type: "internal" },
     session: { id: "s" },

@@ -1959,6 +1959,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         openSpeakerKeychain: openSpeakerKeychain || openAutomationKeychain,
         openResourceAccess: !external && (liveAuthorTurn || openAutomationKeychain),
         ownerAuthAvailable,
+        swarmSandboxId: swarmBinding?.sandboxId,
         visibleSkillsForTurn,
         emitGapWork,
       });
