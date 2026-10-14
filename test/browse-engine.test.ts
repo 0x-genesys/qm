@@ -1,52 +1,104 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { test } from "node:test";
 
-const { ensurePlaywright } = await import(
-  new URL("../skills-seed/browse/scripts/playwright-runtime.mjs", import.meta.url).href
-);
+const runtime = new URL("../skills-seed/browse/scripts/playwright-runtime.mjs", import.meta.url).href;
+const run = promisify(execFile);
 
-test("runtime refuses a corrupted cache before downloading or executing it", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "browse-engine-test-"));
-  const previousCache = process.env.QM_BROWSE_CACHE;
-  const previousFetch = globalThis.fetch;
-  process.env.QM_BROWSE_CACHE = dir;
-  const cache = join(dir, "playwright-core-1.64.0");
-  await mkdir(cache);
-  await writeFile(join(cache, "index.mjs"), "throw new Error('must not execute');");
-  let downloads = 0;
-  globalThis.fetch = async () => {
-    downloads++;
-    throw new Error("must not download over corrupted cache");
+async function fixture() {
+  const dir = await mkdtemp(join(tmpdir(), "browse-runtime-test-"));
+  await mkdir(join(dir, "bin"));
+  await mkdir(join(dir, "cache"));
+  await mkdir(join(dir, "cache", "runtime-other-process"));
+  await writeFile(
+    join(dir, "bin", "npm"),
+    `#!/usr/bin/env node
+const fs=require('node:fs');fs.appendFileSync(process.env.NPM_TEST_LOG,JSON.stringify({args:process.argv.slice(2),cwd:process.cwd(),mode:fs.statSync('.').mode&511,manifest:fs.statSync('package.json').mode&511,skip:process.env.PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD,umask:process.env.npm_config_umask})+'\\n');
+if(process.env.NPM_TEST_FAIL){console.error('npm ERR! code EINTEGRITY');process.exit(1)}
+fs.mkdirSync('node_modules/playwright-core',{recursive:true});fs.writeFileSync('node_modules/playwright-core/index.mjs','export const verified=true;');
+`,
+  );
+  await chmod(join(dir, "bin", "npm"), 0o700);
+  const env = {
+    ...process.env,
+    PATH: `${join(dir, "bin")}:${process.env.PATH}`,
+    QM_BROWSE_CACHE: join(dir, "cache"),
+    NPM_TEST_LOG: join(dir, "calls"),
   };
+  return { dir, env, cleanup: () => rm(dir, { recursive: true, force: true }) };
+}
+
+test("runtime uses locked npm once per process and cleans only its private install", async () => {
+  const f = await fixture();
   try {
-    await assert.rejects(ensurePlaywright(), /cache integrity mismatch; remove/);
-    assert.equal(downloads, 0);
-    assert.equal(await readFile(join(cache, "index.mjs"), "utf8"), "throw new Error('must not execute');");
+    const { stdout } = await run(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import {ensurePlaywright} from ${JSON.stringify(runtime)};const paths=await Promise.all([ensurePlaywright(),ensurePlaywright()]);console.log(JSON.stringify({paths,verified:(await import(paths[0])).verified}));`,
+      ],
+      { env: f.env },
+    );
+    const result = JSON.parse(stdout);
+    assert.equal(result.paths[0], result.paths[1]);
+    assert.equal(result.verified, true);
+    const calls = (await readFile(join(f.dir, "calls"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].args, [
+      "ci",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      "--cache",
+      join(f.dir, "cache", "npm-cache"),
+    ]);
+    assert.equal(calls[0].mode, 0o700);
+    assert.equal(calls[0].manifest, 0o600);
+    assert.equal(calls[0].umask, "0077");
+    assert.equal(calls[0].skip, "1");
+    await assert.rejects(access(calls[0].cwd));
+    await access(join(f.dir, "cache", "runtime-other-process"));
   } finally {
-    globalThis.fetch = previousFetch;
-    if (previousCache === undefined) delete process.env.QM_BROWSE_CACHE;
-    else process.env.QM_BROWSE_CACHE = previousCache;
-    await rm(dir, { recursive: true, force: true });
+    await f.cleanup();
   }
 });
 
-test("runtime rejects unverified upstream bytes and preserves download errors", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "browse-engine-test-"));
-  const previousCache = process.env.QM_BROWSE_CACHE;
-  const previousFetch = globalThis.fetch;
-  process.env.QM_BROWSE_CACHE = dir;
+test("runtime preserves npm integrity failure and removes failed private installs", async () => {
+  const f = await fixture();
   try {
-    globalThis.fetch = async () => new Response("untrusted-upstream", { status: 200 });
-    await assert.rejects(ensurePlaywright(), /archive integrity mismatch/);
-    globalThis.fetch = async () => new Response("temporarily unavailable", { status: 503 });
-    await assert.rejects(ensurePlaywright(), /HTTP 503/);
+    const { stdout } = await run(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        `import {ensurePlaywright} from ${JSON.stringify(runtime)};for(let i=0;i<2;i++)try{await ensurePlaywright()}catch(error){console.log(error.message)}`,
+      ],
+      { env: { ...f.env, NPM_TEST_FAIL: "1" } },
+    );
+    assert.match(stdout, /npm ci failed: npm ERR! code EINTEGRITY/);
+    assert.equal((await readFile(join(f.dir, "calls"), "utf8")).trim().split("\n").length, 1);
+    assert.deepEqual(await readdir(join(f.dir, "cache")), ["runtime-other-process"]);
   } finally {
-    globalThis.fetch = previousFetch;
-    if (previousCache === undefined) delete process.env.QM_BROWSE_CACHE;
-    else process.env.QM_BROWSE_CACHE = previousCache;
-    await rm(dir, { recursive: true, force: true });
+    await f.cleanup();
   }
+});
+
+test("runtime lock pins only the exact upstream package and integrity", async () => {
+  const lock = JSON.parse(
+    await readFile(new URL("../skills-seed/browse/scripts/runtime/package-lock.json", import.meta.url), "utf8"),
+  );
+  assert.deepEqual(Object.keys(lock.packages), ["", "node_modules/playwright-core"]);
+  assert.equal(lock.packages[""].dependencies["playwright-core"], "1.64.0");
+  assert.equal(
+    lock.packages["node_modules/playwright-core"].integrity,
+    "sha512-T9r+MZkTECl2+oUcZ26YgZzTrYidTsIhYYkJix+6iDOymOb1FB2RLLSOxRGnZGv5DStt+aduIVbt+E8WygXYpg==",
+  );
 });

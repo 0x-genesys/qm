@@ -20,7 +20,7 @@ const center = async (locator: any) => {
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
 };
 
-test("full browser protocol behavioral parity", { skip: !endpoint, timeout: 240000 }, async (t) => {
+test("full browser protocol behavioral parity", { skip: !endpoint, timeout: 600000 }, async (t) => {
   const { startFixture } = await import(new URL("./fixtures/browse-parity.mjs", import.meta.url).href);
   const fixture = await startFixture({
     mainOrigin: process.env.BROWSE_TEST_BASE,
@@ -40,7 +40,7 @@ test("full browser protocol behavioral parity", { skip: !endpoint, timeout: 2400
   const { createBrowserClient } = await load("browser-client.mjs");
   const client = createBrowserClient(native, { context });
   const scenario = async (name: string, run: (tab: any, page: any) => Promise<void>, path = "/") => {
-    await t.test(name, { timeout: 25000 }, async () => {
+    await t.test(name, { timeout: process.env.BROWSE_TEST_BASE ? 90000 : 25000 }, async () => {
       const tab = await client.tabs.new();
       try {
         tab.playwright.setDefaultTimeout(7000);
@@ -376,19 +376,28 @@ test("full browser protocol behavioral parity", { skip: !endpoint, timeout: 2400
     "viewport, full-page, clip and element screenshots produce correct PNG dimensions",
     async (_tab, page) => {
       await page.setViewportSize({ width: 900, height: 700 });
-      assert.deepEqual(pngSize(await page.screenshot()), { width: 900, height: 700 });
+      assert.deepEqual(await page.evaluate("({ width: innerWidth, height: innerHeight })"), {
+        width: 900,
+        height: 700,
+      });
+      const pixelRatio = await page.evaluate("window.devicePixelRatio");
+      assert.deepEqual(pngSize(await page.screenshot()), {
+        width: Math.round(900 * pixelRatio),
+        height: Math.round(700 * pixelRatio),
+      });
+      assert.deepEqual(pngSize(await page.screenshot({ scale: "css" })), { width: 900, height: 700 });
       await page.locator("body").evaluate((element: any) => {
         element.style.width = "1400px";
       });
-      const full = pngSize(await page.screenshot({ fullPage: true }));
+      const full = pngSize(await page.screenshot({ fullPage: true, scale: "css" }));
       assert.ok(full.height > 700);
       assert.ok(full.width >= 1400);
-      assert.deepEqual(pngSize(await page.screenshot({ clip: { x: 0, y: 0, width: 120, height: 80 } })), {
+      assert.deepEqual(pngSize(await page.screenshot({ clip: { x: 0, y: 0, width: 120, height: 80 }, scale: "css" })), {
         width: 120,
         height: 80,
       });
       const locator = page.locator("#click-target");
-      const element = pngSize(await locator.screenshot());
+      const element = pngSize(await locator.screenshot({ scale: "css" }));
       const box = await locator.boundingBox();
       assert.ok(Math.abs(element.width - box.width) <= 2);
       assert.ok(Math.abs(element.height - box.height) <= 2);

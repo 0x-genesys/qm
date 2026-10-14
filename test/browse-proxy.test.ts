@@ -53,6 +53,9 @@ test("browser proxy leaves direct CDP endpoints untouched", async () =>
     try {
       const proxy = await startBrowserProxy("wss://browser.example/session", fixture.modulePath);
       assert.equal(proxy.endpoint, "wss://browser.example/session");
+      const failure = proxy.getError(new Error("connect EAI_AGAIN browser.example wss://browser.example/session"));
+      assert.match(failure.message, /EAI_AGAIN/);
+      assert.doesNotMatch(failure.message, /browser.example|wss:\/\//);
       await proxy.close();
     } finally {
       await fixture.remove();
@@ -127,6 +130,61 @@ test("browser proxy uses maintained CONNECT routing, preserves messages, and clo
       for (const socket of connections) socket.destroy();
       for (const socket of upstream.clients) socket.terminate();
       await new Promise<void>((resolve) => upstream.close(() => resolve()));
+      await new Promise<void>((resolve) => forward.close(() => resolve()));
+      await fixture.remove();
+    }
+  }));
+
+for (const proxied of [false, true]) {
+  for (const suffix of ["", "/tenant/browser?token=synthetic-secret"]) {
+    test(`browser discovery preserves ${suffix ? "path/query" : "root"} before ${proxied ? "proxy" : "direct"} routing`, async () =>
+      withCleanProxy(async () => {
+        const fixture = await bundle();
+        const requests: string[] = [];
+        const discovery = createServer((request, response) => {
+          requests.push(request.url!);
+          response.setHeader("content-type", "application/json");
+          response.end(JSON.stringify({ webSocketDebuggerUrl: "wss://browser.invalid/fixed-secret" }));
+        });
+        discovery.listen(0, "127.0.0.1");
+        await once(discovery, "listening");
+        if (proxied) process.env.HTTPS_PROXY = "http://127.0.0.1:1";
+        try {
+          const proxy = await startBrowserProxy(
+            `http://127.0.0.1:${(discovery.address() as AddressInfo).port}${suffix}`,
+            fixture.modulePath,
+          );
+          assert.deepEqual(requests, [
+            suffix ? "/tenant/browser/json/version/?token=synthetic-secret" : "/json/version/",
+          ]);
+          if (proxied) assert.match(proxy.endpoint, /^ws:\/\/127\.0\.0\.1:/);
+          else assert.equal(proxy.endpoint, "wss://browser.invalid/fixed-secret");
+          await proxy.close();
+        } finally {
+          await new Promise<void>((resolve) => discovery.close(() => resolve()));
+          await fixture.remove();
+        }
+      }));
+  }
+}
+
+test("proxy retains HTTP handshake evidence without target credentials", async () =>
+  withCleanProxy(async () => {
+    const fixture = await bundle();
+    const forward = createServer();
+    forward.on("connect", (_request, socket) => socket.end("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n"));
+    forward.listen(0, "127.0.0.1");
+    await once(forward, "listening");
+    process.env.HTTP_PROXY = `http://127.0.0.1:${(forward.address() as AddressInfo).port}`;
+    let proxy;
+    try {
+      proxy = await startBrowserProxy("ws://browser-secret.invalid/private-token?key=secret-value", fixture.modulePath);
+      const client = new WebSocket(proxy.endpoint);
+      await once(client, "close");
+      assert.match(proxy.getError()?.message, /Unexpected server response: 403/);
+      assert.doesNotMatch(String(proxy.getError()?.stack), /browser-secret|private-token|secret-value/);
+    } finally {
+      await proxy?.close();
       await new Promise<void>((resolve) => forward.close(() => resolve()));
       await fixture.remove();
     }

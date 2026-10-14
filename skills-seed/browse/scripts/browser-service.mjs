@@ -3,6 +3,7 @@ import { ensurePlaywright } from "./playwright-runtime.mjs";
 import { installBrowserHistory } from "./browser-history.mjs";
 import { startBrowserProxy } from "./browser-proxy.mjs";
 import { installBrowserCompatibility } from "./browser-compat.mjs";
+import { installBrowserInput } from "./browser-input.mjs";
 import { installBrowserFiles } from "./browser-files.mjs";
 import { installBrowserUploads } from "./browser-upload.mjs";
 
@@ -29,7 +30,6 @@ export async function startBrowserService(cdpUrl, options = {}) {
   try {
     browser = await chromium.connectOverCDP(proxy.endpoint, {
       timeout: 30000,
-      noDefaults: options.provider === true,
     });
     disposers.push(await installBrowserHistory(browser, modulePath));
     let capabilities = {};
@@ -37,19 +37,21 @@ export async function startBrowserService(cdpUrl, options = {}) {
       const { dispose, ...details } = await installBrowserCompatibility(browser, modulePath);
       disposers.push(dispose);
       capabilities = details;
+      disposers.push(await installBrowserInput(browser, modulePath));
       disposers.push(await installBrowserFiles(browser, { browserId: options.browserId, api: options.api }));
       disposers.push(await installBrowserUploads(browser, modulePath));
     }
     const { endpoint } = await browser.bind(options.title || "qm-browse", { host: "127.0.0.1", port: 0 });
     return { endpoint, browser, modulePath, capabilities, close, on: browser.on.bind(browser) };
   } catch (error) {
+    const startupError = proxy.getError?.(browser ? undefined : error) || error;
     try {
       await close();
     } catch (cleanupError) {
-      throw new AggregateError([error, cleanupError], "Browser service startup and cleanup failed", {
+      throw new AggregateError([startupError, cleanupError], "Browser service startup and cleanup failed", {
         cause: cleanupError,
       });
     }
-    throw error;
+    throw startupError;
   }
 }

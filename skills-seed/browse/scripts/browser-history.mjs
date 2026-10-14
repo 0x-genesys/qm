@@ -50,6 +50,21 @@ export async function restoreBrowserHistory(server, page, current) {
     await session._client.send("Runtime.enable");
   }
   for (const session of sessions) {
+    for (const context of session._contextIdToContext.values()) {
+      if (!current()) return;
+      if (context.world !== "utility" || manager.frame(context.frame._id) !== context.frame) continue;
+      await context.evaluate(() => {
+        const roots = [globalThis.document];
+        while (roots.length) {
+          for (const element of roots.pop().querySelectorAll("*")) {
+            delete element._ariaRef;
+            if (element.shadowRoot) roots.push(element.shadowRoot);
+          }
+        }
+      });
+    }
+  }
+  for (const session of sessions) {
     if (!current()) return;
     await session._client.send("Page.setLifecycleEventsEnabled", { enabled: false });
     await session._client.send("Page.setLifecycleEventsEnabled", { enabled: true });

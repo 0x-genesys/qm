@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, request, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 const SCRIPTS = fileURLToPath(new URL("../skills-seed/browse/scripts/", import.meta.url));
+const openProcesses = new Map<string, Set<ChildProcess>>();
 const FIXTURES = fileURLToPath(new URL("./fixtures/browse-lifecycle/", import.meta.url));
 type Call = {
   method: string;
@@ -24,7 +25,7 @@ async function fakeApi(
   patchStatus = 200,
 ) {
   const calls: Call[] = [];
-  const state = { patchStatus, createStatus: 201 };
+  const state = { patchStatus, createStatus: 201, lifetimeMinutes: 60 };
   const server: Server = createServer((req: IncomingMessage, res) => {
     let text = "";
     req.on("data", (c) => (text += c));
@@ -42,7 +43,18 @@ async function fakeApi(
         res.end(JSON.stringify(billing.body ?? { detail: "nope" }));
       } else if (call.method === "POST" && call.url === "/api/v4/browsers") {
         res.statusCode = state.createStatus;
-        res.end(JSON.stringify({ id: "b1", cdpUrl: "ws://fixture.invalid/browser", liveUrl: "https://live.test/b1" }));
+        const createdAt = Date.now();
+        res.end(
+          JSON.stringify({
+            id: "b1",
+            cdpUrl: "ws://fixture.invalid/browser",
+            liveUrl: "https://live.test/b1",
+            startedAt: new Date(createdAt).toISOString(),
+            timeoutAt: Number.isNaN(state.lifetimeMinutes)
+              ? null
+              : new Date(createdAt + state.lifetimeMinutes * 60_000).toISOString(),
+          }),
+        );
       } else if (call.method === "PATCH" && call.url.startsWith("/api/v4/browsers/")) {
         res.statusCode = state.patchStatus;
         res.end(JSON.stringify({ id: "b1", status: "stopped" }));
@@ -67,6 +79,8 @@ function run(args: string[], env: Record<string, string | undefined>, input?: st
   return new Promise<{
     code: number | null;
     out: Record<string, unknown>;
+    child: ChildProcess;
+    exited: Promise<number | null>;
   }>((resolve, reject) => {
     const clean = { ...process.env };
     for (const k of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "BROWSER_USE_API_KEY", "NODE_OPTIONS"])
@@ -74,6 +88,11 @@ function run(args: string[], env: Record<string, string | undefined>, input?: st
     const child = spawn(process.execPath, [join(env.FIXTURE_DIR!, "browser.mjs"), ...args], {
       env: { ...clean, ...env },
     });
+    const exited = new Promise<number | null>((done) => child.once("close", done));
+    if (args[0] === "open") {
+      openProcesses.get(env.FIXTURE_DIR!)?.add(child);
+      child.once("close", () => openProcesses.get(env.FIXTURE_DIR!)?.delete(child));
+    }
     const timeout = setTimeout(() => {
       child.kill("SIGKILL");
       reject(new Error(`browser command timed out: ${args[0]}`));
@@ -85,13 +104,25 @@ function run(args: string[], env: Record<string, string | undefined>, input?: st
       reject(error);
     });
     let stdout = "";
-    child.stdout.on("data", (c) => (stdout += c));
+    child.stdout.on("data", (c) => {
+      stdout += c;
+      if (args[0] !== "open" || !stdout.includes("\n")) return;
+      try {
+        const out = JSON.parse(stdout.split("\n")[0]!);
+        if (out.ok) {
+          clearTimeout(timeout);
+          resolve({ code: 0, out, child, exited });
+        }
+      } catch {
+        return;
+      }
+    });
     child.stdin.end(input ?? "");
     child.on("close", (code) => {
       clearTimeout(timeout);
       const last = stdout.trim().split("\n").at(-1) ?? "{}";
       try {
-        resolve({ code, out: JSON.parse(last) });
+        resolve({ code, out: JSON.parse(last), child, exited });
       } catch {
         reject(new Error(`invalid browser output (${args[0]}, exit ${code}): ${stdout}\n${stderr}`));
       }
@@ -106,7 +137,14 @@ function sandbox(
   config: Record<string, unknown> = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), "browse-skill-"));
-  for (const name of ["browser.mjs", "browser-client.mjs", "browser-snapshot.mjs", "js-runtime.mjs"])
+  openProcesses.set(dir, new Set());
+  for (const name of [
+    "browser.mjs",
+    "browser-client.mjs",
+    "browser-errors.mjs",
+    "browser-snapshot.mjs",
+    "js-runtime.mjs",
+  ])
     copyFileSync(join(SCRIPTS, name), join(dir, name));
   for (const name of ["browser-service.mjs", "playwright-runtime.mjs", "playwright.mjs"])
     copyFileSync(join(FIXTURES, name), join(dir, name));
@@ -131,7 +169,11 @@ function sandbox(
         .filter(Boolean)
         .map((line) => JSON.parse(line)),
     disconnect: () => writeFileSync(disconnect, ""),
-    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+    cleanup: () => {
+      for (const child of openProcesses.get(dir) ?? []) child.kill("SIGKILL");
+      openProcesses.delete(dir);
+      rmSync(dir, { recursive: true, force: true });
+    },
   };
 }
 test("preflight explains a missing, rejected, or empty Browser Use key", async () => {
@@ -196,7 +238,7 @@ test("open keeps one page alive across persistent JavaScript calls and stop stop
     assert.equal(opened.out.ok, true, JSON.stringify(opened.out));
     assert.equal(opened.out.liveUrl, "https://live.test/b1");
     const create = api.calls.find((c) => c.method === "POST");
-    assert.deepEqual(create?.body, { proxyCountryCode: null, profileId: "p-1" });
+    assert.deepEqual(create?.body, { proxyCountryCode: null, profileId: "p-1", timeout: 60, allowResizing: true });
     const nav = await run(["js", "await tab.goto('https://example.com'); await tab.title()"], box.env);
     assert.equal(nav.out.result, "Fake https://example.com");
     await run(["js", "-"], box.env, "var n = 41; var keptTab = tab");
@@ -503,7 +545,7 @@ test("service and worker initialization failures stop the allocated cloud browse
     try {
       const opened = await run(["open"], box.env);
       assert.deepEqual([opened.code, opened.out.reason], [1, "connect_failed"]);
-      assert.ok(String(opened.out.log).includes(Object.values(config)[0]));
+      assert.match(String(opened.out.error), config.serviceError ? /service could not connect/ : /client exited/);
       assert.ok(api.calls.some((call) => call.method === "PATCH" && call.url === "/api/v4/browsers/b1"));
       assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.sock")), false);
       assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.json")), false);
@@ -707,5 +749,73 @@ test("a late asynchronous error with no active script stops the session rather t
     await run(["stop"], box.env).catch(() => {});
     api.close();
     box.cleanup();
+  }
+});
+
+test("open stays foreground after readiness and exits when stop completes", async () => {
+  const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
+  const box = sandbox(api);
+  try {
+    const opened = await run(["open"], box.env);
+    assert.equal(opened.out.ok, true);
+    await sleep(100);
+    assert.equal(opened.child.exitCode, null);
+    assert.equal(opened.child.signalCode, null);
+    assert.equal(
+      api.calls.some((call) => call.method === "PATCH"),
+      false,
+    );
+    assert.deepEqual(api.calls.find((call) => call.method === "POST")?.body, {
+      proxyCountryCode: "us",
+      timeout: 60,
+      allowResizing: true,
+    });
+    const state = JSON.parse(readFileSync(join(box.env.QM_BROWSE_DIR, "default.json"), "utf8"));
+    assert.equal(opened.out.timeoutAt, state.timeoutAt);
+    assert.equal(Date.parse(state.timeoutAt) - Date.parse(state.startedAt), 60 * 60_000);
+    assert.equal((await run(["stop"], box.env)).out.stopped, true);
+    const exited = await Promise.race([opened.exited, sleep(2000).then(() => "still running")]);
+    assert.equal(exited, 0);
+  } finally {
+    await run(["stop"], box.env).catch(() => {});
+    api.close();
+    box.cleanup();
+  }
+});
+
+test("terminating the foreground open process stops its cloud browser", async () => {
+  const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
+  const box = sandbox(api);
+  try {
+    const opened = await run(["open"], box.env);
+    assert.equal(opened.out.ok, true);
+    opened.child.kill("SIGTERM");
+    const exited = await Promise.race([opened.exited, sleep(2000).then(() => "still running")]);
+    assert.equal(exited, 0);
+    assert.ok(api.calls.some((call) => call.method === "PATCH" && call.url === "/api/v4/browsers/b1"));
+    assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.json")), false);
+    assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.sock")), false);
+  } finally {
+    await run(["stop"], box.env).catch(() => {});
+    api.close();
+    box.cleanup();
+  }
+});
+
+test("open stops allocations whose provider deadline does not confirm the lifetime cap", async () => {
+  for (const lifetimeMinutes of [0, 61, Number.NaN]) {
+    const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
+    const box = sandbox(api);
+    api.state.lifetimeMinutes = lifetimeMinutes;
+    try {
+      const opened = await run(["open"], box.env);
+      assert.equal(opened.out.ok, false);
+      assert.match(String(opened.out.error), /lifetime bounded to 60 minutes/);
+      assert.ok(api.calls.some((call) => call.method === "PATCH" && call.url === "/api/v4/browsers/b1"));
+      assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.json")), false);
+    } finally {
+      api.close();
+      box.cleanup();
+    }
   }
 });

@@ -1,25 +1,51 @@
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
+import { formatBrowserError } from "./browser-errors.mjs";
 
 export async function startBrowserProxy(cdpUrl, modulePath) {
   const { ws, wsServer, HttpsProxyAgent, getProxyForUrl } = createRequire(modulePath)("./lib/utilsBundle.js");
-  const lookup = new URL(cdpUrl);
-  if (lookup.protocol === "wss:") lookup.protocol = "https:";
-  else if (lookup.protocol === "ws:") lookup.protocol = "http:";
-  if (!getProxyForUrl(lookup.href)) return { endpoint: cdpUrl, async close() {} };
   let target = cdpUrl;
-  if (lookup.protocol === new URL(cdpUrl).protocol) {
-    lookup.pathname = lookup.pathname.replace(/\/$/, "") + "/json/version";
-    const response = await fetch(lookup, { signal: AbortSignal.timeout(30000) });
-    if (!response.ok) throw new Error(`Browser WebSocket discovery failed: HTTP ${response.status}`);
-    target = (await response.json()).webSocketDebuggerUrl;
+  let destination;
+  try {
+    destination = new URL(target);
+  } catch {
+    throw new Error("Browser endpoint is not a valid URL");
   }
-  const destination = new URL(target);
-  if (!["ws:", "wss:"].includes(destination.protocol))
-    throw new Error("Browser discovery did not return a WebSocket URL");
+  if (["http:", "https:"].includes(destination.protocol)) {
+    if (!destination.pathname.endsWith("/")) destination.pathname += "/";
+    destination.pathname += "json/version/";
+    let response;
+    try {
+      response = await fetch(destination, { signal: AbortSignal.timeout(30000) });
+    } catch (error) {
+      throw safeFailure("Browser WebSocket discovery failed", error, [
+        cdpUrl,
+        destination.href,
+        getProxyForUrl(destination.href),
+      ]);
+    }
+    if (!response.ok) throw new Error(`Browser WebSocket discovery failed: HTTP ${response.status}`);
+    try {
+      target = (await response.json()).webSocketDebuggerUrl;
+      destination = new URL(target);
+    } catch {
+      throw new Error("Browser discovery did not return a valid WebSocket URL");
+    }
+  }
+  if (!["ws:", "wss:"].includes(destination.protocol)) throw new Error("Browser endpoint is not a WebSocket URL");
   destination.protocol = destination.protocol === "wss:" ? "https:" : "http:";
   const proxy = getProxyForUrl(destination.href);
-  const agent = proxy ? new HttpsProxyAgent(proxy) : undefined;
+  if (!proxy)
+    return {
+      endpoint: target,
+      getError: (error) => error && safeFailure("Browser WebSocket transport failed", error, [target, proxy]),
+      async close() {},
+    };
+  const agent = new HttpsProxyAgent(proxy);
+  let failure;
+  const record = (error) => {
+    failure ??= safeFailure("Browser WebSocket transport failed", error, [target, proxy]);
+  };
   const path = `/${randomUUID()}`;
   const server = new wsServer({ host: "127.0.0.1", port: 0, path, maxPayload: 256 * 1024 * 1024 });
   const connections = new Set();
@@ -36,11 +62,20 @@ export async function startBrowserProxy(cdpUrl, modulePath) {
       [client, upstream],
       [upstream, client],
     ]) {
-      source.once("error", terminate);
+      source.once("error", (error) => {
+        record(error);
+        terminate();
+      });
       source.once("close", terminate);
       source.on("message", (data, binary) => {
         source.pause();
-        const send = () => destination.send(data, { binary }, (error) => (error ? terminate() : source.resume()));
+        const send = () =>
+          destination.send(data, { binary }, (error) => {
+            if (error) {
+              record(error);
+              terminate();
+            } else source.resume();
+          });
         if (destination.readyState === ws.CONNECTING) destination.once("open", send);
         else send();
       });
@@ -59,6 +94,8 @@ export async function startBrowserProxy(cdpUrl, modulePath) {
   let closing;
   return {
     endpoint: `ws://127.0.0.1:${server.address().port}${path}`,
+    getError: (error) =>
+      failure || (error && safeFailure("Browser WebSocket transport failed", error, [target, proxy])),
     close() {
       return (closing ??= new Promise((resolve, reject) => {
         for (const socket of connections) socket.terminate();
@@ -70,4 +107,8 @@ export async function startBrowserProxy(cdpUrl, modulePath) {
       }));
     },
   };
+}
+
+function safeFailure(message, error, privateValues) {
+  return new Error(`${message}: ${formatBrowserError(error, privateValues)}`);
 }

@@ -197,6 +197,18 @@ test("CUA releases held keys and mouse after failures, preserving cleanup failur
   assert.deepEqual(calls.at(-1), ["mouseUp"]);
 });
 
+function snapshotSession(read: () => unknown) {
+  return {
+    send: async (method: string) => {
+      if (method === "Page.getFrameTree") return { frameTree: { frame: { id: "main" } } };
+      if (method === "Page.createIsolatedWorld") return { executionContextId: 1 };
+      if (method === "Runtime.evaluate") return { result: { value: await read() } };
+      throw new Error(`Unexpected command ${method}`);
+    },
+    detach: async () => {},
+  };
+}
+
 test("snapshots mask editable values structurally without changing labels, references or native data", async () => {
   const { native, context } = mockBrowser();
   const page = await context.newPage();
@@ -209,12 +221,16 @@ test("snapshots mask editable values structurally without changing labels, refer
   ];
   Object.assign(page, {
     ariaSnapshotJSON: async () => original,
-    getByRef: (ref: string) => ({
-      evaluate: async () => ({ editable: ["e1", "e2", "f1e1"].includes(ref), labeled: ref === "e1" }),
-    }),
+    frames: () => [],
     evaluate: async () => {
       throw new Error("must not modify page");
     },
+  });
+  Object.assign(context, {
+    newCDPSession: async () =>
+      snapshotSession(() =>
+        ["e1", "e2", "e3", "f1e1"].map((ref) => [ref, { editable: ref !== "e3", labeled: ref === "e1" }]),
+      ),
   });
   const tab = createBrowserClient(native).tabs.get(page._guid);
   const snapshot = JSON.parse(await tab.dom_cua.get_visible_dom());
@@ -228,42 +244,41 @@ test("snapshots mask editable values structurally without changing labels, refer
   assert.equal(original[0]?.text, "a");
 });
 
-test("snapshot metadata is concurrent and stale references fail closed", async () => {
+test("snapshot metadata uses bounded batches and stale references fail closed", async () => {
   const { native, context } = mockBrowser();
   const page = await context.newPage();
-  const refs = Array.from({ length: 200 }, (_, index) => `e${index}`);
-  let calls = 0;
-  let release: (value?: unknown) => void = () => {};
-  const barrier = new Promise((resolve) => {
-    release = resolve;
-  });
+  let refs: string[] = [];
+  let reads = 0;
+  let detached = 0;
+  let stale = false;
   Object.assign(page, {
+    frames: () => [],
     ariaSnapshotJSON: async () => refs.map((ref) => ({ ref, role: "generic", text: "private value" })),
-    getByRef: () => ({
-      evaluate: async () => {
-        calls++;
-        await barrier;
-        return { editable: true };
+  });
+  Object.assign(context, {
+    newCDPSession: async () => ({
+      ...snapshotSession(() => {
+        reads++;
+        return stale ? [] : refs.map((ref) => [ref, { editable: true }]);
+      }),
+      detach: async () => {
+        detached++;
       },
     }),
   });
   const tab = createBrowserClient(native).tabs.get(page._guid);
-  const pending = tab.dom_cua.get_visible_dom();
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(calls, 200);
-  release();
-  assert.equal((await pending).includes("private value"), false);
-  Object.assign(page, {
-    getByRef: () => ({
-      evaluate: async () => {
-        throw new Error("detached private value");
-      },
-    }),
-  });
+  for (const size of [200, 2000]) {
+    refs = Array.from({ length: size }, (_, index) => `e${index}`);
+    assert.equal((await tab.dom_cua.get_visible_dom()).includes("private value"), false);
+  }
+  assert.equal(reads, 2);
+  assert.equal(detached, 2);
+  stale = true;
   await assert.rejects(
     tab.dom_cua.get_visible_dom(),
     (error: Error) => error.message === "Snapshot redaction failed: a referenced element could not be verified",
   );
+  assert.equal(detached, 3);
 });
 
 test("dev logs use native stored messages and filter mapped warning levels", async () => {
@@ -286,7 +301,7 @@ test(
       new URL("../skills-seed/browse/scripts/playwright-runtime.mjs", import.meta.url).href
     );
     const { chromium } = await import(pathToFileURL(await ensurePlaywright()).href);
-    const launched = await chromium.launch({ headless: !process.env.DISPLAY });
+    const launched = await chromium.launch({ headless: !process.env.DISPLAY, args: ["--site-per-process"] });
     const directory = await mkdtemp(join(tmpdir(), "browse-client-"));
     let connected;
     try {
@@ -310,15 +325,25 @@ test(
       await newer.close();
       page.setDefaultTimeout(2000);
       assert.equal(page._guid, original._guid);
+      await page.context().route("https://other.test/**", (route: any) =>
+        route.fulfill({
+          contentType: "text/html",
+          body: '<input type="password" role="generic" value="sensitive-cross-origin">',
+        }),
+      );
       await page.route("https://example.test/**", (route: any) =>
         route.fulfill({
           contentType: "text/html",
-          body: '<title>Native</title><input value="sensitive-input"><textarea>sensitive-area</textarea><input type="password" value="sensitive-password"><p>Normal a label</p><input value="a"><input type="radio" value="a"><input type="checkbox"><select><option>Keep options</option></select><button onclick="this.textContent=\'clicked\'">Outer</button><iframe srcdoc="<button>Inner</button><textarea>sensitive-frame</textarea>"></iframe>',
+          body: '<title>Native</title><input value="sensitive-input"><textarea>sensitive-area</textarea><input type="password" value="sensitive-password"><p>Normal a label</p><input value="a"><input type="radio" value="a"><input type="checkbox"><select><option>Keep options</option></select><button onclick="this.textContent=\'clicked\'">Outer</button><iframe srcdoc="<button>Inner</button><textarea>sensitive-frame</textarea>"></iframe><iframe src="https://other.test/child"></iframe>',
         }),
       );
       await tab.goto("https://example.test/");
+      assert.equal(page.frames().length, 3);
+      const crossFrame = page.frames().find((frame: any) => frame.url().startsWith("https://other.test/"));
+      const crossSession = await page.context().newCDPSession(crossFrame);
+      await crossSession.detach();
       await page
-        .frameLocator("iframe")
+        .frameLocator("iframe[srcdoc]")
         .getByRole("button", { name: "Inner" })
         .dblclick({ modifiers: ["Shift"] });
       const handle = await page.evaluateHandle(() => ({ number: 7 }));
@@ -367,6 +392,25 @@ test(
       ]);
       const clipboard = await tab.clipboard.read();
       assert.equal(clipboard[0].entries.find((entry: any) => entry.mimeType === "text/plain").text, "rich clipboard");
+      await page.setContent(
+        '<label for="native-target">Native label <input value="secret-native"></label><input id="native-target" value="secret-native-target"><label>Mixed label <input value="secret-mixed"><textarea>secret-mixed-area</textarea></label><label for="rich-target">Rich label <div contenteditable>secret-rich-label</div></label><input id="rich-target"><input id="source" value="secret-source"><input aria-label="Safe label" aria-labelledby="source" value="secret-target"><label id="nested-label">Label <input value="secret-inner"></label><input aria-labelledby="nested-label"><span id="shadow-label"></span><input aria-label="Safe shadow label" aria-labelledby="shadow-label"><span id="chain-label" aria-labelledby="source"></span><input aria-label="Safe chain label" aria-labelledby="chain-label"><span id="clean-label">Clean label</span><input aria-label="Lower priority label" aria-labelledby="clean-label" value="secret-clean">',
+      );
+      await page.locator("#shadow-label").evaluate((element: any) => {
+        element.attachShadow({ mode: "open" }).innerHTML = '<input value="secret-shadow">';
+      });
+      const labelSnapshot = JSON.stringify(await page.ariaSnapshotJSON({ mode: "ai" }));
+      assert.equal(labelSnapshot.includes('"name":"secret-source"'), true);
+      assert.equal(labelSnapshot.includes('"name":"Label secret-inner"'), true);
+      assert.equal(labelSnapshot.includes('"name":"secret-shadow"'), true);
+      for (const secret of ["secret-native", "secret-mixed-area", "secret-rich-label"])
+        assert.equal(
+          flatten(JSON.parse(labelSnapshot)).some((node) => node.name?.includes(secret)),
+          true,
+          secret,
+        );
+      const safeLabels = await page.domSnapshot();
+      assert.equal(safeLabels.includes("secret-"), false);
+      assert.equal(safeLabels.includes('"name": "Clean label"'), true);
       await page.setContent('<p>Public label</p><textarea disabled role="none">disabled-secret</textarea>');
       assert.equal((await page.domSnapshot()).includes("disabled-secret"), false);
       await page.setContent(
@@ -381,6 +425,7 @@ test(
       assert.equal(raw.includes("password-secret"), true);
       const redacted = await page.domSnapshot();
       assert.equal(redacted.includes("-secret"), false);
+      assert.equal(redacted.includes('"name": "Account name"'), true);
       for (const label of [
         "Public label",
         "Account name",
@@ -403,12 +448,49 @@ test(
                 .evaluate((element: any) => element.remove());
               return snapshot;
             },
-            getByRef: page.getByRef.bind(page),
+            _guid: page._guid,
+            context: () => page.context(),
+            frames: () => page.frames(),
+            mainFrame: () => page.mainFrame(),
           },
           { timeout: 100 },
         ),
         /Snapshot redaction failed: a referenced element could not be verified/,
       );
+      for (const fields of [20, 200, 1000]) {
+        const html = Array.from(
+          { length: fields / 20 },
+          (_, branch) =>
+            Array.from(
+              { length: 20 },
+              (_, depth) => `<div role="group" aria-label="Group ${branch}-${depth}"><input value="scaling-secret">`,
+            ).join("") + "</div>".repeat(20),
+        ).join("");
+        await page.setContent(html);
+        const commands: string[] = [];
+        const measuredPage = {
+          _guid: page._guid,
+          frames: () => page.frames(),
+          mainFrame: () => page.mainFrame(),
+          ariaSnapshotJSON: (options: unknown) => page.ariaSnapshotJSON(options),
+          context: () => ({
+            newCDPSession: async (target: unknown) => {
+              const session = await page.context().newCDPSession(target === measuredPage ? page : target);
+              return {
+                detach: () => session.detach(),
+                send: async (method: string, params: unknown) => {
+                  commands.push(method);
+                  return session.send(method, params);
+                },
+              };
+            },
+          }),
+        };
+        const snapshot = await domSnapshot(measuredPage);
+        assert.equal(snapshot.includes("scaling-secret"), false);
+        assert.equal((snapshot.match(/"text": "<redacted>"/g) || []).length, fields);
+        assert.deepEqual(commands, ["Page.getFrameTree", "Page.createIsolatedWorld", "Runtime.evaluate"]);
+      }
       const png = await page.screenshot();
       await tab.clipboard.write([{ entries: [{ mimeType: "image/png", base64: png.toString("base64") }] }]);
       const image = (await tab.clipboard.read())[0].entries.find((entry: any) => entry.mimeType === "image/png");

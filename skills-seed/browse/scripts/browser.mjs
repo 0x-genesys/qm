@@ -1,26 +1,21 @@
 #!/usr/bin/env node
-import { spawn, spawnSync, fork } from "node:child_process";
+import { fork } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, openSync, closeSync, chmodSync } from "node:fs";
-import { request, createServer } from "node:http";
+import { request, createServer, setGlobalProxyFromEnv } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startBrowserService } from "./browser-service.mjs";
+import { formatBrowserError } from "./browser-errors.mjs";
 import { ensurePlaywright } from "./playwright-runtime.mjs";
 import { parseArgs } from "node:util";
-import { setTimeout as sleep } from "node:timers/promises";
-if ((process.env.HTTPS_PROXY || process.env.https_proxy) && !process.env.NODE_USE_ENV_PROXY) {
-  const r = spawnSync(process.execPath, [...process.execArgv, ...process.argv.slice(1)], {
-    stdio: "inherit",
-    env: { ...process.env, NODE_USE_ENV_PROXY: "1" },
-  });
-  process.exit(r.status ?? 1);
-}
+setGlobalProxyFromEnv();
 const API = (process.env.BROWSER_USE_API_BASE ?? "https://api.browser-use.com").replace(/\/+$/, "");
 const KEY = process.env.BROWSER_USE_API_KEY;
 const DIR = process.env.QM_BROWSE_DIR ?? join(tmpdir(), "qm-browse");
 const IDLE_MS = Number(process.env.QM_BROWSE_IDLE_MS ?? 15 * 60000);
 const MAX_OUTPUT = 10_000;
+const PROVIDER_LIFETIME_MINUTES = 60;
 const print = (obj) => console.log(JSON.stringify(obj));
 function fail(obj, code = 1) {
   print({ ok: false, ...obj });
@@ -29,7 +24,6 @@ function fail(obj, code = 1) {
 const paths = (session) => ({
   sock: join(DIR, `${session}.sock`),
   state: join(DIR, `${session}.json`),
-  log: join(DIR, `${session}.log`),
   lock: join(DIR, `${session}.lock`),
 });
 async function api(method, path, body) {
@@ -69,13 +63,6 @@ async function preflight() {
     sessionLimit: r.json?.concurrentSessionLimit,
   };
 }
-async function cdpEndpoint(cdpUrl) {
-  if (!new URL(cdpUrl).protocol.startsWith("http")) return cdpUrl;
-  const res = await fetch(new URL("/json/version", cdpUrl), { signal: AbortSignal.timeout(15_000) });
-  if (!res.ok) throw new Error(`CDP discovery failed: HTTP ${res.status}`);
-  return (await res.json()).webSocketDebuggerUrl;
-}
-
 async function stopBrowser(id) {
   try {
     const r = await api("PATCH", `/api/v4/browsers/${encodeURIComponent(id)}`, { action: "stop" });
@@ -166,54 +153,25 @@ async function openLocked(session, values) {
   }
   await ensurePlaywright();
   const country = values.country ?? "us";
-  const body = { proxyCountryCode: country === "none" ? null : country };
+  const body = {
+    proxyCountryCode: country === "none" ? null : country,
+    timeout: PROVIDER_LIFETIME_MINUTES,
+    allowResizing: true,
+  };
   if (values.profile) body.profileId = values.profile;
   const created = await api("POST", "/api/v4/browsers", body);
   if (created.status !== 200 && created.status !== 201) {
     fail({ reason: "create_failed", status: created.status, detail: created.json }, created.status === 402 ? 2 : 1);
   }
-  const { id, cdpUrl, liveUrl } = created.json;
-  writeFileSync(p.state, JSON.stringify({ id, cdpUrl, liveUrl }), { mode: 0o600 });
-  rmSync(p.sock, { force: true });
-  const log = openSync(p.log, "w");
-  const child = spawn(process.execPath, [process.argv[1], "__daemon", "--session", session], {
-    detached: true,
-    stdio: ["ignore", log, log],
-    env: process.env,
-  });
-  closeSync(log);
-  child.unref();
-  for (let i = 0; i < 120; i++) {
-    await sleep(500);
-    if (existsSync(p.sock)) {
-      const h = await call(p.sock, "/health", {}, 5000).catch(() => null);
-      if (h?.ok) {
-        print({ ok: true, session, browserId: id, liveUrl, tabs: h.tabs, capabilities: h.capabilities });
-        return;
-      }
-    }
-    if (child.exitCode !== null) break;
-  }
-  if (child.exitCode === null) process.kill(child.pid, "SIGTERM");
-  const s = await stopBrowser(id);
-  if (s.stopped) rmSync(p.state, { force: true });
-  const tail = existsSync(p.log) ? readFileSync(p.log, "utf8").slice(-2000) : "";
-  fail({ reason: "connect_failed", browserId: id, stop: s, log: tail });
+  const ready = await daemon(session, created.json);
+  print({ ok: true, session, ...ready });
 }
-async function daemon(session) {
+async function daemon(session, created) {
   process.umask(0o077);
   const p = paths(session);
-  const { id, cdpUrl, liveUrl } = JSON.parse(readFileSync(p.state, "utf8"));
+  const { id, cdpUrl, liveUrl, startedAt, timeoutAt } = created;
   const endpoints = [cdpUrl];
-  const privateError = (error) => {
-    let message = String(error?.message ?? error);
-    for (const endpoint of endpoints) {
-      const url = new URL(endpoint);
-      for (const secret of [endpoint, `${url.origin}${url.pathname}`, url.hostname].filter(Boolean))
-        message = message.replaceAll(secret, "<browser endpoint>");
-    }
-    return message;
-  };
+  const privateError = (error) => formatBrowserError(error, [...endpoints, KEY]);
   let stopping = null;
   let worker;
   let browser;
@@ -234,172 +192,183 @@ async function daemon(session) {
     }));
   for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(sig, () => shutdown(sig).then(() => process.exit(0)));
   try {
-    const endpoint = await cdpEndpoint(cdpUrl);
-    endpoints.push(endpoint);
-    browser = await startBrowserService(endpoint, { provider: true, browserId: id, api });
+    writeFileSync(p.state, JSON.stringify({ id, cdpUrl, liveUrl, startedAt, timeoutAt }), { mode: 0o600 });
+    const lifetimeMs = Date.parse(timeoutAt) - Date.parse(startedAt);
+    if (!(lifetimeMs > 0 && lifetimeMs <= PROVIDER_LIFETIME_MINUTES * 60_000 && Date.parse(timeoutAt) > Date.now()))
+      throw new Error("Provider did not confirm a browser lifetime bounded to 60 minutes");
+    browser = await startBrowserService(cdpUrl, { provider: true, browserId: id, api });
     endpoints.push(browser.endpoint);
-  } catch (err) {
-    console.error(`connect failed: ${privateError(err)}`);
-    await shutdown("connect failed");
-    process.exit(1);
-  }
-  browser.on("disconnected", () => {
-    if (!stopping) shutdown("disconnected").then(() => process.exit(0));
-  });
-  const listTabs = () =>
-    browser.browser
-      .contexts()
-      .flatMap((context) => context.pages())
-      .map((page) => ({
-        id: page._guid,
-        url: page.url(),
-        title: "",
-      }));
-  if (!listTabs().length) {
-    const context = browser.browser.contexts()[0] ?? (await browser.browser.newContext());
-    await context.newPage();
-  }
-  const modulePath = await ensurePlaywright();
-  worker = fork(fileURLToPath(new URL("./js-runtime.mjs", import.meta.url)), [browser.endpoint, modulePath], {
-    env: { PATH: process.env.PATH, HOME: process.env.HOME },
-    execArgv: [...process.execArgv, "--unhandled-rejections=strict"],
-    stdio: ["ignore", "ignore", "inherit", "ipc"],
-  });
-  let pendingJs;
-  let readyResolve, readyReject;
-  const ready = new Promise((resolve, reject) => {
-    readyResolve = resolve;
-    readyReject = reject;
-  });
-  const readyTimer = setTimeout(
-    () => readyReject(new Error("JavaScript browser client initialization timed out")),
-    30_000,
-  );
-  worker.on("message", (message) => {
-    if (message.type === "ready") {
+    browser.on("disconnected", () => {
+      if (!stopping) shutdown("disconnected").then(() => process.exit(0));
+    });
+    const listTabs = () =>
+      browser.browser
+        .contexts()
+        .flatMap((context) => context.pages())
+        .map((page) => ({
+          id: page._guid,
+          url: page.url(),
+          title: "",
+        }));
+    if (!listTabs().length) {
+      const context = browser.browser.contexts()[0] ?? (await browser.browser.newContext());
+      await context.newPage();
+    }
+    const modulePath = await ensurePlaywright();
+    worker = fork(fileURLToPath(new URL("./js-runtime.mjs", import.meta.url)), [browser.endpoint, modulePath], {
+      env: { PATH: process.env.PATH, HOME: process.env.HOME },
+      execArgv: [...process.execArgv, "--unhandled-rejections=strict"],
+      stdio: ["ignore", "ignore", "inherit", "ipc"],
+    });
+    let pendingJs;
+    let initialized = false;
+    let readyResolve, readyReject;
+    const ready = new Promise((resolve, reject) => {
+      readyResolve = resolve;
+      readyReject = reject;
+    });
+    const readyTimer = setTimeout(
+      () => readyReject(new Error("JavaScript browser client initialization timed out")),
+      30_000,
+    );
+    worker.on("message", (message) => {
+      if (message.type === "ready") {
+        clearTimeout(readyTimer);
+        readyResolve();
+      } else if (message.type === "fatal") {
+        if (!initialized) return readyReject(new Error(message.error));
+        if (pendingJs) {
+          clearTimeout(pendingJs.timer);
+          pendingJs.resolve({ error: message.error });
+          pendingJs = null;
+        }
+        shutdown("unhandled asynchronous error").then(() => process.exit(1));
+      } else if (message.type === "result" && pendingJs?.id === message.id) {
+        clearTimeout(pendingJs.timer);
+        const { resolve } = pendingJs;
+        pendingJs = null;
+        resolve(message);
+      }
+    });
+    worker.on("exit", () => {
       clearTimeout(readyTimer);
-      readyResolve();
-    } else if (message.type === "fatal") {
+      readyReject(new Error("JavaScript browser client exited during initialization"));
+      if (stopping || !initialized) return;
       if (pendingJs) {
         clearTimeout(pendingJs.timer);
-        pendingJs.resolve({ error: message.error });
+        pendingJs.resolve({ error: "JavaScript process exited; browser stopped" });
         pendingJs = null;
       }
-      shutdown("unhandled asynchronous error").then(() => process.exit(1));
-    } else if (message.type === "result" && pendingJs?.id === message.id) {
-      clearTimeout(pendingJs.timer);
-      const { resolve } = pendingJs;
-      pendingJs = null;
-      resolve(message);
-    }
-  });
-  worker.on("exit", () => {
-    clearTimeout(readyTimer);
-    readyReject(new Error("JavaScript browser client exited during initialization"));
-    if (stopping) return;
-    if (pendingJs) {
-      clearTimeout(pendingJs.timer);
-      pendingJs.resolve({ error: "JavaScript process exited; browser stopped" });
-      pendingJs = null;
-    }
-    shutdown("JavaScript process exited").then(() => process.exit(1));
-  });
-  try {
+      shutdown("JavaScript process exited").then(() => process.exit(1));
+    });
     await ready;
+    initialized = true;
+    let sequence = 0;
+    const runJs = (code, timeoutMs = 90_000) =>
+      new Promise((resolve) => {
+        const id = ++sequence;
+        const timer =
+          timeoutMs === 0
+            ? null
+            : setTimeout(() => {
+                pendingJs = null;
+                resolve({
+                  error: `JavaScript exceeded ${timeoutMs / 1000} seconds; browser stopped. Inspect before retrying any action.`,
+                });
+                worker.kill("SIGKILL");
+              }, timeoutMs);
+        pendingJs = { id, resolve, timer };
+        worker.send({ type: "js", id, code });
+      });
+    let idle;
+    const touch = () => {
+      clearTimeout(idle);
+      idle = setTimeout(() => shutdown("idle").then(() => process.exit(0)), IDLE_MS);
+    };
+    touch();
+    const handlers = {
+      "/health": async () => ({
+        ok: true,
+        browserId: id,
+        liveUrl,
+        tabs: listTabs(),
+        capabilities: browser.capabilities,
+      }),
+      "/js": async ({ code, timeoutMs = 90_000 }) => {
+        if (typeof code !== "string" || code.length > 50_000)
+          throw new Error("code must be a string under 50,000 characters");
+        if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 2_147_483_647)
+          throw new Error("timeoutMs must be an integer from 0 to 2147483647");
+        const { result, output, error } = await runJs(code, timeoutMs);
+        const failed = error !== undefined;
+        const text = String(error ?? result ?? "undefined");
+        const resultText = text.slice(0, MAX_OUTPUT);
+        const consoleText = (output ?? "").slice(0, MAX_OUTPUT - resultText.length);
+        return {
+          ok: !failed,
+          ...(failed ? { error: resultText } : { result: resultText }),
+          output: consoleText,
+          truncated: text.length + (output?.length ?? 0) > MAX_OUTPUT,
+        };
+      },
+      "/screenshot": async ({ path }) => {
+        const out = path || join(DIR, `${session}-${Date.now()}.png`);
+        const { result, error } = await runJs(`await tab.screenshot(${JSON.stringify(out)})`);
+        if (error !== undefined) throw new Error(error);
+        return { ok: true, path: result };
+      },
+      "/stop": async () => {
+        const s = await shutdown("stop requested");
+        setImmediate(() => process.exit(0));
+        return { ok: s.stopped, browserId: id, ...s };
+      },
+    };
+    let queue = Promise.resolve();
+    const server = createServer((req, res) => {
+      let text = "";
+      req.on("data", (c) => {
+        text += c;
+        if (text.length > 100000) req.destroy();
+      });
+      req.on("end", () => {
+        const handle = async () => {
+          if (res.destroyed || stopping) return res.destroy();
+          const activity = req.url !== "/health";
+          if (activity) clearTimeout(idle);
+          let body;
+          try {
+            const handler = handlers[req.url];
+            if (!handler) throw new Error(`unknown command ${req.url}`);
+            body = await handler(JSON.parse(text || "{}"));
+          } catch (err) {
+            body = { ok: false, error: String(err?.stack ?? err) };
+          }
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify(body));
+          if (activity) touch();
+        };
+        if (["/stop", "/health"].includes(req.url)) void handle();
+        else
+          queue = queue.then(handle).catch((err) => {
+            console.error(err.message);
+            res.destroy();
+            touch();
+          });
+      });
+    });
+    rmSync(p.sock, { force: true });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(p.sock, () => {
+        chmodSync(p.sock, 0o600);
+        resolve();
+      });
+    });
+    return { browserId: id, liveUrl, timeoutAt, tabs: listTabs(), capabilities: browser.capabilities };
   } catch (error) {
-    console.error(privateError(error));
-    await shutdown("JavaScript browser client initialization failed");
-    process.exit(1);
+    const stop = await shutdown("initialization failed");
+    fail({ reason: "connect_failed", browserId: id, stop, error: privateError(error) });
   }
-  let sequence = 0;
-  const runJs = (code, timeoutMs = 90_000) =>
-    new Promise((resolve) => {
-      const id = ++sequence;
-      const timer =
-        timeoutMs === 0
-          ? null
-          : setTimeout(() => {
-              pendingJs = null;
-              resolve({
-                error: `JavaScript exceeded ${timeoutMs / 1000} seconds; browser stopped. Inspect before retrying any action.`,
-              });
-              worker.kill("SIGKILL");
-            }, timeoutMs);
-      pendingJs = { id, resolve, timer };
-      worker.send({ type: "js", id, code });
-    });
-  let idle;
-  const touch = () => {
-    clearTimeout(idle);
-    idle = setTimeout(() => shutdown("idle").then(() => process.exit(0)), IDLE_MS);
-  };
-  touch();
-  const handlers = {
-    "/health": async () => ({ ok: true, browserId: id, liveUrl, tabs: listTabs(), capabilities: browser.capabilities }),
-    "/js": async ({ code, timeoutMs = 90_000 }) => {
-      if (typeof code !== "string" || code.length > 50_000)
-        throw new Error("code must be a string under 50,000 characters");
-      if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 2_147_483_647)
-        throw new Error("timeoutMs must be an integer from 0 to 2147483647");
-      const { result, output, error } = await runJs(code, timeoutMs);
-      const failed = error !== undefined;
-      const text = String(error ?? result ?? "undefined");
-      const resultText = text.slice(0, MAX_OUTPUT);
-      const consoleText = (output ?? "").slice(0, MAX_OUTPUT - resultText.length);
-      return {
-        ok: !failed,
-        ...(failed ? { error: resultText } : { result: resultText }),
-        output: consoleText,
-        truncated: text.length + (output?.length ?? 0) > MAX_OUTPUT,
-      };
-    },
-    "/screenshot": async ({ path }) => {
-      const out = path || join(DIR, `${session}-${Date.now()}.png`);
-      const { result, error } = await runJs(`await tab.screenshot(${JSON.stringify(out)})`);
-      if (error !== undefined) throw new Error(error);
-      return { ok: true, path: result };
-    },
-    "/stop": async () => {
-      const s = await shutdown("stop requested");
-      setImmediate(() => process.exit(0));
-      return { ok: s.stopped, browserId: id, ...s };
-    },
-  };
-  let queue = Promise.resolve();
-  const server = createServer((req, res) => {
-    let text = "";
-    req.on("data", (c) => {
-      text += c;
-      if (text.length > 100000) req.destroy();
-    });
-    req.on("end", () => {
-      const handle = async () => {
-        if (res.destroyed || stopping) return res.destroy();
-        const activity = req.url !== "/health";
-        if (activity) clearTimeout(idle);
-        let body;
-        try {
-          const handler = handlers[req.url];
-          if (!handler) throw new Error(`unknown command ${req.url}`);
-          body = await handler(JSON.parse(text || "{}"));
-        } catch (err) {
-          body = { ok: false, error: String(err?.stack ?? err) };
-        }
-        res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify(body));
-        if (activity) touch();
-      };
-      if (["/stop", "/health"].includes(req.url)) void handle();
-      else
-        queue = queue.then(handle).catch((err) => {
-          console.error(err.message);
-          res.destroy();
-          touch();
-        });
-    });
-  });
-  rmSync(p.sock, { force: true });
-  server.listen(p.sock, () => chmodSync(p.sock, 0o600));
 }
 async function main() {
   const { values, positionals } = parseArgs({
@@ -424,8 +393,6 @@ async function main() {
     }
     case "open":
       return open(session, values);
-    case "__daemon":
-      return daemon(session);
     case "js": {
       const code = arg === undefined || arg === "-" ? await readStdin() : arg;
       const timeoutMs = Number(values["timeout-ms"] ?? 90_000);

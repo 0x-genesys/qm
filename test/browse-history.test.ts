@@ -40,6 +40,7 @@ test("history restoration waits for descendants and replays native frame, contex
   ]);
   const makeSession = (id: string, parentId?: string) => ({
     _targetId: id,
+    _contextIdToContext: new Map(),
     _isMainFrame: () => id === "main",
     _client: {
       async send(method: string, params?: { enabled: boolean }) {
@@ -98,6 +99,9 @@ test(
   { skip: !process.env.BROWSE_HISTORY_CDP, timeout: 45000 },
   async () => {
     const { startFixture } = await import(new URL("./fixtures/browse-parity.mjs", import.meta.url).href);
+    const { domSnapshot } = await import(
+      new URL("../skills-seed/browse/scripts/browser-snapshot.mjs", import.meta.url).href
+    );
     const { startBrowserService } = await import(
       new URL("../skills-seed/browse/scripts/browser-service.mjs", import.meta.url).href
     );
@@ -114,6 +118,8 @@ test(
       const page = await context.newPage();
       page.setDefaultTimeout(10000);
       await page.goto(fixture.mainUrl);
+      await page.ariaSnapshotJSON({ mode: "ai" });
+      await page.evaluate("document.body._ariaRef={siteOwned:true}");
       await page.evaluate(
         "window.restored=false;window.addEventListener('pageshow',event=>window.restored=event.persisted)",
       );
@@ -130,6 +136,16 @@ test(
       assert.equal(await page.evaluate("document.readyState"), "complete");
       assert.equal(page.frames().length, 7);
       assert.equal(mainNavigations, 1);
+      assert.equal(await page.evaluate("document.body._ariaRef.siteOwned"), true);
+      const nodes: { name?: string; ref?: string; children?: typeof nodes }[] = JSON.parse(await domSnapshot(page));
+      let nestedRef: string | undefined;
+      while (nodes.length) {
+        const node = nodes.pop()!;
+        if (node.name === "Parity cross-nested-cross") nestedRef = node.ref;
+        nodes.push(...(node.children || []));
+      }
+      assert(nestedRef, "restored cross-frame snapshot contains its native ref");
+      assert.equal(await page.getByRef(nestedRef).textContent(), "Parity cross-nested-cross");
       assert.equal(
         await page.frameLocator("#cross-frame").frameLocator("#nested-cross-frame").locator("h1").textContent(),
         "Parity cross-nested-cross",

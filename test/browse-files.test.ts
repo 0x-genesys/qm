@@ -207,21 +207,22 @@ test(
       return response.json();
     };
     let id: string | undefined;
-    let daemon: any;
+    let service: any;
     let client: any;
-    let dispose: any;
     try {
-      const created = await api("POST", "/browsers", { proxyCountryCode: null, timeout: 5 });
+      const created = await api("POST", "/browsers", { proxyCountryCode: null, timeout: 5, allowResizing: true });
       assert(created && typeof created === "object" && "id" in created && typeof created.id === "string");
       id = created.id;
       assert("cdpUrl" in created && typeof created.cdpUrl === "string");
-      daemon = await chromium.connectOverCDP(created.cdpUrl, { noDefaults: true });
-      dispose = await installBrowserFiles(daemon);
-      const { endpoint } = await daemon.bind("files-test", { host: "127.0.0.1", port: 0 });
-      client = await chromium.connect(endpoint);
+      const { startBrowserService } = await import(
+        new URL("../skills-seed/browse/scripts/browser-service.mjs", import.meta.url).href
+      );
+      service = await startBrowserService(created.cdpUrl, { provider: true, browserId: id });
+      client = await chromium.connect(service.endpoint);
       await temporary(async (dir) => {
         const context = client.contexts()[0];
-        const page = await context.newPage();
+        const page = context.pages()[0];
+        assert(page, "Fresh Browser Use session must have an initial default-context page");
         await page.goto('data:text/html,<input type=file multiple><a download="same.bin">Download</a>', {
           waitUntil: "commit",
         });
@@ -302,12 +303,32 @@ test(
     } finally {
       try {
         await client?.close();
-        await daemon?.unbind();
-        await daemon?.close();
-        await dispose?.();
+        await service?.close();
       } finally {
         if (id) await api("PATCH", `/browsers/${id}`, { action: "stop" });
       }
     }
   },
 );
+
+test("artifact failures retain diagnostic causes while redacting private values", async () => {
+  const { browser, completed, impl, complete } = nativeFixture();
+  browser.newContext = async () => {
+    throw new Error("read secret-endpoint failed", {
+      cause: Object.assign(new Error("not accessible"), { code: "EACCES" }),
+    });
+  };
+  const dispose = await installBrowserFiles(browser, { privateValues: ["secret-endpoint"] });
+  try {
+    impl.downloadCreated(null, "one", "blob:one", "a");
+    complete("one");
+    await waitUntil(() => completed.length === 1);
+    assert(completed[0]);
+    assert.match(completed[0].error, /EACCES/);
+    assert.match(completed[0].error, /not accessible/);
+    assert.match(completed[0].error, /private browser value/);
+    assert(!completed[0].error.includes("secret-endpoint"));
+  } finally {
+    await dispose();
+  }
+});

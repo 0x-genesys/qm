@@ -5,7 +5,6 @@ import type { SlackSessionStatusState } from "./slack/session-status.ts";
 import { availableRuntimeError } from "./api/runtime-config.ts";
 import { createApprovalStore } from "./core/approval-store.ts";
 import { createKeychainApprovals, type KeychainApprovals } from "./credentials/keychain-approval.ts";
-import { asObject } from "./harness/codex-auth-file.ts";
 import { flushErrorReporting, startTiming } from "../plugins/chassis/src/error-reporting.ts";
 import type { TimingStatus } from "../plugins/chassis/src/timing.ts";
 import { createProductAnalytics } from "./util/product-analytics.ts";
@@ -306,7 +305,7 @@ import { createModelGateway, type ModelGateway } from "./model/model-gateway.ts"
 import { createModelCredentialStore, type ModelCredentialStore } from "./model/model-credential-store.ts";
 import { refreshChatGPTTokens, refreshClaudeTokens } from "./model/subscription-oauth.ts";
 import { createUserModelCredentialStore, type UserModelCredentialStore } from "./model/user-model-credential-store.ts";
-import { type ModelGatewayTransportConfig, setProviderBaseUrls } from "./model/provider-endpoints.ts";
+import { setProviderBaseUrls } from "./model/provider-endpoints.ts";
 import { setCustomProviders } from "./model/custom-providers.ts";
 import { createCustomProviderStore, type CustomProviderStore } from "./model/custom-provider-store.ts";
 import { createMemorySessionStore } from "./sessions/memory-session-store.ts";
@@ -318,7 +317,7 @@ import { createCodexHarness, codexHarnessConfigOptions } from "./harness/codex-h
 import { keychainCodexAuthStore, fileCodexAuthStore, type CodexAuthStore } from "./harness/codex-auth-store.ts";
 import { keychainHarnessAuthEnv } from "./credentials/harness-auth-env.ts";
 import { createClaudeHarness, claudeHarnessConfigOptions } from "./harness/claude-harness.ts";
-import { createPiHarness, piHarnessConfigOptions, type ProviderKeys } from "./harness/pi-harness.ts";
+import { createPiHarness, piHarnessConfigOptions } from "./harness/pi-harness.ts";
 import { createHarnessRouter, resolveRuntimeChoiceDurable } from "./harness/harness-router.ts";
 import { selectableModelCatalog } from "./model/model-catalog.ts";
 import type { Harness } from "./harness/harness.ts";
@@ -498,8 +497,6 @@ export interface BuiltApp {
   consentLinks: ConsentLinkStore;
   oauthFlows: OAuthFlowStore;
   secretDrops: SecretDropStore;
-  browserModelGateway?: ModelGatewayTransportConfig;
-  resolveBrowserCompanyKeys: (includeSubscription?: boolean) => Promise<ProviderKeys>;
   modelGateway: ModelGateway;
   modelCredentials: ModelCredentialStore;
   userModelCredentials: UserModelCredentialStore;
@@ -1396,17 +1393,6 @@ export function buildApp(
   if (config.codexAuthCredential && keychain)
     companyCodexAuthStore = keychainCodexAuthStore({ keychain, credentialId: config.codexAuthCredential });
   else if (config.codexAuthFile) companyCodexAuthStore = fileCodexAuthStore(config.codexAuthFile);
-  const resolveBrowserCompanyKeys = async (includeSubscription = true): Promise<ProviderKeys> => {
-    const keys: ProviderKeys = await resolveModelProviderKeys();
-    if (includeSubscription && harnessCarriedModelAuth(config) === "openai") {
-      const auth = await companyCodexAuthStore?.load();
-      const token = companyCodexAuthStore
-        ? asObject(auth?.tokens)?.access_token
-        : config.codexProcessEnv.CODEX_ACCESS_TOKEN;
-      if (typeof token === "string" && token) keys["openai-codex"] = token;
-    }
-    return keys;
-  };
   const runtimeOrgScope = scopeId("org", config.orgId);
   const orgBaseModelId = (): string | undefined =>
     configStore.getRuntimeSelection(runtimeOrgScope)?.modelId ?? configStore.getBaseModel(runtimeOrgScope) ?? undefined;
@@ -2908,8 +2894,6 @@ export function buildApp(
     consentLinks,
     oauthFlows,
     secretDrops,
-    browserModelGateway: gatewayTransport,
-    resolveBrowserCompanyKeys,
     modelGateway,
     modelCredentials,
     userModelCredentials,
@@ -2998,8 +2982,6 @@ export function serverDeps(
   const carriedModelAuth = harnessCarriedModelAuth(config);
   return {
     externalSlackPolicies: config.externalSlackPolicies,
-    browserModelGateway: built.browserModelGateway,
-    resolveBrowserCompanyKeys: built.resolveBrowserCompanyKeys,
     production: config.production,
     checkReadiness: built.checkReadiness,
     ...(built.backgroundOwnership

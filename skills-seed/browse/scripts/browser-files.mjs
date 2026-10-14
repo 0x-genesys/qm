@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, open, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
+import { formatBrowserError } from "./browser-errors.mjs";
 
 export async function copyBrowserArtifact(browser, { path, size, destination, signal, timeoutMs = 120000 }) {
   const deadline = AbortSignal.timeout(timeoutMs);
@@ -46,7 +47,9 @@ export async function copyBrowserArtifact(browser, { path, size, destination, si
         returnByValue: true,
       });
       if (chunk.exceptionDetails || typeof chunk.result?.value !== "string")
-        throw new Error("Browser artifact changed or became unreadable during transfer");
+        throw new Error("Browser artifact changed or became unreadable during transfer", {
+          cause: chunk.exceptionDetails,
+        });
       const bytes = Buffer.from(chunk.result.value, "base64");
       if (bytes.length !== length) throw new Error("Browser artifact was truncated during transfer");
       await file.writeFile(bytes);
@@ -68,7 +71,7 @@ export async function copyBrowserArtifact(browser, { path, size, destination, si
   }
 }
 
-export async function installBrowserFiles(browser, { timeoutMs = 120000 } = {}) {
+export async function installBrowserFiles(browser, { timeoutMs = 120000, privateValues = [] } = {}) {
   const impl = browser._connection?.toImpl?.(browser);
   if (
     !impl?._session?.prependListener ||
@@ -161,7 +164,7 @@ export async function installBrowserFiles(browser, { timeoutMs = 120000 } = {}) 
     const transfer = copyBrowserArtifact(browser, { path, size: event.totalBytes, destination, signal, timeoutMs })
       .then(
         () => settle(guid, ""),
-        (failure) => settle(guid, failure.message),
+        (failure) => settle(guid, formatBrowserError(failure, privateValues)),
       )
       .finally(() => {
         pending.delete(guid);

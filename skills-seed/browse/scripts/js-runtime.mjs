@@ -1,8 +1,10 @@
 import { start } from "node:repl";
+import { writeSync } from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { PassThrough, Writable } from "node:stream";
 import { inspect } from "node:util";
 import { createBrowserClient } from "./browser-client.mjs";
+import { formatBrowserError } from "./browser-errors.mjs";
 const send = (message) => process.send?.(message);
 const { chromium } = await import(process.argv[3]);
 const connection = await chromium.connect(process.argv[2]);
@@ -22,8 +24,14 @@ repl.context.console = new console.Console(stream, stream);
 let active;
 const invocation = new AsyncLocalStorage();
 function fatal(error) {
-  send({ type: "fatal", error: `Unhandled asynchronous error; browser stopped: ${error?.stack || inspect(error)}` });
-  process.exit(1);
+  const message =
+    `Unhandled asynchronous error; browser stopped: ${formatBrowserError(error, [process.argv[2]])}`.slice(0, 10_000);
+  try {
+    writeSync(2, message + "\n");
+    send({ type: "fatal", error: message });
+  } finally {
+    process.exit(1);
+  }
 }
 process.on("uncaughtExceptionMonitor", fatal);
 function complete(id, error, result, failed = error !== null && error !== undefined) {
@@ -35,7 +43,7 @@ function complete(id, error, result, failed = error !== null && error !== undefi
   send({
     type: "result",
     id,
-    error: failed ? error?.stack || error?.message || inspect(error) : undefined,
+    error: failed ? formatBrowserError(error, [process.argv[2]]) : undefined,
     result: rendered,
     output,
   });
