@@ -25,6 +25,16 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, TextContent } from "@earendil-works/pi-ai";
 import type { UserMessageWithAttachments } from "@earendil-works/pi-web-ui";
 import { markdown } from "./message-markdown";
+import { multiPaneLayout } from "./split";
+import {
+  foldedThreads,
+  onThreadsChange,
+  parseQuotedReply,
+  splitButton,
+  splitIntoThreads,
+  threadSplit,
+  threadsVersion,
+} from "./threads";
 import { html, nothing, render, type TemplateResult } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { ref } from "lit/directives/ref.js";
@@ -228,6 +238,7 @@ interface SettledRowKey {
   speakerLabel: string | undefined;
   edited: boolean;
   deleted: boolean;
+  threads: number;
   tpl: TemplateResult | typeof nothing;
 }
 const settledRowCache = new WeakMap<object, SettledRowKey>();
@@ -276,6 +287,9 @@ export function createChatSurface(
   let connectionReturnMessageCount: number | null = null;
   const transcriptFetcher = dependencies.fetchTranscript ?? fetchTranscript;
   const sessionOpener = dependencies.openSession ?? openSession;
+  onThreadsChange(() => {
+    if (chatState.agent && !multiPaneLayout()) drawActiveChat();
+  });
 
   const chatState = {
     agent: null as Agent | null,
@@ -1725,7 +1739,8 @@ export function createChatSurface(
       hit.forking === forking &&
       hit.speakerLabel === speakerLabel &&
       hit.edited === edited &&
-      hit.deleted === deleted
+      hit.deleted === deleted &&
+      hit.threads === threadsVersion()
     ) {
       return hit.tpl;
     }
@@ -1746,6 +1761,7 @@ export function createChatSurface(
       speakerLabel,
       edited,
       deleted,
+      threads: threadsVersion(),
       tpl,
     });
     return tpl;
@@ -1918,18 +1934,39 @@ export function createChatSurface(
           ${msg.stopReason === "error" && msg.errorMessage ? html`<div class="composer-error inline">${msg.errorMessage}</div>` : nothing}`,
           meta: isStreaming ? nothing : messageMeta(msg, index),
         });
+      // Quote-then-answer replies can be split into side-by-side threads (single pane only).
+      const threadSeq = messageEntrySeqs(message)[0];
+      const quoted = !multiPaneLayout() && !isStreaming && threadSeq !== undefined ? parseQuotedReply(text) : null;
+      const split = quoted ? threadSplit(chatState.sessionId, threadSeq) : undefined;
+      const splitOpen = Boolean(split && split.status !== "folded");
+      const splitControl =
+        quoted && !splitOpen && chatState.sessionId
+          ? splitButton(
+              () => void splitIntoThreads(chatState.sessionId!, threadSeq!, quoted),
+              quoted.points.length,
+              false,
+            )
+          : nothing;
       return html`
         <article
-          class="message-row assistant-row ${isStreaming ? "streaming" : ""}"
+          class="message-row assistant-row ${isStreaming ? "streaming" : ""} ${splitOpen ? "threaded" : ""}"
           data-index=${index}
           data-entry-seqs=${messageEntrySeqs(message)
             .filter((seq) => !inlineSteers.has(seq))
             .join(" ")}
         >
           <div class="assistant-body">
-            ${workView} ${assistantContent(msg, isStreaming, showWork)} ${assistantFileList(deliveredFiles)}
+            ${
+              splitOpen && quoted && split
+                ? html`${workView}
+                    ${quoted.intro ? html`<div class="streaming-text" dir="auto">${markdown(quoted.intro)}</div>` : nothing}
+                    <qm-thread-split .split=${split}></qm-thread-split>`
+                : html`${workView} ${assistantContent(msg, isStreaming, showWork)}`
+            }
+            ${assistantFileList(deliveredFiles)}
+            ${split && quoted ? foldedThreads(split, () => void splitIntoThreads(chatState.sessionId!, threadSeq!, quoted)) : nothing}
             ${msg.stopReason === "error" && msg.errorMessage ? html`<div class="composer-error inline">${msg.errorMessage}</div>` : nothing}
-            ${isStreaming ? nothing : messageMeta(msg, index)}
+            ${isStreaming || splitOpen ? nothing : messageMeta(msg, index, splitControl)}
           </div>
         </article>
       `;
@@ -1947,7 +1984,11 @@ export function createChatSurface(
     return role === "user" || role === "user-with-attachments" ? slackWireToPlain(raw) : stripSlackDirectives(raw);
   }
 
-  function messageMeta(message: AgentMessage, index: number): TemplateResult | typeof nothing {
+  function messageMeta(
+    message: AgentMessage,
+    index: number,
+    extra: TemplateResult | typeof nothing = nothing,
+  ): TemplateResult | typeof nothing {
     const text = copyableText(message).trim();
     const ts = (message as { timestamp?: number }).timestamp;
     if (!text && ts === undefined) return nothing;
@@ -1996,6 +2037,7 @@ export function createChatSurface(
               </button>`
             : nothing
         }
+        ${extra}
       </div>
     `;
   }

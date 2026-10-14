@@ -837,6 +837,11 @@ function refreshHeaders(): void {
   if (appState.currentView === "chats") syncUrlFromState();
 }
 
+/** True when the canvas shows more than one tile side by side (multiview). */
+export function multiPaneLayout(): boolean {
+  return (dockApi?.groups.length ?? 0) > 1;
+}
+
 export function singlePaneSessionId(): string | null {
   if (!dockApi || dockApi.panels.length !== 1) return null;
   const params = panelParams(dockApi.panels[0]!);
