@@ -1530,14 +1530,14 @@ async function collectTree(
   return out;
 }
 
-export interface WriteFileResult {
+interface WriteFileResult {
   /** Files record ID, present when the file was published to durable Files. */
   fileId?: string;
   bytes?: number;
 }
 
 /** files write reads the whole file into core memory; larger files go through the direct upload helper. */
-export const MAX_WRITE_PUBLISH_BYTES = 100 * 1024 ** 2;
+const MAX_WRITE_PUBLISH_BYTES = 100 * 1024 ** 2;
 
 function isUnderAnyDir(path: string, dirs: readonly string[]): boolean {
   const p = path.replace(/^\.?\/+/, "").replace(/\/+$/, "");
