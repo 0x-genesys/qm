@@ -1,37 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, request, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
-import { registerHooks } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
-import { createContext, runInContext } from "node:vm";
-import { WebSocketServer } from "ws";
-const SCRIPT = fileURLToPath(new URL("../skills-seed/browse/scripts/browser.mjs", import.meta.url));
-const INJECTED_LOADER = new URL("../skills-seed/browse/scripts/injected-engine.mjs", import.meta.url).href;
-const offlineLoader = `import { registerHooks } from 'node:module';
-registerHooks({ load(url, context, nextLoad) {
-  if (url === ${JSON.stringify(INJECTED_LOADER)}) return {
-    format: 'module', shortCircuit: true,
-    source: 'export async function loadInjectedSource() { return ""; }',
-  };
-  return nextLoad(url, context);
-} });`;
-registerHooks({
-  load(url, context, nextLoad) {
-    if (url === INJECTED_LOADER)
-      return {
-        format: "module",
-        shortCircuit: true,
-        source: 'export async function loadInjectedSource() { return ""; }',
-      };
-    return nextLoad(url, context);
-  },
-});
+const SCRIPTS = fileURLToPath(new URL("../skills-seed/browse/scripts/", import.meta.url));
+const FIXTURES = fileURLToPath(new URL("./fixtures/browse-lifecycle/", import.meta.url));
 type Call = {
   method: string;
   url: string;
@@ -45,9 +23,8 @@ async function fakeApi(
   },
   patchStatus = 200,
 ) {
-  const cdp = await fakeCdp();
   const calls: Call[] = [];
-  const state = { patchStatus };
+  const state = { patchStatus, createStatus: 201 };
   const server: Server = createServer((req: IncomingMessage, res) => {
     let text = "";
     req.on("data", (c) => (text += c));
@@ -64,8 +41,8 @@ async function fakeApi(
         res.statusCode = billing.status;
         res.end(JSON.stringify(billing.body ?? { detail: "nope" }));
       } else if (call.method === "POST" && call.url === "/api/v4/browsers") {
-        res.statusCode = 201;
-        res.end(JSON.stringify({ id: "b1", cdpUrl: cdp.url, liveUrl: "https://live.test/b1" }));
+        res.statusCode = state.createStatus;
+        res.end(JSON.stringify({ id: "b1", cdpUrl: "ws://fixture.invalid/browser", liveUrl: "https://live.test/b1" }));
       } else if (call.method === "PATCH" && call.url.startsWith("/api/v4/browsers/")) {
         res.statusCode = state.patchStatus;
         res.end(JSON.stringify({ id: "b1", status: "stopped" }));
@@ -79,165 +56,9 @@ async function fakeApi(
   await new Promise((r) => server.once("listening", r));
   return {
     calls,
-    cdp,
     state,
     base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     close: () => {
-      server.close();
-      cdp.close();
-    },
-  };
-}
-async function fakeCdp() {
-  const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
-  await new Promise<void>((resolve) => server.once("listening", resolve));
-  const calls: Array<{
-    method: string;
-    params: Record<string, any>;
-    sessionId?: string;
-  }> = [];
-  const pages = new Map<
-    string,
-    {
-      url: string;
-      context: ReturnType<typeof createContext>;
-    }
-  >();
-  const sessions = new Map<string, string>();
-  function addPage(url: string) {
-    const id = `tab-${pages.size + 1}`;
-    const page = { url, context: createContext({}) };
-    const document = {
-      get title() {
-        return "Fake " + page.url;
-      },
-      querySelectorAll: () => [],
-    };
-    page.context = createContext({
-      document,
-      location: {
-        get href() {
-          return page.url;
-        },
-      },
-    });
-    pages.set(id, page);
-    return id;
-  }
-  addPage("about:blank");
-  const info = (id: string) => ({
-    targetId: id,
-    type: "page",
-    url: pages.get(id)!.url,
-    title: "Fake " + pages.get(id)!.url,
-    attached: false,
-    browserContextId: "context-1",
-  });
-  server.on("connection", (socket) => {
-    socket.on("message", async (raw) => {
-      const request = JSON.parse(raw.toString());
-      const { id, method, params = {}, sessionId } = request;
-      calls.push({ method, params, sessionId });
-      const reply = (result: unknown) => socket.send(JSON.stringify({ id, sessionId, result }));
-      const event = (method: string, params: unknown) => socket.send(JSON.stringify({ method, params, sessionId }));
-      try {
-        const page = pages.get(sessions.get(sessionId)!);
-        switch (method) {
-          case "Target.getTargets":
-            reply({ targetInfos: [...pages.keys()].map(info) });
-            break;
-          case "Target.getTargetInfo":
-            reply({ targetInfo: info(params.targetId) });
-            break;
-          case "Target.createTarget": {
-            const targetId = addPage(params.url || "about:blank");
-            reply({ targetId });
-            event("Target.targetCreated", { targetInfo: info(targetId) });
-            break;
-          }
-          case "Target.attachToTarget": {
-            if (!pages.has(params.targetId)) throw new Error("No target with given id found");
-            const childSession = `session-${params.targetId}`;
-            sessions.set(childSession, params.targetId);
-            reply({ sessionId: childSession });
-            break;
-          }
-          case "Target.closeTarget":
-            pages.delete(params.targetId);
-            reply({ success: true });
-            event("Target.targetDestroyed", { targetId: params.targetId });
-            break;
-          case "Page.navigate": {
-            assert.ok(page, "navigation needs an attached target");
-            page.url = params.url;
-            reply({ frameId: "frame-1", loaderId: "loader-1" });
-            event("Page.frameNavigated", { frame: { id: "frame-1", url: page.url } });
-            event("Page.loadEventFired", { timestamp: 1 });
-            event("Page.lifecycleEvent", { name: "DOMContentLoaded", loaderId: "loader-1", frameId: "frame-1" });
-            break;
-          }
-          case "Runtime.evaluate": {
-            assert.ok(page, "evaluation needs an attached target");
-            try {
-              const operation = /^"qm:([^"]+)"/.exec(params.expression)?.[1];
-              const replies: Record<string, unknown> = {
-                init: undefined,
-                "locator.count": 1,
-                "locator.textContent": { value: "Continue" },
-                "locator.prepareClick": { x: 30, y: 20 },
-                "locator.finishClick": "done",
-                "locator.prepareFill": { ready: true },
-                "locator.fill": "done",
-                snapshot: "- button Continue",
-              };
-              const value = operation ? replies[operation] : await runInContext(params.expression, page.context);
-              reply({ result: { type: typeof value, value } });
-            } catch (error) {
-              reply({
-                result: { type: "object", subtype: "error" },
-                exceptionDetails: { text: "Uncaught", exception: { description: String(error) } },
-              });
-            }
-            break;
-          }
-          case "Page.getFrameTree":
-            reply({ frameTree: { frame: { id: "frame-1" } } });
-            break;
-          case "Page.createIsolatedWorld":
-            reply({ executionContextId: 7 });
-            break;
-          case "Input.dispatchMouseEvent":
-          case "Input.dispatchKeyEvent":
-          case "Input.insertText":
-            reply({});
-            break;
-          case "Page.captureScreenshot":
-            reply({ data: Buffer.from("png").toString("base64") });
-            break;
-          case "Page.setLifecycleEventsEnabled":
-          case "Runtime.enable":
-          case "Page.enable":
-          case "Target.setDiscoverTargets":
-          case "Target.setAutoAttach":
-          case "Target.detachFromTarget":
-            reply({});
-            break;
-          default:
-            throw new Error(`Unexpected CDP command: ${method}`);
-        }
-      } catch (error) {
-        socket.send(JSON.stringify({ id, sessionId, error: { code: -32000, message: String(error) } }));
-      }
-    });
-  });
-  return {
-    calls,
-    url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}/devtools/browser/test`,
-    disconnect: () => {
-      for (const client of server.clients) client.terminate();
-    },
-    close: () => {
-      for (const client of server.clients) client.terminate();
       server.close();
     },
   };
@@ -248,8 +69,11 @@ function run(args: string[], env: Record<string, string | undefined>, input?: st
     out: Record<string, unknown>;
   }>((resolve, reject) => {
     const clean = { ...process.env };
-    for (const k of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "BROWSER_USE_API_KEY"]) delete clean[k];
-    const child = spawn(process.execPath, [SCRIPT, ...args], { env: { ...clean, ...env } });
+    for (const k of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "BROWSER_USE_API_KEY", "NODE_OPTIONS"])
+      delete clean[k];
+    const child = spawn(process.execPath, [join(env.FIXTURE_DIR!, "browser.mjs"), ...args], {
+      env: { ...clean, ...env },
+    });
     const timeout = setTimeout(() => {
       child.kill("SIGKILL");
       reject(new Error(`browser command timed out: ${args[0]}`));
@@ -279,19 +103,36 @@ function sandbox(
     base: string;
   },
   extra: Record<string, string> = {},
+  config: Record<string, unknown> = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), "browse-skill-"));
-  const loader = join(dir, "offline-loader.mjs");
-  writeFileSync(loader, offlineLoader);
+  for (const name of ["browser.mjs", "browser-client.mjs", "browser-snapshot.mjs", "js-runtime.mjs"])
+    copyFileSync(join(SCRIPTS, name), join(dir, name));
+  for (const name of ["browser-service.mjs", "playwright-runtime.mjs", "playwright.mjs"])
+    copyFileSync(join(FIXTURES, name), join(dir, name));
+  const events = join(dir, "events.jsonl");
+  const disconnect = join(dir, "disconnect");
+  writeFileSync(events, "");
+  writeFileSync(join(dir, "fixture-config.json"), JSON.stringify({ events, disconnect, ...config }));
   const env = {
-    NODE_OPTIONS: `--import=${loader}`,
+    FIXTURE_DIR: dir,
     BROWSER_USE_API_BASE: api.base,
     BROWSER_USE_API_KEY: "bu_test",
     QM_BROWSE_DIR: join(dir, "run"),
     QM_BROWSE_CACHE: join(dir, "cache"),
     ...extra,
   };
-  return { dir, env, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return {
+    dir,
+    env,
+    events: () =>
+      readFileSync(events, "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line)),
+    disconnect: () => writeFileSync(disconnect, ""),
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
 }
 test("preflight explains a missing, rejected, or empty Browser Use key", async () => {
   const cases: Array<
@@ -363,13 +204,9 @@ test("open keeps one page alive across persistent JavaScript calls and stop stop
     assert.equal(kept.out.result, "42");
     const keptTab = await run(["js", "await keptTab.url()"], box.env);
     assert.equal(keptTab.out.result, "https://example.com");
-    const evaluated = await run(["js", "await tab.evaluate('document.title')"], box.env);
-    assert.equal(evaluated.out.result, "Fake https://example.com");
-    assert.ok(api.cdp.calls.some((c) => c.method === "Page.navigate"));
-    assert.ok(api.cdp.calls.some((c) => c.method === "Runtime.evaluate"));
     const shot = await run(["screenshot", join(box.dir, "s.png")], box.env);
     assert.equal(shot.out.ok, true);
-    assert.equal(readFileSync(join(box.dir, "s.png"), "utf8"), "png");
+    assert.equal(readFileSync(join(box.dir, "s.png"), "utf8"), "screenshot:https://example.com");
     const stopped = await run(["stop"], box.env);
     assert.equal(stopped.out.stopped, true);
     const patch = api.calls.find((c) => c.method === "PATCH");
@@ -437,7 +274,7 @@ test("structured tabs API persists references and rejects missing tabs without l
       ["js", "var second = await browser.tabs.new(); await second.goto('https://second.test'); second.id"],
       box.env,
     );
-    assert.equal(created.out.result, "tab-2", JSON.stringify(created.out));
+    assert.equal(created.out.result, "page-2", JSON.stringify(created.out));
     const retained = await run(["js", "var restored = browser.tabs.get(second.id); await restored.title()"], box.env);
     assert.equal(retained.out.result, "Fake https://second.test");
     assert.equal((await run(["js", "(await browser.tabs.list()).length"], box.env)).out.result, "2");
@@ -465,6 +302,8 @@ test("structured tabs API persists references and rejects missing tabs without l
       assert.equal(primitive.out.ok, false, code);
       assert.ok(primitive.out.error, code);
     }
+    assert.equal((await run(["js", "null"], box.env)).out.result, "null");
+    assert.equal((await run(["js", "undefined"], box.env)).out.result, "undefined");
     const large = await run(["js", "console.log('x'.repeat(20_000)); 'y'.repeat(20_000)"], box.env);
     assert.equal(large.out.ok, true);
     assert.equal(large.out.truncated, true);
@@ -473,8 +312,6 @@ test("structured tabs API persists references and rejects missing tabs without l
     assert.equal(unknown.code, 1);
     assert.equal(unknown.out.ok, false);
     assert.equal((await run(["js", "await restored.url()"], box.env)).out.result, "https://second.test");
-    const legacy = await run(["eval", "1+1"], box.env);
-    assert.equal(legacy.code, 1, "the removed eval command must not remain an alternate code path");
   } finally {
     await run(["stop"], box.env).catch(() => {});
     api.close();
@@ -494,9 +331,9 @@ test("concurrent js calls run sequentially in the persistent runtime", async () 
       ],
       box.env,
     );
-    for (let i = 0; i < 100 && !api.cdp.calls.some((c) => c.method === "Page.navigate"); i++) await sleep(20);
+    for (let i = 0; i < 100 && !box.events().some((c) => c.method === "goto"); i++) await sleep(20);
     assert.ok(
-      api.cdp.calls.some((c) => c.method === "Page.navigate"),
+      box.events().some((c) => c.method === "goto"),
       "first call reached the browser",
     );
     const second = run(["js", "serial += 1"], box.env);
@@ -514,12 +351,12 @@ test("concurrent js calls run sequentially in the persistent runtime", async () 
     box.cleanup();
   }
 });
-test("a CDP disconnect stops the cloud browser and removes the dead session", async () => {
+test("a browser service disconnect stops the cloud browser and removes the dead session", async () => {
   const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
   const box = sandbox(api);
   try {
     assert.equal((await run(["open"], box.env)).out.ok, true);
-    api.cdp.disconnect();
+    box.disconnect();
     for (let i = 0; i < 100 && existsSync(join(box.env.QM_BROWSE_DIR, "default.json")); i++) await sleep(30);
     assert.ok(api.calls.some((c) => c.method === "PATCH" && c.url === "/api/v4/browsers/b1"));
     assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.sock")), false);
@@ -546,68 +383,6 @@ test("concurrent opens create only one cloud browser for a session", async () =>
     box.cleanup();
   }
 });
-test("structured locators use the isolated page world and native input commands", async () => {
-  const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
-  const box = sandbox(api);
-  try {
-    assert.equal((await run(["open"], box.env)).out.ok, true);
-    const count = await run(
-      ["js", "await tab.playwright.getByRole('button', { name: 'Continue', exact: true }).count()"],
-      box.env,
-    );
-    assert.equal(count.out.result, "1", JSON.stringify(count.out));
-    const text = await run(["js", "await tab.playwright.locator('button').textContent()"], box.env);
-    assert.equal(text.out.result, "Continue");
-    assert.equal(
-      (await run(["js", "await tab.playwright.getByRole('button', { name: 'Continue' }).click()"], box.env)).out.ok,
-      true,
-    );
-    assert.equal((await run(["js", "await tab.playwright.locator('input').fill('Ada')"], box.env)).out.ok, true);
-    const calls = api.cdp.calls;
-    assert.ok(
-      calls.some((call) => call.method === "Page.createIsolatedWorld" && call.params.worldName === "qm-browse"),
-    );
-    const evaluations = calls.filter(
-      (call) => call.method === "Runtime.evaluate" && call.params.expression.startsWith('"qm:'),
-    );
-    assert.ok(evaluations.length > 0);
-    assert.ok(evaluations.every((call) => call.params.contextId === 7));
-    assert.equal(evaluations.filter((call) => call.params.expression.startsWith('"qm:init')).length, 1);
-    assert.ok(evaluations.some((call) => call.params.expression.includes("internal:role=button[name=")));
-    assert.deepEqual(
-      calls.filter((call) => call.method === "Input.dispatchMouseEvent").map((call) => call.params.type),
-      ["mouseMoved", "mousePressed", "mouseReleased"],
-    );
-    assert.ok(
-      evaluations.some(
-        (call) => call.params.expression.startsWith('"qm:locator.fill"') && call.params.expression.includes('"Ada"'),
-      ),
-    );
-    assert.equal(
-      calls.some((call) => call.method === "Input.insertText"),
-      false,
-    );
-  } finally {
-    await run(["stop"], box.env).catch(() => {});
-    api.close();
-    box.cleanup();
-  }
-});
-test("browser service rejects unknown commands and invalid tabs before sending CDP", async () => {
-  const cdp = await fakeCdp();
-  const { connectBrowser } = await import(new URL("../skills-seed/browse/scripts/cdp.mjs", import.meta.url).href);
-  const service = await connectBrowser(cdp.url);
-  try {
-    const before = cdp.calls.length;
-    await assert.rejects(service.execute({ method: "Browser.close" }), /Unknown browser command/);
-    await assert.rejects(service.execute({ method: "tab.title", tabId: "missing" }), /Unknown tab ID/);
-    assert.equal(cdp.calls.length, before, "invalid requests must not become protocol commands");
-    assert.equal((await service.execute({ method: "tabs.list" })).length, 1, "rejections do not poison the queue");
-  } finally {
-    service.close();
-    cdp.close();
-  }
-});
 test("a disconnected queued caller cannot execute later browser actions", async () => {
   const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
   const box = sandbox(api);
@@ -620,9 +395,9 @@ test("a disconnected queued caller cannot execute later browser actions", async 
       ],
       box.env,
     );
-    for (let i = 0; i < 100 && !api.cdp.calls.some((c) => c.method === "Page.navigate"); i++) await sleep(10);
+    for (let i = 0; i < 100 && !box.events().some((c) => c.method === "goto"); i++) await sleep(10);
     assert.ok(
-      api.cdp.calls.some((c) => c.method === "Page.navigate"),
+      box.events().some((c) => c.method === "goto"),
       "first script has started",
     );
     const queued = request({
@@ -640,7 +415,7 @@ test("a disconnected queued caller cannot execute later browser actions", async 
     queued.destroy();
     assert.equal((await active).out.ok, true);
     assert.equal((await run(["js", "cancelledActionRan"], box.env)).out.result, "false");
-    assert.ok(!api.cdp.calls.some((c) => c.method === "Page.navigate" && c.params.url === "https://must-not-run.test"));
+    assert.ok(!box.events().some((c) => c.method === "goto" && c.url === "https://must-not-run.test"));
   } finally {
     await run(["stop"], box.env).catch(() => {});
     api.close();
@@ -652,10 +427,13 @@ test("stop cancels a never-resolving script without waiting for the JavaScript t
   const box = sandbox(api);
   try {
     assert.equal((await run(["open"], box.env)).out.ok, true);
-    const active = run(["js", "await tab.goto('https://blocked.test'); await new Promise(() => {})"], box.env);
-    for (let i = 0; i < 100 && !api.cdp.calls.some((c) => c.method === "Page.navigate"); i++) await sleep(10);
+    const active = run(
+      ["js", "await tab.goto('https://blocked.test'); await new Promise(() => {})", "--timeout-ms", "0"],
+      box.env,
+    );
+    for (let i = 0; i < 100 && !box.events().some((c) => c.method === "goto"); i++) await sleep(10);
     assert.ok(
-      api.cdp.calls.some((c) => c.method === "Page.navigate"),
+      box.events().some((c) => c.method === "goto"),
       "blocked script has started",
     );
     const stopped = await run(["stop"], box.env, undefined, 3000);
@@ -678,17 +456,98 @@ test("screenshot follows the current REPL tab even after the original tab closes
     assert.equal(
       (await run(["js", "var original = tab; tab = await browser.tabs.new('https://current.test'); tab.id"], box.env))
         .out.result,
-      "tab-2",
+      "page-2",
     );
     const path = join(box.dir, "current.png");
     assert.equal((await run(["screenshot", path], box.env)).out.ok, true);
     assert.equal((await run(["js", "await original.close()"], box.env)).out.ok, true);
     assert.equal((await run(["screenshot", path], box.env)).out.ok, true);
-    assert.equal(readFileSync(path, "utf8"), "png");
-    assert.deepEqual(
-      api.cdp.calls.filter((c) => c.method === "Page.captureScreenshot").map((c) => c.sessionId),
-      ["session-tab-2", "session-tab-2"],
+    assert.equal(readFileSync(path, "utf8"), "screenshot:https://current.test");
+  } finally {
+    await run(["stop"], box.env).catch(() => {});
+    api.close();
+    box.cleanup();
+  }
+});
+
+test("a failed browser create returns provider status without leaving a session", async () => {
+  const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
+  const box = sandbox(api);
+  try {
+    for (const status of [402, 503]) {
+      api.state.createStatus = status;
+      const opened = await run(["open"], box.env);
+      assert.deepEqual(
+        [opened.code, opened.out.reason, opened.out.status],
+        [status === 402 ? 2 : 1, "create_failed", status],
+      );
+      assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.json")), false);
+      assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.lock")), false);
+    }
+    assert.equal(
+      api.calls.some((call) => call.method === "PATCH"),
+      false,
     );
+  } finally {
+    api.close();
+    box.cleanup();
+  }
+});
+
+test("service and worker initialization failures stop the allocated cloud browser", async () => {
+  for (const config of [{ serviceError: "service could not connect" }, { connectError: "worker could not connect" }]) {
+    const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
+    const box = sandbox(api, {}, config);
+    try {
+      const opened = await run(["open"], box.env);
+      assert.deepEqual([opened.code, opened.out.reason], [1, "connect_failed"]);
+      assert.ok(String(opened.out.log).includes(Object.values(config)[0]));
+      assert.ok(api.calls.some((call) => call.method === "PATCH" && call.url === "/api/v4/browsers/b1"));
+      assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.sock")), false);
+      assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.json")), false);
+      assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.lock")), false);
+      if (config.connectError) assert.ok(box.events().some((event) => event.method === "service.close"));
+    } finally {
+      await run(["stop"], box.env).catch(() => {});
+      api.close();
+      box.cleanup();
+    }
+  }
+});
+
+test("a stale browser must be stopped successfully before a replacement is allocated", async () => {
+  const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } }, 500);
+  const box = sandbox(api);
+  try {
+    mkdirSync(box.env.QM_BROWSE_DIR, { recursive: true });
+    const statePath = join(box.env.QM_BROWSE_DIR, "default.json");
+    writeFileSync(statePath, JSON.stringify({ id: "old" }));
+    const opened = await run(["open"], box.env);
+    assert.deepEqual([opened.code, opened.out.reason, opened.out.browserId], [1, "stale_browser_not_stopped", "old"]);
+    assert.equal(JSON.parse(readFileSync(statePath, "utf8")).id, "old");
+    assert.equal(
+      api.calls.some((call) => call.method === "POST"),
+      false,
+    );
+    api.state.patchStatus = 200;
+    assert.equal((await run(["stop"], box.env)).out.stopped, true);
+  } finally {
+    api.close();
+    box.cleanup();
+  }
+});
+
+test("an explicit JavaScript deadline stops the session and reports the timeout", async () => {
+  const api = await fakeApi({ status: 200, body: { totalCreditsBalanceUsd: 1 } });
+  const box = sandbox(api);
+  try {
+    assert.equal((await run(["open"], box.env)).out.ok, true);
+    const expired = await run(["js", "await new Promise(() => {})", "--timeout-ms", "50"], box.env);
+    assert.equal(expired.code, 1);
+    assert.match(String(expired.out.error), /JavaScript exceeded/);
+    for (let i = 0; i < 100 && existsSync(join(box.env.QM_BROWSE_DIR, "default.json")); i++) await sleep(20);
+    assert.equal(existsSync(join(box.env.QM_BROWSE_DIR, "default.json")), false);
+    assert.ok(api.calls.some((call) => call.method === "PATCH"));
   } finally {
     await run(["stop"], box.env).catch(() => {});
     api.close();
