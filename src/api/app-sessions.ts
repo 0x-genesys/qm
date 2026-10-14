@@ -8,11 +8,23 @@ import type { PendingApprovalRecord } from "../types.ts";
 import { orgId as orgIdOf } from "../config.ts";
 import { parseScopeId, scopeId, type ScopeId } from "../types.ts";
 import { fileArtifactId, artifactPath } from "../files/file-artifact-store.ts";
-import { entryWithinTenure, transcriptEntries, windowedTranscript } from "../sessions/session-store.ts";
+import {
+  acquireLeaseWithin,
+  appendEntryOutsideTurn,
+  entryWithinTenure,
+  transcriptEntries,
+  windowedTranscript,
+} from "../sessions/session-store.ts";
 import { createTranscriptSource } from "../harness/tape-projection.ts";
 import { appendCoverageImport } from "../harness/replay.ts";
 import { swallowAs } from "../util/errors.ts";
-import { latestGoalRecord } from "../harness/goal.ts";
+import {
+  cancelGoal,
+  goalCancelledNote,
+  goalSnapshotPayload,
+  latestGoalRecord,
+  rehydrateOpenGoal,
+} from "../harness/goal.ts";
 import { SEARCH_HIT_LIMIT, entrySearchText, searchSnippet, searchTerms } from "../sessions/entry-search.ts";
 import { supportsProcessSessions } from "../sandbox/sandbox.ts";
 import { processIsGone } from "../sandbox/process-poll.ts";
@@ -52,6 +64,7 @@ function coversTailWindow(entries: readonly { type: string }[], tailTurns: numbe
 }
 
 const GOAL_LOOKBACK_ENTRIES = 2000;
+const GOAL_CANCEL_LEASE_WAIT_MS = 30_000;
 
 export function createSessionMethods(
   deps: AppDeps,
@@ -88,6 +101,7 @@ export function createSessionMethods(
   | "authorizesCapabilityScope"
   | "updateSession"
   | "detachSession"
+  | "cancelSessionGoal"
   | "regenerateTitle"
   | "spawnSession"
   | "discardSession"
@@ -106,6 +120,7 @@ export function createSessionMethods(
   const {
     sessionsForViewer,
     sessionForViewer,
+    mayWriteSession,
     managedProjectMembership,
     filesForViewer,
     canUseContext,
@@ -871,6 +886,43 @@ export function createSessionMethods(
             deps.advisoryLock!.withLock("session-run-admission", detach),
           )
         : detach();
+    },
+
+    async cancelSessionGoal(sessionId, principalId) {
+      const session = await sessionForViewer(sessionId, principalId);
+      if (!session || !(await mayWriteSession(principalId, session))) return null;
+      const openGoal = async () =>
+        rehydrateOpenGoal(
+          (await deps.sessions.getRecentEntries([session.id], GOAL_LOOKBACK_ENTRIES)).get(session.id) ?? [],
+        );
+      const before = await openGoal();
+      if (!before) return { cancelled: false as const, reason: "no_open_goal" as const };
+      let { lease } = await deps.sessions.acquireLease(session.id, "backfill");
+      if (!lease) {
+        if (before.status === "active")
+          for (const run of await deps.runs.inFlightForThread(session.threadRef))
+            if (run.status === "running") await deps.signals?.send(run.id, { kind: "abort" });
+        ({ lease } = await acquireLeaseWithin(deps.sessions, session.id, "backfill", GOAL_CANCEL_LEASE_WAIT_MS));
+      }
+      if (!lease) return { cancelled: false as const, reason: "busy" as const };
+      try {
+        const goal = await openGoal();
+        if (!goal) return { cancelled: false as const, reason: "no_open_goal" as const };
+        cancelGoal(goal, "Cancelled from the goal bar.");
+        await appendEntryOutsideTurn(
+          deps.sessions,
+          lease,
+          {
+            type: "system",
+            payload: { ...goalSnapshotPayload(goal), cancelledBy: principalId },
+            scopeLabel: session.scopeId,
+          },
+          () => goalCancelledNote(goal),
+        );
+        return { cancelled: true as const };
+      } finally {
+        await deps.sessions.releaseLease(lease);
+      }
     },
 
     async regenerateTitle(sessionId, principalId) {
