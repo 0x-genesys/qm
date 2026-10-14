@@ -115,8 +115,7 @@ Helpful KPIs here are: how many env vars do we have? how large is the database s
 The PR must do what the person asked for, and nothing they would object to if told plainly. The danger is drift during the work. Agents restate a request in a worker brief. They add rules the person never stated. They remove behavior without saying so, and their reports read as compliance. The reviewer reads the person's own words from the conversations that produced the PR, every brief handed to a worker, and the reports the person was shown, then compares them with the diff. Flag:
 
 - rules or constraints in a brief that the person never gave;
-- behavior the diff removes or changes that no report to the person stated plainly;
-- agent-facing tool descriptions that newly send agents to `execute` or raw API calls for something a tool used to do.
+- behavior the diff removes or changes that no report to the person stated plainly.
 
 Cite the person's words beside the conflicting change.
 
