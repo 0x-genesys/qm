@@ -9,7 +9,7 @@ import { DEFAULT_CODEX_MODEL_ID, modelSupportedByHarness } from "../model/pi-mod
 import { startSignalPoll, type RunSignalStore } from "../runs/run-signal-store.ts";
 import type { LlmCallUsage } from "../sessions/session-store.ts";
 import type { ScopeId, SessionEntry } from "../types.ts";
-import { asError, swallow } from "../util/errors.ts";
+import { swallow } from "../util/errors.ts";
 import { countTokens } from "../util/tokens.ts";
 import { CodexAppServer, CodexRpcError } from "./codex-app-server.ts";
 import { redactSecrets } from "./redact-secrets.ts";
@@ -30,7 +30,6 @@ import {
   harnessToolOptions,
   oneShotModelUtilities,
   oneShotRunner,
-  tapeReplyCheckpoint,
   recordSteerIntake,
   recordStoppedReply,
   type SteerIntake,
@@ -41,6 +40,7 @@ import {
 import {
   recordedMessageTimestamps,
   reconstructMessagesFromHistory,
+  OMITTED_IMAGE_TEXT,
   seedPriorTurns,
   type PiReplayMessage,
 } from "./replay.ts";
@@ -150,7 +150,6 @@ type ActiveTurn = {
   usageByThread: Map<string, LlmCallUsage>;
   firstOutputAt: number | null;
   fallbackInputTokens: number;
-  tapeError?: Error;
   seenUserItems: Set<string>;
   pendingSteers: Array<{ prompt: string; inputText: string; intake: SteerIntake }>;
   interrupt?: () => Promise<void>;
@@ -331,7 +330,10 @@ function replayItems(messages: readonly PiReplayMessage[]): CodexItem[] {
       out.push({
         type: "message",
         role: "user",
-        content: message.content.map((part) => ({ type: "input_text", text: part.text })),
+        content: message.content.map((part) => ({
+          type: "input_text",
+          text: part.type === "text" ? part.text : OMITTED_IMAGE_TEXT,
+        })),
       });
       continue;
     }
@@ -339,7 +341,7 @@ function replayItems(messages: readonly PiReplayMessage[]): CodexItem[] {
       out.push({
         type: "function_call_output",
         call_id: codexReplayCallId(message.toolCallId),
-        output: message.content.map((part) => part.text).join("\n"),
+        output: message.content.map((part) => (part.type === "text" ? part.text : OMITTED_IMAGE_TEXT)).join("\n"),
       });
       continue;
     }
@@ -548,8 +550,6 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
             }
           }
           if (method === "item/completed") {
-            let stamp: Awaited<ReturnType<typeof recordSteerIntake>> | undefined;
-            let tapeItem = item;
             if (
               threadId === state.threadId &&
               item.type === "userMessage" &&
@@ -565,25 +565,10 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
               const index = state.pendingSteers.findIndex((steer) => steer.inputText === text);
               if (index >= 0) {
                 const [steer] = state.pendingSteers.splice(index, 1);
-                stamp = await recordSteerIntake(state.turn, steer!.intake);
-                tapeItem = { type: "message", role: "user", content: [{ type: "input_text", text: steer!.prompt }] };
+                await recordSteerIntake(state.turn, steer!.intake);
               }
             }
             state.completedItems.push(item);
-            if (state.turn.tape && !state.tapeError) {
-              try {
-                await state.turn.tape({
-                  kind: "message",
-                  harness: "codex",
-                  scopeLabel: state.turn.scopeLabel,
-                  payload: tapeItem,
-                  ...stamp,
-                });
-              } catch (error) {
-                state.tapeError = asError(error);
-                void state.interrupt?.();
-              }
-            }
           }
           await processCollabItem(state, item);
         }
@@ -1095,30 +1080,6 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
         fallbackInputTokens: countTokens(JSON.stringify({ replay, input })),
         stopped: false,
       };
-      if (turn.tape) {
-        await turn.tape({
-          kind: "message",
-          harness: "codex",
-          scopeLabel: turn.scopeLabel,
-          entrySeq: userEntry.seq,
-          meta: {
-            bareText: turn.input,
-            ...((turn.triggerTs ?? turn.entryTs) ? { ts: (turn.triggerTs ?? turn.entryTs)! } : {}),
-          },
-          payload: {
-            type: "message",
-            role: "user",
-            content: [
-              { type: "input_text", text: codexTurnInputText(turn) },
-              ...(turn.images ?? []).map((image) => ({
-                type: "input_image",
-                image_url: "[image bytes omitted]",
-                media_type: image.mimeType,
-              })),
-            ],
-          },
-        });
-      }
     } catch (error) {
       return failSetup(error);
     }
@@ -1304,7 +1265,6 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
               }),
             ])
           : await completed;
-      if (state.tapeError) throw state.tapeError;
       if (state.modelCalls === 0) {
         state.modelCalls = 1;
         turn.recordModelCall({
@@ -1325,12 +1285,11 @@ export function createCodexHarness(opts: CodexHarnessOptions = {}): Harness {
         for (const thinking of reasoningFromTurn(result))
           await turn.emit({ type: "thinking", payload: { thinking }, scopeLabel: turn.scopeLabel });
         if (reply && !terminal) {
-          const finalEntry = await turn.emit({
+          await turn.emit({
             type: "assistant",
             payload: { text: reply },
             scopeLabel: turn.scopeLabel,
           });
-          await tapeReplyCheckpoint(turn, finalEntry);
         }
         turnResult = {
           reply,

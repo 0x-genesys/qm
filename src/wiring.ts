@@ -2000,7 +2000,6 @@ export function buildApp(
     defaultTurnWallClockMs: config.turnWallClockMs,
     userModelCredentials,
     ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
-    sessionTapeMode: config.sessionTapeMode,
     sessions,
     workspace,
     files,
