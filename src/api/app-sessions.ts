@@ -262,11 +262,11 @@ export function createSessionMethods(
     },
 
     async getSessionForViewer(sessionId, principalId, window) {
-      const found = await timeSessionRead("acl", () => sessionForViewer(sessionId, principalId));
+      const found = await sessionForViewer(sessionId, principalId);
       if (!found) return null;
       const session = {
         ...found,
-        canContinue: await timeSessionRead("continue", () => canContinueOnWeb(principalId, found)),
+        canContinue: await canContinueOnWeb(principalId, found),
       };
       let limit = tailWindowLimit(window);
       const [initialRead, pinRecords] = await Promise.all([
@@ -290,7 +290,7 @@ export function createSessionMethods(
       }
       const w = windowedTranscript(visible, window);
       const earlier = w.earlier + read.earlier;
-      const pins = await timeSessionRead("pin_previews", () =>
+      const pins = await timeSessionRead("pins", () =>
         decoratedPins(pinRecords, visible, (seq) => viewerStoredEntryAt(sessionId, principalId, seq)),
       );
       return {

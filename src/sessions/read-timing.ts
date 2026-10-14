@@ -1,21 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-type ReadStage =
-  | "total"
-  | "acl"
-  | "continue"
-  | "transcript"
-  | "participant_windows"
-  | "latest_seq"
-  | "entries"
-  | "suffix_check"
-  | "tape"
-  | "projection"
-  | "fallback"
-  | "pins"
-  | "pin_previews";
+type ReadStage = "total" | "transcript" | "pins";
 
-const timings = new AsyncLocalStorage<Map<ReadStage, number>>();
+const timings = new AsyncLocalStorage<Map<string, number>>();
 
 export async function timeSessionRead<T>(stage: ReadStage, read: () => T | Promise<T>): Promise<T> {
   const current = timings.getStore();
@@ -28,9 +15,6 @@ export async function timeSessionRead<T>(stage: ReadStage, read: () => T | Promi
   }
 }
 
-export async function collectSessionReadTiming<T>(read: () => Promise<T>): Promise<{ value: T; header: string }> {
-  const current = new Map<ReadStage, number>();
-  const value = await timings.run(current, () => timeSessionRead("total", read));
-  const header = [...current].map(([stage, ms]) => `qm_session_${stage};dur=${ms.toFixed(2)}`).join(", ");
-  return { value, header };
+export function collectSessionReadTiming<T>(collected: Map<string, number>, read: () => Promise<T>): Promise<T> {
+  return timings.run(collected, () => timeSessionRead("total", read));
 }

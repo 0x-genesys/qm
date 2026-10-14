@@ -36,6 +36,7 @@ const allowedProperties = new Set([
   "transfer_bytes",
   "server_timing",
 ]);
+const MAX_TRANSCRIPT_TIMINGS = 50;
 const transcriptTimings = new Map<string, { transfer_bytes: number; server_timing: Record<string, number> }>();
 let transcriptObserver: PerformanceObserver | undefined;
 
@@ -43,6 +44,7 @@ function observeTranscriptTimings(): void {
   if (transcriptObserver || typeof PerformanceObserver === "undefined") return;
   transcriptObserver = new PerformanceObserver((list) => {
     for (const entry of list.getEntries() as PerformanceResourceTiming[]) {
+      if (!entry.name.includes("/api/sessions/")) continue;
       const path = new URL(entry.name).pathname;
       const parts = path.split("/");
       if (parts.at(-3) !== "api" || parts.at(-2) !== "sessions") continue;
@@ -51,7 +53,8 @@ function observeTranscriptTimings(): void {
         transfer_bytes: entry.encodedBodySize,
         server_timing: Object.fromEntries(entry.serverTiming.map((t) => [t.name, Math.round(t.duration)])),
       });
-      if (transcriptTimings.size > 50) transcriptTimings.delete(transcriptTimings.keys().next().value!);
+      if (transcriptTimings.size > MAX_TRANSCRIPT_TIMINGS)
+        transcriptTimings.delete(transcriptTimings.keys().next().value!);
     }
   });
   transcriptObserver.observe({ type: "resource", buffered: false });

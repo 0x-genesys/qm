@@ -1,4 +1,3 @@
-import { timeSessionRead } from "../sessions/read-timing.ts";
 import type { EntryType, ScopeId, SessionEntry } from "../types.ts";
 import type { GetEntriesOptions, NewSearchEntry, SessionStore, TapeRecord } from "../sessions/session-store.ts";
 import { entryWithinTenure, TAPE_RENDER_VERSION } from "../sessions/session-store.ts";
@@ -426,17 +425,15 @@ export function createTranscriptSource(sessions: TranscriptStore): TranscriptSou
   ): Promise<ProjectedRead | null> => {
     try {
       const latest = Math.min(
-        await timeSessionRead("latest_seq", () => sessions.latestEntrySeq(sessionId)),
+        await sessions.latestEntrySeq(sessionId),
         beforeSeq === undefined ? Infinity : beforeSeq - 1,
       );
       if (latest < 0) return { entries: [], anchored: false, base: -1 };
       if (sessions.getTranscriptEntries) {
         const first = Math.min(latest + 1, Math.max(sinceSeq ?? 0, limit === undefined ? 0 : latest - limit + 1));
         const [entries, completePrefix] = await Promise.all([
-          timeSessionRead("entries", () => sessions.getTranscriptEntries!(sessionId, { limit, beforeSeq, sinceSeq })),
-          sinceSeq === undefined ||
-            first === 0 ||
-            timeSessionRead("suffix_check", () => sessions.canReadTranscriptSuffix?.(sessionId, first)),
+          sessions.getTranscriptEntries(sessionId, { limit, beforeSeq, sinceSeq }),
+          sinceSeq === undefined || first === 0 || sessions.canReadTranscriptSuffix?.(sessionId, first),
         ]);
         if (sinceSeq !== undefined && !completePrefix) return projected(sessionId, limit, beforeSeq);
         if (entries.length === latest - first + 1 && entries.every((entry, i) => entry.seq === first + i)) {
@@ -451,15 +448,15 @@ export function createTranscriptSource(sessions: TranscriptStore): TranscriptSou
       let anchored = false;
       if (limit !== undefined) {
         const cap = Math.min(Math.max(limit * 2, SUFFIX_ROW_CAP_MIN), SUFFIX_ROW_CAP_MAX);
-        rows = await timeSessionRead("tape", () => sessions.getTape(sessionId, { limit: cap }));
+        rows = await sessions.getTape(sessionId, { limit: cap });
         anchored = rows.length >= cap;
       } else {
-        rows = await timeSessionRead("tape", () => sessions.getTape(sessionId));
+        rows = await sessions.getTape(sessionId);
       }
       if (!anchored && tapeHasRenderBlockers(rows)) {
         return null;
       }
-      const projection = await timeSessionRead("projection", () => projectTapeEntries(sessionId, rows, { anchored }));
+      const projection = projectTapeEntries(sessionId, rows, { anchored });
       if (!projection || projection.coveredSeq < latest) return null;
       if (anchored && projection.entries.length < limit!) return null;
       return { entries: projection.entries, anchored, base: projection.baseSeq };
@@ -487,14 +484,14 @@ export function createTranscriptSource(sessions: TranscriptStore): TranscriptSou
     },
     async forViewer(sessionId, principalId, opts?): Promise<TranscriptRead> {
       const fallback = async (): Promise<TranscriptRead> => ({
-        entries: (await timeSessionRead("fallback", () => sessions.visibleEntries(sessionId, principalId))).filter(
+        entries: (await sessions.visibleEntries(sessionId, principalId)).filter(
           (entry) => opts?.beforeSeq === undefined || entry.seq < opts.beforeSeq,
         ),
         earlier: 0,
       });
       let windows;
       try {
-        windows = await timeSessionRead("participant_windows", () => sessions.participantWindowsOf(sessionId));
+        windows = await sessions.participantWindowsOf(sessionId);
       } catch (err) {
         swallow("tape-projection: participant windows", err);
         return fallback();

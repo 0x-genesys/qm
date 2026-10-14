@@ -43,34 +43,21 @@ test("session HTTP reads expose executed stages without changing payloads or aut
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), expected);
   const measured = stages(response.headers.get("server-timing"));
-  for (const name of [
-    "total",
-    "acl",
-    "continue",
-    "transcript",
-    "participant_windows",
-    "latest_seq",
-    "entries",
-    "pins",
-    "pin_previews",
-  ])
-    assert.ok(measured.has(name), name);
-  assert.equal(measured.has("fallback"), false);
-  assert.equal(measured.has("tape"), false);
+  assert.deepEqual([...measured.keys()].sort(), ["pins", "total", "transcript"]);
   assert.ok(measured.get("total")! >= measured.get("transcript")!);
-
-  t.mock.method(built.sessions, "getTranscriptEntries", async () => []);
-  t.mock.method(built.sessions, "getTape", async () => []);
-  const fallback = await fetch(`${base}/v1/sessions/${session.id}?viewer=viewer`);
-  assert.equal(fallback.status, 200);
-  assert.deepEqual(((await fallback.json()) as { entries: unknown }).entries, expected!.entries);
-  const fallbackStages = stages(fallback.headers.get("server-timing"));
-  for (const name of ["tape", "projection", "fallback"]) assert.ok(fallbackStages.has(name), name);
 
   const denied = await fetch(`${base}/v1/sessions/${session.id}?viewer=stranger`);
   assert.equal(denied.status, 404);
   assert.deepEqual(await denied.json(), { error: "not_found" });
-  assert.deepEqual([...stages(denied.headers.get("server-timing")).keys()].sort(), ["acl", "total"]);
+  assert.deepEqual([...stages(denied.headers.get("server-timing")).keys()].sort(), ["total"]);
+
+  t.mock.method(built.sessions, "listPins", async () => {
+    throw new Error("pins unavailable");
+  });
+  const failed = await fetch(`${base}/v1/sessions/${session.id}?viewer=viewer`);
+  assert.equal(failed.status, 500);
+  const failedStages = stages(failed.headers.get("server-timing"));
+  for (const name of ["total", "pins"]) assert.ok(failedStages.has(name), name);
 });
 
 test("session timings aggregate repeats and isolate overlapping request contexts", async (t) => {
@@ -80,28 +67,30 @@ test("session timings aggregate repeats and isolate overlapping request contexts
   const waiting = new Promise<void>((resolve) => {
     release = resolve;
   });
-  const first = collectSessionReadTiming(async () => {
-    await timeSessionRead("entries", async () => {
+  const firstTimings = new Map<string, number>();
+  const secondTimings = new Map<string, number>();
+  const first = collectSessionReadTiming(firstTimings, async () => {
+    await timeSessionRead("transcript", async () => {
       now += 2;
       await waiting;
     });
-    await timeSessionRead("entries", () => {
+    await timeSessionRead("transcript", () => {
       now += 3;
     });
     return "first";
   });
-  const second = await collectSessionReadTiming(() =>
-    timeSessionRead("fallback", () => {
+  const second = await collectSessionReadTiming(secondTimings, () =>
+    timeSessionRead("pins", () => {
       now += 5;
       return "second";
     }),
   );
   release();
   const completed = await first;
-  assert.equal(completed.value, "first");
-  assert.equal(second.value, "second");
-  assert.equal(stages(completed.header).get("entries"), 10);
-  assert.equal(stages(completed.header).has("fallback"), false);
-  assert.equal(stages(second.header).get("fallback"), 5);
-  assert.equal(stages(second.header).has("entries"), false);
+  assert.equal(completed, "first");
+  assert.equal(second, "second");
+  assert.equal(firstTimings.get("transcript"), 10);
+  assert.equal(firstTimings.has("pins"), false);
+  assert.equal(secondTimings.get("pins"), 5);
+  assert.equal(secondTimings.has("transcript"), false);
 });
