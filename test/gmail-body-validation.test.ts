@@ -89,7 +89,7 @@ for (const [command, body] of [
   ["draft", ""],
   ["reply", " \t\r\n"],
   ["update-draft", ""],
-]) {
+] as const) {
   test(
     `${command} rejects ${body ? "whitespace-only" : "empty"} body files before a draft write`,
     { skip: !havePython },
