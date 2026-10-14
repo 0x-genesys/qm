@@ -1230,13 +1230,10 @@ async function serveDeploymentGit(ctx: BaseCtx): Promise<void> {
     if (isPush && access.permission !== "write")
       return sendJson(ctx.res, 403, { error: "forbidden", message: "deployment git token is read-only" });
     if (
-      access.principalId &&
+      !access.principalId ||
       !(await ctx.app.authorizesDeploymentGitAccess(parts.id, access.principalId, access.permission))
     ) {
       return sendJson(ctx.res, 403, { error: "forbidden", message: "deployment git access has been revoked" });
-    }
-    if (isPush && !access.principalId) {
-      return sendJson(ctx.res, 403, { error: "forbidden", message: "deployment git write access has been revoked" });
     }
   }
   const repoPath = await ctx.app.deploymentGitRepoPath(parts.id);

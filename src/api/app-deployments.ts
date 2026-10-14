@@ -131,7 +131,7 @@ export function createDeploymentMethods(
     },
     async deploymentGitPermissionFor(idOrName, principalId) {
       const deployment = (await deps.deploy.listDeployments()).find((d) => d.id === idOrName || d.name === idOrName);
-      return deployment ? principalGitPermission(deployment, principalId) : null;
+      return deployment && (await principalGitPermission(deployment, principalId)) === "write" ? "write" : null;
     },
     rollbackDeployment(id, version) {
       return deps.deploy.rollbackDeployment(id, version);
@@ -177,7 +177,7 @@ export function createDeploymentMethods(
     ): Promise<{ status: "ok"; logs: string | null } | { status: "not_found" | "denied" }> {
       const deployment = await deps.deploy.getDeployment(id);
       if (!deployment) return { status: "not_found" };
-      if (!(await principalCanReadDeployment(deployment, principalId))) return { status: "denied" };
+      if ((await principalGitPermission(deployment, principalId)) !== "write") return { status: "denied" };
       return { status: "ok", logs: await deps.deploy.deploymentLogs(id, opts) };
     },
     deploymentGitRepoPath(id) {
@@ -190,7 +190,7 @@ export function createDeploymentMethods(
       const d = await deps.deploy.getDeployment(idOrName);
       if (!d) return null;
       const permission = await principalGitPermission(d, principalId);
-      if (!permission) return null;
+      if (permission !== "write") return null;
       const token = await mintDeployGitAccess(opts.secret, {
         deploymentId: d.id,
         permission,
@@ -202,11 +202,11 @@ export function createDeploymentMethods(
       url.password = token;
       return { url: url.toString(), permission };
     },
-    async authorizesDeploymentGitAccess(id, principalId, permission) {
+    async authorizesDeploymentGitAccess(id, principalId, _permission) {
       const d = await deps.deploy.getDeployment(id);
       if (!d) return false;
       const current = await principalGitPermission(d, principalId);
-      return permission === "write" ? current === "write" : current !== null;
+      return current === "write";
     },
     reapIdleDeployments(ttlMs, now) {
       return deps.deploy.reapIdleDeployments(ttlMs, now);
