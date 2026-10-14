@@ -434,7 +434,10 @@ test("private sandbox inventories require a DM or effective Open admin conversat
     for (const target of ["personal:U1", ORG]) {
       const denied = await read(channel, target);
       assert.equal(denied.status, 403);
-      assert.match(((await denied.json()) as { message: string }).message, /ask the agent in a DM/);
+      const body = await denied.text();
+      assert.match(body, /ask the agent in a DM/);
+      for (const privateValue of [record.name, record.ownerScopeId, record.backingScopeId, record.machineId!])
+        assert.equal(body.includes(privateValue), false);
     }
     const dm = await read(await capFor("admin-alice"));
     assert.equal(dm.status, 200);
