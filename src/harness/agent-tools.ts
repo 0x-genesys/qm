@@ -137,7 +137,7 @@ const TRUNCATED_TAIL_CHARS = 10_000;
 function capResultText(t: string, recovery?: string, maxChars = MAX_TOOL_RESULT_CHARS): string {
   if (t.length <= maxChars) return t;
   const notice =
-    `\n…[truncated — full result was ${t.length} chars and the middle was dropped; ` +
+    `\n…[truncated — full result was ${t.length} chars (${Buffer.byteLength(t, "utf8")} UTF-8 bytes) and the middle was dropped; ` +
     `${recovery ?? "full captured result was not stored; do not rerun side-effecting work just to recover output"}]…\n`;
   return headSlice(t, maxChars - TRUNCATED_TAIL_CHARS - notice.length) + notice + tailSlice(t, TRUNCATED_TAIL_CHARS);
 }

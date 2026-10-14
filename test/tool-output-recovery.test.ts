@@ -102,6 +102,7 @@ test("storage failure reports missing recovery without changing the command resu
   });
   const seen = await f.run();
   assert.match(seen, /storage failed; no retrieval reference/);
+  assert.match(seen, /100059 UTF-8 bytes/);
   assert.ok(seen.endsWith("[exit 0]"));
   assert.equal(f.emitted[0]!.outputStorageError, "storage unavailable");
   assert.equal(f.emitted[0]!.isError, false);
@@ -134,6 +135,7 @@ test("file reads preserve same-scope output without re-owning a foreign result",
   const result = await invoke("foreign-read", { action: "read", path: "shared/note.txt" });
   assert.match(result.content[0]!.text!, /shared source/);
   assert.match(result.content[0]!.text!, /full captured result was not stored/);
+  assert.match(result.content[0]!.text!, new RegExp(`${Buffer.byteLength(text)} UTF-8 bytes`));
   assert.equal((await f.files.listOwnedByScopes([owner])).files.length, 0);
   f.context.read = async () => ({ content: text, sourceScopeId: owner });
   const local = await invoke("local-read", { action: "read", path: "note.txt" });
