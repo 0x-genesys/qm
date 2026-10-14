@@ -238,8 +238,13 @@ export function createMemoryRunStore(opts?: { maxClaims?: number }): MemoryRunti
     },
 
     async inFlightForThread(sessionId) {
+      return store.inFlightForThreads([sessionId]);
+    },
+
+    async inFlightForThreads(sessionIds) {
+      const wanted = new Set(sessionIds);
       return [...runs.values()]
-        .filter((r) => r.sessionId === sessionId && !isTerminal(r.status))
+        .filter((r) => wanted.has(r.sessionId) && !isTerminal(r.status))
         .sort((a, b) => a.createdAt - b.createdAt);
     },
 

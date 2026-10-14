@@ -184,3 +184,31 @@ test("child latest-run timing comes from durable run records through queue, comp
   assert.equal((await view())?.createdAt, next.createdAt);
   assert.equal((await view())?.finishedAt, null);
 });
+
+test("session projection keeps the running child task alongside newer queued follow-ups", async () => {
+  const { app, runs, sessions } = freshApp();
+  const parent = await app.turn(dm("parent", "web:U1:queue-parent"));
+  const child = await app.turn(dm("child", "web:U1:queue-child"));
+  await sessions.setParentSession(child.sessionId!, parent.sessionId!);
+  const { run } = await runs.enqueue({ sessionId: "web:U1:queue-child", request: enqueueRequest() });
+  const active = await runs.claimForSession("web:U1:queue-child", "w", 5_000);
+  const { run: queued } = await runs.enqueue({ sessionId: "web:U1:queue-child", request: enqueueRequest() });
+  let reads = 0;
+  const batch = runs.inFlightForThreads.bind(runs);
+  runs.inFlightForThreads = async (refs) => {
+    reads++;
+    assert.deepEqual(refs, ["web:U1:queue-child"]);
+    return batch(refs);
+  };
+  const projected = (await app.listSessions("U1")).find((session) => session.id === child.sessionId)!;
+  assert.equal(reads, 1);
+  assert.equal(projected.latestRun?.id, queued.id);
+  assert.deepEqual(
+    projected.inFlightRuns?.map((run) => [run.id, run.status]),
+    [
+      [run.id, "running"],
+      [queued.id, "pending"],
+    ],
+  );
+  assert.equal(projected.inFlightRuns?.[0]?.startedAt, active!.startedAt);
+});

@@ -1,3 +1,4 @@
+import type { Run } from "../runs/run-store.ts";
 import { composeSoul } from "../resolution/resolution-service.ts";
 import { principalEntitledToScope } from "../resolution/context-filter.ts";
 import { createCurrentScopeMembers } from "../resolution/scope-membership.ts";
@@ -451,13 +452,27 @@ export function createSessionMethods(
       }
       const working = sessions.filter((s) => workingThreadRefs.has(s.threadRef));
       const children = sessions.filter((s) => s.parentSessionId);
-      const [latestRuns, recentEntries] = await Promise.all([
+      const [latestRuns, recentEntries, inFlight] = await Promise.all([
         deps.runs.latestForThreads([...working, ...children].map((s) => s.threadRef)),
         deps.sessions.getRecentEntries(
           working.map((s) => s.id),
           GOAL_LOOKBACK_ENTRIES,
         ),
+        deps.runs.inFlightForThreads(children.map((s) => s.threadRef)),
       ]);
+      const runTiming = (run: Run) => ({
+        id: run.id,
+        status: run.result?.status === "failed" ? ("failed" as const) : run.status,
+        createdAt: run.createdAt,
+        startedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+      });
+      const inFlightByThread = new Map<string, ReturnType<typeof runTiming>[]>();
+      for (const run of inFlight) {
+        const rows = inFlightByThread.get(run.sessionId) ?? [];
+        rows.push(runTiming(run));
+        inFlightByThread.set(run.sessionId, rows);
+      }
       const goals = new Map<
         string,
         { objective: string; activeMs: number; runningSince?: number; floor?: Record<string, number> }
@@ -480,17 +495,8 @@ export function createSessionMethods(
           ...s,
           ...(workingThreadRefs.has(s.threadRef) ? { working: true } : {}),
           ...(waiting.has(s.id) ? { awaitingInput: true } : {}),
-          ...(run
-            ? {
-                latestRun: {
-                  id: run.id,
-                  status: run.result?.status === "failed" ? ("failed" as const) : run.status,
-                  createdAt: run.createdAt,
-                  startedAt: run.startedAt,
-                  finishedAt: run.finishedAt,
-                },
-              }
-            : {}),
+          ...(run ? { latestRun: runTiming(run) } : {}),
+          ...(inFlightByThread.has(s.threadRef) ? { inFlightRuns: inFlightByThread.get(s.threadRef)! } : {}),
           ...(jobCounts.has(s.threadRef) ? { backgroundJobs: jobCounts.get(s.threadRef)! } : {}),
           ...(watchCounts.has(s.threadRef) ? { watches: watchCounts.get(s.threadRef)! } : {}),
           ...(cronCounts.has(s.threadRef) ? { crons: cronCounts.get(s.threadRef)! } : {}),

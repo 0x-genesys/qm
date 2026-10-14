@@ -90,6 +90,25 @@ for (const backend of backends) {
     assert.equal(await runs.activeForThread("sX"), null, "terminal run is not active");
   });
 
+  test(`[${backend.name}] in-flight batch is scoped, ordered and excludes completed runs`, async () => {
+    const { runs } = backend.make();
+    const first = (await runs.enqueue({ sessionId: "batch-a", request: turn("active") })).run;
+    const claimed = await runs.claimForSession("batch-a", "w", 5_000);
+    const next = (await runs.enqueue({ sessionId: "batch-a", request: turn("queued") })).run;
+    const other = (await runs.enqueue({ sessionId: "batch-b", request: turn("queued") })).run;
+    await runs.enqueue({ sessionId: "private", request: turn("hidden") });
+    assert.deepEqual(await runs.inFlightForThreads([]), []);
+    assert.deepEqual(
+      (await runs.inFlightForThreads(["batch-a", "batch-b"])).map((run) => run.id),
+      [first.id, next.id, other.id],
+    );
+    await runs.complete(first.id, claimed!.leaseToken!, { status: "ok", reply: "done" });
+    assert.deepEqual(
+      (await runs.inFlightForThreads(["batch-a"])).map((run) => run.id),
+      [next.id],
+    );
+  });
+
   test(`[${backend.name}] inFlightForThread puts the running turn first and the queue behind it`, async () => {
     const { runs } = backend.make();
     assert.deepEqual(await runs.inFlightForThread("sQ"), [], "nothing in flight");

@@ -126,6 +126,7 @@ export interface Session {
     startedAt: number | null;
     finishedAt: number | null;
   };
+  inFlightRuns?: NonNullable<Session["latestRun"]>[];
   canContinue?: boolean;
   backgroundJobs?: number;
   watches?: number;

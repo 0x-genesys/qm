@@ -5,6 +5,8 @@ type SubagentState = "queued" | "working" | "waiting" | "done" | "failed";
 
 export interface SubagentRow {
   session: CoreSession;
+  run: CoreSession["latestRun"];
+  queued: NonNullable<CoreSession["latestRun"]>[];
   state: SubagentState;
   depth: number;
   startedAt: number | null;
@@ -50,7 +52,9 @@ export function subagentRows(list: readonly CoreSession[], rootId: string): Suba
   return descendantsOf(list, rootId)
     .filter(({ session }) => session.latestRun || session.working || session.awaitingInput)
     .map(({ session, depth }) => {
-      const run = session.latestRun;
+      const inFlight = session.inFlightRuns ?? [];
+      const run = inFlight.find((run) => run.status === "running") ?? inFlight[0] ?? session.latestRun;
+      const queued = inFlight.filter((candidate) => candidate.status === "pending" && candidate.id !== run?.id);
       let state: SubagentState = "done";
       if (session.awaitingInput) state = "waiting";
       else if (run?.status === "pending") state = "queued";
@@ -58,6 +62,8 @@ export function subagentRows(list: readonly CoreSession[], rootId: string): Suba
       else if (run?.status === "failed") state = "failed";
       return {
         session,
+        run,
+        queued,
         state,
         depth,
         startedAt: run?.createdAt ?? null,
@@ -70,22 +76,28 @@ export function visibleSubagents(rows: readonly SubagentRow[], acknowledged: Rea
   return rows.filter((row) => !((row.state === "done" || row.state === "failed") && acknowledged.has(ackKey(row))));
 }
 
-export function ackKey(row: Pick<SubagentRow, "session">): string {
-  return `${row.session.id}@${row.session.latestRun?.id ?? "unknown"}`;
+export function ackKey(row: Pick<SubagentRow, "session" | "run">): string {
+  return `${row.session.id}@${row.run?.id ?? "unknown"}`;
 }
 
 export function subagentTiming(row: SubagentRow, now = Date.now()): string | null {
-  const run = row.session.latestRun;
+  const run = row.run;
   if (row.startedAt === null || !run) return null;
   if ((run.status === "done" || run.status === "failed") && row.endedAt === null) return null;
   return `${goalElapsedLabel(row.startedAt, row.endedAt ?? now)} elapsed (incl. queue)`;
+}
+
+export function subagentQueueTiming(row: SubagentRow, now = Date.now()): string | null {
+  if (!row.queued.length) return null;
+  const oldest = Math.min(...row.queued.map((run) => run.createdAt));
+  return `${row.queued.length} queued · oldest ${goalElapsedLabel(oldest, now)}`;
 }
 
 export function subagentSummary(rows: readonly SubagentRow[]): string {
   const count = (state: SubagentState) => rows.filter((row) => row.state === state).length;
   const parts: string[] = [];
   const working = count("working");
-  const queued = count("queued");
+  const queued = count("queued") + rows.reduce((count, row) => count + row.queued.length, 0);
   const done = count("done");
   const waiting = count("waiting");
   const failed = count("failed");
@@ -94,7 +106,7 @@ export function subagentSummary(rows: readonly SubagentRow[]): string {
   if (working) parts.push(`${working} running`);
   if (waiting) parts.push(`${waiting} need${waiting === 1 ? "s" : ""} you`);
   if (failed) parts.push(`${failed} failed`);
-  return `Latest runs: ${parts.join(", ")}`;
+  return `Runs: ${parts.join(", ")}`;
 }
 
 export interface PeekLine {

@@ -3299,3 +3299,36 @@ test(
     }
   },
 );
+
+test("pg run store: in-flight batch retains running and queued identities across store reload", { skip }, async () => {
+  const first = createPostgresRunStore(URL!);
+  const reloaded = createPostgresRunStore(URL!);
+  try {
+    const active = (await first.runs.enqueue({ sessionId: "batch-active", request: turn("active") })).run;
+    await first.runs.claimForSession("batch-active", "w", 60_000);
+    const queued = (await first.runs.enqueue({ sessionId: "batch-active", request: turn("queued") })).run;
+    const other = (await first.runs.enqueue({ sessionId: "batch-other", request: turn("other") })).run;
+    await first.runs.enqueue({ sessionId: "batch-hidden", request: turn("hidden") });
+    const expected = [
+      [active.id, "running"],
+      [queued.id, "pending"],
+      [other.id, "pending"],
+    ];
+    assert.deepEqual(
+      (await first.runs.inFlightForThreads(["batch-active", "batch-other"])).map((run) => [run.id, run.status]),
+      expected,
+    );
+    assert.deepEqual(
+      (await reloaded.runs.inFlightForThreads(["batch-active", "batch-other"])).map((run) => [run.id, run.status]),
+      expected,
+    );
+    assert.deepEqual(await reloaded.runs.inFlightForThreads([]), []);
+    assert.deepEqual(
+      (await reloaded.runs.inFlightForThread("batch-active")).map((run) => run.id),
+      [active.id, queued.id],
+    );
+  } finally {
+    await first.close();
+    await reloaded.close();
+  }
+});

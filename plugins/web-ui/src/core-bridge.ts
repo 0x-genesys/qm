@@ -146,6 +146,7 @@ export interface CoreSession {
     startedAt: number | null;
     finishedAt: number | null;
   };
+  inFlightRuns?: NonNullable<CoreSession["latestRun"]>[];
   canContinue?: boolean;
   backgroundJobs?: number;
   watches?: number;

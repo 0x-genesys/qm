@@ -3281,6 +3281,7 @@ qm-markdown .tok-in {
 .subagent-row-head {
   appearance: none;
   display: flex;
+  flex-wrap: wrap;
   flex: 1 1 0;
   min-width: 0;
   align-items: center;
@@ -3318,7 +3319,7 @@ qm-markdown .tok-in {
   color: var(--foreground);
 }
 .subagent-row-meta {
-  flex: 0 0 auto;
+  flex: 1 1 100%;
   font-variant-numeric: tabular-nums;
 }
 .subagent-row.failed .subagent-row-meta,

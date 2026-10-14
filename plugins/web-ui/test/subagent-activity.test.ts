@@ -9,6 +9,7 @@ import {
   subagentRows,
   subagentSummary,
   subagentTiming,
+  subagentQueueTiming,
   visibleSubagents,
 } from "../src/subagent-activity.ts";
 import { backgroundLabel, conversationBackground, rowIndicators } from "../src/session-list.ts";
@@ -81,7 +82,7 @@ test("rows retain completed and failed run timings until that run is dismissed",
   );
   assert.equal(rows[0]!.endedAt, null);
   assert.equal(rows[1]!.endedAt, 61_000);
-  assert.equal(subagentSummary(rows), "Latest runs: 2 running, 1 needs you, 1 failed");
+  assert.equal(subagentSummary(rows), "Runs: 2 running, 1 needs you, 1 failed");
   const failed = rows[1]!;
   assert.deepEqual(
     visibleSubagents(rows, new Set([ackKey(failed)])).map((r) => r.session.id),
@@ -129,7 +130,7 @@ test("latest run elapsed includes queue time and survives reload without countin
   const [queued] = subagentRows([session], "root");
   assert.equal(queued!.state, "queued");
   assert.equal(subagentTiming(queued!, 160_000), "1m elapsed (incl. queue)");
-  assert.equal(subagentSummary([queued!]), "Latest runs: 1 queued");
+  assert.equal(subagentSummary([queued!]), "Runs: 1 queued");
   const running = { ...session, latestRun: { ...session.latestRun!, status: "running" as const, startedAt: 160_000 } };
   assert.equal(subagentTiming(subagentRows([running], "root")[0]!, 180_000), "1m 20s elapsed (incl. queue)");
   const completed = { ...running, latestRun: { ...running.latestRun, status: "done" as const, finishedAt: 200_000 } };
@@ -137,7 +138,7 @@ test("latest run elapsed includes queue time and survives reload without countin
   const [reloaded] = subagentRows(JSON.parse(JSON.stringify([completed])), "root");
   assert.equal(subagentTiming(done!, 210_000), "1m 40s elapsed (incl. queue)");
   assert.equal(subagentTiming(reloaded!, 500_000), subagentTiming(done!, 210_000));
-  assert.equal(subagentSummary([done!]), "Latest runs: 1 done");
+  assert.equal(subagentSummary([done!]), "Runs: 1 done");
   assert.equal(visibleSubagents([done!], new Set()).length, 1);
   const dismissed = new Set([ackKey(done!)]);
   assert.equal(visibleSubagents([reloaded!], dismissed).length, 0);
@@ -158,4 +159,40 @@ test("missing run timestamps never fall back to session lifetime or an indefinit
     "root",
   );
   assert.equal(subagentTiming(done!, 500_000), null);
+});
+
+test("an older running task stays visible when a newer follow-up queues, including after reload", () => {
+  const active = { id: "active", status: "running" as const, createdAt: 100_000, startedAt: 130_000, finishedAt: null };
+  const queued = { id: "follow-up", status: "pending" as const, createdAt: 200_000, startedAt: null, finishedAt: null };
+  const session = row("child", "root", { working: true, latestRun: queued, inFlightRuns: [active, queued] });
+  for (const input of [session, JSON.parse(JSON.stringify(session))]) {
+    const [current] = subagentRows([input], "root");
+    assert.equal(current!.state, "working");
+    assert.equal(current!.run?.id, active.id);
+    assert.equal(subagentTiming(current!, 260_000), "2m 40s elapsed (incl. queue)");
+    assert.equal(subagentQueueTiming(current!, 260_000), "1 queued · oldest 1m");
+    assert.equal(subagentSummary([current!]), "Runs: 1 queued, 1 running");
+  }
+});
+
+test("a finished parent run does not hide its active grandchild", () => {
+  const done = { id: "done", status: "done" as const, createdAt: 100_000, startedAt: 120_000, finishedAt: 160_000 };
+  const active = { id: "active", status: "running" as const, createdAt: 130_000, startedAt: 140_000, finishedAt: null };
+  const rows = subagentRows(
+    [
+      row("child", "root", { working: true, latestRun: done }),
+      row("grandchild", "child", { working: true, latestRun: active, inFlightRuns: [active] }),
+    ],
+    "root",
+  );
+  assert.deepEqual(
+    rows.map((row) => [row.state, row.depth]),
+    [
+      ["done", 1],
+      ["working", 2],
+    ],
+  );
+  assert.equal(subagentTiming(rows[0]!, 200_000), "1m elapsed (incl. queue)");
+  assert.equal(subagentTiming(rows[1]!, 200_000), "1m 10s elapsed (incl. queue)");
+  assert.equal(visibleSubagents(rows, new Set([ackKey(rows[0]!)])).length, 1);
 });

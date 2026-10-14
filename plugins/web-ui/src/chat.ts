@@ -195,6 +195,7 @@ import {
   subagentRows,
   subagentSummary,
   subagentTiming,
+  subagentQueueTiming,
   visibleSubagents,
   type PeekLine,
   type SubagentRow,
@@ -2580,6 +2581,7 @@ export function createChatSurface(
 
   function subagentRowTpl(row: SubagentRow): TemplateResult {
     const elapsed = subagentTiming(row);
+    const queue = subagentQueueTiming(row);
     const peeking = subagentUi.peekId === row.session.id;
     const approvals = unresolvedApprovals(subagentUi.approvals.get(row.session.id) ?? []);
     const title = row.session.title?.trim() || "Subagent";
@@ -2599,8 +2601,8 @@ export function createChatSurface(
         <span class="subagent-row-title" dir="auto">${title}</span>
         <span
           class="subagent-row-meta"
-          title="Latest run only; earlier runs or descendants may still be active. Elapsed time includes queue time, not just active work."
-          >${row.session.latestRun ? "Latest run · " : ""}${SUBAGENT_STATE_LABEL[row.state]}${elapsed ? ` · ${elapsed}` : ""}</span
+          title="This run only; descendants are shown separately. Elapsed time includes queue time, not just active work."
+          >${row.run ? "Run · " : ""}${SUBAGENT_STATE_LABEL[row.state]}${elapsed ? ` · ${elapsed}` : ""}${queue ? ` · ${queue}` : ""}</span
         >
       </button>
       ${
@@ -2645,7 +2647,7 @@ export function createChatSurface(
     if (subagentUi.peekId && !rows.some((row) => row.session.id === subagentUi.peekId)) stopSubagentPeek();
     syncSubagentApprovals(rows);
     subagentUi.ticking = rows.some(
-      (row) => row.session.latestRun?.status === "running" || row.session.latestRun?.status === "pending",
+      (row) => row.run?.status === "running" || row.run?.status === "pending" || row.queued.length > 0,
     );
     syncWorkTicker();
     if (!rows.length) return nothing;

@@ -458,9 +458,14 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
     },
 
     async inFlightForThread(sessionId: string): Promise<Run[]> {
+      return runs.inFlightForThreads([sessionId]);
+    },
+
+    async inFlightForThreads(sessionIds): Promise<Run[]> {
+      if (!sessionIds.length) return [];
       const { rows } = await q(
-        "SELECT * FROM runs WHERE session_id = $1 AND status IN ('pending','running') ORDER BY created_at ASC, seq ASC",
-        [sessionId],
+        "SELECT * FROM runs WHERE session_id = ANY($1::text[]) AND status IN ('pending','running') ORDER BY created_at ASC, seq ASC",
+        [sessionIds],
       );
       return rows.map(rowToRun);
     },
