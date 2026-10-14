@@ -57,7 +57,7 @@ import { publicUrlOf } from "../deploy/deploy-store.ts";
 import { carriesGitMetadata } from "../deploy/deploy-fs.ts";
 import type { AclStore } from "../acl/acl-store.ts";
 import type { AuditLog } from "../audit/audit-log.ts";
-import { TURN_FILES_DIR, mimeFromName, type OutboundFile } from "../core/attachments.ts";
+import { TURN_FILES_DIR, mimeFromName, safeAttachmentName, type OutboundFile } from "../core/attachments.ts";
 import { errMessage, withCleanup } from "../util/errors.ts";
 import { fileArtifactId, type FileArtifactStore } from "../files/file-artifact-store.ts";
 import type { ScopedConfigStore } from "../resolution/config-store.ts";
@@ -1059,17 +1059,19 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
               `${path} is ${bytes.byteLength} bytes, over the ${MAX_WRITE_PUBLISH_BYTES / 1024 ** 2} MiB limit for files write; use the Files upload helper (GET /v1/files/upload-client) for larger files`,
             );
           const sha256 = createHash("sha256").update(bytes).digest("hex");
-          const name = path.split(/[\\/]/).pop() || path;
+          const name = safeAttachmentName(path.split(/[\\/]/).pop() || path);
+          const id = fileArtifactId(`${ownerScopeId}:${path}:${sha256}`, "out", 0);
           const { artifact } = await deps.files.put({
-            id: fileArtifactId(`${ownerScopeId}:${path}:${sha256}`, "out", 0),
+            id,
             ownerScopeId,
             createdBy: deps.createdBy,
             name,
-            path,
+            path: `artifacts/${id}/${name}`,
             mimetype: mimeFromName(name),
             data: bytes,
             direction: "out",
             createdInScope: writableScopeId ?? ownerScopeId,
+            maxBytes: MAX_WRITE_PUBLISH_BYTES,
           });
           return { fileId: artifact.id, bytes: bytes.byteLength };
         }),
