@@ -3,14 +3,14 @@ import "./slack-account";
 import { openModelConnectManager, type StatusResponse } from "./model-connect";
 import { api, fetchUiState, putUiState, withBase } from "./core-bridge";
 import { html, nothing, render, type TemplateResult } from "lit";
-import { Download, ExternalLink, LogOut, Monitor, Moon, ShieldUser, Sun, type IconNode } from "lucide";
+import { Download, Droplets, ExternalLink, LogOut, Monitor, Moon, ShieldUser, Sun, type IconNode } from "lucide";
 import { icon } from "./icons";
 import { ADMIN_HOME_URL, appState, can, signOut } from "./shell";
 import { sessionsState, setWebOnly } from "./sessions";
 import { errMessage } from "../../chassis/src/errors";
 import { importTheme, isPalette, themeCss, themeTokens, type Palette } from "./theme-import";
 
-type ThemeChoice = "light" | "dark" | "system" | "custom";
+type ThemeChoice = "light" | "dark" | "system" | "glass" | "custom";
 
 const THEME_KEY = "theme";
 const CUSTOM_THEME_KEY = "theme:custom";
@@ -23,6 +23,7 @@ const THEME_OPTIONS: Array<{ value: ThemeChoice; label: string; glyph: IconNode 
   { value: "light", label: "Light", glyph: Sun },
   { value: "dark", label: "Dark", glyph: Moon },
   { value: "system", label: "System", glyph: Monitor },
+  { value: "glass", label: "Liquid glass", glyph: Droplets },
 ];
 
 let settingsHost: HTMLElement | null = null;
@@ -31,7 +32,7 @@ let themeImportError: string | null = null;
 function storedTheme(): ThemeChoice {
   try {
     const stored = localStorage.getItem(THEME_KEY);
-    if (stored === "light" || stored === "dark") return stored;
+    if (stored === "light" || stored === "dark" || stored === "glass") return stored;
     if (stored === "custom" && storedCustomTheme()) return stored;
   } catch {
     void 0;
@@ -76,6 +77,7 @@ export function applyTheme(): void {
   const choice = storedTheme();
   const custom = choice === "custom" ? storedCustomTheme() : null;
   const root = document.documentElement;
+  root.classList.toggle("glass", choice === "glass");
   let styleEl = document.getElementById(CUSTOM_THEME_STYLE_ID);
   if (custom) {
     const tokens = themeTokens(custom);
@@ -90,7 +92,9 @@ export function applyTheme(): void {
     return;
   }
   styleEl?.remove();
-  const dark = choice === "system" ? window.matchMedia("(prefers-color-scheme: dark)").matches : choice === "dark";
+  const dark =
+    choice === "dark" ||
+    ((choice === "system" || choice === "glass") && window.matchMedia("(prefers-color-scheme: dark)").matches);
   root.classList.toggle("dark", dark);
   publishTheme();
 }
@@ -142,7 +146,7 @@ export function watchSystemTheme(): void {
     if (event.key === null || event.key === THEME_KEY || event.key === CUSTOM_THEME_KEY) applyTheme();
   });
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-    if (storedTheme() === "system") applyTheme();
+    if (storedTheme() === "system" || storedTheme() === "glass") applyTheme();
   });
 }
 
@@ -180,7 +184,7 @@ function themeRow(): TemplateResult {
   const custom = storedCustomTheme();
   const note = themeImportError
     ? html`<span class="settings-row-error">${themeImportError}</span>`
-    : "System follows your device's light or dark setting. Import an iTerm2 .itermcolors or a VS Code color theme .json to paint the app with its palette.";
+    : "System follows your device's light or dark setting. Liquid glass frosts the window and follows that same appearance. Import an iTerm2 .itermcolors or a VS Code color theme .json to paint the app with its palette.";
   return html`
     <div class="settings-row">
       <div class="settings-row-copy">
