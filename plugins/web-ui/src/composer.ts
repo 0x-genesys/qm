@@ -320,8 +320,7 @@ export function createComposerSurface(ctx: ConvCtx, options: ComposerOptions = {
   }
 
   function steerRefusalText(reason: string): string {
-    if (reason.startsWith("account_changed"))
-      return "The running task uses a different AI account than you have selected.";
+    if (reason.startsWith("account_changed")) return "The running task uses a different AI account.";
     if (reason === "terminal") return "The task finished before it could take this.";
     return "The running task could not take this.";
   }
@@ -1539,7 +1538,7 @@ export function createComposerSurface(ctx: ConvCtx, options: ComposerOptions = {
       } else if (outcome.reason === "queued_changed") {
         if (agent === ctx.chat.state.agent && threadRef === ctx.chat.state.threadRef)
           composerState.error = "The queued message changed. Try steering it again.";
-      } else if (outcome.reason === "queued_started" || outcome.reason === "not_found") {
+      } else if (outcome.reason === "queued_started") {
         forgetQueuedRun(threadRef, queued.runId);
       } else {
         steerRefusals.set(threadRef, { liveRunId, reason: outcome.reason ?? "" });

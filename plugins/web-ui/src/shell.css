@@ -3887,37 +3887,14 @@ qm-markdown .tok-in {
   outline-offset: 3px;
 }
 .send-btn:disabled,
-.stop-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-
-.queue-btn {
-  width: 34px;
-  height: 34px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--background);
-  color: var(--muted-foreground);
-  cursor: pointer;
-  transition: background 0.12s ease;
-}
-.queue-btn:hover:not(:disabled) {
-  background: var(--secondary);
-  color: var(--foreground);
-}
-.queue-btn:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--foreground) 35%, transparent);
-  outline-offset: 3px;
-}
+.stop-btn:disabled,
 .queue-btn:disabled {
   opacity: 0.35;
   cursor: not-allowed;
 }
-.stop-btn {
+
+.stop-btn,
+.queue-btn {
   width: 34px;
   height: 34px;
   border: 1px solid var(--border);
@@ -3932,10 +3909,12 @@ qm-markdown .tok-in {
     background 0.12s ease,
     opacity 0.12s ease;
 }
-.stop-btn:hover:not(:disabled) {
+.stop-btn:hover:not(:disabled),
+.queue-btn:hover:not(:disabled) {
   background: var(--secondary);
 }
-.stop-btn:focus-visible {
+.stop-btn:focus-visible,
+.queue-btn:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--foreground) 35%, transparent);
   outline-offset: 3px;
 }

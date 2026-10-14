@@ -164,6 +164,14 @@ test("a steered queued message stays visible as Steering until model intake or t
       assert.deepEqual(chips(), [{ tag: "Steering", text: "same text" }]);
     });
 
+    const queuedChips = () => chips().filter((chip) => chip.tag !== "Steering");
+    const until = async (done: () => boolean): Promise<void> => {
+      for (let i = 0; i < 200 && !done(); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        draw();
+      }
+      assert.ok(done());
+    };
     const typeAndSend = async (text: string, how: "enter" | "queue"): Promise<void> => {
       const input = host.querySelector<HTMLTextAreaElement>("textarea")!;
       input.value = text;
@@ -173,10 +181,10 @@ test("a steered queued message stays visible as Steering until model intake or t
           .querySelector<HTMLTextAreaElement>("textarea")!
           .dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
       else host.querySelector<HTMLButtonElement>('[aria-label="Queue for after this turn"]')!.click();
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await until(() => queuedChips().some((chip) => chip.text === text) || chips().some((chip) => chip.text === text));
+      await new Promise((resolve) => setTimeout(resolve, 0));
       draw();
     };
-    const queuedChips = () => chips().filter((chip) => chip.tag !== "Steering");
 
     await t.test("Enter during a run queues once and steers that message", async () => {
       const posts = turnPosts;
@@ -227,7 +235,10 @@ test("a steered queued message stays visible as Steering until model intake or t
       ]);
       assert.ok(host.querySelector('[aria-label="Steer the running task"]'));
       composer!.setQueuedRuns(threadRef, []);
-      draw();
+      const sent = signalled.length;
+      await typeAndSend("now it can steer", "enter");
+      assert.deepEqual(signalled.slice(sent), [`typed${turnPosts}`]);
+      assert.deepEqual(queuedChips(), []);
     });
 
     await t.test("the chip goes when the run ends without intake", async () => {
