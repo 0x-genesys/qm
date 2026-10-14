@@ -134,11 +134,11 @@ const MAX_TOOL_RESULT_CHARS = 100_000;
 const PRESSURE_WARN_FULL60 = 50;
 const TRUNCATED_TAIL_CHARS = 10_000;
 
-function capResultText(t: string): string {
+function capResultText(t: string, recovery?: string): string {
   if (t.length <= MAX_TOOL_RESULT_CHARS) return t;
   const notice =
     `\n…[truncated — full result was ${t.length} chars and the middle was dropped; ` +
-    `refetch narrower (filter or paginate the call, or redirect to a file and read it in pieces) if you need it]…\n`;
+    `${recovery ?? "full captured result was not stored; do not rerun side-effecting work just to recover output"}]…\n`;
   return (
     headSlice(t, MAX_TOOL_RESULT_CHARS - TRUNCATED_TAIL_CHARS - notice.length) +
     notice +
@@ -147,7 +147,8 @@ function capResultText(t: string): string {
 }
 
 function capPayloadStrings(v: unknown): unknown {
-  if (typeof v === "string") return capResultText(v);
+  if (typeof v === "string")
+    return capResultText(v, "payload string shortened; consult the result fullResult metadata for any saved output");
   if (Array.isArray(v)) {
     let out: unknown[] | null = null;
     for (let i = 0; i < v.length; i++) {
@@ -427,6 +428,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           .filter((c, i) => c.type !== "text" || i === firstText);
       }
       let persistedSummary = summary;
+      let resultPrefix = "";
       const tool = String(summary.tool ?? "");
       const provenance =
         screenAs?.provenance ??
@@ -482,7 +484,8 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           }
         } else if (screen.outcome === "unscreened") {
           if (!result.startsWith(UNSCREENED_PREFIX)) {
-            result = `${unscreenedNotice("tool output")}\n${result}`;
+            resultPrefix = `${unscreenedNotice("tool output")}\n`;
+            result = `${resultPrefix}${result}`;
             (ret as { content: Array<{ type: string; text?: string }>; details?: unknown }).content = [
               { type: "text", text: result },
               ...ret.content.filter((c) => c.type !== "text"),
@@ -495,6 +498,22 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
             unscreened: true,
           };
         }
+      }
+      if (resultTruncated && !persistedSummary.quarantined) {
+        let recovery: string | undefined;
+        try {
+          const saved = await ref.current?.storeToolResult?.(callId, t);
+          if (saved) {
+            persistedSummary = { ...persistedSummary, fullResult: saved };
+            recovery = `${saved.sizeBytes} UTF-8 bytes saved in Files ${saved.fileId}; download GET $AGENT_API_URL/v1/files/${saved.fileId}/content with header x-agent-capability: $AGENT_API_TOKEN to a file, then read ranges locally without rerunning the original work`;
+          }
+        } catch (error) {
+          persistedSummary = { ...persistedSummary, outputStorageError: errMessage(error) };
+          recovery =
+            "full-output storage failed; no retrieval reference is available; do not rerun side-effecting work just to recover output";
+        }
+        result = resultPrefix + capResultText(t, recovery);
+        ret.content = ret.content.map((part) => (part.type === "text" ? { ...part, text: result } : part));
       }
       const delivered: string[] = [];
       const mailbox = await ref.current?.sessionSyscalls?.receive?.().catch(() => []);
