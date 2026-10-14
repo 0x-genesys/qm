@@ -19,7 +19,6 @@ export interface SecretDropRecord {
   purpose: string;
   requestedBy: string;
   audienceScopeId?: ScopeId;
-  scopeVersion?: string;
   grantMode?: GrantMode;
   destination?: Destination;
   threadRef?: string;

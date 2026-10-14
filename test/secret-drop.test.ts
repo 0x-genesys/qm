@@ -401,9 +401,7 @@ describe("/v1/keychain/drops — mint, form, redeem", async () => {
     );
     const { dropId, formPath } = (await minted.json()) as { dropId: string; formPath: string };
     const original = built.app.authorizesCapabilityScope;
-    let lookups = 0;
     built.app.authorizesCapabilityScope = async () => {
-      lookups++;
       throw new Error("membership store unavailable");
     };
     try {
@@ -412,9 +410,30 @@ describe("/v1/keychain/drops — mint, form, redeem", async () => {
       const { credential } = (await response.json()) as { credential: { id: string } };
       const grants = await built.keychain!.grantsForScope(scopeId("channel", "C1"));
       assert.ok(grants.some((entry) => entry.credential.id === credential.id));
-      assert.equal(lookups, 0);
     } finally {
       built.app.authorizesCapabilityScope = original;
+    }
+  });
+
+  it("the owner can submit an existing drop after leaving its channel", async () => {
+    const minted = await post(
+      "/v1/keychain/drops",
+      { service: "departed-owner", purpose: "finish the original credential request" },
+      await capFor("U_A", scopeId("channel", "C1")),
+    );
+    const { dropId, formPath } = (await minted.json()) as { dropId: string; formPath: string };
+    await built.directory.replaceChannels([{ channelId: "C1", name: "drops", isPrivate: true }], []);
+    try {
+      const response = await redeem(dropId, { secret: "owner-key" }, "U_A", linkToken(formPath));
+      assert.equal(response.status, 200);
+      const { credential } = (await response.json()) as { credential: { id: string } };
+      const grants = await built.keychain!.grantsForScope(scopeId("channel", "C1"));
+      assert.ok(grants.some((entry) => entry.credential.id === credential.id));
+    } finally {
+      await built.directory.replaceChannels(
+        [{ channelId: "C1", name: "drops", isPrivate: false }],
+        [{ channelId: "C1", principalId: "U_A" }],
+      );
     }
   });
 
@@ -589,7 +608,7 @@ describe("/v1/keychain/drops — mint, form, redeem", async () => {
     assert.ok(!html.includes(t), "the token itself is never embedded in the page body");
   });
 
-  it("a live bot attestation survives mint and private-scope redemption", async () => {
+  it("a live bot can mint and redeem its own private-scope drop", async () => {
     await built.directory.replaceChannels(
       [{ channelId: "C1", name: "drops", isPrivate: true }],
       [{ channelId: "C1", principalId: "U_A" }],
@@ -606,10 +625,6 @@ describe("/v1/keychain/drops — mint, form, redeem", async () => {
     );
     assert.equal(minted.status, 200);
     const { dropId, formPath } = (await minted.json()) as { dropId: string; formPath: string };
-    const token = await verifyCapabilityToken(linkToken(formPath)!, SECRET);
-    assert.equal(token?.botActor, true);
-    assert.equal(token?.liveActor, true);
-    assert.deepEqual(token?.members, members);
     assert.equal((await redeem(dropId, { secret: "bot-secret" }, "B-LEGACY", linkToken(formPath))).status, 200);
   });
 });

@@ -1,10 +1,5 @@
 import { orgId as configOrgId } from "../../config.ts";
-import {
-  mintCapabilityToken,
-  verifyCapabilityToken,
-  SECRET_DROP_AUD,
-  type CapabilityClaims,
-} from "../../auth/capability-token.ts";
+import { mintCapabilityToken, verifyCapabilityToken, SECRET_DROP_AUD } from "../../auth/capability-token.ts";
 import { KeychainError, type GrantMode } from "../../credentials/keychain.ts";
 import { SECRET_DROP_TTL_MS, type SecretDropField, type SecretDropRecord } from "../../credentials/secret-drop.ts";
 import { parseScopeId } from "../../types.ts";
@@ -93,15 +88,11 @@ function dropNotYoursHtml(): string {
   );
 }
 
-async function dropLinkClaims(
-  ctx: ApiCtx,
-  dropId: string,
-  rec: SecretDropRecord,
-): Promise<CapabilityClaims | true | null> {
+async function dropLinkClaims(ctx: ApiCtx, dropId: string, rec: SecretDropRecord): Promise<boolean> {
   if (!rec.requiresToken) return true;
   const capSecret = ctx.deps.capabilitySecret ?? ctx.secret;
   const token = ctx.url.searchParams.get("t");
-  if (!capSecret || !token) return null;
+  if (!capSecret || !token) return false;
   const claims = await verifyCapabilityToken(token, capSecret);
   if (
     !claims ||
@@ -110,8 +101,8 @@ async function dropLinkClaims(
     !samePerson(claims.actorId, rec.ownerId) ||
     (rec.audienceScopeId && claims.scopeId !== rec.audienceScopeId)
   )
-    return null;
-  return claims;
+    return false;
+  return true;
 }
 
 function dropFormHtml(
@@ -211,7 +202,6 @@ async function mintDrop(ctx: ApiCtx): Promise<void> {
     requestedBy: capability.actorId,
     audienceScopeId: capability.scopeId,
     ...(wantsGrant ? { grantMode: (b.grantMode as GrantMode | undefined) ?? "standing" } : {}),
-    ...(wantsGrant && capability.scopeVersion ? { scopeVersion: capability.scopeVersion } : {}),
     ...(dest.ok && dest.destination ? { destination: dest.destination } : {}),
     ...(capability.threadRef ? { threadRef: capability.threadRef } : {}),
     requiresToken: true,
@@ -226,9 +216,6 @@ async function mintDrop(ctx: ApiCtx): Promise<void> {
     {
       actorId: ownerId,
       scopeId: capability.scopeId,
-      ...(capability.botActor ? { botActor: true } : {}),
-      ...(capability.liveActor ? { liveActor: true } : {}),
-      ...(capability.members ? { members: capability.members } : {}),
       aud: SECRET_DROP_AUD,
       drop: dropId,
       exp: Date.now() + SECRET_DROP_TTL_MS,
