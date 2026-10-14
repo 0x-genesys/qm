@@ -237,13 +237,14 @@ export async function brokerCredentialCall(opts: {
     };
   }
 
-  const mask = createExactSecretValueMasker([
-    rec.secret,
-    JSON.stringify(rec.secret).slice(1, -1),
-    encodeURIComponent(rec.secret),
-  ]);
-  let text = mask(await resp.text());
-  let truncated = false;
+  const secrets = [rec.secret, JSON.stringify(rec.secret).slice(1, -1), encodeURIComponent(rec.secret)];
+  const mask = createExactSecretValueMasker(secrets);
+  const responseText = await resp.text();
+  const trailingGuard = Math.max(...secrets.map((value) => value.length)) - 1;
+  const scanLimit = MAX_RESPONSE_BYTES + trailingGuard;
+  let text = mask(responseText.slice(0, scanLimit));
+  if (responseText.length > scanLimit) text = text.slice(0, Math.max(0, text.length - trailingGuard));
+  let truncated = responseText.length > MAX_RESPONSE_BYTES;
   if (text.length > MAX_RESPONSE_BYTES) {
     text = text.slice(0, MAX_RESPONSE_BYTES);
     truncated = true;

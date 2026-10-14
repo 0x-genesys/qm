@@ -536,3 +536,22 @@ test("broker masks JSON and URL encodings of its own reflected key without maski
   assert.equal(new URL(response.url).searchParams.get("key"), "<redacted:credential>");
   assert.equal(response.continueAt, unrelated);
 });
+
+test("redacting a large reflective response does not bypass the original response-size bound", async () => {
+  const secret = "synthetic-long-key-".repeat(8);
+  const result = await brokerCredentialCall(
+    base({
+      reader: reader({ slug: "x-firehose", secret }),
+      fetchImpl: async () => ({ status: 200, text: async () => secret.repeat(Math.ceil(6_000_000 / secret.length)) }),
+    }),
+  );
+  const response = result.json as { body: string; truncated?: boolean };
+  assert.equal(response.truncated, true, "the raw upstream response exceeds the existing size limit");
+  assert.ok(response.body.length <= 5_000_000);
+  assert.ok(!response.body.includes(secret));
+  assert.equal(
+    "<redacted:credential>".startsWith(response.body.replaceAll("<redacted:credential>", "")),
+    true,
+    "the bounded scan must not retain a partial key suffix",
+  );
+});
