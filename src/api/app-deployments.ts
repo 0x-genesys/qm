@@ -47,7 +47,7 @@ export function createDeploymentMethods(
   | "resolveEnvironmentByName"
   | "attachScope"
 > {
-  const { effectiveDeploymentPermission, principalCanReadDeployment, principalGitPermission } = h;
+  const { effectiveDeploymentPermission, principalCanReadDeployment, principalDeploymentPermission } = h;
   const invitationLock = deps.advisoryLock ?? createMemoryAdvisoryLock();
   return {
     deploy(input) {
@@ -120,7 +120,7 @@ export function createDeploymentMethods(
       const deployments = await deps.deploy.listDeployments();
       const enriched = await Promise.all(
         deployments.map(async (d): Promise<ViewerDeployment | null> => {
-          const permission = await principalGitPermission(d, principalId);
+          const permission = await principalDeploymentPermission(d, principalId);
           return permission ? { ...deploymentView(d), permission } : null;
         }),
       );
@@ -131,7 +131,7 @@ export function createDeploymentMethods(
     },
     async deploymentGitPermissionFor(idOrName, principalId) {
       const deployment = (await deps.deploy.listDeployments()).find((d) => d.id === idOrName || d.name === idOrName);
-      return deployment && (await principalGitPermission(deployment, principalId)) === "write" ? "write" : null;
+      return deployment && (await principalDeploymentPermission(deployment, principalId)) === "write" ? "write" : null;
     },
     rollbackDeployment(id, version) {
       return deps.deploy.rollbackDeployment(id, version);
@@ -177,7 +177,7 @@ export function createDeploymentMethods(
     ): Promise<{ status: "ok"; logs: string | null } | { status: "not_found" | "denied" }> {
       const deployment = await deps.deploy.getDeployment(id);
       if (!deployment) return { status: "not_found" };
-      if ((await principalGitPermission(deployment, principalId)) !== "write") return { status: "denied" };
+      if ((await principalDeploymentPermission(deployment, principalId)) !== "write") return { status: "denied" };
       return { status: "ok", logs: await deps.deploy.deploymentLogs(id, opts) };
     },
     deploymentGitRepoPath(id) {
@@ -189,7 +189,7 @@ export function createDeploymentMethods(
     async deploymentGitUrlFor(idOrName, principalId, opts) {
       const d = await deps.deploy.getDeployment(idOrName);
       if (!d) return null;
-      const permission = await principalGitPermission(d, principalId);
+      const permission = await principalDeploymentPermission(d, principalId);
       if (permission !== "write") return null;
       const token = await mintDeployGitAccess(opts.secret, {
         deploymentId: d.id,
@@ -202,10 +202,10 @@ export function createDeploymentMethods(
       url.password = token;
       return { url: url.toString(), permission };
     },
-    async authorizesDeploymentGitAccess(id, principalId, _permission) {
+    async authorizesDeploymentGitAccess(id, principalId) {
       const d = await deps.deploy.getDeployment(id);
       if (!d) return false;
-      const current = await principalGitPermission(d, principalId);
+      const current = await principalDeploymentPermission(d, principalId);
       return current === "write";
     },
     reapIdleDeployments(ttlMs, now) {
