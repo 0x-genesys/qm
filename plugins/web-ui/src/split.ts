@@ -163,6 +163,11 @@ function pushRemoteSoon(payload: { updatedAt: number }): void {
 }
 
 function flushRemoteNow(): void {
+  if (persistTimer !== null) {
+    window.clearTimeout(persistTimer);
+    persistTimer = null;
+    persist();
+  }
   if (remoteTimer !== null) {
     window.clearTimeout(remoteTimer);
     remoteTimer = null;

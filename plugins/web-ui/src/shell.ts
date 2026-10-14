@@ -1225,3 +1225,7 @@ export async function boot(): Promise<void> {
     mainConversation().newChat();
   }
 }
+
+window.addEventListener("qm:prepare-update", (event) => {
+  (event as CustomEvent<{ ready: boolean }>).detail.ready = true;
+});
