@@ -30,6 +30,7 @@ import { createLoopIngress, type LoopIngressService, type LoopIngress, type Ingr
 import { createGmailPushClient } from "./loops/gmail-push.ts";
 import { createGatewayCatalog } from "./model/gateway-catalog.ts";
 import { createSuggestedActivityService, type SuggestedActivityProfile } from "./suggestions/activities.ts";
+import { createMemoryTidyService, withMemoryTidy, type MemoryTidyProfile } from "./memory/tidy.ts";
 import { createRuntimeService } from "./harness/runtime-control.ts";
 import {
   createSessionSyscalls,
@@ -150,7 +151,7 @@ import { createPostgresRateLimiter } from "./ratelimit/postgres-rate-limiter.ts"
 import { createBudgetTracker, estimateCostUsd } from "./ratelimit/budget.ts";
 import type { SecurityScreenProbe } from "./security/security-screener.ts";
 import { createPostgresBudgetTracker } from "./ratelimit/postgres-budget.ts";
-import { createCronStore, type CronStore } from "./cron/cron-store.ts";
+import { createCronStore, DROP_RUN_AS_MIGRATION, type CronStore } from "./cron/cron-store.ts";
 import { createMemoryCronFireStore, createPostgresCronFireStore } from "./cron/fire-store.ts";
 import { createLoopStore } from "./loops/loop-store.ts";
 import { createLoopItemLedger } from "./loops/item-ledger.ts";
@@ -178,7 +179,6 @@ import {
   type EnvironmentStore,
 } from "./environments/environment-store.ts";
 import { createIdempotencyStore, type IdempotencyRecord } from "./idempotency/idempotency-store.ts";
-import { isOpenScopeMember } from "./resolution/sharing-access.ts";
 import { createScheduler, type Scheduler } from "./cron/scheduler.ts";
 import { createPgBossCronQueue } from "./cron/job-queue.ts";
 import { createWebhookStore, type WebhookHistory } from "./webhooks/webhook-store.ts";
@@ -199,6 +199,7 @@ import {
   createCurrentScopeMembers,
   createIsCurrentSharedScopeMember,
   createManagesArtifactHome,
+  rosterAdmits,
   type CanReadScope,
   type CanManageScope,
   type ManagesArtifactHome,
@@ -474,7 +475,6 @@ export function stopWithBackstop(
 export interface BuiltApp {
   checkReadiness: (signal: AbortSignal) => Promise<void>;
   backgroundOwnership?: BackgroundOwnershipControl;
-  suggestedActivityMaintenance: Sweeper;
   suggestedActivities?: ReturnType<typeof createSuggestedActivityService>;
   app: App;
   screenSecurity?: SecurityScreenProbe;
@@ -847,14 +847,17 @@ export function buildApp(
   );
   // Session storage is built further down; trace-derived providers only read it after the first turn.
   const memorySessions: { store?: SessionStore } = {};
-  const baseMemory: MemoryService = createConfiguredMemoryService({
-    defaultMemory,
-    config: config.memoryProviderConfig,
-    sessionEntries: (sessionId) => {
-      if (!memorySessions.store) throw new Error("session store is not ready");
-      return memorySessions.store.getEntries(sessionId, { limit: MEMORY_CAPTURE_ENTRY_WINDOW });
-    },
-  });
+  const baseMemory: MemoryService = withMemoryTidy(
+    createConfiguredMemoryService({
+      defaultMemory,
+      config: config.memoryProviderConfig,
+      sessionEntries: (sessionId) => {
+        if (!memorySessions.store) throw new Error("session store is not ready");
+        return memorySessions.store.getEntries(sessionId, { limit: MEMORY_CAPTURE_ENTRY_WINDOW });
+      },
+    }),
+    (scope) => memoryTidy.ensure(scope),
+  );
   const mcpServers = createMcpServerStore(artifactMap<McpServer>("mcp_servers"));
   const errors = withErrorReporting(config.databaseUrl ? createPostgresErrorLog(config.databaseUrl) : createErrorLog());
   const sandboxOnError = (
@@ -1769,8 +1772,6 @@ export function buildApp(
   const managesArtifactHome = createManagesArtifactHome({ managedGroups: projects, directory }, canManageScope);
   const currentScopeMembers = createCurrentScopeMembers({ managedGroups: projects, directory, identity });
   const isCurrentSharedScopeMember = createIsCurrentSharedScopeMember({ managedGroups: projects, directory, identity });
-  const openScopeMember = (actorId: string, scope: ScopeId) =>
-    isOpenScopeMember({ actorId, scope, config: configStore, isCurrentSharedScopeMember });
   membership.canReadScope = canReadScope;
   membership.canManageScope = canManageScope;
   membership.canUseSandboxScope = async (actorId, scopeId) =>
@@ -1892,6 +1893,16 @@ export function buildApp(
       cronChanged.notify?.(id);
     },
   };
+  pgArtifactMap?.pool.registerMigration(DROP_RUN_AS_MIGRATION);
+  pgArtifactMap?.pool.registerMigration({
+    id: "durable-map/suggested_activity_profiles/0001-nightly-on-use",
+    statements: [
+      "CREATE TABLE IF NOT EXISTS crons (id TEXT PRIMARY KEY, json JSONB NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS suggested_activity_profiles (id TEXT PRIMARY KEY, json JSONB NOT NULL)",
+      `UPDATE crons c SET json = jsonb_set(c.json, '{schedule,cron}', to_jsonb(get_byte(sha256(convert_to(p.id, 'UTF8')), 0) % 60 || ' 2 * * *')) FROM suggested_activity_profiles p WHERE p.json ->> 'cronId' = c.id AND c.json -> 'schedule' = p.json -> 'managedSchedule'`,
+      `UPDATE crons c SET json = jsonb_set(c.json, '{enabled}', 'true') FROM suggested_activity_profiles p WHERE p.json ->> 'cronId' = c.id AND (p.json ->> 'autoPaused')::boolean`,
+    ],
+  });
   const webhooks = createWebhookStore(artifactMap<Webhook>("webhooks"), artifactMap<WebhookHistory>("webhook_history"));
   pgArtifactMap?.pool.registerMigration({
     id: "durable-map/webhooks/0002-disable-rows-orphaned-by-webhook-removal",
@@ -1932,8 +1943,16 @@ export function buildApp(
     const ref = request.conversation.channelRef;
     if (request.conversation.kind !== "group" || !ref || !projects.recognizes(ref)) return request;
     const version = await projects.version(ref);
-    const audience = await currentScopeMembers(resolution.scopeFor(request.conversation, request.actor));
-    if (!version || !audience?.some((p) => p.id === request.actor.id))
+    const audience = await currentScopeMembers(scope);
+    if (
+      !version ||
+      !audience ||
+      !rosterAdmits(
+        audience.map((p) => p.id),
+        request.actor.id,
+        scope,
+      )
+    )
       throw new Error("session owner is no longer a member of this project");
     return {
       ...request,
@@ -2457,7 +2476,6 @@ export function buildApp(
             run: (req) => app.turn(req),
             directory,
             currentScopeMembers,
-            isOpenScopeMember: openScopeMember,
             sessions,
             getCron: (id) => crons.get(id),
             getAsk: (id) => keychain.getAsk(id),
@@ -2488,7 +2506,6 @@ export function buildApp(
       run: (req) => app.turn(req),
       directory,
       currentScopeMembers,
-      isOpenScopeMember: openScopeMember,
       sessions,
     },
   });
@@ -2518,8 +2535,18 @@ export function buildApp(
   const sweepAsks =
     keychain && askResolution ? createAskExpirySweep({ keychain, fire: askResolution, auditLog }) : undefined;
   let ingressMaintenance: Promise<void> | undefined;
+  const suggestedActivityProfiles = artifactMap<SuggestedActivityProfile>("suggested_activity_profiles");
+  const memoryTidy = createMemoryTidyService({
+    store: artifactMap<MemoryTidyProfile>("memory_tidy_profiles"),
+    memory: baseMemory,
+    timezone: async (principalId) => (await suggestedActivityProfiles.get(principalId))?.timezone,
+    crons,
+    scheduler: { notifyChanged: (id) => scheduler.notifyChanged(id) },
+  });
   const scheduler = createScheduler({
     admittedWork,
+    skipFire: async (cron) => (await memoryTidy.skipFire(cron)) ?? suggestedActivities.skipFire(cron),
+    deleteCron: (id) => app.deleteCron(id),
     requireQueueStart: Boolean(config.backgroundDeploymentId),
     lock: advisoryLock,
     crons,
@@ -2530,7 +2557,6 @@ export function buildApp(
     leaderLease,
     directory,
     currentScopeMembers,
-    isOpenScopeMember: openScopeMember,
     sessions,
     fireLoop: (loopId, fireKey, cronId) => loopFire.fire(loopId, fireKey, cronId),
     ...(config.databaseUrl
@@ -2548,18 +2574,13 @@ export function buildApp(
     },
   });
   const suggestedActivities = createSuggestedActivityService({
-    store: artifactMap<SuggestedActivityProfile>("suggested_activity_profiles"),
+    store: suggestedActivityProfiles,
     sessions,
     crons,
     scheduler,
     enabled: config.suggestedActivitiesEnabled === true,
     ...(config.suggestedActivitiesContext ? { context: config.suggestedActivitiesContext } : {}),
   });
-  const suggestedActivityMaintenance = createSweeper(
-    () => leaderLease.hold("suggested-activities:maintenance", () => suggestedActivities.maintain()),
-    60 * 60_000,
-    { label: "suggested-activities", immediate: true },
-  );
   cronChanged.notify = (id) => scheduler.notifyChanged(id);
   orchestratorDeps.control = createControlService(app, scheduler, admin);
   orchestratorDeps.validateScheduledRuntime = (scope, choice, purpose) =>
@@ -2952,7 +2973,6 @@ export function buildApp(
       ? { suggestedActivities }
       : {}),
     ...(backgroundOwnership ? { backgroundOwnership } : {}),
-    suggestedActivityMaintenance,
     uiState: artifactMap<PersistedUiState>("web_ui_state"),
     sessionShares: artifactMap<SessionShare>("session_shares"),
     sessionShareBytes:

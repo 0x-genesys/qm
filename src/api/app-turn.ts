@@ -6,6 +6,7 @@ import { isSubagentThreadRef, stopSessionTree } from "../sessions/session-syscal
 import type { Conversation, Principal, TurnRequest, TurnResult } from "../types.ts";
 import { orgId as orgIdOf } from "../config.ts";
 import { scopeId } from "../types.ts";
+import { rosterAdmits } from "../resolution/scope-membership.ts";
 import { isHalt, routeWake, type Wake } from "../wake/wake.ts";
 import type { OrchestratorInput } from "../core/orchestrator.ts";
 import { isPersonAuthored, resolveTurnOrigin } from "../core/turn-origin.ts";
@@ -134,7 +135,7 @@ export function createTurnMethods(
         }
         const roster = (await deps.projects?.members(conversationRef)) ?? [];
         const activeMemberIds = roster.filter((memberId) => deps.identity.isInternal(deps.identity.classify(memberId)));
-        if (!activeMemberIds.includes(actor.id))
+        if (!rosterAdmits(activeMemberIds, actor.id, scopeId("group", conversationRef)))
           return { status: "refused", reason: "you're not a member of that context" };
         projectAudience = await Promise.all(
           activeMemberIds.map(async (memberId) => {
