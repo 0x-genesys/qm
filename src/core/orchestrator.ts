@@ -1942,7 +1942,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         provisionForReach,
         reclaimBox,
         provisionPending,
-        invalidateProvision,
       } = createTurnSandboxes({
         deps: { ...deps, sandboxResources: turnSandboxResources, isCurrentSharedScopeMember },
         input,
@@ -2668,7 +2667,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const baseTools = createToolContext({
           sandbox: deps.sandbox,
           sandboxResources: turnSandboxResources,
-          invalidateProvision,
           provision,
           provisionScratch,
           provisionResource,
