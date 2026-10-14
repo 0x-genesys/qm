@@ -465,7 +465,6 @@ test("one session's board is left on screen under the next session's panel", asy
 
 test("the open board never reads again, so a running swarm's later messages never arrive", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  // jsdom reports a document as hidden, and the refresh only runs on a visible tab.
   Object.defineProperty(document, "hidden", { configurable: true, value: false });
   t.after(() => delete (document as unknown as { hidden?: boolean }).hidden);
   const board = [message({ id: "m-1", seq: 1, text: "the first finding" })];
