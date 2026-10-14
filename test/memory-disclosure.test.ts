@@ -1,3 +1,4 @@
+import { createSemanticMemoryService } from "../src/memory/semantic-recall.ts";
 import { createCurrentScopeMembers } from "../src/resolution/scope-membership.ts";
 import { createDirectoryStore } from "../src/directory/directory-store.ts";
 import { test } from "node:test";
@@ -313,4 +314,23 @@ test("a recall-only routed provider still reaches prompt recall through disclosu
   const recalled = recallText(await disclosedMemory(routed, f.access).recall("group:room"));
   assert.match(recalled, /BRAIN_FACT/);
   assert.doesNotMatch(recalled, /OPAQUE_SENTINEL/);
+});
+
+test("semantic recall ranks only currently disclosed facts and rechecks membership on every recall", async () => {
+  const f = fixture();
+  f.put("personal:alice", "hidden", "restricted");
+  f.put("personal:alice", "late ordinary fact", "ordinary");
+  const queries: string[][] = [];
+  const semantic = createSemanticMemoryService(f.raw, async () => ({ id: "test", embed: async () => [[1, 0]] }), {
+    async search(input) {
+      queries.push(input.facts.map((fact) => fact.id));
+      return input.facts.map((fact) => ({ factId: fact.id, hash: fact.hash, score: 1 }));
+    },
+  });
+  const view = disclosedMemory(semantic, f.access);
+  assert.match((await view.recall("personal:alice", { query: "recall" }))[0]!.text, /late ordinary fact/);
+  assert.deepEqual(queries, [["2"]]);
+  f.access.currentScopeMembers = async () => [];
+  assert.deepEqual(await view.recall("personal:alice", { query: "recall" }), []);
+  assert.deepEqual(queries, [["2"]]);
 });

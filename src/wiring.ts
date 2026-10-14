@@ -46,7 +46,7 @@ import {
   SUBAGENT_TREE_RUN_CAP,
 } from "./sessions/session-syscalls.ts";
 import { createMemoryEmbedder } from "./model/embeddings.ts";
-import { createSemanticMemoryService, type MemoryVector } from "./memory/semantic-recall.ts";
+import { createSemanticMemory } from "./memory/semantic-memory.ts";
 import { createPostgresBrokerSessions, type BrokerSessionStore } from "./auth/broker-sessions.ts";
 import { createDirectFileUploads, type DirectFileUploads } from "./files/direct-file-upload.ts";
 import { createPostgresFileUploadStore } from "./files/file-upload-store.ts";
@@ -433,7 +433,7 @@ import {
 import { createPostgresErrorLog } from "./admin/postgres-error-log.ts";
 import { createMetricsSink, type MetricsSink } from "./admin/metrics-sink.ts";
 import { createPostgresMetricsSink } from "./admin/postgres-metrics-sink.ts";
-import { errMessage, reportFailure, reportFailureAs, swallowAs } from "./util/errors.ts";
+import { errMessage, reportFailureAs, swallowAs } from "./util/errors.ts";
 import { sleep, withTimeout } from "./util/async.ts";
 import { createSlackInstallationStore, type SlackInstallationStore } from "./surfaces/slack-installation.ts";
 
@@ -845,22 +845,19 @@ export function buildApp(
   const notebookMemory: MemoryService = config.databaseUrl
     ? createPostgresMemoryService(config.databaseUrl)
     : createMemoryService(workspace);
-  const defaultMemory = createSemanticMemoryService(
-    notebookMemory,
-    async () => {
-      const id = await configStore.getEmbeddingModelDurable();
-      return id ? resolveMemoryEmbedder(id) : undefined;
-    },
-    artifactMap<MemoryVector>("memory_vectors", ["scope"]),
-    {
-      onError: (error) => reportFailure("memory semantic recall; using recent facts", error),
-    },
-  );
+  const semanticMemory = createSemanticMemory({
+    notebook: notebookMemory,
+    databaseUrl: config.databaseUrl,
+    embeddingModel: () => configStore.getEmbeddingModelDurable(),
+    resolveEmbedder: (id) => resolveMemoryEmbedder(id),
+    leaderLease,
+    createSweeper,
+  });
   // Session storage is built further down; trace-derived providers only read it after the first turn.
   const memorySessions: { store?: SessionStore } = {};
   const baseMemory: MemoryService = withMemoryTidy(
     createConfiguredMemoryService({
-      defaultMemory,
+      defaultMemory: semanticMemory.memory,
       config: config.memoryProviderConfig,
       sessionEntries: (sessionId) => {
         if (!memorySessions.store) throw new Error("session store is not ready");
@@ -2780,6 +2777,7 @@ export function buildApp(
         .catch(swallowAs("wiring: monitor resume failed", undefined));
       monitorRetentionSweeper.start();
       spendSweeper?.start();
+      semanticMemory.start();
       if (config.skillSyncPollMs > 0) skillSyncEngine.start(config.skillSyncPollMs);
       blobSweeper.start();
       composioReturnSweeper.start();
@@ -2810,6 +2808,7 @@ export function buildApp(
       processReaper?.stop(),
       monitorRetentionSweeper.stop(),
       spendSweeper?.stop(),
+      semanticMemory.stop(),
       skillSyncEngine.stop(),
       idleSweeper?.stop(),
       deployMaintenanceSweeper.stop(),
@@ -2887,6 +2886,7 @@ export function buildApp(
         ].map((closing) => closing?.catch(reportFailureAs("shutdown: close event stores", undefined))),
       );
       await harness.turns.close?.();
+      await semanticMemory.close();
       await flyTunnel?.stop();
     },
   };

@@ -18,6 +18,7 @@ export async function recallAcrossScopes(
   labels: ReadonlyMap<string, string> = new Map(),
 ): Promise<RecalledFact[]> {
   const budget = Math.max(0, Math.min(RECALL_MAX_CHARS, Math.floor(context.maxChars ?? RECALL_MAX_CHARS)));
+  if (!budget) return [];
   const unique = [...new Set(scopes)];
   const batches = await Promise.all(
     unique.map(async (scope) => (await memory.recall(scope, context)).map((row) => ({ ...row, scope }))),
