@@ -110,16 +110,11 @@ Helpful KPIs here are: how many env vars do we have? how large is the database s
 - **[qm#876](https://github.com/yc-software/qm/pull/876)** (2026-09-02): Porter added as yet another SANDBOX_BACKEND and DEPLOY_PROVIDER (plus a Helm chart), shortly after Modal and E2B.
 - **[qm#478](https://github.com/yc-software/qm/pull/478)** (2026-08-13): Added smolmachines as yet another sandbox backend, then SMOLMACHINES_CPUS/MEMORY_MB/DISK_GB env knobs ([qm#507](https://github.com/yc-software/qm/pull/507)).
 
-### Loss of control (always reviewed, 1 example)
+### Loss of control (reviewed in the owning session, 1 example)
 
-The PR must do what the person asked for, and nothing they would object to if told plainly. The danger is drift during the work. Agents restate a request in a worker brief. They add rules the person never stated. They remove behavior without saying so, and their reports read as compliance. The reviewer reads the person's own words from the conversations that produced the PR, every brief handed to a worker, and the reports the person was shown, then compares them with the diff. Flag:
+The PR must do what the person asked for, and nothing they would object to if told plainly. The danger is drift during the work. Agents restate a request in a worker brief. They add rules the person never stated. They remove behavior without saying so, and their reports read as compliance. Flag rules or constraints in a brief that the person never gave, and behavior the diff removes or changes that no report to the person stated plainly. Unlike the other lenses, this review reads private conversations, so it runs only inside the session that owns the PR (see AGENTS.md) and never appears in the PR description or CI.
 
-- rules or constraints in a brief that the person never gave;
-- behavior the diff removes or changes that no report to the person stated plainly.
-
-Cite the person's words beside the conflicting change.
-
-- **`files write` stopped writing to Files** (2026-10-12): The person asked, repeatedly, that files "be materialized into `files` with an id" and that a share "must be in s3 `files` first". The brief to the worker restated this as: refuse to share a path, tell the agent to put the file in Files itself, and "do not auto-copy silently". The person never gave that last rule. The worker therefore deleted the server-side publish from `files write` and pointed the `write` and `share` descriptions at the raw `POST /v1/files/uploads` flow. Reports said "you can't share a file path any more" but never "`files write` no longer saves to Files". All Wall of shame lenses accepted it. Agents then hand-built three-step uploads through `execute`; abandoned ones filled the per-person upload quota for 24h and blocked uploads with `429 upload_quota`. [qm#2199](https://github.com/yc-software/qm/pull/2199); fixed in [qm#2319](https://github.com/yc-software/qm/pull/2319).
+- **`files write` stopped writing to Files** (2026-10-12): The person asked for files to live in Files with an ID, and for shares to require that. The worker brief added a rule they never gave, that the tool must not copy the file into Files itself. The worker therefore deleted the server-side publish from `files write` and pointed agents at the raw upload API. Reports said only that sharing a path was refused. Agents then hand-built uploads through `execute`, and abandoned ones filled the per-person upload quota with `429 upload_quota`. [qm#2199](https://github.com/yc-software/qm/pull/2199); fixed in [qm#2319](https://github.com/yc-software/qm/pull/2319).
 
 ### Provider drift (2 examples)
 
