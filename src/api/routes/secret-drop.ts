@@ -7,13 +7,13 @@ import {
 } from "../../auth/capability-token.ts";
 import { KeychainError, type GrantMode } from "../../credentials/keychain.ts";
 import { SECRET_DROP_TTL_MS, type SecretDropField, type SecretDropRecord } from "../../credentials/secret-drop.ts";
-import { isSharedScope, parseScopeId } from "../../types.ts";
+import { parseScopeId } from "../../types.ts";
 import { samePerson } from "../../directory/person.ts";
 import { escapeHtml } from "../../../plugins/chassis/src/http.ts";
 import { sendJson } from "../http.ts";
 import type { ApiCtx, Route } from "./route.ts";
 import { audit, resolveCapabilityDestination, verifiedConversationSpeaker } from "./shared.ts";
-import { reportFailureAs, swallow } from "../../util/errors.ts";
+import { swallow } from "../../util/errors.ts";
 
 const TRIGGERED = "secret-drop links can only be minted on a turn a person sent — this turn was fired by a trigger";
 
@@ -91,21 +91,6 @@ function dropNotYoursHtml(): string {
     "Not your link",
     `<h1 id="title">This link is for someone else</h1><p>This credential request was created for a different teammate. If it was meant for you, sign in as yourself and open it again.</p>`,
   );
-}
-
-function dropScopeAuthorized(ctx: ApiCtx, rec: SecretDropRecord, claims?: CapabilityClaims): Promise<boolean> {
-  const audienceScopeId = rec.audienceScopeId;
-  if (!audienceScopeId || !isSharedScope(audienceScopeId)) return Promise.resolve(true);
-  return ctx.app
-    .authorizesCapabilityScope({
-      actorId: rec.ownerId,
-      scopeId: audienceScopeId,
-      ...(rec.scopeVersion ? { scopeVersion: rec.scopeVersion } : {}),
-      ...(claims?.botActor ? { botActor: true } : {}),
-      ...(claims?.liveActor ? { liveActor: true } : {}),
-      ...(claims?.members ? { members: claims.members } : {}),
-    })
-    .catch(reportFailureAs("secret drop: conversation membership check", false));
 }
 
 async function dropLinkClaims(
@@ -306,13 +291,6 @@ async function redeemDrop(ctx: ApiCtx): Promise<void> {
       message: "sign in as the account owner to complete this credential drop",
     });
   }
-  const attestation = linkClaims === true ? undefined : linkClaims;
-  if (!(await dropScopeAuthorized(ctx, peeked.rec, attestation))) {
-    return sendJson(res, 409, {
-      error: "scope_changed",
-      message: "couldn't confirm you're still in this conversation — try again, or ask the agent for a fresh link",
-    });
-  }
   const dropFieldDefs = peeked.rec.fields;
   let saveFields: Array<{ envKey: string; value: string; secret: boolean }> | undefined;
   if (dropFieldDefs?.length) {
@@ -347,9 +325,8 @@ async function redeemDrop(ctx: ApiCtx): Promise<void> {
       ...(drop.host ? { host: drop.host } : {}),
       origin: "secret-drop",
     });
-    const mayShare = await dropScopeAuthorized(ctx, drop, attestation);
     let grantId: string | undefined;
-    if (mayShare && drop.grantMode && drop.audienceScopeId) {
+    if (drop.grantMode && drop.audienceScopeId) {
       const grant = await deps.keychain.createGrant({
         credentialId: meta.id,
         ownerId: drop.ownerId,
@@ -365,7 +342,7 @@ async function redeemDrop(ctx: ApiCtx): Promise<void> {
       resource: `${meta.service}:${meta.id}`,
       scopeLabel: drop.audienceScopeId ?? drop.ownerId,
     });
-    if (mayShare && drop.audienceScopeId) {
+    if (drop.audienceScopeId) {
       void (async () => {
         const pending = (await deps.secretDrops!.siblings(drop).catch(() => [])).map((s) => s.service);
         await deps.fireDropResolution?.({

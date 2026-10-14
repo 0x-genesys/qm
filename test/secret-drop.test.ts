@@ -370,7 +370,7 @@ describe("/v1/keychain/drops — mint, form, redeem", async () => {
     );
   });
 
-  it("a Project roster change refuses an unredeemed drop on every attempt", async () => {
+  it("a Project roster change does not invalidate an owner-bound drop", async () => {
     await built.app.upsertDirectory([
       { principalId: "U_PROJECT_OWNER", displayName: "Owner", type: "internal" },
       { principalId: "U_PROJECT_MEMBER", displayName: "Member", type: "internal" },
@@ -385,43 +385,37 @@ describe("/v1/keychain/drops — mint, form, redeem", async () => {
     const { dropId, formPath } = (await minted.json()) as { dropId: string; formPath: string };
 
     assert.equal((await built.app.addProjectMember(project.id, "U_PROJECT_OWNER", "U_PROJECT_MEMBER")).status, "ok");
-    for (let attempt = 0; attempt < 2; attempt++)
-      assert.equal(
-        (await redeem(dropId, { secret: "must-not-save" }, "U_PROJECT_OWNER", linkToken(formPath))).status,
-        409,
-      );
-    assert.ok((await built.secretDrops.peek(dropId)).ok);
-
-    assert.ok(
-      !(await built.keychain!.listByOwner("U_PROJECT_OWNER")).some(
-        (credential) => credential.service === "project-stale",
-      ),
-    );
+    const response = await redeem(dropId, { secret: "project-key" }, "U_PROJECT_OWNER", linkToken(formPath));
+    assert.equal(response.status, 200);
+    const { credential } = (await response.json()) as { credential: { id: string } };
+    const grants = await built.keychain!.grantsForScope(project.scopeId);
+    assert.ok(grants.some((entry) => entry.credential.id === credential.id));
+    assert.equal((await redeem(dropId, { secret: "again" }, "U_PROJECT_OWNER", linkToken(formPath))).status, 404);
   });
 
-  it("a membership lookup outage leaves the drop link usable for a retry", async () => {
+  it("an owner-bound drop saves and grants without consulting conversation membership", async () => {
     const minted = await post(
       "/v1/keychain/drops",
       { service: "outage-drop", purpose: "survive a membership outage" },
       await capFor("U_A", scopeId("channel", "C1")),
     );
     const { dropId, formPath } = (await minted.json()) as { dropId: string; formPath: string };
-    const directory = built.directory as unknown as Record<string, unknown>;
-    const originals = Object.fromEntries(
-      ["channelMember", "channelMembership", "channelPrivacy", "get"].map((name) => [name, directory[name]]),
-    );
-    for (const name of Object.keys(originals))
-      directory[name] = async () => {
-        throw new Error("membership store unavailable");
-      };
+    const original = built.app.authorizesCapabilityScope;
+    let lookups = 0;
+    built.app.authorizesCapabilityScope = async () => {
+      lookups++;
+      throw new Error("membership store unavailable");
+    };
     try {
-      const failed = await redeem(dropId, { secret: "sk_outage" }, "U_A", linkToken(formPath));
-      assert.equal(failed.status, 409);
-      assert.ok((await built.secretDrops.peek(dropId)).ok);
+      const response = await redeem(dropId, { secret: "sk_outage" }, "U_A", linkToken(formPath));
+      assert.equal(response.status, 200);
+      const { credential } = (await response.json()) as { credential: { id: string } };
+      const grants = await built.keychain!.grantsForScope(scopeId("channel", "C1"));
+      assert.ok(grants.some((entry) => entry.credential.id === credential.id));
+      assert.equal(lookups, 0);
     } finally {
-      Object.assign(directory, originals);
+      built.app.authorizesCapabilityScope = original;
     }
-    assert.equal((await redeem(dropId, { secret: "sk_outage" }, "U_A", linkToken(formPath))).status, 200);
   });
 
   it("an agent-declared fields[] drop renders each input, saves them all, and materializes them in order", async () => {
