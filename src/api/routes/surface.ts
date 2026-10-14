@@ -1,3 +1,4 @@
+import { collectSessionReadTiming } from "../../sessions/read-timing.ts";
 import { memoryForRequest } from "./memory-access.ts";
 import type { MemoryEdit, MemoryService } from "../../memory/memory-service.ts";
 import { suggestedActivityRoutes } from "./suggested-activities.ts";
@@ -153,7 +154,10 @@ async function getSession(ctx: ApiCtx): Promise<void> {
       message: "tailTurns and beforeSeq must be positive integers, sinceSeq a non-negative one",
     });
   }
-  const found = await app.getSessionForViewer(id, viewer, Object.keys(window).length ? window : undefined);
+  const { value: found, header } = await collectSessionReadTiming(() =>
+    app.getSessionForViewer(id, viewer, Object.keys(window).length ? window : undefined),
+  );
+  res.setHeader("server-timing", header);
   if (!found) return sendJson(res, 404, { error: "not_found" });
   return sendJson(res, 200, found);
 }
