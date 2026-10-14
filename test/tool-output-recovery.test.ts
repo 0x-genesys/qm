@@ -67,12 +67,13 @@ test("a result exactly at the preview cap is complete without a stored copy", as
 });
 
 test("an oversized result has a bounded Unicode-safe preview and a byte-exact retrievable masked copy", async () => {
-  const stdout = "a".repeat(100_025) + "😀example-secret終";
+  const stdout = "😀".repeat(50_013) + "example-secret終";
   const f = fixture(stdout);
   const seen = await f.run();
   assert.ok(seen.length <= 100_000);
   assert.match(seen, /truncated/);
   assert.doesNotMatch(seen, /\uFFFD|example-secret/);
+  assert.equal(Buffer.from(seen, "utf8").toString("utf8"), seen, "preview has no orphaned UTF-16 surrogates");
   assert.ok(seen.endsWith("終\n[exit 0]"));
   const saved = f.emitted[0]!.fullResult as { fileId: string; sizeBytes: number };
   assert.ok(saved?.fileId, "the replay and caller must retain a recovery reference");
