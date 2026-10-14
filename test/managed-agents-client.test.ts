@@ -155,15 +155,15 @@ test("command env and working directory reach the guest", async () => {
 test("files round trip through the guest upload and download streams", async () => {
   const s = await session("qm-files");
   const body = Buffer.from("managed agents file payload");
-  await s.writeFileBytes("/workspace/home/notes/a.txt", new Uint8Array(body));
-  const read = await s.readFileBytes("/workspace/home/notes/a.txt");
+  await s.writeFileBytes("/home/user/notes/a.txt", new Uint8Array(body));
+  const read = await s.readFileBytes("/home/user/notes/a.txt");
   assert.ok(read);
   assert.equal(Buffer.from(read).toString("utf8"), "managed agents file payload");
 });
 
 test("a missing file reads as null rather than an error", async () => {
   const s = await session("qm-missing");
-  assert.equal(await s.readFileBytes("/workspace/home/nope.txt"), null);
+  assert.equal(await s.readFileBytes("/home/user/nope.txt"), null);
 });
 
 test("resuming a paused session does not wait out a fixed poll interval", async () => {
@@ -220,8 +220,8 @@ test("the tunnel heartbeats so an edge idle timeout cannot kill a long silent co
 test("a large file survives the chunked upload path", async () => {
   const s = await session("qm-large");
   const body = Buffer.alloc(900 * 1024, "x");
-  await s.writeFileBytes("/workspace/home/big.bin", new Uint8Array(body));
-  const read = await s.readFileBytes("/workspace/home/big.bin");
+  await s.writeFileBytes("/home/user/big.bin", new Uint8Array(body));
+  const read = await s.readFileBytes("/home/user/big.bin");
   assert.equal(read?.length, body.length);
 });
 

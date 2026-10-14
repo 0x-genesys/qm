@@ -85,9 +85,9 @@ export async function startFakeManagedAgentsService(): Promise<FakeManagedAgents
           return;
         }
         try {
-          const cwd = (frame.start.workdir || root).replace(/^\/workspace\/home/, root);
+          const cwd = (frame.start.workdir || root).replace(/^\/home\/user/, root);
           mkdirSync(cwd, { recursive: true });
-          const child = spawn("sh", ["-c", script.replace(/\/workspace\/home/g, root)], {
+          const child = spawn("sh", ["-c", script.replace(/\/home\/user/g, root)], {
             cwd,
             env: { ...process.env, ...frame.start.env, HOME: root },
           });
@@ -117,7 +117,7 @@ export async function startFakeManagedAgentsService(): Promise<FakeManagedAgents
         if (frame.chunk?.length) chunks.push(frame.chunk);
       });
       call.on("end", () => {
-        const hostPath = path.replace(/^\/workspace\/home/, root);
+        const hostPath = path.replace(/^\/home\/user/, root);
         mkdirSync(dirname(hostPath), { recursive: true });
         const body = Buffer.concat(chunks);
         writeFileSync(hostPath, body);
@@ -125,7 +125,7 @@ export async function startFakeManagedAgentsService(): Promise<FakeManagedAgents
       });
     },
     Download: (call: grpc.ServerWritableStream<{ path?: string }, unknown>) => {
-      const hostPath = (call.request.path ?? "").replace(/^\/workspace\/home/, root);
+      const hostPath = (call.request.path ?? "").replace(/^\/home\/user/, root);
       let body: Buffer;
       try {
         body = readFileSync(hostPath);
