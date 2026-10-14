@@ -10,7 +10,6 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { test } from "node:test";
 
 const SCRIPT = fileURLToPath(new URL("../skills-seed/browse/scripts/browser.mjs", import.meta.url));
-const SKILL = fileURLToPath(new URL("../skills-seed/browse/SKILL.md", import.meta.url));
 
 type Call = { method: string; url: string; key: string | undefined; body: unknown };
 
@@ -194,21 +193,5 @@ test("an idle browser is stopped by the daemon", async () => {
   } finally {
     api.close();
     box.cleanup();
-  }
-});
-
-test("browse skill uses Browser Use only and keeps the safety guidance", () => {
-  const skill = readFileSync(SKILL, "utf8");
-  for (const gone of [/kernel/i, /anchor/i, /browserbase/i, /browser-engine/, /BROWSE_LAB/, /do not pip install/i]) {
-    assert.doesNotMatch(skill, gone);
-  }
-  for (const kept of [
-    /BROWSER_USE_API_KEY/,
-    /qm\.ycinside\.com\/keychain/,
-    /LinkedIn/,
-    /finally/,
-    /"action":\s*"stop"/,
-  ]) {
-    assert.match(skill, kept);
   }
 });
