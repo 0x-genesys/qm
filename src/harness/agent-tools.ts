@@ -1541,8 +1541,8 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     label: "subagents",
     description:
       "Start and coordinate subagents: background workers you spawn for a task. A subagent does not get its own sidebar entry and does not inherit this conversation, so give it a complete standalone task with the context and authorization it needs. Its final answer comes back to you as an internal message. " +
-      "`open` starts a subagent with `task`. `followup_task` gives an existing subagent more work in `task` and starts a turn if it is idle; active work is queued safely. " +
-      '`send_message` passes information to one of your subagents, a sibling subagent, or your parent (target="parent") without starting a turn; with interrupt:true it stops a subagent\'s current run. ' +
+      "`open` starts a subagent with `task`. `steer` promptly delivers corrections or approvals in `text` to your attached child, waking it if idle. `followup_task` gives an existing subagent more work in `task` and starts a turn if it is idle; active work is queued safely. " +
+      '`send_message` passes information to one of your subagents, a sibling subagent, or your parent (target="parent") without starting a turn, except meaningful progress or blockers sent to your parent wake it; do not send routine acknowledgments. With interrupt:true it stops a subagent\'s current run. ' +
       "`read` with no target lists your subagents; with a target it reads that subagent's transcript. " +
       (delegateWork
         ? "Delegate substantial work, then end this turn promptly. A subagent's completion wakes you automatically to report the result. Do not wait or poll for subagents. "
@@ -1563,6 +1563,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         Type.Literal("read"),
         Type.Literal("send_message"),
         Type.Literal("followup_task"),
+        Type.Literal("steer"),
         Type.Literal("wait"),
       ]),
       requestId: Type.Optional(
@@ -1590,7 +1591,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
             "\"parent\", or a subagent's sessionId or exact title (yours or a sibling's). Do not invent filesystem paths such as /root/name. read: omit to list your subagents.",
         }),
       ),
-      text: Type.Optional(Type.String({ description: "send_message: the message to deliver." })),
+      text: Type.Optional(Type.String({ description: "send_message or steer: the message to deliver." })),
       interrupt: Type.Optional(
         Type.Boolean({ description: "send_message: abort the target's current run instead of delivering text." }),
       ),
@@ -1600,7 +1601,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       const tc = ref.current;
       const syscalls = tc?.sessionSyscalls;
       const p = params as {
-        action: "open" | "read" | "send_message" | "followup_task" | "wait";
+        action: "open" | "read" | "send_message" | "followup_task" | "steer" | "wait";
         timeoutMs?: number;
         requestId?: string;
         harness?: string;
@@ -1672,11 +1673,11 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           ),
         );
       }
-      if (p.action === "send_message" || p.action === "followup_task") {
+      if (p.action === "send_message" || p.action === "followup_task" || p.action === "steer") {
         const followup = p.action === "followup_task";
         const body = followup ? p.task : p.text;
-        if (followup && p.interrupt) {
-          const message = "interrupt applies to send_message, not followup_task.";
+        if (p.action !== "send_message" && p.interrupt) {
+          const message = "interrupt applies only to send_message.";
           return recordResult(
             callId,
             { tool: "subagents", action: p.action, error: message },
@@ -1687,6 +1688,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         const result = await syscalls.write({
           requestId: callId,
           followup,
+          steer: p.action === "steer",
           target: p.target ?? "",
           ...(body ? { text: body } : {}),
           ...(p.interrupt ? { interrupt: true } : {}),
@@ -1700,9 +1702,9 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           );
         }
         const verbs = {
-          steered: "steered into its running turn",
+          steered: "stored for prompt delivery to its current turn",
           queued_turn: "queued as a new turn",
-          queued_message: "queued internally without starting a turn",
+          queued_message: "queued internally; parent updates wake it when idle",
           interrupted: "sent an interrupt request — it stays re-taskable",
         } as const;
         const verb = verbs[result.delivered];

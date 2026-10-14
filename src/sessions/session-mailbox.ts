@@ -11,12 +11,20 @@ export interface SessionMessage {
   audience: OrchestratorInput["conversation"]["audience"];
   createdAt: number;
   consumed?: boolean;
+  wake?: { request: OrchestratorInput; mode: "steer" | "notify"; dedupKey: string };
+  wakePending?: boolean;
 }
 
 export function createSessionMailbox(backing: DurableMap<SessionMessage>) {
   return {
-    async send(message: SessionMessage): Promise<void> {
-      await backing.putIfAbsent(message.id, message);
+    async send(message: SessionMessage): Promise<SessionMessage> {
+      return backing.putIfAbsent(message.id, message);
+    },
+    async wakeable(afterId?: string): Promise<SessionMessage[]> {
+      return backing.select({ where: { field: "wakePending", anyOfFold: ["true"] }, limit: 100, afterId });
+    },
+    async settleWake(id: string): Promise<void> {
+      await backing.merge(id, { wakePending: false });
     },
     async pending(recipientId: string): Promise<SessionMessage[]> {
       const rows = await backing.select({ where: { field: "recipientId", anyOfFold: [recipientId] } });

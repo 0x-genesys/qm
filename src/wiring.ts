@@ -39,6 +39,7 @@ import { createRuntimeService } from "./harness/runtime-control.ts";
 import {
   createSessionSyscalls,
   deliverSubagentMail,
+  wakeSessionMessages,
   sessionTreeRoot,
   sessionTreeRunCount,
   sessionTreeWorking,
@@ -1975,7 +1976,9 @@ export function buildApp(
       conversation: { ...request.conversation, audience, publishMembers: audience },
     };
   };
-  const sessionMailbox = createSessionMailbox(artifactMap<SessionMessage>("session_mailbox", ["recipientId"]));
+  const sessionMailbox = createSessionMailbox(
+    artifactMap<SessionMessage>("session_mailbox", ["recipientId", "wakePending"]),
+  );
   const sessionSyscalls = createSessionSyscalls({
     mailbox: sessionMailbox,
     enabled: async (actorId) =>
@@ -2396,6 +2399,14 @@ export function buildApp(
       void returnSessionRun(run).catch(swallowAs("sessions: return", undefined));
   });
   const sweepSessionReturns = async () => {
+    await wakeSessionMessages({
+      mailbox: sessionMailbox,
+      sessions,
+      runs,
+      signals: runSignals,
+      maxAttempts,
+      advisoryLock,
+    });
     let afterId: string | undefined;
     for (;;) {
       const batch = await runs.pendingReturns(100, afterId);

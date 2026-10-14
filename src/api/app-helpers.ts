@@ -657,7 +657,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
           continue;
         }
         let replayRunId: string | undefined;
-        const dedupKey = `session-signal:${runId}:${id}`;
+        const dedupKey = signal.sessionRequest && signal.dedupeKey ? signal.dedupeKey : `session-signal:${runId}:${id}`;
         if (signal.sessionRequest) {
           const { clientTools: _clientTools, ...sessionRequest } = signal.sessionRequest;
           const { run } = await deps.runs.enqueue({

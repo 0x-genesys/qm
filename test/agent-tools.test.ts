@@ -5,7 +5,7 @@ import { Check } from "typebox/value";
 import { fromJSONSchema, z, type ZodObject } from "zod";
 import { createAgentTools, pauseStampAfterToolCall, type ToolContextRef } from "../src/harness/agent-tools.ts";
 import { resumeStrategy } from "../src/core/turn-resume.ts";
-import { createMemoryRunSignalStore, waitForClientResult } from "../src/runs/run-signal-store.ts";
+import { createMemoryRunSignalStore, startSignalPoll, waitForClientResult } from "../src/runs/run-signal-store.ts";
 import { filterHistoryForAudience } from "../src/resolution/context-filter.ts";
 import { CommandDenied, NeedsApproval, type ToolContext } from "../src/tools/primitives.ts";
 import type { ClientToolDeclaration, EntryType, SessionEntry } from "../src/types.ts";
@@ -3424,7 +3424,7 @@ test("subagents followup_task takes its instruction in task, like open", async (
   );
   assert.match(
     textOut(await call(session, { action: "followup_task", target: "child", task: "stop?", interrupt: true })),
-    /interrupt applies to send_message/,
+    /interrupt applies only to send_message/,
   );
   await call(session, { action: "followup_task", target: "child", text: "misplaced" });
   assert.deepEqual(
@@ -3435,6 +3435,74 @@ test("subagents followup_task takes its instruction in task, like open", async (
       { followup: true, text: undefined, interrupt: undefined },
     ],
   );
+});
+
+test("a coordination signal reaches the real mailbox tool path, which acknowledges only committed delivery", async () => {
+  const signals = createMemoryRunSignalStore();
+  const messages = [
+    {
+      id: "correction",
+      recipientId: "child",
+      senderId: "parent",
+      actor: { id: "U1", type: "internal" as const },
+      text: "Use the smaller change",
+      audience: [],
+      createdAt: Date.now(),
+    },
+  ];
+  const tc = fakeToolContext();
+  let committed = false;
+  let consumed = false;
+  const writes: unknown[] = [];
+  tc.sessionSyscalls = {
+    open: async () => ({ ok: false, message: "unused" }),
+    read: async () => ({ ok: false, message: "unused" }),
+    write: async (input) => {
+      writes.push(input);
+      await signals.send("worker", { kind: "steer", text: "Read internal messages", dedupeKey: "wake" });
+      return { ok: true, sessionId: "child", title: "child", delivered: "steered" };
+    },
+    receive: async () => (consumed ? [] : messages),
+    acknowledge: async () => {
+      assert.equal(committed, true);
+      consumed = true;
+    },
+  };
+  const ref: ToolContextRef = {
+    current: tc,
+    emit: async (entry) => {
+      if (entry.type === "tool_result") committed = true;
+    },
+  };
+  const tool = createAgentTools(ref).find((tool) => tool.name === "subagents")!;
+  const sender = createAgentTools({
+    current: {
+      ...tc,
+      sessionSyscalls: {
+        ...tc.sessionSyscalls,
+        receive: undefined,
+        acknowledge: undefined,
+      },
+    },
+  }).find((tool) => tool.name === "subagents")!;
+  assert.ok(Check(sender.parameters, { action: "steer", target: "child", text: "correction" }));
+  let received = "";
+  const stop = startSignalPoll(signals, "worker", {
+    onAbort: async () => {},
+    onSteer: async () => {
+      received = textOut(await call(tool, { action: "wait", timeoutMs: 0 }));
+    },
+  });
+  try {
+    await call(sender, { action: "steer", target: "child", text: "correction" });
+    for (let i = 0; !received && i < 100; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.match(received, /Use the smaller change/);
+    assert.equal(consumed, true);
+    assert.deepEqual(await signals.pending("worker"), []);
+    assert.equal((writes[0] as { steer: boolean }).steer, true);
+  } finally {
+    await stop();
+  }
 });
 
 test("conversation coordinator mailbox checks never block on children", async () => {

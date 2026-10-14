@@ -19,6 +19,7 @@ import {
   sessionTreeRunCount,
   delegatedAuthorizationOrigin,
   stopSessionTree,
+  wakeSessionMessages,
 } from "../src/sessions/session-syscalls.ts";
 import { scopeId, type Conversation, type Principal, type ScopeId, type Session } from "../src/types.ts";
 import type { SessionStore } from "../src/sessions/session-store.ts";
@@ -304,7 +305,7 @@ test("a finished child durably wakes its Slack parent exactly once and leaves th
   const wakes = await r.runs.inFlightForThread(r.room.threadRef);
   assert.equal(wakes.length, 1);
   assert.equal(wakes[0]!.dedupKey, `subagent-return:${finished!.id}`);
-  assert.match(wakes[0]!.request.text, /Check internal messages/);
+  assert.match(wakes[0]!.request.text, /subagents wait/);
   assert.equal(wakes[0]!.request.surfaceTools, true);
 });
 
@@ -508,7 +509,7 @@ test("terminal children remain recoverable until their return is acknowledged", 
   const wakes = await r.runs.inFlightForThread(r.room.threadRef);
   assert.equal(wakes.length, 1);
   assert.equal(wakes[0]!.dedupKey, `subagent-return:${pending!.id}`);
-  assert.match(wakes[0]!.request.text, /Check internal messages/);
+  assert.match(wakes[0]!.request.text, /subagents wait/);
   assert.equal(wakes[0]!.request.surfaceTools, true);
   await r.mailbox.acknowledge(r.room.id, [`subagent-mail-${pending!.id}`]);
   assert.equal(
@@ -819,7 +820,7 @@ test("retrying an unqueued child preserves detachment and uses its current tree 
   assert.equal((await r.sessions.get(child.id))?.parentSessionId ?? null, null);
 });
 
-test("siblings and children send durable deduplicated messages without new turns", async () => {
+test("siblings remain passive and child progress durably wakes its parent once", async () => {
   const r = await rig();
   const parent = r.syscallsFor(r.room);
   const one = await parent.open({ task: "one", name: "one" });
@@ -846,7 +847,7 @@ test("siblings and children send durable deduplicated messages without new turns
   await r.runs.complete(run.id, claimed!.leaseToken!, { status: "ok", reply: "ready" });
   assert.equal((await sender.write({ target: "parent", text: "progress" })).ok, true);
   assert.equal((await parent.receive!()).length, 1);
-  assert.equal((await r.runs.inFlightForThread(r.room.threadRef)).length, 0);
+  assert.equal((await r.runs.inFlightForThread(r.room.threadRef)).length, 1);
 });
 
 test("follow-up retries recover the accepted run before checking full capacity", async (t) => {
@@ -1493,8 +1494,8 @@ for (const addressed of [true, false]) {
     assert.equal(wake.request.delegatingRunId, r.parent.id);
     assert.equal(wake.request.sessionSenderId, r.child.id);
     assert.equal(wake.request.origin.kind, "automation");
-    assert.match(wake.request.text, /delegated task finished/i);
-    assert.equal(wake.request.displayText, "Delegated task completed");
+    assert.match(wake.request.text, /Internal coordination messages/);
+    assert.equal(wake.request.displayText, "Internal coordination update");
     assert.equal(wake.request.envelopeWrapped, true);
   });
 }
@@ -1901,4 +1902,174 @@ test("sessions list shows only sidebar sessions the whole audience can see and c
     assert.equal(out.ok, false);
   }
   assert.equal(started.length, 4);
+});
+
+async function coordinationRig() {
+  const r = await rig();
+  const parent = await r.runs.enqueue({
+    sessionId: r.room.threadRef,
+    request: {
+      actor,
+      conversation,
+      origin: { kind: "human" },
+      text: "work",
+    },
+  });
+  const claimed = await r.runs.claimById(parent.run.id, "parent", 60_000);
+  await r.runs.complete(parent.run.id, claimed!.leaseToken!, { status: "ok", reply: "delegating" });
+  const api = r.syscallsFor(r.room);
+  const opened = await api.open({ task: "investigate" });
+  assert.ok(opened.ok);
+  const child = await freshSession(r.sessions, opened.sessionId);
+  const [run] = await r.runs.inFlightForThread(child.threadRef);
+  const active = await r.runs.claimById(run!.id, "child", 60_000);
+  return { ...r, api, child, active: active!, repair: () => wakeSessionMessages({ ...r, maxAttempts: 3 }) };
+}
+
+test("steer persists correction once and nudges the active worker rather than queueing work", async () => {
+  const r = await coordinationRig();
+  const input = { target: r.child.id, steer: true, text: "approved: use the smaller change", requestId: "approval" };
+  for (let i = 0; i < 2; i++) {
+    const result = await r.api.write(input);
+    assert.ok(result.ok);
+    assert.equal(result.delivered, "steered");
+  }
+  assert.equal((await r.runs.inFlightForThread(r.child.threadRef)).length, 1);
+  const signals = await r.signals.pending(r.active.id);
+  assert.equal(signals.length, 1);
+  assert.doesNotMatch(signals[0]!.signal.text!, /smaller change/);
+  const receiver = r.syscallsFor(r.child);
+  const messages = await receiver.receive!();
+  assert.equal(messages.length, 1);
+  assert.match(messages[0]!.text, /smaller change/);
+  await receiver.acknowledge!(messages.map((m) => m.id));
+  await r.repair();
+  assert.deepEqual(await r.mailbox.wakeable(), []);
+  assert.deepEqual(await receiver.receive!(), []);
+});
+
+test("steer retry rejects changed body, target and message mode without another signal", async () => {
+  const r = await coordinationRig();
+  const input = { target: r.child.id, steer: true, text: "correct this", requestId: "same" };
+  assert.equal((await r.api.write(input)).ok, true);
+  assert.equal((await r.api.write({ ...input, text: "different" })).ok, false);
+  assert.equal((await r.api.write({ ...input, steer: false })).ok, false);
+  const other = await r.api.open({ task: "other" });
+  assert.ok(other.ok);
+  assert.equal((await r.api.write({ ...input, target: other.sessionId })).ok, false);
+  assert.equal((await r.signals.pending(r.active.id)).length, 1);
+  assert.deepEqual(await r.mailbox.pending(other.sessionId), []);
+});
+
+test("steer is parent-only and read-only senders cannot steer writable work", async () => {
+  const r = await coordinationRig();
+  const sibling = await r.api.open({ task: "sibling" });
+  assert.ok(sibling.ok);
+  const siblingApi = r.syscallsFor(await freshSession(r.sessions, sibling.sessionId));
+  assert.equal((await siblingApi.write({ target: r.child.id, steer: true, text: "do this" })).ok, false);
+  const readonly = createSessionSyscalls({ ...r, maxAttempts: 3 }).forTurn({
+    session: r.room,
+    scopeId: scope,
+    request: { actor, conversation, readOnly: true },
+  });
+  assert.equal((await readonly.write({ target: r.child.id, steer: true, text: "do this" })).ok, false);
+  assert.deepEqual(await r.signals.pending(r.active.id), []);
+});
+
+test("durable steer intent repairs failed signal dispatch after factory recreation", async () => {
+  const r = await coordinationRig();
+  const broken = createSessionSyscalls({
+    ...r,
+    maxAttempts: 3,
+    signals: {
+      ...r.signals,
+      send: async () => {
+        throw new Error("signal store unavailable");
+      },
+    },
+  }).forTurn({ session: r.room, scopeId: scope, request: { actor, conversation } });
+  const result = await broken.write({ target: r.child.id, steer: true, text: "correct it", requestId: "retry" });
+  assert.equal(result.ok, false);
+  assert.equal((await r.mailbox.pending(r.child.id)).length, 1);
+  await r.repair();
+  await r.repair();
+  assert.equal((await r.signals.pending(r.active.id)).length, 1);
+  assert.equal((await r.runs.inFlightForThread(r.child.threadRef)).length, 1);
+});
+
+test("an acknowledged nudge is not an acknowledged correction: unread mail wakes an idle worker", async () => {
+  const r = await coordinationRig();
+  await r.api.write({ target: r.child.id, steer: true, text: "must not be lost", requestId: "unread" });
+  const [signal] = await r.signals.pending(r.active.id);
+  await r.signals.acknowledge(r.active.id, signal!.id);
+  await r.runs.complete(r.active.id, r.active.leaseToken!, { status: "ok", reply: "finished too soon" });
+  await r.repair();
+  await r.repair();
+  const wakes = await r.runs.inFlightForThread(r.child.threadRef);
+  assert.equal(wakes.length, 1);
+  assert.equal(wakes[0]!.dedupKey, signal!.signal.dedupeKey);
+  assert.equal((await r.syscallsFor(r.child).receive!()).length, 1);
+});
+
+test("busy parent progress is coalesced and survives completion without mailbox consumption", async () => {
+  const r = await coordinationRig();
+  const busy = await r.runs.enqueue({
+    sessionId: r.room.threadRef,
+    request: {
+      actor,
+      conversation,
+      origin: { kind: "human" },
+      text: "another request",
+    },
+  });
+  const active = await r.runs.claimById(busy.run.id, "parent", 60_000);
+  for (const text of ["found the cause", "need a decision"]) {
+    assert.equal((await r.syscallsFor(r.child).write({ target: "parent", text, requestId: text })).ok, true);
+  }
+  assert.equal((await r.runs.inFlightForThread(r.room.threadRef)).length, 1);
+  await r.runs.complete(active!.id, active!.leaseToken!, { status: "ok", reply: "done" });
+  await r.repair();
+  await r.repair();
+  assert.equal((await r.runs.inFlightForThread(r.room.threadRef)).length, 1);
+  const messages = await r.api.receive!();
+  assert.equal(messages.length, 2);
+  await r.api.acknowledge!(messages.map((m) => m.id));
+  await r.repair();
+  assert.equal((await r.runs.inFlightForThread(r.room.threadRef)).length, 0);
+  assert.deepEqual(await r.mailbox.wakeable(), []);
+});
+
+test("a child progress wake cannot generate a silent completion acknowledgement chain", async () => {
+  const r = await coordinationRig();
+  const nested = await r.syscallsFor(r.child).open({ task: "nested" });
+  assert.ok(nested.ok);
+  await r.runs.complete(r.active.id, r.active.leaseToken!, { status: "ok", reply: "done" });
+  const grandchild = await freshSession(r.sessions, nested.sessionId);
+  await r.syscallsFor(grandchild).write({ target: "parent", text: "check this blocker" });
+  const [wake] = await r.runs.inFlightForThread(r.child.threadRef);
+  const active = await r.runs.claimById(wake!.id, "child", 60_000);
+  assert.equal(active!.request.sessionMessageDepth, 1);
+  await r.runs.complete(active!.id, active!.leaseToken!, { status: "ok", reply: "" });
+  const completed = await r.runs.get(active!.id);
+  assert.equal(await deliverSubagentMail({ ...r, maxAttempts: 3 }, completed!), true);
+  assert.deepEqual(await r.mailbox.pending(r.room.id), []);
+});
+
+test("reparenting before deferred notification dispatch does not wake the former parent", async () => {
+  const r = await coordinationRig();
+  const broken = createSessionSyscalls({
+    ...r,
+    maxAttempts: 3,
+    runs: {
+      ...r.runs,
+      enqueue: async () => {
+        throw new Error("queue unavailable");
+      },
+    },
+  }).forTurn({ session: r.child, scopeId: scope, request: { actor, conversation } });
+  assert.equal((await broken.write({ target: "parent", text: "progress" })).ok, false);
+  await r.sessions.setParentSession(r.child.id, null);
+  await r.repair();
+  assert.deepEqual(await r.runs.inFlightForThread(r.room.threadRef), []);
+  assert.deepEqual(await r.mailbox.wakeable(), []);
 });
