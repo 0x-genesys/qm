@@ -232,7 +232,6 @@ export interface ToolContext extends SurfaceToolDeps {
     name: string,
     opts?: { path?: string; sandboxId?: string; source?: string; signal?: AbortSignal },
   ): Promise<SkillResult>;
-  /** Saves to the sandbox (when `data` is given) and publishes the file to durable Files; returns its Files ID. */
   write(path: string, data: string | undefined, sandboxId?: string): Promise<WriteFileResult>;
   publish(input: PublishInput): Promise<PublishResult>;
   setDeploymentPublic(id: string, isPublic: boolean): Promise<{ id: string; name?: string; public: boolean }>;
@@ -1062,7 +1061,6 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           const sha256 = createHash("sha256").update(bytes).digest("hex");
           const name = path.split(/[\\/]/).pop() || path;
           const { artifact } = await deps.files.put({
-            // Same scope + path + bytes → same record, so retries and unchanged rewrites don't pile up copies.
             id: fileArtifactId(`${ownerScopeId}:${path}:${sha256}`, "out", 0),
             ownerScopeId,
             createdBy: deps.createdBy,
@@ -1531,12 +1529,10 @@ async function collectTree(
 }
 
 interface WriteFileResult {
-  /** Files record ID, present when the file was published to durable Files. */
   fileId?: string;
   bytes?: number;
 }
 
-/** files write reads the whole file into core memory; larger files go through the direct upload helper. */
 const MAX_WRITE_PUBLISH_BYTES = 100 * 1024 ** 2;
 
 function isUnderAnyDir(path: string, dirs: readonly string[]): boolean {
