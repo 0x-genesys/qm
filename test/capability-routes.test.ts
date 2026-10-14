@@ -339,6 +339,7 @@ describe("capability-token control plane (crons + webhooks + SOUL)", () => {
       { title: "Private-channel grant", schedule: { everyMs: 60_000 }, text: "private reminder" },
       owner,
     );
+    assert.equal(created.status, 200);
     const { cron } = (await created.json()) as any;
     const path = `/v1/crons/${cron.id}`;
     try {

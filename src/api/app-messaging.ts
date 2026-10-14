@@ -45,7 +45,9 @@ export async function cronVisibility(deps: AppDeps, h: AppHelpers, principalId: 
     const { kind, ref } = parseScopeId(ownerScopeId);
     return kind !== "group" || deps.projects?.recognizes(ref) !== true || scopeNames.has(ownerScopeId);
   };
-  const grants = (await deps.acl.list()).filter((grant) => parseRef(grant.ref).kind === "cron");
+  const grants = (await deps.acl.list()).filter(
+    (grant) => (grant.permission === "read" || grant.permission === "write") && parseRef(grant.ref).kind === "cron",
+  );
   const grantees = [...new Set(grants.map((grant) => grant.granteeScopeId))];
   const readable = new Set(
     (
