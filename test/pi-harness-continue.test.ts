@@ -191,6 +191,7 @@ test("a token-limited Pi response fails visibly without retrying an incomplete a
     text?: string;
     step?: { stopReason?: string };
   };
+  assert.ok(partial);
   assert.equal(partial.text, "done: two files");
   assert.equal(partial.step?.stopReason, "length");
 });

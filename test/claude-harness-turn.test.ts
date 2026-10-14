@@ -811,9 +811,10 @@ for (const shutdown of [false, true]) {
 }
 
 test("a token-limited Claude turn fails visibly instead of persisting an incomplete final", async () => {
+  const partial = "  an unfinished sentence abo\n";
   currentScript = async function* (prompts) {
     await prompts[Symbol.asyncIterator]().next();
-    yield resultMessage("an unfinished sentence abo", { stop_reason: "max_tokens" });
+    yield resultMessage(partial, { stop_reason: "max_tokens" });
   };
   const { turn, entries } = harnessTurn({ readOnly: false });
   await assert.rejects(createClaudeHarness({}).turns.runTurn(turn), (error: unknown) => {
@@ -825,6 +826,7 @@ test("a token-limited Claude turn fails visibly instead of persisting an incompl
     entries.some((entry) => entry.type === "assistant"),
     false,
   );
+  assert.equal((entries.find((entry) => entry.type === "text")?.payload as { text?: string }).text, partial);
 });
 
 test("Claude still accepts successful stop-sequence and pause results", async () => {
