@@ -23,8 +23,11 @@ const THEME_OPTIONS: Array<{ value: ThemeChoice; label: string; glyph: IconNode 
   { value: "light", label: "Light", glyph: Sun },
   { value: "dark", label: "Dark", glyph: Moon },
   { value: "system", label: "System", glyph: Monitor },
-  { value: "glass", label: "Liquid glass", glyph: Droplets },
 ];
+
+function macDesktop(): boolean {
+  return document.documentElement.dataset.qmDesktop === "darwin";
+}
 
 let settingsHost: HTMLElement | null = null;
 let themeImportError: string | null = null;
@@ -32,7 +35,8 @@ let themeImportError: string | null = null;
 function storedTheme(): ThemeChoice {
   try {
     const stored = localStorage.getItem(THEME_KEY);
-    if (stored === "light" || stored === "dark" || stored === "glass") return stored;
+    if (stored === "light" || stored === "dark") return stored;
+    if (stored === "glass") return macDesktop() ? stored : "system";
     if (stored === "custom" && storedCustomTheme()) return stored;
   } catch {
     void 0;
@@ -77,7 +81,7 @@ export function applyTheme(): void {
   const choice = storedTheme();
   const custom = choice === "custom" ? storedCustomTheme() : null;
   const root = document.documentElement;
-  root.classList.toggle("glass", choice === "glass");
+  root.classList.toggle("glass", choice === "glass" && macDesktop());
   let styleEl = document.getElementById(CUSTOM_THEME_STYLE_ID);
   if (custom) {
     const tokens = themeTokens(custom);
@@ -184,7 +188,7 @@ function themeRow(): TemplateResult {
   const custom = storedCustomTheme();
   const note = themeImportError
     ? html`<span class="settings-row-error">${themeImportError}</span>`
-    : "System follows your device's light or dark setting. Liquid glass frosts the window and follows that same appearance. Import an iTerm2 .itermcolors or a VS Code color theme .json to paint the app with its palette.";
+    : "System follows your device's light or dark setting. Import an iTerm2 .itermcolors or a VS Code color theme .json to paint the app with its palette.";
   return html`
     <div class="settings-row">
       <div class="settings-row-copy">
@@ -193,7 +197,10 @@ function themeRow(): TemplateResult {
       </div>
       <div class="settings-theme-controls">
         <div class="settings-choice" role="radiogroup" aria-label="Theme">
-          ${THEME_OPTIONS.map((option) => themeOption(option.value, current, option.label, icon(option.glyph, 15)))}
+          ${(macDesktop()
+            ? [...THEME_OPTIONS, { value: "glass" as const, label: "Liquid glass", glyph: Droplets }]
+            : THEME_OPTIONS
+          ).map((option) => themeOption(option.value, current, option.label, icon(option.glyph, 15)))}
           ${custom ? themeOption("custom", current, custom.name, themeSwatches(custom)) : nothing}
         </div>
         <div class="settings-theme-import">

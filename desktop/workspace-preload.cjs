@@ -1,5 +1,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
+if (document.documentElement) document.documentElement.dataset.qmDesktop = process.platform;
+
 contextBridge.exposeInMainWorld("qmDesktop", {
   openBrowser: (url) => ipcRenderer.invoke("qm:open-browser", url),
 });
