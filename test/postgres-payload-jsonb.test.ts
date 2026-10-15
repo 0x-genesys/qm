@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { applyPgMigrations, registeredPgMigrations } from "../src/persistence/pg-pool.ts";
@@ -29,6 +30,9 @@ test("payload jsonb: the startup migration converts a TEXT table in place and re
       "INSERT INTO sessions(id, type, scope_id, thread_ref, created_at, messages, turns) VALUES ('legacy', 'channel', $1, 'legacy-thread', 1, 6, 3)",
       [scope],
     );
+    await raw.query(
+      await readFile(new globalThis.URL("./fixtures/legacy-participant-activity.sql", import.meta.url), "utf8"),
+    );
     const legacy: [number, string, string | null][] = [
       [0, "user", '{"text":"nul\\u0000inside","name":"Ada"}'],
       [1, "assistant", '{"text":"lone \\ud800 high and \\udc00 low, pair \\ud83d\\ude00"}'],
@@ -44,6 +48,10 @@ test("payload jsonb: the startup migration converts a TEXT table in place and re
         [seq, type, payload, scope, seq],
       );
 
+    assert.equal(
+      (await raw.query("SELECT user_last_activity_seq FROM sessions WHERE id='legacy'")).rows[0].user_last_activity_seq,
+      5,
+    );
     const conversion = registeredPgMigrations(URL!).filter((m) => m.id === CONVERT);
     await raw.query(conversion[0]!.statements.find((sql) => sql.includes("FUNCTION entry_payload_repair"))!);
     for (const text of [
@@ -68,6 +76,15 @@ test("payload jsonb: the startup migration converts a TEXT table in place and re
     await raw.query("DELETE FROM session_entries WHERE session_id = 'legacy' AND seq = 5");
     assert.equal((await store.getEntries("legacy")).length, 6, "the store's first query runs the conversion");
     assert.equal(await type(), "jsonb");
+    assert.equal(
+      (await raw.query("SELECT to_regprocedure('participant_activity_on_entry_v3()') IS NULL AS gone")).rows[0].gone,
+      true,
+    );
+    assert.equal(
+      (await raw.query("SELECT count(*)::int AS n FROM pg_trigger WHERE tgname='participant_activity_entry_v3'"))
+        .rows[0].n,
+      0,
+    );
     const payloads = (await store.getEntries("legacy")).map((e) => e.payload);
     assert.deepEqual(payloads, [
       { text: "nulinside", name: "Ada" },
