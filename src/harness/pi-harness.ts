@@ -1131,6 +1131,13 @@ function customModelsPath(): string | null {
   return path;
 }
 
+/**
+ * Retries pi-ai makes on one model request before the turn sees a failure: 408/409/429/5xx and
+ * dropped connections, honoring Retry-After up to 60s, abortable. Without it every transient
+ * provider error fails the whole attempt and the run is requeued and resumed.
+ */
+const PROVIDER_REQUEST_RETRIES = 2;
+
 export async function buildModelRuntime(
   keys: ProviderKeys | string,
   modelGateway?: ModelGatewayTransportConfig,
@@ -1174,7 +1181,11 @@ export async function buildModelRuntime(
     }) as typeof runtime.getAuth;
   }
   const retained = <T extends object | undefined>(options: T): T =>
-    cacheRetention ? ({ ...options, cacheRetention } as T) : options;
+    ({
+      maxRetries: PROVIDER_REQUEST_RETRIES,
+      ...options,
+      ...(cacheRetention ? { cacheRetention } : {}),
+    }) as T;
   const wireModelId = <T extends Pick<ModelsSimpleStreamOptions, "onPayload"> | undefined>(
     options: T,
     model: Model<Api>,
