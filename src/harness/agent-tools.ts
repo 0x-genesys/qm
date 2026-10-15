@@ -671,6 +671,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         ...(ref.abortSignal ? { signal: ref.abortSignal } : {}),
       };
       const r = await tc.execute(params.command, Object.keys(execOpts).length ? execOpts : undefined);
+      const { stdout: _stdout, stderr: _stderr, ...execMeta } = r;
       const parts = [r.stdout, r.stderr ? `[stderr]\n${r.stderr}` : ""].filter(Boolean).join("\n");
       const reachedPrefix = r.reached ? `[ran on ${r.reached.label}'s computer]\n` : "";
       const localExec = !route?.scratch && !route?.ownerAuth && route?.reachTarget === undefined && !r.reached;
@@ -680,7 +681,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           : "";
       return recordResult(
         callId,
-        { tool: "execute", ...scopeNote, ...r },
+        { tool: "execute", ...scopeNote, ...execMeta },
         {
           content: [
             {
@@ -1908,9 +1909,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         ...(params.sandbox_id ? { sandboxId: params.sandbox_id } : {}),
         ...(params.credentials?.length ? { credentials: params.credentials } : {}),
       });
+      const { output: _output, ...startMeta } = r;
       return recordResult(
         callId,
-        { tool: "execute", background: true, ...r },
+        { tool: "execute", background: true, ...startMeta },
         {
           content: [
             {
@@ -2070,9 +2072,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
               ...(params.max_bytes !== undefined ? { maxBytes: params.max_bytes } : {}),
               ...(params.wait_seconds !== undefined ? { waitSeconds: params.wait_seconds } : {}),
             });
+            const { chunks: _chunks, ...pollMeta } = r;
             return recordResult(
               callId,
-              { tool: "background", action: params.action, ...r },
+              { tool: "background", action: params.action, ...pollMeta },
               {
                 content: [
                   { type: "text" as const, text: `${r.chunks}\n[cursor ${r.cursor} | ${fmtStatus(r.status)}]` },
