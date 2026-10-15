@@ -194,6 +194,11 @@ import { createDockerDeployProvider } from "./deploy/docker-deploy-provider.ts";
 import { createAwsDeployProvider, type StoredDeployBody } from "./deploy/aws-deploy-provider.ts";
 import { createFlyDeployProvider, type FlyMachineConfig } from "./deploy/fly-deploy-provider.ts";
 import { createPorterDeployProvider, type StoredPorterDeployBody } from "./deploy/porter-deploy-provider.ts";
+import {
+  createE2bDeployProvider,
+  E2B_DEPLOY_IDLE_TIMEOUT_SEC,
+  type StoredE2bDeployBody,
+} from "./deploy/e2b-deploy-provider.ts";
 import type { DeployProvider } from "./deploy/deploy-provider.ts";
 import { createDeployService } from "./deploy/deploy-service.ts";
 import {
@@ -239,8 +244,8 @@ import {
   type StoredSuperserveSandbox,
 } from "./sandbox/superserve-sandbox.ts";
 import { createSdkSuperserveClient } from "./sandbox/superserve-client.ts";
-import { createE2bSandbox, type StoredE2bSandbox } from "./sandbox/e2b-sandbox.ts";
-import { createSdkE2bClient } from "./sandbox/e2b-client.ts";
+import { createE2bSandbox, E2B_TEMPLATE_TOOLS, type StoredE2bSandbox } from "./sandbox/e2b-sandbox.ts";
+import { createSdkE2bClient, type E2bClient } from "./sandbox/e2b-client.ts";
 import {
   createManagedAgentsSandbox,
   QM_TEMPLATE_TOOLS,
@@ -929,19 +934,25 @@ export function buildApp(
   const e2bBodies = artifactMap<StoredE2bSandbox>("e2b_sandbox_bodies");
   const modalBodies = artifactMap<StoredModalSandbox>("modal_sandbox_bodies");
   const awsBodies = artifactMap<StoredMicrovm>("aws_sandbox_bodies");
+  const e2bClient = (use: "computers" | "apps"): E2bClient => {
+    const e2b = config.e2bSandbox;
+    if (!e2b.apiKey)
+      throw new Error(`${use === "apps" ? "DEPLOY_PROVIDER" : "SANDBOX_BACKEND"}=e2b requires E2B_API_KEY`);
+    const ttlSec = use === "apps" ? E2B_DEPLOY_IDLE_TIMEOUT_SEC : e2b.sandboxTtlSec;
+    return createSdkE2bClient({
+      apiKey: e2b.apiKey,
+      ...(e2b.templateId ? { templateId: e2b.templateId } : {}),
+      ...(ttlSec ? { sandboxTtlMs: ttlSec * 1000 } : {}),
+      ...(e2b.maxLifetimeSec ? { maxLifetimeMs: e2b.maxLifetimeSec * 1000 } : {}),
+      ...(e2b.proxy ? { proxy: e2b.proxy } : {}),
+      ...(use === "computers" && e2b.egressProxyUrl ? { egressProxyUrl: e2b.egressProxyUrl } : {}),
+    });
+  };
   const buildE2b = (): Sandbox => {
     const e2b = config.e2bSandbox;
-    if (!e2b.apiKey) throw new Error("SANDBOX_BACKEND=e2b requires E2B_API_KEY");
     return createE2bSandbox(workspace, {
       advisoryLock,
-      client: createSdkE2bClient({
-        apiKey: e2b.apiKey,
-        ...(e2b.templateId ? { templateId: e2b.templateId } : {}),
-        ...(e2b.sandboxTtlSec ? { sandboxTtlMs: e2b.sandboxTtlSec * 1000 } : {}),
-        ...(e2b.maxLifetimeSec ? { maxLifetimeMs: e2b.maxLifetimeSec * 1000 } : {}),
-        ...(e2b.proxy ? { proxy: e2b.proxy } : {}),
-        ...(e2b.egressProxyUrl ? { egressProxyUrl: e2b.egressProxyUrl } : {}),
-      }),
+      client: e2bClient("computers"),
       ...(e2b.namePrefix ? { namePrefix: e2b.namePrefix } : {}),
       ...(e2b.defaultTimeoutSec ? { defaultTimeoutSec: e2b.defaultTimeoutSec } : {}),
       keepWarmSec: Math.ceil(config.backgroundJobTtlMaxMs / 1000),
@@ -950,7 +961,7 @@ export function buildApp(
         ? { nativeSnapshotIntervalMs: e2b.nativeSnapshotIntervalSec * 1000 }
         : {}),
       ...(e2b.egressProxyUrl ? { egressProxyUrl: e2b.egressProxyUrl } : {}),
-      extraTools: deploymentLayer.advertisedTools,
+      extraTools: [...(e2b.templateId ? E2B_TEMPLATE_TOOLS : []), ...deploymentLayer.advertisedTools],
       credentialPaths: deploymentLayer.credentialPaths,
       layerToolFiles: () => deploymentLayer.installFiles,
       blobTransfer,
@@ -1742,6 +1753,16 @@ export function buildApp(
         store: artifactMap<StoredPorterDeployBody>("porter_deploy_bodies"),
         onError: sandboxOnError,
       }),
+    e2b: () => {
+      const e2b = config.e2bSandbox;
+      return createE2bDeployProvider({
+        client: e2bClient("apps"),
+        ...(e2b.namePrefix ? { namePrefix: e2b.namePrefix } : {}),
+        advisoryLock,
+        store: artifactMap<StoredE2bDeployBody>("e2b_deploy_bodies"),
+        onError: sandboxOnError,
+      });
+    },
   };
   if (
     config.deployProvider === "fly" &&
@@ -1797,6 +1818,7 @@ export function buildApp(
   const deployService = createDeployService({
     deliveries,
     deployAppsDomain: config.awsDeploy.appsDomain,
+    publicLinksAvailable: !!(config.awsDeploy.appsDomain && config.awsDeploy.gateSecret),
     publicWebUrl: config.publicWebUrl,
     appPublished: productAnalytics.appPublished,
     deployStore,
