@@ -1180,9 +1180,11 @@ export async function buildModelRuntime(
       return getAuth(model, overrides);
     }) as typeof runtime.getAuth;
   }
-  const retained = <T extends object | undefined>(options: T): T =>
+  // The Codex subscription adapter retries every error in its own loop (permanent ones too), so it
+  // keeps pi-ai's default of no retries.
+  const retained = <T extends object | undefined>(options: T, model: Model<Api>): T =>
     ({
-      maxRetries: PROVIDER_REQUEST_RETRIES,
+      ...(model.provider === CODEX_SUBSCRIPTION_PROVIDER ? {} : { maxRetries: PROVIDER_REQUEST_RETRIES }),
       ...options,
       ...(cacheRetention ? { cacheRetention } : {}),
     }) as T;
@@ -1214,7 +1216,7 @@ export async function buildModelRuntime(
           : (modelRequestOverrides(model.id)?.model ?? model.id);
       const candidate = withRequestHeaders(model, true, false);
       const passthrough = {
-        ...retained(options),
+        ...retained(options, model),
         onPayload: async (payload: unknown) => {
           const transformed = options?.onPayload ? await options.onPayload(payload, model) : undefined;
           return applyThinkingBinding(transformed === undefined ? payload : transformed, candidate);
@@ -1227,7 +1229,7 @@ export async function buildModelRuntime(
       };
     }
     const routed = {
-      ...retained(options),
+      ...retained(options, model),
       apiKey: request.apiKey,
       transformHeaders: async (headers: ProviderHeaders) => ({
         ...(options?.transformHeaders ? await options.transformHeaders(headers) : headers),
@@ -1337,6 +1339,7 @@ export async function probeModel(
       {
         maxTokens: Math.min(128, model.maxTokens),
         signal,
+        maxRetries: 0,
         maxRetryDelayMs: 1,
         onPayload: (payload) => applyFastSpeed(payload, fastMode, model.api),
       },
