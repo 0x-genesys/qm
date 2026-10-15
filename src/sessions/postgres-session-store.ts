@@ -40,6 +40,7 @@ import type {
   StoreOptions,
 } from "./session-store.ts";
 import { tsPrefixQuery } from "./entry-search.ts";
+import { ITEMS_TABLES_SQL } from "./items-schema.ts";
 import {
   DROP_SESSION_TAPE_SQL,
   LEGACY_TAPE_STEPS_SIZE_GUARD_SQL,
@@ -862,6 +863,10 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
              updated_at TIMESTAMPTZ NOT NULL
            )`,
         ],
+      },
+      {
+        id: "sessions/store/0034-items-tables",
+        statements: ITEMS_TABLES_SQL,
       },
     ],
     [

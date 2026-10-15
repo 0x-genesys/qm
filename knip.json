@@ -16,6 +16,7 @@
         "scripts/backfill-search-index.ts",
         "scripts/backfill-session-origin.ts",
         "scripts/e2b-live-smoke.mjs",
+        "scripts/items-bulk-copy.ts",
         "scripts/modal-live-smoke.mjs",
         "scripts/dev/cli.ts",
         "scripts/dev/supervisor/main.ts",
