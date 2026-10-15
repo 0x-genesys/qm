@@ -4,6 +4,15 @@ import type { DecisionStore } from "./store.ts";
 
 const HOOK_TIMEOUT_MS = 5_000;
 
+export async function routeTurnRuntime<R extends object>(
+  requested: R | undefined,
+  continueTurn: boolean | undefined,
+  classify: () => Promise<{ runtime?: R } | undefined>,
+): Promise<R | undefined> {
+  if (continueTurn) return requested;
+  return (await classify())?.runtime ?? requested;
+}
+
 export interface DecisionTurn {
   actorId?: string;
   scopeLabel: string;
