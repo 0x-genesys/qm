@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { applyPgMigrations, registeredPgMigrations } from "../src/persistence/pg-pool.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { createContextSummaryPayload } from "../src/sessions/session-store.ts";
+import { jsonbSafeStringify } from "../src/util/text.ts";
 import { scopeId } from "../src/types.ts";
 
 const URL = process.env.DATABASE_URL;
@@ -44,6 +45,20 @@ test("payload jsonb: the startup migration converts a TEXT table in place and re
       );
 
     const conversion = registeredPgMigrations(URL!).filter((m) => m.id === CONVERT);
+    await raw.query(conversion[0]!.statements.find((sql) => sql.includes("FUNCTION entry_payload_repair"))!);
+    for (const text of [
+      "\\u0000",
+      "\\ud800",
+      "\\udc00",
+      "\ud800\ud800",
+      "\udc00\udc00",
+      "😀\ud800😀",
+      'quoted "\u0000 tail',
+    ]) {
+      const encoded = JSON.stringify({ text });
+      const repaired = await raw.query("SELECT entry_payload_repair($1) AS payload", [encoded]);
+      assert.deepEqual(repaired.rows[0].payload, JSON.parse(jsonbSafeStringify({ text })), encoded);
+    }
     await assert.rejects(applyPgMigrations(raw, conversion), /invalid input syntax for type json/);
     assert.equal(await type(), "text", "an unrepairable row rolls back the entire conversion");
     assert.equal(
