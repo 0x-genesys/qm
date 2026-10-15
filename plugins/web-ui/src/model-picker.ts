@@ -18,8 +18,7 @@ import {
 import { modelSupportsFastMode } from "./pi-models.ts";
 import {
   LOADOUT_CAP,
-  ULTRAFAST_MODEL_ID,
-  ULTRAFAST_BASE_MODEL_ID,
+  isUltrafastModel,
   ultrafastChoice,
   effortLevelsForHarness,
   compatibleHarnessOptions,
@@ -126,12 +125,13 @@ export function createModelPicker<T>(bindings: ModelPickerBindings<T>) {
   }
 
   function modelLabel(option: ModelOption): string {
-    return option.model.id === ULTRAFAST_MODEL_ID
+    return isUltrafastModel(option.model.id)
       ? (catalog
           .options()
           .find(
-            (candidate) => candidate.harnessId === option.harnessId && candidate.model.id === ULTRAFAST_BASE_MODEL_ID,
-          )?.label ?? "Astra")
+            (candidate) =>
+              candidate.harnessId === option.harnessId && candidate.model.id === presetModelId(option.value),
+          )?.label ?? option.label)
       : option.label;
   }
 
@@ -179,7 +179,7 @@ export function createModelPicker<T>(bindings: ModelPickerBindings<T>) {
           <span class="loadout-details">
             <span class="loadout-harness">${option.harnessLabel}</span>
             <span>${effortText(settings.effort)}</span>
-            ${option.model.id === ULTRAFAST_MODEL_ID ? html`<span class="loadout-ultrafast-badge">${icon(Zap, 10)} Ultrafast</span>` : nothing}
+            ${isUltrafastModel(option.model.id) ? html`<span class="loadout-ultrafast-badge">${icon(Zap, 10)} Ultrafast</span>` : nothing}
             ${settings.fast ? html`<span class="loadout-bolt" aria-label="Fast">${icon(Zap, 10)}</span>` : nothing}
           </span>
         </span>
@@ -404,7 +404,7 @@ export function createModelPicker<T>(bindings: ModelPickerBindings<T>) {
                     ${modelGlyph(option)}<span class="menu-option-copy"
                       ><span>${modelLabel(option)}</span
                       ><span class="loadout-meta"
-                        >${option.harnessLabel}${option.model.id === ULTRAFAST_MODEL_ID ? " · Ultrafast · 6× cost" : ""}</span
+                        >${option.harnessLabel}${isUltrafastModel(option.model.id) ? " · Ultrafast · 6× cost" : ""}</span
                       ></span
                     ><span class="loadout-add-label" aria-hidden="true">Add</span>
                   </button>`,
@@ -460,9 +460,9 @@ export function createModelPicker<T>(bindings: ModelPickerBindings<T>) {
     if (!selected) return html`<span class="context-model-status">No models available</span>`;
     const open = composerState.openMenu === "loadout";
     const entries = seededLoadout(selected);
-    const ultrafastOn = selected.model.id === ULTRAFAST_MODEL_ID;
+    const ultrafastOn = isUltrafastModel(selected.model.id);
     const ultrafastTarget = ultrafastChoice(catalog.options(), selected);
-    const modelSupportsFast = catalog.supportsFast(ultrafastOn ? ULTRAFAST_BASE_MODEL_ID : selected.model.id);
+    const modelSupportsFast = catalog.supportsFast(presetModelId(selected.value));
     const fastAvailable =
       !!choice &&
       (!ultrafastOn || !!ultrafastTarget) &&
