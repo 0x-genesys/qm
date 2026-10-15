@@ -1,7 +1,7 @@
 import { absoluteAppLinks } from "../src/util/text.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { headSlice, tailSlice, hasLoneSurrogate } from "../src/util/text.ts";
+import { headSlice, tailSlice, hasLoneSurrogate, jsonbSafeStringify } from "../src/util/text.ts";
 
 test("headSlice and tailSlice pass short strings through and cut long ones", () => {
   assert.equal(headSlice("abc", 5), "abc");
@@ -37,4 +37,13 @@ test("app links preserve tilde fences and multi-backtick code spans", () => {
   for (const text of ["~~~md\n[x](/d/x/)\n~~~", "``[x](/d/x/)``", "````md\n[x](/d/x/)\n````"]) {
     assert.equal(absoluteAppLinks(text, "https://qm.example.com"), text);
   }
+});
+
+test("jsonbSafeStringify cleans nested values without changing valid Unicode or literal escapes", () => {
+  const value = { text: "a\u0000b\ud800c\udc00", nested: ["😀", "\\u0000", "\\ud800"] };
+  assert.deepEqual(JSON.parse(jsonbSafeStringify(value)), {
+    text: "ab�c�",
+    nested: ["😀", "\\u0000", "\\ud800"],
+  });
+  assert.equal(jsonbSafeStringify(null), "null");
 });

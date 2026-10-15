@@ -1357,8 +1357,8 @@ test(
       ).rows.reduce((m, r) => m.set(r.id, [r.f, r.l, r.turns]), new Map<string, unknown[]>());
     try {
       for (const [seq, payload] of [
-        [0, '{"text":"poisoned\\u0000tail"}'],
-        [1, '{"text":"truncated'],
+        [0, '{"text":"poisoned\\u0000tail"}'.replace("\\u0000", "")],
+        [1, '{"note":"no text"}'],
       ] as const) {
         await raw.query(
           "INSERT INTO session_entries(session_id, seq, parent_seq, type, payload, scope_label, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
@@ -1400,7 +1400,7 @@ test(
       assert.deepEqual(
         [junkRow.firstMessage, junkRow.lastMessage],
         ["poisonedtail", ""],
-        "a null-byte escape is dropped and malformed JSON previews as empty, never a fatal cast",
+        "a payload without text previews as empty",
       );
       const emptyRow = all.find((r) => r.id === empty.id)!;
       assert.deepEqual([emptyRow.firstMessage, emptyRow.lastMessage], ["", ""], "an entry-less legacy row is blank");
@@ -1644,7 +1644,9 @@ test("pg safe JSON functions are marked parallel-unsafe", { skip }, async () => 
     await raw.query(`CREATE OR REPLACE FUNCTION safe_jsonb(t text) RETURNS jsonb
       LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $safe_jsonb$
       BEGIN RETURN t::jsonb; EXCEPTION WHEN others THEN RETURN NULL; END $safe_jsonb$`);
-    await raw.query("CREATE INDEX safe_jsonb_parallel_repair_test ON session_entries ((safe_jsonb(payload) ->> 'ts'))");
+    await raw.query(
+      "CREATE INDEX safe_jsonb_parallel_repair_test ON session_entries ((safe_jsonb(payload::text) ->> 'ts'))",
+    );
 
     const s = createPostgresSessionStore(URL!);
     await s.scanAll();
@@ -1652,19 +1654,11 @@ test("pg safe JSON functions are marked parallel-unsafe", { skip }, async () => 
     const result = await raw.query(
       `SELECT proname, proparallel
          FROM pg_proc
-        WHERE oid IN (
-          'safe_json(text)'::regprocedure,
-          'safe_jsonb(text)'::regprocedure,
-          'entry_search_text(text)'::regprocedure
-        )`,
+        WHERE oid = 'safe_jsonb(text)'::regprocedure`,
     );
     assert.deepEqual(
       new Map(result.rows.map((row) => [row.proname as string, row.proparallel as string])),
-      new Map([
-        ["entry_search_text", "u"],
-        ["safe_json", "u"],
-        ["safe_jsonb", "u"],
-      ]),
+      new Map([["safe_jsonb", "u"]]),
     );
     assert.equal(
       (await raw.query("SELECT to_regclass('safe_jsonb_parallel_repair_test') AS index")).rows[0]!.index,
@@ -1801,45 +1795,62 @@ test(
   },
 );
 
-test("pg null-byte payloads: stripped on write, tolerated on read (no jsonb cast crash)", { skip }, async () => {
-  const s = createPostgresSessionStore(URL!);
-  const scope = scopeId("channel", "nul");
-  const a = await s.getOrCreateByThread("nulA", "channel", scope);
-  await s.addParticipant(a.id, "NUL1");
-  const { lease } = await s.acquireLease(a.id);
-  const e = await s.append(lease!, { type: "user", payload: { text: "a\u0000b" }, scopeLabel: scope });
-  await s.releaseLease(lease!);
-  assert.equal(
-    (e.payload as { text?: string }).text,
-    "ab",
-    "append returns the sanitized payload, matching what is stored",
-  );
-  assert.equal(((await s.getEntries(a.id))[0]!.payload as { text?: string }).text, "ab", "null byte stripped at write");
-
-  const pg = (await import("pg")).default;
-  const raw = new pg.Pool({ connectionString: URL });
-  try {
-    await raw.query(
-      "INSERT INTO session_entries(session_id, seq, parent_seq, type, payload, scope_label, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-      [a.id, 1, 0, "user", JSON.stringify({ text: "x\u0000y" }), scope, Date.now()],
+test(
+  "pg null-byte and lone-surrogate payloads are sanitized on write, which the jsonb column requires",
+  { skip },
+  async () => {
+    const s = createPostgresSessionStore(URL!);
+    const scope = scopeId("channel", "nul");
+    const a = await s.getOrCreateByThread("nulA", "channel", scope);
+    await s.addParticipant(a.id, "NUL1");
+    const { lease } = await s.acquireLease(a.id);
+    const e = await s.append(lease!, { type: "user", payload: { text: "a\u0000b" }, scopeLabel: scope });
+    await s.releaseLease(lease!);
+    assert.equal(
+      (e.payload as { text?: string }).text,
+      "ab",
+      "append returns the sanitized payload, matching what is stored",
     );
-    await raw.query("UPDATE sessions SET messages = NULL, turns = NULL, last_activity = NULL WHERE id = $1", [a.id]);
-  } finally {
-    await raw.end();
-  }
-  const attributed = (await s.attributedTurns()).filter((t) => t.sessionId === a.id);
-  assert.equal(
-    attributed.reduce((n, t) => n + t.turns, 0),
-    2,
-    "both user turns counted; the poisoned legacy row does not crash the read",
-  );
-  const { lease: lease2 } = await s.acquireLease(a.id);
-  await s.append(lease2!, { type: "user", payload: { text: "z" }, scopeLabel: scope });
-  await s.releaseLease(lease2!);
-  const row = (await s.scopeSessionSummaries(scope, false, { limit: 500 })).find((r) => r.id === a.id)!;
-  assert.equal(row.turns, 3, "append recounts NULL turns; the poisoned row is counted, not crashed");
-  assert.equal(row.messages, 3, "messages self-heal from the entry seq");
-});
+    assert.equal(
+      ((await s.getEntries(a.id))[0]!.payload as { text?: string }).text,
+      "ab",
+      "null byte stripped at write",
+    );
+    const { lease: lone } = await s.acquireLease(a.id);
+    await s.append(lone!, { type: "user", payload: { text: "x\uD800y" }, scopeLabel: scope });
+    await s.releaseLease(lone!);
+    assert.equal(((await s.getEntries(a.id))[1]!.payload as { text?: string }).text, "x\uFFFDy");
+
+    const pg = (await import("pg")).default;
+    const raw = new pg.Pool({ connectionString: URL });
+    try {
+      await assert.rejects(
+        raw.query("UPDATE session_entries SET payload = $3 WHERE session_id = $1 AND seq = $2", [
+          a.id,
+          1,
+          JSON.stringify({ text: "x\u0000y" }),
+        ]),
+        { code: "22P05" },
+        "the jsonb column refuses what the write path strips",
+      );
+      await raw.query("UPDATE sessions SET messages = NULL, turns = NULL, last_activity = NULL WHERE id = $1", [a.id]);
+    } finally {
+      await raw.end();
+    }
+    const attributed = (await s.attributedTurns()).filter((t) => t.sessionId === a.id);
+    assert.equal(
+      attributed.reduce((n, t) => n + t.turns, 0),
+      2,
+      "both user turns counted",
+    );
+    const { lease: lease2 } = await s.acquireLease(a.id);
+    await s.append(lease2!, { type: "user", payload: { text: "z" }, scopeLabel: scope });
+    await s.releaseLease(lease2!);
+    const row = (await s.scopeSessionSummaries(scope, false, { limit: 500 })).find((r) => r.id === a.id)!;
+    assert.equal(row.turns, 3, "append recounts NULL turns");
+    assert.equal(row.messages, 3, "messages self-heal from the entry seq");
+  },
+);
 
 test(
   "pg session counters: legacy and mismatched counters heal on the next append, not at startup",
@@ -3035,7 +3046,7 @@ test("pg search: writes are atomic and updates and deletes keep the index curren
   }
 });
 
-test("pg search: migration fills holes below the watermark and covers legacy-only sessions", { skip }, async () => {
+test("pg search: holes below the watermark are counted and raw writes are indexed", { skip }, async () => {
   const store = createPostgresSessionStore(URL!);
   const session = await store.getOrCreateByThread("search-migration", "dm", scopeId("personal", "UMIGSEARCH"));
   await store.addParticipant(session.id, "UMIGSEARCH", undefined, { includeHistory: true });
@@ -3043,38 +3054,28 @@ test("pg search: migration fills holes below the watermark and covers legacy-onl
   const pg = (await import("pg")).default;
   const pool = new pg.Pool({ connectionString: URL });
   try {
-    await pool.query("DROP TRIGGER session_entries_search_write_through ON session_entries");
-    await pool.query(
-      "DELETE FROM qm_schema_migrations WHERE id IN ('sessions/store/0014-search-write-through-v1','sessions/store/0015-search-backfill-v1')",
-    );
     for (let seq = 0; seq < 3; seq++) {
       await pool.query(
         "INSERT INTO session_entries(session_id,seq,parent_seq,type,payload,scope_label,created_at) VALUES($1,$2,NULL,'user',$3,$4,$5)",
         [session.id, seq, JSON.stringify({ text: `historical document ${seq}` }), session.scopeId, seq],
       );
     }
-    await pool.query(
-      "INSERT INTO session_entry_search(session_id,seq,type,text,created_at) VALUES($1,2,'user','historical document 2',2)",
-      [session.id],
-    );
+    await pool.query("DELETE FROM session_entry_search WHERE session_id = $1 AND seq < 2", [session.id]);
     assert.equal(await store.searchIndexCoverage(session.id), 2);
     assert.equal(await store.missingSearchEntries(session.id), 2);
-    const ids = registeredPgMigrations(URL!).map((migration) => migration.id);
-    assert.ok(
-      ids.indexOf("sessions/store/0014-search-write-through-v1") <
-        ids.indexOf("sessions/store/0015-search-backfill-v1"),
-    );
-    await migrateRegisteredPgSchemas(URL!);
-    const migrated = store;
-    assert.equal(await migrated.missingSearchEntries(session.id), 0);
-    const hits = await migrated.searchEntries("UMIGSEARCH", "historical document");
-    assert.equal(hits.length, 3);
+    assert.equal(await store.lastSearchableEntrySeq(session.id), 2);
+    const hits = await store.searchEntries("UMIGSEARCH", "historical document");
+    assert.equal(hits.length, 1);
     assert.ok(hits.every((hit) => hit.title === "My documents" && hit.archived));
     await pool.query(
       "INSERT INTO session_entries(session_id,seq,parent_seq,type,payload,scope_label,created_at) VALUES($1,3,NULL,'user',$2,$3,3)",
-      [session.id, JSON.stringify({ text: "old writer document" }), session.scopeId],
+      [session.id, JSON.stringify({ text: "old writer document", name: "Old Writer" }), session.scopeId],
     );
-    assert.equal((await migrated.searchEntries("UMIGSEARCH", "old writer")).length, 1);
+    const written = await store.searchEntries("UMIGSEARCH", "old writer");
+    assert.deepEqual(
+      written.map((hit) => [hit.text, hit.author]),
+      [["old writer document", "Old Writer"]],
+    );
   } finally {
     await pool.end();
   }
@@ -3242,7 +3243,6 @@ test("pg context window preserves user memory checkpoints through compaction and
     const summary = await append("system", { kind: "context_summary", throughSeq: reply.seq, text: "CURRENT_SUMMARY" });
     const restarted = createPostgresSessionStore(URL!);
     const window = await restarted.getContextWindow(session.id);
-    assert.equal(window.totalEntries, 6);
     assert.deepEqual(
       window.entries.map((entry) => entry.seq),
       [checkpointEntry.seq, summary.seq],

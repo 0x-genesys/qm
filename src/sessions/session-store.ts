@@ -43,7 +43,7 @@ export function createContextSummaryPayload(throughSeq: number, text: string): C
 
 export interface ContextWindow {
   entries: SessionEntry[];
-  totalEntries: number;
+  load?: { queryMs: number; parseMs: number; bytes: number };
 }
 
 export function contextWindowFromEntries(entries: SessionEntry[]): ContextWindow {
@@ -56,7 +56,6 @@ export function contextWindowFromEntries(entries: SessionEntry[]): ContextWindow
       throughSeq === undefined
         ? [...entries]
         : entries.filter((entry) => entry.seq > throughSeq || entry === memoryContext),
-    totalEntries: entries.length,
   };
 }
 
@@ -257,6 +256,9 @@ export interface GapWork {
 
 export type GapPhases = Partial<Record<GapPhase, number>> & {
   residual?: number;
+  context_load_query?: number;
+  context_load_parse?: number;
+  context_load_bytes?: number;
 } & {
   [key: `tool_body.${string}`]: number | undefined;
 };

@@ -1253,6 +1253,14 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       );
       screenSession.id = session.id;
       leaseMs += Date.now() - sessionStart;
+      const contextLoad = { query: 0, parse: 0, bytes: 0 };
+      const contextWindow = async () => {
+        const window = await deps.sessions.getContextWindow(session.id);
+        contextLoad.query += window.load?.queryMs ?? 0;
+        contextLoad.parse += window.load?.parseMs ?? 0;
+        contextLoad.bytes += window.load?.bytes ?? 0;
+        return window;
+      };
       if (!input.sessionParticipantIds?.length && !automatedTurn)
         await deps.sessions.addParticipant(session.id, actor.id);
 
@@ -1278,7 +1286,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           seq,
         );
       };
-      const initialMemoryWindow = await deps.sessions.getContextWindow(session.id);
+      const initialMemoryWindow = await contextWindow();
       const initialMemoryContext = initialMemoryWindow.entries.findLast((entry) => memoryContextPayload(entry));
       const candidateMemoryContext = nextMemoryContext(
         initialMemoryWindow.entries,
@@ -1964,7 +1972,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           await Promise.all(pendingScreenRequests.splice(0).map((rec) => recordScreenRequest(rec)));
           return true;
         });
-        const memoryWindow = await deps.sessions.getContextWindow(session.id);
+        const memoryWindow = await contextWindow();
 
         memoryView = await context.memorySnapshot();
         const latestMemoryContext = memoryWindow.entries.findLast((entry) => memoryContextPayload(entry));
@@ -2344,7 +2352,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           )
         ) {
           const detectHistory = filterHistory(
-            memoryBoundedEntries((await deps.sessions.getContextWindow(session.id)).entries)
+            memoryBoundedEntries((await contextWindow()).entries)
               .slice(-DETECT_HISTORY_TAIL)
               .filter((e) => e.type !== "soul"),
           );
@@ -2748,10 +2756,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const tools = external ? externalTools(baseTools, accessResource) : baseTools;
 
         if (input.attachments?.some((attachment) => attachment.sourceId)) {
-          input.attachments = withoutAlreadyIngested(
-            input.attachments,
-            (await deps.sessions.getContextWindow(session.id)).entries,
-          );
+          input.attachments = withoutAlreadyIngested(input.attachments, (await contextWindow()).entries);
         }
         const inbound =
           input.attachments?.length && !strictReadOnly
@@ -2820,7 +2825,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           if (importedEntries.length) importedOverheard.push(...toImport);
         }
 
-        const rawEntries = (await deps.sessions.getContextWindow(session.id)).entries;
+        const rawEntries = (await contextWindow()).entries;
         const priorTurns = memoryHistoryReset ? undefined : input.priorTurns;
         const visibleHistory = filterHistory(forModelContext(rawEntries));
         const recallStart = Date.now();
@@ -3613,6 +3618,18 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               void deps.budget?.record(actor.id, estimateCostUsd(rec.inputTokens));
             },
             recordLlmRequest: async (rec, signal) => {
+              if (rec.step === 0 && contextLoad.bytes > 0) {
+                rec = {
+                  ...rec,
+                  gapPhases: {
+                    ...rec.gapPhases,
+                    context_load_query: Math.round(contextLoad.query),
+                    context_load_parse: Math.round(contextLoad.parse),
+                    context_load_bytes: contextLoad.bytes,
+                  },
+                };
+                Object.assign(contextLoad, { query: 0, parse: 0, bytes: 0 });
+              }
               try {
                 await deps.sessions.recordLlmRequest(session.id, { ...rec, scopeLabel: scopeId }, signal);
               } catch (err) {
@@ -3641,9 +3658,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               await adoptRuntime(segment.runtimeHandoff.choice, segment.runtimeHandoff.lifetime);
               await deps.harness.turns.resetSession?.(session.id);
             }
-            let resumedHistory = filterHistory(
-              forModelContext((await deps.sessions.getContextWindow(session.id)).entries),
-            );
+            let resumedHistory = filterHistory(forModelContext((await contextWindow()).entries));
             if (recovery)
               resumedHistory = await withManagedRosterVersion(() =>
                 compactRecent({
@@ -3724,9 +3739,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             }
           }
           if (spine.surfaceOutboundCount === 0 && !silentPollNarration) {
-            const nudgeHistory = filterHistory(
-              forModelContext((await deps.sessions.getContextWindow(session.id)).entries),
-            );
+            const nudgeHistory = filterHistory(forModelContext((await contextWindow()).entries));
             result = await runHarnessTurn(
               "[system] You were addressed directly. Reply with the `slack` tool's `post` action, or decline explicitly with finish_silently — ending the turn without either is not allowed here.",
               inbound.images.length ? { images: inbound.images } : {},
