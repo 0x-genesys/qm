@@ -453,3 +453,25 @@ test("items copy preserves missing call IDs as NULL and still constrains present
     );
   });
 });
+
+test("payload parsing keeps ordinary JSON fast-path and Unicode repair semantics", { skip }, async () => {
+  await withSchema(async (raw) => {
+    const valid: Array<[string, unknown]> = [
+      [
+        String.raw`{"text":"ordinary \"quoted\" text","values":[1,true,null]}`,
+        { text: 'ordinary "quoted" text', values: [1, true, null] },
+      ],
+      [String.raw`{"text":"\u0041"}`, { text: "A" }],
+      [String.raw`{"text":"before\u0000after"}`, { text: "beforeafter" }],
+      [String.raw`{"text":"before\ud800after"}`, { text: "before�after" }],
+      [String.raw`{"text":"literal\\u0000"}`, { text: String.raw`literal\u0000` }],
+    ];
+    for (const [input, expected] of valid)
+      assert.deepEqual(
+        (await raw.query("SELECT items_copy_payload($1::text) AS parsed", [input])).rows[0].parsed,
+        expected,
+      );
+    for (const input of [String.raw`{"text":"\q"}`, '{"text":"unfinished"', String.raw`{"text":"\u0000","bad":}`])
+      await assert.rejects(raw.query("SELECT items_copy_payload($1::text)", [input]), /invalid input syntax/);
+  });
+});

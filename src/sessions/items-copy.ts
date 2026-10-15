@@ -3,7 +3,8 @@ export const ITEMS_COPY_REPAIR_SQL = [
              LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $items_copy_payload$
              DECLARE r text;
              BEGIN
-               IF t IS NULL OR pg_input_is_valid(t, 'jsonb') THEN RETURN t::jsonb; END IF;
+               IF t IS NULL OR strpos(t, E'\\u') = 0 THEN RETURN t::jsonb; END IF;
+               IF pg_input_is_valid(t, 'jsonb') THEN RETURN t::jsonb; END IF;
                r := regexp_replace(t, '(?<!\\)((?:\\\\)*)\\u0000', '\1', 'g');
                IF NOT pg_input_is_valid(r, 'jsonb') THEN
                  r := regexp_replace(regexp_replace(r,
