@@ -30,6 +30,7 @@ import type {
   SessionEntry,
   SessionType,
   TurnResult,
+  TurnRuntime,
   PendingApproval,
   PendingApprovalRecord,
 } from "../types.ts";
@@ -3020,6 +3021,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         let firstChunkAt: number | undefined;
         let lastChunkAt: number | undefined;
         const emittedEntries: SessionEntry[] = [];
+        let turnRuntime: TurnRuntime | undefined;
         const syntheticPrompt = syntheticInput || partial || approvalReplay || !!releasedToolOutput;
         failureUserPayload =
           !syntheticPrompt && input.text.trim()
@@ -3150,14 +3152,16 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             return errMessage(error);
           }
         };
-        const adoptRuntime = async (choice: RuntimeChoice) => {
+        let agentSwitch: "task" | "scope" | undefined;
+        const adoptRuntime = async (choice: RuntimeChoice, lifetime: "task" | "scope") => {
           const error = await checkRuntimeAuth(choice);
           if (error) throw new NonRetryableTurnError(error);
+          agentSwitch = lifetime;
           ({ userProviderKeys, userModelOverride, userHarnessOverride, claudeOauthToken } =
             await loadRuntimeAuth(choice));
           requestedRuntime = userModelOverride ? { ...choice, modelId: userModelOverride } : choice;
         };
-        if (restoredRuntime) await adoptRuntime(restoredRuntime);
+        if (restoredRuntime) await adoptRuntime(restoredRuntime.choice, restoredRuntime.lifetime);
         if (automatedTurn && input.model && inputHarness) {
           const error = await deps.validateScheduledRuntime?.(
             scopeId,
@@ -3374,6 +3378,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               ? { runtimePinned: true }
               : {}),
             runtimeActorId: actor.id,
+            onRuntime: (reported: TurnRuntime) => {
+              const runtime: TurnRuntime = agentSwitch ? { ...reported, change: { agent: agentSwitch } } : reported;
+              turnRuntime = runtime;
+              if (input.runId) deps.turnStream?.noteRuntime(input.runId, runtime);
+            },
             ...(runtimePurpose ? { runtimePurpose } : {}),
             ...(deps.runtime && input.runId
               ? {
@@ -3629,7 +3638,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               throw new NonRetryableTurnError("The task reached its wall-clock limit during runtime handoff");
             const recovery = "context" in segment.runtimeHandoff;
             if ("choice" in segment.runtimeHandoff) {
-              await adoptRuntime(segment.runtimeHandoff.choice);
+              await adoptRuntime(segment.runtimeHandoff.choice, segment.runtimeHandoff.lifetime);
               await deps.harness.turns.resetSession?.(session.id);
             }
             let resumedHistory = filterHistory(
@@ -3989,6 +3998,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           };
         }
 
+        if (turnRuntime) finalResult = { ...finalResult, runtime: turnRuntime };
         await fallbackTitleWrite;
 
         if (input.background && finalResult.status !== "pending_approval") {

@@ -264,7 +264,7 @@ export function createSessionMethods(
       if (!found) return null;
       const session = { ...found, canContinue: await canContinueOnWeb(principalId, found) };
       let limit = tailWindowLimit(window);
-      const [initialRead, pinRecords, goals] = await Promise.all([
+      const [initialRead, pinRecords, goals, latestRuns] = await Promise.all([
         transcripts.forViewer(sessionId, principalId, {
           limit,
           beforeSeq: window?.beforeSeq,
@@ -272,8 +272,10 @@ export function createSessionMethods(
         }),
         deps.sessions.listPins(sessionId),
         deps.sessions.goals([sessionId]),
+        window?.beforeSeq === undefined ? deps.runs.latestForThreads([found.threadRef]) : undefined,
       ]);
       const goal = openGoal(goals.get(sessionId));
+      const runtime = latestRuns?.get(found.threadRef)?.result?.runtime;
       let read = initialRead;
       let visible = read.entries;
       while (limit !== undefined && read.earlier > 0 && !coversTailWindow(visible, window!.tailTurns!)) {
@@ -290,6 +292,7 @@ export function createSessionMethods(
         ...(earlier > 0 ? { earlierEntries: earlier } : {}),
         ...(pins.length ? { pins } : {}),
         ...(goal ? { goal: goalView(goal) } : {}),
+        ...(runtime ? { runtime } : {}),
       };
     },
 
