@@ -324,29 +324,33 @@ function validateUnattendedGrants(grants: string[]): string | null {
   return null;
 }
 
-// Conservative, cheap heuristic: does this cron's task text look like it needs
-// admin-plane reads that scheduled (unattended) fires will be refused? False
-// negatives are fine; noisy false positives are not — so match only on fairly
-// explicit admin-read phrasing.
-const ADMIN_READ_TASK_PATTERN =
-  /\badmin\b|\baudit log|\busage (?:report|metrics|stats|summary|grind)|\btranscripts?\b|\bsession (?:transcripts?|metrics|reads?)\b/i;
-
 export const CRON_UNATTENDED_GRANT_WARNING =
-  "Warning: this cron's task appears to need admin reads, but scheduled fires run unattended and will be " +
-  "refused — admin unattended reads require a personal-scope cron with unattendedGrants. Ask the owner now " +
-  "whether to set up a standing grant / re-rig at personal scope, rather than letting the first unattended fire fail.";
+  "Warning: this conversation currently holds live-turn-only permissions (org-admin reads and/or live credential " +
+  "grants) that will NOT carry over to this cron's scheduled fires — unattended admin reads require a " +
+  "personal-scope cron with unattendedGrants. If the cron's task will need those permissions, follow up with the " +
+  "owner now about a standing grant / re-rigging at personal scope, rather than letting the first unattended fire fail.";
 
-export function cronCreateUnattendedWarning(
-  task: string | undefined,
+// State-based (no task-text sniffing): on a live turn, warn when the creator currently
+// holds permissions that will not survive unattended fires — they are a current org
+// admin, or the conversation carries live-granted claims — and the cron is not already
+// armed (personal scope + non-empty unattendedGrants). Advisory only; never refuses.
+export async function cronCreateUnattendedWarning(
+  admin: AdminService | undefined,
   ownerScopeId: string,
   unattendedGrants: string[] | undefined,
-  capability: Pick<CapabilityClaims, "liveActor">,
-): string | undefined {
+  capability: Pick<CapabilityClaims, "actorId" | "liveActor" | "grants">,
+): Promise<string | undefined> {
   if (capability.liveActor !== true) return undefined;
-  if (typeof task !== "string" || !ADMIN_READ_TASK_PATTERN.test(task)) return undefined;
   const armed = ownerScopeId.startsWith("personal:") && (unattendedGrants?.length ?? 0) > 0;
   if (armed) return undefined;
-  return CRON_UNATTENDED_GRANT_WARNING;
+  if ((capability.grants?.length ?? 0) > 0) return CRON_UNATTENDED_GRANT_WARNING;
+  try {
+    const status = await admin?.adminStatusOf({ id: capability.actorId, type: "internal" });
+    if (status?.isAdmin) return CRON_UNATTENDED_GRANT_WARNING;
+  } catch {
+    // advisory only — an admin-status lookup failure never blocks or warns
+  }
+  return undefined;
 }
 
 export function createControlService(app: App, scheduler?: Scheduler, admin?: AdminService): ControlService {
@@ -525,7 +529,7 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
               typeof req.title === "string" ? `a scheduled message ("${req.title}")` : "a recurring scheduled message",
           });
         }
-        const warning = cronCreateUnattendedWarning(req.action, ownerScopeId, req.unattendedGrants, capability);
+        const warning = await cronCreateUnattendedWarning(admin, ownerScopeId, req.unattendedGrants, capability);
         return {
           ok: true,
           cron,
