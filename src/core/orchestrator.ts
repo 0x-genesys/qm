@@ -2952,14 +2952,15 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const approvalReplay =
           !!pausedTurnUserEntry &&
           String((pausedTurnUserEntry.payload as { text?: string } | null)?.text ?? "").trim() === input.text.trim();
-        if (partial)
-          postKeys.seed(
-            completedSurfaceEnqueues(
-              filterHistory(await deps.sessions.getEntries(session.id, { sinceSeq: partial.userSeq })),
-              partial.userSeq,
-              surfaceName,
-            ),
+        if (partial) {
+          const posted = completedSurfaceEnqueues(
+            filterHistory(await deps.sessions.getEntries(session.id, { sinceSeq: partial.userSeq })),
+            partial.userSeq,
+            surfaceName,
           );
+          postKeys.seed(posted);
+          spine.surfaceOutboundCount += posted;
+        }
         if (partial) {
           deps.auditLog.record({
             at: Date.now(),
