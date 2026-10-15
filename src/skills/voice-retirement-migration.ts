@@ -19,7 +19,7 @@ export const VOICE_RETIREMENT_MIGRATION = {
      WHERE json ->> 'createdBy' = 'system:skills-seed' AND starts_with(json ->> 'scopeId', 'org:')
        AND json #>> '{manifest,name}' IN ('email-draft-in-voice', 'email-voice-profile') AND json ->> 'status' <> 'archived'`,
     `UPDATE loops SET json = json || jsonb_build_object(
-       'playbook', replace(json ->> 'playbook', '${previousInstruction}', '${replacementInstruction}'),
+       'playbook', replace(replace(json ->> 'playbook', '${previousInstruction}', '${replacementInstruction}'), 'Inbox sync v6.', 'Inbox sync v7.'),
        'playbookVersion', COALESCE((json ->> 'playbookVersion')::int, 0) + 1,
        'playbookHistory', COALESCE(json -> 'playbookHistory', '[]'::jsonb) || jsonb_build_array(jsonb_build_object(
          'version', COALESCE((json ->> 'playbookVersion')::int, 0) + 1,
@@ -29,7 +29,7 @@ export const VOICE_RETIREMENT_MIGRATION = {
      WHERE (json ->> 'surface' = 'inbox' OR starts_with(json ->> 'surface', 'inbox:'))
        AND strpos(json ->> 'playbook', '${previousInstruction}') > 0`,
     `UPDATE crons SET json = json || jsonb_build_object(
-       'action', replace(json ->> 'action', '${previousInstruction}', '${replacementInstruction}'),
+       'action', replace(replace(json ->> 'action', '${previousInstruction}', '${replacementInstruction}'), 'Inbox sync v6.', 'Inbox sync v7.'),
        'updatedAt', floor(extract(epoch FROM statement_timestamp()) * 1000)::bigint)
      WHERE id IN (SELECT json ->> 'cronId' FROM loops WHERE json ->> 'surface' = 'inbox' OR starts_with(json ->> 'surface', 'inbox:'))
        AND strpos(json ->> 'action', '${previousInstruction}') > 0`,

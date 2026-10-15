@@ -7,6 +7,10 @@ import pg from "pg";
 import { buildApp } from "../src/wiring.ts";
 import { migrateRegisteredPgSchemas } from "../src/persistence/pg-pool.ts";
 import { testConfig } from "./support/test-config.ts";
+import { loopItemRoutes } from "../src/api/routes/loop-items.ts";
+import { createLoopStore } from "../src/loops/loop-store.ts";
+import { ensureDefaultInboxLoops } from "../src/loops/inbox-loop.ts";
+import type { ApiCtx } from "../src/api/routes/route.ts";
 
 const databaseUrl = process.env.DATABASE_URL;
 
@@ -76,7 +80,7 @@ test(
       assert.equal(inbox.playbookVersion, 5);
       assert.deepEqual(inbox.playbookHistory[0], previous.playbookHistory[0]);
       assert.equal(inbox.playbookHistory[1].by, "system:voice-skill-retirement");
-      assert.ok(inbox.playbook.startsWith("Keep my custom introduction.\n"));
+      assert.ok(inbox.playbook.includes("\nKeep my custom introduction.\n"));
       assert.ok(inbox.playbook.endsWith("\nKeep my custom closing preference."));
       assert.deepEqual(savedLoops.get("custom"), loops[1]);
       assert.deepEqual(savedLoops.get("other"), loops[2]);
@@ -86,6 +90,36 @@ test(
       assert.equal(savedCrons.get("sync").enabled, false);
       assert.equal(savedCrons.get("sync").action, inbox.playbook);
       assert.deepEqual(savedCrons.get("unrelated"), { action: playbook, enabled: false, updatedAt: 1 });
+      const store = createLoopStore();
+      const [loop] = await ensureDefaultInboxLoops(store, "reviewer");
+      await store.update(loop!.id, { cronId: "sync" });
+      let resumedCron = { id: "sync", schedule: { everyMs: 900_000 }, ...savedCrons.get("sync") };
+      let status = 0;
+      await loopItemRoutes
+        .find((route) => "path" in route && route.path === "/v1/loops/inbox/sync-cron")!
+        .handle({
+          capability: { actorId: "reviewer", scopeId: "personal:reviewer", liveActor: true },
+          body: { enabled: true, loopId: loop!.id },
+          deps: { loops: { store }, featureFlags: { enabled: async () => true } },
+          app: {
+            getCron: async () => resumedCron,
+            updateCron: async (_id: string, patch: Record<string, unknown>) =>
+              (resumedCron = { ...resumedCron, ...patch }),
+            setCronEnabled: async (_id: string, enabled: boolean) => {
+              resumedCron = { ...resumedCron, enabled };
+            },
+          },
+          res: {
+            getHeader: () => undefined,
+            writeHead: (code: number) => {
+              status = code;
+            },
+            end: () => {},
+          },
+        } as unknown as ApiCtx);
+      assert.equal(status, 200);
+      assert.equal(resumedCron.enabled, true);
+      assert.equal(resumedCron.action, savedCrons.get("sync").action);
       await migrateRegisteredPgSchemas(databaseUrl);
       assert.deepEqual(await built.app.listSkills(), [...upgraded.values()]);
       assert.deepEqual(
