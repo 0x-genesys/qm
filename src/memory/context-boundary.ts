@@ -12,9 +12,8 @@ interface MemoryContext {
 }
 
 export function memoryContextPayload(entry: SessionEntry): MemoryContext | null {
-  let value = entry.type === "system" ? entry.payload : null;
-  if (entry.type === "user") value = (entry.payload as { memoryContext?: unknown } | null)?.memoryContext;
-  const p = value as Partial<MemoryContext> | null;
+  const p = (entry.type === "user" ? (entry.payload as { memoryContext?: unknown } | null)?.memoryContext : null) as
+    Partial<MemoryContext> | null | undefined;
   return p?.kind === "memory_context" &&
     Number.isSafeInteger(p.throughSeq) &&
     p.throughSeq! >= -1 &&
@@ -39,10 +38,10 @@ export function buildMemoryContextSnapshot(input: {
   };
 }
 
-export function memoryBoundedEntries(entries: SessionEntry[]): SessionEntry[] {
+export function memoryBoundedEntries(entries: SessionEntry[], through = -1): SessionEntry[] {
   const boundary = entries.findLast((entry) => memoryContextPayload(entry));
-  const through = boundary ? memoryContextPayload(boundary)!.throughSeq : -1;
-  return entries.filter((entry) => entry.seq > through && !(entry.type === "system" && memoryContextPayload(entry)));
+  const cutoff = Math.max(through, boundary ? memoryContextPayload(boundary)!.throughSeq : -1);
+  return entries.filter((entry) => entry.seq > cutoff);
 }
 
 export function nextMemoryContext(

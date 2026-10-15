@@ -125,7 +125,7 @@ import {
   INBOX_DIR,
   TURN_FILES_DIR,
   environmentNote,
-  inboundIssuesText,
+  inboundIssuesNote,
   inboundIssueList,
   inboundManifest,
   isVisionAttachment,
@@ -1985,10 +1985,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ? [UNTRACKED_PROVENANCE]
             : []),
         ];
-        if (memoryContextChanged) {
-          await deps.harness.turns.resetSession?.(session.id);
-          await deps.sessions.append(lease, { type: "system", scopeLabel: scopeId, payload: nextContext });
-        }
+        if (memoryContextChanged) await deps.harness.turns.resetSession?.(session.id);
+        const audienceWindow = async () => {
+          const window = await deps.sessions.getContextWindow(session.id);
+          return { ...window, entries: memoryBoundedEntries(window.entries, nextContext.throughSeq) };
+        };
         if (input.approval) {
           const p = await pending.get(input.approval.requestId);
           const decision = input.approval.approved ? "approve" : "deny";
@@ -2342,11 +2343,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 findTrailingPartialTurn((await transcripts.forRender(session.id)).entries, input.text)))
           )
         ) {
-          const detectHistory = filterHistory(
-            memoryBoundedEntries((await deps.sessions.getContextWindow(session.id)).entries).slice(
-              -DETECT_HISTORY_TAIL,
-            ),
-          );
+          const detectHistory = filterHistory((await audienceWindow()).entries.slice(-DETECT_HISTORY_TAIL));
           const detectStart = Date.now();
           const decision = await deps.harness.models.shouldRespond({
             session,
@@ -2718,7 +2715,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               }
             : {}),
           sessionHistory: (() => {
-            const historyView = async () => filterHistory(forSearchView(await deps.sessions.getEntries(session.id)));
+            const historyView = async () =>
+              filterHistory(
+                forSearchView(memoryBoundedEntries(await deps.sessions.getEntries(session.id), nextContext.throughSeq)),
+              );
             return {
               search: async (q: string, limit?: number) => searchSessionEntries(await historyView(), q, limit),
               open: async (seq: number) => openSessionEntry(await historyView(), seq),
@@ -2776,6 +2776,19 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               )
             : { metas: [], images: [], tooMany: [], unavailable: [], blocked: [], unscreened: [] };
         const manifest = inboundManifest(inbound.metas, turnInboxDir, inbound.unstaged);
+        const inboundIssues = inboundIssueList({
+          tooMany: inbound.tooMany,
+          unavailable: inbound.unavailable,
+          blocked: inbound.blocked,
+          surfaceNotes: [
+            ...(input.inboundNotes ?? []),
+            ...(strictReadOnly
+              ? (input.attachments ?? []).map(
+                  (attachment) => `${safeAttachmentName(attachment.name)} — unavailable in Strict posture`,
+                )
+              : []),
+          ],
+        });
 
         const importedOverheard: OverheardEntryPayload[] = [];
         if (!memoryHistoryReset && (!input.envelopeWrapped || humanTurn) && input.overheard?.length) {
@@ -2798,8 +2811,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           if (importedEntries.length) importedOverheard.push(...toImport);
         }
 
-        const contextWindow = await deps.sessions.getContextWindow(session.id);
-        const rawEntries = contextWindow.entries;
+        const rawEntries = (await audienceWindow()).entries;
         const priorTurns = memoryHistoryReset ? undefined : input.priorTurns;
         const visibleHistory = filterHistory(forModelContext(rawEntries));
         const recallStart = Date.now();
@@ -3002,9 +3014,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const emittedEntries: SessionEntry[] = [];
         const syntheticPrompt = syntheticInput || partial || approvalReplay || !!releasedToolOutput;
         failureUserPayload =
-          !syntheticPrompt && input.text.trim()
+          !syntheticPrompt && (input.text.trim() || inboundIssues.length)
             ? {
                 text: input.text,
+                memoryContext: nextContext,
+                ...(inboundIssues.length ? { environment: environmentNote(inboundIssuesNote(inboundIssues)) } : {}),
                 ...(humanTurn ? { speakerId: actor.id } : {}),
                 ...((messageTs ?? entryTs) ? { ts: messageTs ?? entryTs } : {}),
                 ...(actor.displayName?.trim() ? { name: actor.displayName.trim() } : {}),
@@ -3169,7 +3183,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           );
           const snapshot = environmentDelta(turnContextBlocks, continuation?.history ?? history, session.id);
           const turnEnvironment = environmentNote(
-            [turnEnvironmentContents, snapshot.text, recall.text ? `${memoryHeading}${recall.text}` : ""]
+            [
+              turnEnvironmentContents,
+              snapshot.text,
+              recall.text ? `${memoryHeading}${recall.text}` : "",
+              inboundIssuesNote(inboundIssues),
+            ]
               .filter(Boolean)
               .join("\n\n"),
           );
@@ -3334,7 +3353,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                   text,
                   inboundManifest(received.metas, inboxDir, received.unstaged),
                   ...steeredDocuments.notices,
-                  issues.length ? inboundIssuesText(issues) : "",
+                  inboundIssuesNote(issues),
                   enforceScreen &&
                   (steeredUnscreened ||
                     received.unscreened.length ||
@@ -3618,9 +3637,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               await adoptRuntime(segment.runtimeHandoff.choice);
               await deps.harness.turns.resetSession?.(session.id);
             }
-            let resumedHistory = filterHistory(
-              forModelContext((await deps.sessions.getContextWindow(session.id)).entries),
-            );
+            let resumedHistory = filterHistory(forModelContext((await audienceWindow()).entries));
             if (recovery)
               resumedHistory = await withManagedRosterVersion(() =>
                 compactRecent({
@@ -3701,9 +3718,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             }
           }
           if (spine.surfaceOutboundCount === 0 && !silentPollNarration) {
-            const nudgeHistory = filterHistory(
-              forModelContext((await deps.sessions.getContextWindow(session.id)).entries),
-            );
+            const nudgeHistory = filterHistory(forModelContext((await audienceWindow()).entries));
             result = await runHarnessTurn(
               "[system] You were addressed directly. Reply with the `slack` tool's `post` action, or decline explicitly with finish_silently — ending the turn without either is not allowed here.",
               inbound.images.length ? { images: inbound.images } : {},

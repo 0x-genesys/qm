@@ -225,8 +225,8 @@ export function inboundManifest(metas: AttachmentMeta[], inboxDir = INBOX_DIR, u
   return `${lead}\n${list}`;
 }
 
-export function inboundIssuesText(issues: readonly string[]): string {
-  return `Files received this turn that did not reach ./${INBOX_DIR}/: ${issues.join("; ")}`;
+export function inboundIssuesNote(issues: readonly string[]): string {
+  return issues.length ? `Files received this turn that did not reach ./${INBOX_DIR}/: ${issues.join("; ")}` : "";
 }
 
 export function inboundIssueList(opts: {

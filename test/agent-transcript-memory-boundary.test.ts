@@ -60,10 +60,9 @@ async function fixture() {
   const snapshot = () => buildMemoryContextSnapshot({ targetScope: ROOM, audience });
   const checkpoint = async (throughSeq = -1) => {
     const current = snapshot();
-    return append("system", {
-      kind: "memory_context",
-      snapshot: current,
-      throughSeq,
+    return append("user", {
+      text: "checkpoint turn",
+      memoryContext: { kind: "memory_context", snapshot: current, throughSeq },
     });
   };
   const server = createServer(
@@ -176,12 +175,15 @@ test("agent transcripts use viewer access for old, cross-scope and project sessi
         assert.ok(active);
         if (session.id === projectSession.id)
           await f.built.sessions.append(active, {
-            type: "system",
+            type: "user",
             scopeLabel: session.scopeId,
             payload: {
-              kind: "memory_context",
-              snapshot: buildMemoryContextSnapshot({ targetScope: session.scopeId, audience: [] }),
-              throughSeq: -1,
+              text: "checkpoint turn",
+              memoryContext: {
+                kind: "memory_context",
+                snapshot: buildMemoryContextSnapshot({ targetScope: session.scopeId, audience: [] }),
+                throughSeq: -1,
+              },
             },
           });
         await f.built.sessions.append(active, {

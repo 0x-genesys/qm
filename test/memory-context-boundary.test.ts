@@ -230,10 +230,10 @@ for (const change of ["audience", "type", "scope"] as const)
         sessionId: "synthetic",
         parentSeq: null,
         seq: 0,
-        type: "system",
+        type: "user",
         scopeLabel: "group:room",
         createdAt: 1,
-        payload: checkpoint,
+        payload: { text: "", memoryContext: checkpoint },
       },
     ];
     assert.equal(nextMemoryContext(entries, after, 5).throughSeq, 5);

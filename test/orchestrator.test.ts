@@ -176,19 +176,41 @@ test("the deployment turn wall-clock reaches the harness and a per-turn cap repl
   assert.equal((await freshApp().app.turn(dm("!wallclock"))).reply, "wallclock:0");
 });
 
-test("inbound file problems stay off the reply, the model context and the session log", async () => {
+test("inbound file problems reach the model in the environment footer, not a log entry", async () => {
   const { app, sessions } = freshApp();
   const note = 'skipped "screenshot.png" — too many files in one message (max 10)';
   const res = await app.turn(dm("what's your favorite color", { inboundNotes: [note] }));
   assert.equal(res.status, "ok", res.reason);
-  assert.doesNotMatch(res.reply ?? "", /too many files|skipped|screenshot\.png/);
-  const found = await app.getSession(res.sessionId!);
-  assert.ok(!found!.entries.some((e) => e.type === "system"), "no system entry is written for them");
+
+  const entries = await sessions.getEntries(res.sessionId!);
+  assert.equal(
+    entries.some((e) => e.type === "system" && /screenshot\.png/.test(JSON.stringify(e.payload))),
+    false,
+  );
+  const user = entries.find((e) => e.type === "user");
+  assert.match(
+    String((user!.payload as { environment?: unknown }).environment),
+    /<environment>[\s\S]*did not reach \.\/inbox\/[\s\S]*screenshot\.png[\s\S]*<\/environment>/,
+  );
+
   const reqs = (await sessions.listLlmRequests(res.sessionId!)) as Array<{ model: string; promptEnvelope: unknown }>;
-  for (const r of reqs.filter((request) => request.model !== "mock-security")) {
-    assert.doesNotMatch(JSON.stringify(r.promptEnvelope), /too many files|screenshot\.png/);
-  }
+  assert.ok(
+    reqs
+      .filter((request) => request.model !== "mock-security")
+      .some((r) => /screenshot\.png/.test(JSON.stringify(r.promptEnvelope))),
+    "the model sees the dropped file",
+  );
+
   assert.equal((res as { fileNotes?: unknown }).fileNotes, undefined);
+});
+
+test("a failed turn still records which inbound files did not arrive", async () => {
+  const { app, sessions, errors } = freshApp();
+  const note = 'skipped "screenshot.png" — too many files in one message (max 10)';
+  await assert.rejects(app.turn(dm("!boom", { inboundNotes: [note] })), /boom/);
+  const { sessionId } = (await errors.list()).find((e) => e.category === "turn")!;
+  const user = (await sessions.getEntries(sessionId!)).find((e) => e.type === "user");
+  assert.match(String((user?.payload as { environment?: unknown } | undefined)?.environment), /screenshot\.png/);
 });
 
 test("a proactive-opener turn greets with no user text and records the seeding entry hidden", async () => {

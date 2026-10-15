@@ -21,7 +21,7 @@ import {
   MAX_ATTACHMENT_BYTES,
   environmentNote,
   inboundIssueList,
-  inboundIssuesText,
+  inboundIssuesNote,
   inboundManifest,
   materializeInbound,
   withoutAlreadyIngested,
@@ -120,8 +120,9 @@ test("inboundIssueList is empty when nothing failed, and names each problem othe
   assert.doesNotMatch(joined, /your own words|NOT received|⚠️|\(note:/);
 });
 
-test("inboundIssuesText names the files that did not reach the inbox", () => {
-  const text = inboundIssuesText(["x.png — too many files in one message"]);
+test("inboundIssuesNote names the files that did not reach the inbox and is empty without issues", () => {
+  assert.equal(inboundIssuesNote([]), "");
+  const text = inboundIssuesNote(["x.png — too many files in one message"]);
   assert.match(text, /did not reach \.\/inbox\//);
   assert.match(text, /x\.png/);
 });

@@ -106,13 +106,11 @@ test("reset source title does not enter fresh child task", async () => {
     payload: { text: "PRIVATE_SENTINEL" },
   });
   await r.sessions.append(lease, {
-    type: "system",
+    type: "user",
     scopeLabel: scope,
     payload: {
-      kind: "memory_context",
-      fingerprint: "new",
-      snapshot: { audience: "safe-audience" },
-      throughSeq: old.seq,
+      text: "new audience turn",
+      memoryContext: { kind: "memory_context", snapshot: { audience: "safe-audience" }, throughSeq: old.seq },
     },
   });
   await r.sessions.releaseLease(lease);

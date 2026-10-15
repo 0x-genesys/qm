@@ -4,7 +4,7 @@ import { suggestedActivityRoutes } from "./suggested-activities.ts";
 import { runtimeFallback, runtimeConfigBody, userRuntimeConfigBody, webuiModelEnabled } from "../runtime-config.ts";
 import { canReadNotebook, searchAcrossScopes } from "../../memory/cross-scope.ts";
 import { sessionSharingRoutes } from "./session-sharing.ts";
-import type { Grant, PendingApproval, ScopeId, Session } from "../../types.ts";
+import type { Grant, PendingApproval, ScopeId, Session, SessionEntry } from "../../types.ts";
 import { parseScopeId, scopeId as makeScopeId } from "../../types.ts";
 import type { Skill, SkillResolution } from "../../skills/skill-store.ts";
 import { ByteSourceTooLargeError } from "../../files/durable-byte-store.ts";
@@ -199,9 +199,16 @@ async function getAgentConversation(ctx: ApiCtx): Promise<void> {
   if (!found) return sendJson(res, 404, { error: "not_found", message: "not a conversation you can see" });
   return sendJson(res, 200, {
     session: agentConversation(found.session),
-    entries: found.entries.filter((entry) => entry.type !== "system"),
+    entries: found.entries.filter((entry) => entry.type !== "system").map(withoutMemoryContext),
     ...(found.earlierEntries ? { earlierEntries: found.earlierEntries } : {}),
   });
+}
+
+function withoutMemoryContext(entry: SessionEntry): SessionEntry {
+  if (entry.type !== "user" || !entry.payload || typeof entry.payload !== "object") return entry;
+  if (!("memoryContext" in entry.payload)) return entry;
+  const { memoryContext: _memoryContext, ...payload } = entry.payload as Record<string, unknown>;
+  return { ...entry, payload };
 }
 
 async function getSessionEntry(ctx: ApiCtx): Promise<void> {
