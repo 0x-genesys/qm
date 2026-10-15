@@ -1,3 +1,4 @@
+import { TURN_STOPPED_KIND } from "../harness/replay.ts";
 import type { RuntimeChoice } from "../harness/harness.ts";
 import { unrecordedToolResult } from "../harness/context-compaction.ts";
 
@@ -26,6 +27,11 @@ export function isResumeNote(text: string): boolean {
   return [RESUME_HEAD, RUNTIME_HEAD, TRIMMED_HEAD, LEGACY_NOTE_HEAD].some((head) => t.startsWith(head));
 }
 
+/** A stop record closes its turn, like a final answer: a later attempt must not resume it. */
+function isTurnStoppedEntry(e: SessionEntry): boolean {
+  return e.type === "system" && (e.payload as { kind?: unknown } | null)?.kind === TURN_STOPPED_KIND;
+}
+
 const MODEL_TURN_ENTRY_TYPES = new Set<SessionEntry["type"]>(["user", "assistant", "tool_call", "tool_result"]);
 
 export function findTrailingPartialTurn(entries: readonly SessionEntry[], inputText: string): PartialTurn | null {
@@ -34,7 +40,7 @@ export function findTrailingPartialTurn(entries: readonly SessionEntry[], inputT
   let workEntries = 0;
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]!;
-    if (e.type === "assistant") return null;
+    if (e.type === "assistant" || isTurnStoppedEntry(e)) return null;
     if (e.type === "tool_call" || e.type === "tool_result") {
       workEntries += 1;
       continue;
@@ -111,7 +117,7 @@ export function resumeStrategy(entries: readonly SessionEntry[], partial: Partia
     (e) => e.type === "tool_call" && !answered.has((e.payload as { callId?: unknown } | null)?.callId),
   );
   if (dangling.length === 0) {
-    const last = turn.findLast((e) => MODEL_TURN_ENTRY_TYPES.has(e.type));
+    const last = turn.findLast((e) => MODEL_TURN_ENTRY_TYPES.has(e.type) || isTurnStoppedEntry(e));
     return last?.type === "tool_result" ? { kind: "continue" } : { kind: "note" };
   }
   // Calls with no result at all get one recording what happened; a call whose re-run was itself cut off
