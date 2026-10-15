@@ -402,41 +402,6 @@ test("session reads hide history outside the viewer's participant tenure", async
   assert.doesNotMatch(view.rendered, /hidden-before-membership/);
 });
 
-test("shared session reads require every audience member to see each entry", async () => {
-  const r = await rig();
-  const other: Principal = { id: "U2", type: "internal" };
-  const sharedScope = scopeId("group", "G1");
-  const shared = await r.sessions.getOrCreateByThread("group:G1", "group", sharedScope);
-  await r.sessions.addParticipant(shared.id, actor.id);
-  await r.sessions.addParticipant(shared.id, other.id);
-  const { lease } = await r.sessions.acquireLease(shared.id);
-  assert.ok(lease);
-  await r.sessions.append(lease, { type: "assistant", payload: { text: "private-only" }, scopeLabel: scope });
-  await r.sessions.append(lease, { type: "assistant", payload: { text: "shared-visible" }, scopeLabel: sharedScope });
-  await r.sessions.releaseLease(lease);
-  const factory = createSessionSyscalls({
-    mailbox: r.mailbox,
-    sessions: r.sessions,
-    runs: r.runs,
-    signals: r.signals,
-    maxAttempts: 3,
-  });
-  const tool = factory.forTurn({
-    session: shared,
-    scopeId: sharedScope,
-    orgScopeId: scopeId("org", "example"),
-    request: {
-      surface: "web",
-      actor,
-      conversation: { kind: "group", threadRef: shared.threadRef, audience: [actor, other] },
-    },
-  });
-  const view = await tool.read({ target: shared.id });
-  assert.ok(view.ok && view.mode === "transcript");
-  assert.doesNotMatch(view.rendered, /private-only/);
-  assert.match(view.rendered, /shared-visible/);
-});
-
 test("child runs retain the managed roster and read-only floor", async () => {
   const r = await rig();
   const tool = createSessionSyscalls({

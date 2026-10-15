@@ -31,7 +31,6 @@ function modelReplayable(entries: SessionEntry[]): SessionEntry[] {
   return memoryBoundedEntries(entries).filter(
     (e) =>
       ((e.type !== "thinking" && e.type !== "text") || isObj((e.payload as { step?: unknown } | null)?.step)) &&
-      e.type !== "soul" &&
       (e.payload as { kind?: unknown } | null)?.kind !== "turn_failure",
   );
 }

@@ -1,5 +1,6 @@
 import type { SessionEntry } from "../types.ts";
-import { entryDeliveryKey, isOverheardEntry } from "../sessions/session-store.ts";
+import { isOverheardEntry } from "../sessions/session-store.ts";
+import { isDeliveryEntry } from "../sessions/items.ts";
 
 const NOTE_HEAD = "(system note:";
 
@@ -25,6 +26,7 @@ export function findTrailingPartialTurn(entries: readonly SessionEntry[], inputT
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]!;
     if (e.type === "assistant") return null;
+    if (isDeliveryEntry(e)) continue;
     if (e.type === "tool_call" || e.type === "tool_result") {
       workEntries += 1;
       continue;
@@ -54,9 +56,10 @@ export function turnAtSeq(entries: readonly SessionEntry[], userSeq: number): Re
   for (let i = start + 1; i < entries.length; i++) {
     const e = entries[i]!;
     if (e.type === "assistant") {
-      if (!entryDeliveryKey(e)) answer = { seq: e.seq, text: entryText(e) };
+      answer = { seq: e.seq, text: entryText(e) };
       continue;
     }
+    if (isDeliveryEntry(e)) continue;
     if (e.type === "tool_call" || e.type === "tool_result") {
       workEntries += 1;
       continue;
@@ -83,7 +86,7 @@ export type ResumeStrategy =
 
 export function resumeStrategy(entries: readonly SessionEntry[], partial: PartialTurn): ResumeStrategy {
   if (partial.workEntries === 0) return { kind: "restart" };
-  const turn = entries.filter((e) => e.seq > partial.userSeq);
+  const turn = entries.filter((e) => e.seq > partial.userSeq && !isDeliveryEntry(e));
   const answered = new Set<unknown>();
   for (const e of turn) {
     const payload = e.payload as { callId?: unknown; interrupted?: unknown } | null;

@@ -29,7 +29,7 @@ before(async () => {
   const p = new pg.Pool({ connectionString: URL });
   await p.query("DROP TABLE IF EXISTS qm_schema_migrations CASCADE");
   await p.query(
-    "DROP TABLE IF EXISTS session_spend_days, session_spend_dirty, sessions, session_entries, participants, session_leases, session_tape, session_llm_requests, session_pins, runs, tool_calls CASCADE",
+    "DROP TABLE IF EXISTS session_spend_days, session_spend_dirty, sessions, items, participants, session_leases, session_llm_requests, session_pins, runs, tool_calls CASCADE",
   );
   await p.end();
 });
@@ -81,11 +81,12 @@ test("pg participant presence checks seek into the visible history window", { sk
   const raw = new pg.Pool({ connectionString: URL });
   try {
     await raw.query(
-      `INSERT INTO session_entries(session_id, seq, parent_seq, type, payload, scope_label, created_at)
-       SELECT $1, n, NULL, 'user', '{"text":"window fixture"}', $2, n * 10
+      `INSERT INTO items(tenant_id, session_id, seq, kind, body, created_at)
+       SELECT qm_tenant_id(), $1, n, 'UserMessage', '{"text":"window fixture"}', to_timestamp(n * 10 / 1000.0)
          FROM generate_series(0, 3999) n`,
-      [session.id, session.scopeId],
+      [session.id],
     );
+    await raw.query("ANALYZE items");
     await store.addParticipant(session.id, owner);
     const captured: { text: string; values: unknown[] }[] = [];
     const execute = pg.Client.prototype.query;
@@ -113,7 +114,7 @@ test("pg participant presence checks seek into the visible history window", { sk
     ];
     type Plan = { "Relation Name"?: string; "Rows Removed by Filter"?: number; Plans?: Plan[] };
     const rejectedEntries = (plan: Plan): number =>
-      (plan["Relation Name"] === "session_entries" ? (plan["Rows Removed by Filter"] ?? 0) : 0) +
+      (plan["Relation Name"] === "items" ? (plan["Rows Removed by Filter"] ?? 0) : 0) +
       (plan.Plans ?? []).reduce((sum, child) => sum + rejectedEntries(child), 0);
     for (const window of windows) {
       await raw.query(
@@ -1356,13 +1357,13 @@ test(
         )
       ).rows.reduce((m, r) => m.set(r.id, [r.f, r.l, r.turns]), new Map<string, unknown[]>());
     try {
-      for (const [seq, payload] of [
-        [0, '{"text":"poisoned\\u0000tail"}'],
-        [1, '{"text":"truncated'],
+      for (const [seq, body] of [
+        [0, { text: "poisonedtail" }],
+        [1, {}],
       ] as const) {
         await raw.query(
-          "INSERT INTO session_entries(session_id, seq, parent_seq, type, payload, scope_label, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-          [junk.id, seq, seq - 1, "user", payload, scope, 1],
+          "INSERT INTO items(tenant_id, session_id, seq, kind, body, created_at) VALUES (qm_tenant_id(),$1,$2,'UserMessage',$3,to_timestamp(0.001))",
+          [junk.id, seq, body],
         );
       }
       await raw.query(
@@ -1400,7 +1401,7 @@ test(
       assert.deepEqual(
         [junkRow.firstMessage, junkRow.lastMessage],
         ["poisonedtail", ""],
-        "a null-byte escape is dropped and malformed JSON previews as empty, never a fatal cast",
+        "a body without text previews as empty",
       );
       const emptyRow = all.find((r) => r.id === empty.id)!;
       assert.deepEqual([emptyRow.firstMessage, emptyRow.lastMessage], ["", ""], "an entry-less legacy row is blank");
@@ -1500,7 +1501,7 @@ test("pg scopeSessionSummaries: the listing plan is an index walk with no per-ro
     )) {
       const explained = await raw.query(`EXPLAIN (FORMAT JSON) ${query.text}`, query.values);
       const plan = JSON.stringify(explained.rows[0]["QUERY PLAN"]);
-      assert.doesNotMatch(plan, /SubPlan|session_entries/, "no correlated subquery over session_entries");
+      assert.doesNotMatch(plan, /SubPlan|"Relation Name":"items"/, "no correlated subquery over items");
       assert.doesNotMatch(plan, /"Node Type":"Sort"/, "the index supplies the order; nothing is sorted");
       assert.match(plan, new RegExp(`"Index Name":"${index}"`), `${index} serves the listing`);
     }
@@ -1644,7 +1645,9 @@ test("pg safe JSON functions are marked parallel-unsafe", { skip }, async () => 
     await raw.query(`CREATE OR REPLACE FUNCTION safe_jsonb(t text) RETURNS jsonb
       LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $safe_jsonb$
       BEGIN RETURN t::jsonb; EXCEPTION WHEN others THEN RETURN NULL; END $safe_jsonb$`);
-    await raw.query("CREATE INDEX safe_jsonb_parallel_repair_test ON session_entries ((safe_jsonb(payload) ->> 'ts'))");
+    await raw.query(
+      "CREATE INDEX safe_jsonb_parallel_repair_test ON legacy_session_entries ((safe_jsonb(payload) ->> 'ts'))",
+    );
 
     const s = createPostgresSessionStore(URL!);
     await s.scanAll();
@@ -1801,7 +1804,7 @@ test(
   },
 );
 
-test("pg null-byte payloads: stripped on write, tolerated on read (no jsonb cast crash)", { skip }, async () => {
+test("pg null-byte payloads: stripped on write and counted alongside raw items", { skip }, async () => {
   const s = createPostgresSessionStore(URL!);
   const scope = scopeId("channel", "nul");
   const a = await s.getOrCreateByThread("nulA", "channel", scope);
@@ -1820,8 +1823,8 @@ test("pg null-byte payloads: stripped on write, tolerated on read (no jsonb cast
   const raw = new pg.Pool({ connectionString: URL });
   try {
     await raw.query(
-      "INSERT INTO session_entries(session_id, seq, parent_seq, type, payload, scope_label, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-      [a.id, 1, 0, "user", JSON.stringify({ text: "x\u0000y" }), scope, Date.now()],
+      "INSERT INTO items(tenant_id, session_id, seq, kind, body, created_at) VALUES (qm_tenant_id(),$1,$2,'UserMessage',$3,to_timestamp($4 / 1000.0))",
+      [a.id, 1, { text: "xy" }, Date.now()],
     );
     await raw.query("UPDATE sessions SET messages = NULL, turns = NULL, last_activity = NULL WHERE id = $1", [a.id]);
   } finally {
@@ -1831,13 +1834,13 @@ test("pg null-byte payloads: stripped on write, tolerated on read (no jsonb cast
   assert.equal(
     attributed.reduce((n, t) => n + t.turns, 0),
     2,
-    "both user turns counted; the poisoned legacy row does not crash the read",
+    "both user turns counted",
   );
   const { lease: lease2 } = await s.acquireLease(a.id);
   await s.append(lease2!, { type: "user", payload: { text: "z" }, scopeLabel: scope });
   await s.releaseLease(lease2!);
   const row = (await s.scopeSessionSummaries(scope, false, { limit: 500 })).find((r) => r.id === a.id)!;
-  assert.equal(row.turns, 3, "append recounts NULL turns; the poisoned row is counted, not crashed");
+  assert.equal(row.turns, 3, "append recounts NULL turns");
   assert.equal(row.messages, 3, "messages self-heal from the entry seq");
 });
 
@@ -1885,8 +1888,8 @@ test(
       assert.equal(legacy.lastActivity, entries[entries.length - 1]!.createdAt, "last-activity = newest entry");
 
       await raw.query(
-        "INSERT INTO session_entries(session_id, seq, parent_seq, type, payload, scope_label, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7)",
-        [a.id, 4, 3, "user", JSON.stringify({ text: "from the old instance" }), scope, Date.now()],
+        "INSERT INTO items(tenant_id, session_id, seq, kind, body, created_at) VALUES (qm_tenant_id(),$1,$2,'UserMessage',$3,to_timestamp($4 / 1000.0))",
+        [a.id, 4, { text: "from the old instance" }, Date.now()],
       );
       const { lease: lease2 } = await s2.acquireLease(a.id);
       await s2.append(lease2!, { type: "user", payload: { text: "back on new code" }, scopeLabel: scope });
@@ -1896,15 +1899,8 @@ test(
       assert.equal(healed.turns, 3, "seq/messages mismatch triggers a full turns recount");
 
       await raw.query(
-        "INSERT INTO session_entries(session_id, seq, parent_seq, type, payload, scope_label, created_at) VALUES ($1,0,NULL,'user',$2,$3,$4), ($1,1,0,'assistant',$5,$3,$6)",
-        [
-          b.id,
-          JSON.stringify({ text: "drained turn" }),
-          scope,
-          Date.now(),
-          JSON.stringify({ text: "reply" }),
-          Date.now() + 1,
-        ],
+        "INSERT INTO items(tenant_id, session_id, seq, kind, body, created_at) VALUES (qm_tenant_id(),$1,0,'UserMessage',$2,to_timestamp($3 / 1000.0)), (qm_tenant_id(),$1,1,'AgentMessage',$4,to_timestamp($5 / 1000.0))",
+        [b.id, { text: "drained turn" }, Date.now(), { text: "reply" }, Date.now() + 1],
       );
       await raw.query("UPDATE sessions SET messages = 0, turns = 0 WHERE id = $1", [b.id]);
       const s3 = createPostgresSessionStore(URL!);
@@ -2716,14 +2712,17 @@ test("pg search: full-text over entries with prefix match, window ACL, and type 
     payload: { text: "Done — pushed the memo board refresh." },
     scopeLabel: scope,
   });
-  await s.append(lease, { type: "tool_call", payload: { text: "memo board tool noise" }, scopeLabel: scope });
+  await s.append(lease, {
+    type: "tool_call",
+    payload: { tool: "execute", callId: "noise", text: "memo board tool noise" },
+    scopeLabel: scope,
+  });
   // A latecomer joins without history, then one more message lands.
   await s.addParticipant(sess.id, "ULATE");
   await s.append(lease, { type: "user", payload: { text: "memo board postscript" }, scopeLabel: scope });
   await s.releaseLease(lease);
 
   const hits = await s.searchEntries("USRCH", "memo boar");
-  assert.ok(hits.every((hit) => hit.entryScopeLabel === scopeId("personal", "USRCH")));
   assert.equal(hits.length, 3, "prefix terms match user and assistant text; tool calls are ignored");
   assert.equal(hits[0]!.text, "memo board postscript", "newest first");
   assert.equal(hits[2]!.author, "josh", "user hits carry the author");
@@ -2804,7 +2803,11 @@ test("pg search: message writes populate the index and tool results stay unfinda
     { seq: reply.seq, type: "assistant", text: "Rotated the deploy key.", createdAt: reply.createdAt },
   ]);
   assert.equal(await s.searchIndexCoverage(sess.id), reply.seq);
-  assert.deepEqual(await s.searchEntries("UIDX", "deploy key"), before, "search hits are unchanged by the reindex");
+  assert.deepEqual(
+    await s.searchEntries("UIDX", "deploy key"),
+    before,
+    "re-appending indexed rows leaves search hits unchanged",
+  );
 
   await s.append(lease, { type: "user", payload: { text: "also rotate the staging deploy key" }, scopeLabel: scope });
   assert.equal((await s.searchEntries("UIDX", "deploy key")).length, 3, "a new message is indexed immediately");
@@ -2879,7 +2882,7 @@ test(
     const pg = (await import("pg")).default;
     const raw = new pg.Pool({ connectionString: URL });
     const leftovers = await raw.query(
-      "SELECT (SELECT COUNT(*) FROM session_entries WHERE session_id = $1) AS e, (SELECT COUNT(*) FROM session_leases WHERE session_id = $1) AS l",
+      "SELECT (SELECT COUNT(*) FROM items WHERE session_id = $1) AS e, (SELECT COUNT(*) FROM session_leases WHERE session_id = $1) AS l",
       [sess.id],
     );
     await raw.end();
@@ -2952,7 +2955,7 @@ test("pg deleteSessionIfEmpty: a held lease or landed entries refuse the discard
   const pg = (await import("pg")).default;
   const raw = new pg.Pool({ connectionString: URL });
   const orphans = await raw.query(
-    "SELECT (SELECT COUNT(*) FROM session_entries WHERE session_id = $1) AS e, (SELECT COUNT(*) FROM session_leases WHERE session_id = $1) AS l",
+    "SELECT (SELECT COUNT(*) FROM items WHERE session_id = $1) AS e, (SELECT COUNT(*) FROM session_leases WHERE session_id = $1) AS l",
     [empty.id],
   );
   await raw.end();
@@ -2989,7 +2992,7 @@ test("pg search: globally limits indexed hits across sessions", { skip }, async 
   }
 });
 
-test("pg search: writes are atomic and updates and deletes keep the index current", { skip }, async () => {
+test("pg search: writes are atomic, items are append-only, and deletes keep the index current", { skip }, async () => {
   const store = createPostgresSessionStore(URL!);
   const session = await store.getOrCreateByThread("search-atomic", "dm", scopeId("personal", "UATOMIC"));
   await store.addParticipant(session.id, "UATOMIC", undefined, { includeHistory: true });
@@ -3011,71 +3014,36 @@ test("pg search: writes are atomic and updates and deletes keep the index curren
       payload: { text: "original document" },
       scopeLabel: session.scopeId,
     });
-    await pool.query("UPDATE session_entries SET payload=$3 WHERE session_id=$1 AND seq=$2", [
-      session.id,
-      entry.seq,
-      JSON.stringify({ text: "edited document", name: "Editor" }),
-    ]);
-    assert.deepEqual(await store.searchEntries("UATOMIC", "original"), []);
-    assert.equal((await store.searchEntries("UATOMIC", "edited"))[0]!.author, "Editor");
-    await pool.query("UPDATE session_entries SET type='tool_result' WHERE session_id=$1", [session.id]);
-    assert.deepEqual(await store.searchEntries("UATOMIC", "edited"), []);
-    await pool.query("UPDATE session_entries SET type='user' WHERE session_id=$1", [session.id]);
-    assert.equal((await store.searchEntries("UATOMIC", "edited")).length, 1);
+    await assert.rejects(
+      pool.query("UPDATE items SET body=$3 WHERE session_id=$1 AND seq=$2", [
+        session.id,
+        entry.seq,
+        { text: "edited document", name: "Editor" },
+      ]),
+      /UPDATE on items is forbidden/,
+    );
+    assert.equal((await store.searchEntries("UATOMIC", "original")).length, 1);
     await pool.query("DELETE FROM session_entry_search WHERE session_id=$1", [session.id]);
     assert.equal(await store.missingSearchEntries(session.id), 1);
-    assert.deepEqual(await store.searchEntries("UATOMIC", "edited"), [], "search never falls back to the legacy table");
-    await pool.query("UPDATE session_entries SET payload=payload WHERE session_id=$1", [session.id]);
-    await pool.query("DELETE FROM session_entries WHERE session_id=$1", [session.id]);
-    assert.deepEqual(await store.searchEntries("UATOMIC", "edited"), []);
+    assert.deepEqual(await store.searchEntries("UATOMIC", "original"), [], "search reads only the index");
+    await pool.query(
+      "INSERT INTO session_entry_search(session_id,seq,type,text,created_at) VALUES($1,$2,'user',$3,$4)",
+      [session.id, entry.seq, "original document", entry.createdAt],
+    );
+    assert.equal((await store.searchEntries("UATOMIC", "original")).length, 1);
+    await assert.rejects(
+      pool.query("DELETE FROM items WHERE session_id=$1", [session.id]),
+      /only allowed through its session/,
+    );
+    await pool.query("DELETE FROM sessions WHERE id=$1", [session.id]);
+    assert.equal(
+      (await pool.query("SELECT count(*)::int AS n FROM session_entry_search WHERE session_id=$1", [session.id]))
+        .rows[0].n,
+      0,
+    );
   } finally {
     await pool.query("ALTER TABLE session_entry_search DROP CONSTRAINT IF EXISTS search_test_failure");
     await store.releaseLease(lease);
-    await pool.end();
-  }
-});
-
-test("pg search: migration fills holes below the watermark and covers legacy-only sessions", { skip }, async () => {
-  const store = createPostgresSessionStore(URL!);
-  const session = await store.getOrCreateByThread("search-migration", "dm", scopeId("personal", "UMIGSEARCH"));
-  await store.addParticipant(session.id, "UMIGSEARCH", undefined, { includeHistory: true });
-  await store.updateParticipantView(session.id, "UMIGSEARCH", { title: "My documents", archived: true });
-  const pg = (await import("pg")).default;
-  const pool = new pg.Pool({ connectionString: URL });
-  try {
-    await pool.query("DROP TRIGGER session_entries_search_write_through ON session_entries");
-    await pool.query(
-      "DELETE FROM qm_schema_migrations WHERE id IN ('sessions/store/0014-search-write-through-v1','sessions/store/0015-search-backfill-v1')",
-    );
-    for (let seq = 0; seq < 3; seq++) {
-      await pool.query(
-        "INSERT INTO session_entries(session_id,seq,parent_seq,type,payload,scope_label,created_at) VALUES($1,$2,NULL,'user',$3,$4,$5)",
-        [session.id, seq, JSON.stringify({ text: `historical document ${seq}` }), session.scopeId, seq],
-      );
-    }
-    await pool.query(
-      "INSERT INTO session_entry_search(session_id,seq,type,text,created_at) VALUES($1,2,'user','historical document 2',2)",
-      [session.id],
-    );
-    assert.equal(await store.searchIndexCoverage(session.id), 2);
-    assert.equal(await store.missingSearchEntries(session.id), 2);
-    const ids = registeredPgMigrations(URL!).map((migration) => migration.id);
-    assert.ok(
-      ids.indexOf("sessions/store/0014-search-write-through-v1") <
-        ids.indexOf("sessions/store/0015-search-backfill-v1"),
-    );
-    await migrateRegisteredPgSchemas(URL!);
-    const migrated = store;
-    assert.equal(await migrated.missingSearchEntries(session.id), 0);
-    const hits = await migrated.searchEntries("UMIGSEARCH", "historical document");
-    assert.equal(hits.length, 3);
-    assert.ok(hits.every((hit) => hit.title === "My documents" && hit.archived));
-    await pool.query(
-      "INSERT INTO session_entries(session_id,seq,parent_seq,type,payload,scope_label,created_at) VALUES($1,3,NULL,'user',$2,$3,3)",
-      [session.id, JSON.stringify({ text: "old writer document" }), session.scopeId],
-    );
-    assert.equal((await migrated.searchEntries("UMIGSEARCH", "old writer")).length, 1);
-  } finally {
     await pool.end();
   }
 });
@@ -3111,7 +3079,7 @@ test("pg transcript write failure rolls back the entry and its counters", { skip
     `CREATE FUNCTION reject_transcript_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'transcript unavailable'; END $$`,
   );
   await client.query(
-    `CREATE TRIGGER reject_transcript_test BEFORE INSERT ON session_entries FOR EACH ROW WHEN (NEW.session_id = '${session.id}') EXECUTE FUNCTION reject_transcript_test()`,
+    `CREATE TRIGGER reject_transcript_test BEFORE INSERT ON items FOR EACH ROW WHEN (NEW.session_id = '${session.id}') EXECUTE FUNCTION reject_transcript_test()`,
   );
   try {
     await assert.rejects(
@@ -3123,7 +3091,7 @@ test("pg transcript write failure rolls back the entry and its counters", { skip
     const counters = (await client.query("SELECT messages FROM sessions WHERE id=$1", [session.id])).rows[0];
     assert.equal(counters.messages, 0);
   } finally {
-    await client.query("DROP TRIGGER reject_transcript_test ON session_entries");
+    await client.query("DROP TRIGGER reject_transcript_test ON items");
     await client.query("DROP FUNCTION reject_transcript_test()");
     await client.end();
     await s.releaseLease(lease);

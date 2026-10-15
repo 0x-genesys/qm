@@ -1,4 +1,5 @@
 import { adminOperations } from "../tools/admin.ts";
+import { parkIfOverCap } from "../sessions/tool-output.ts";
 import { MAX_OUTBOUND_FILES, type OutboundFile } from "../core/attachments.ts";
 import { MaskedExecutionError } from "../security/secret-masking.ts";
 import type { DocumentInput } from "../core/document-inputs.ts";
@@ -13,7 +14,6 @@ import type { ClientToolDeclaration, CronFireLogEntry, EntryType, ScopeId } from
 import type { ToolContext, PublishInput, PublishAudienceDescriptor } from "../tools/primitives.ts";
 import type { GapWork } from "../sessions/session-store.ts";
 import { NeedsApproval, CommandDenied } from "../tools/primitives.ts";
-import { classifyScopeLabel } from "../classify/scope-classifier.ts";
 import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import { splitToScope } from "../api/artifact-share.ts";
 import { errMessage } from "../util/errors.ts";
@@ -379,16 +379,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     capabilityTtlMs === 0
       ? "Two limits: this deployment does not expire those turn tokens, but authorization checks still apply (publish checkpoints to durable Files and retain the file ID for the later turn or cron)"
       : `Two limits: those turn tokens expire ${capabilityTtlHours} hours after the turn that launched the job started (past that they 401 — publish checkpoints to durable Files and verify success before expiry, retaining the file ID for the later turn or cron; if publication is unavailable, report it and retain needed local state on a scoped computer)`;
-  const log = async (type: EntryType, payload: unknown, sourceScopeId?: ScopeId | null): Promise<void> => {
+  const log = async (type: EntryType, payload: unknown): Promise<void> => {
     if (!ref.emit || !ref.scopeLabel) return;
-    const scopeLabel = classifyScopeLabel({
-      type,
-      sessionScopeId: ref.scopeLabel,
-      orgScopeId: ref.orgScopeId ?? ref.scopeLabel,
-      sourceScopeId,
-    });
-    if (type === "tool_result" && ref.shutdown?.aborted && isObj(payload)) payload = { ...payload, interrupted: true };
-    await ref.emit({ type, payload, scopeLabel });
+    if (type === "tool_result" && ref.shutdown?.aborted) return;
+    await ref.emit({ type, payload, scopeLabel: ref.scopeLabel });
   };
 
   const retryMarks = new Map<string, RetryMark>();
@@ -419,7 +413,9 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         .filter((c) => c.type === "text")
         .map((c) => c.text ?? "")
         .join("\n");
-      let result = capResultText(t);
+      const parked = ref.current?.toolOutput ? await parkIfOverCap(ref.current.toolOutput, t, callId) : null;
+      const output = parked?.output;
+      let result = parked?.text ?? capResultText(t);
       const resultTruncated = result !== t;
       if (result !== t) {
         const firstText = ret.content.findIndex((c) => c.type === "text");
@@ -525,18 +521,15 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         result += `\n\n${text}`;
         delivered.push(message.id);
       }
-      await log(
-        "tool_result",
-        {
-          ...(capPayloadStrings(persistedSummary) as Record<string, unknown>),
-          callId,
-          isError,
-          ...(resultTruncated ? { resultTruncated: true } : {}),
-          ...(display ? { display } : {}),
-          result,
-        },
-        delivered.length ? ref.scopeLabel : sourceScopeId,
-      );
+      await log("tool_result", {
+        ...(capPayloadStrings(persistedSummary) as Record<string, unknown>),
+        callId,
+        isError,
+        ...(resultTruncated ? { resultTruncated: true } : {}),
+        ...(display ? { display } : {}),
+        result,
+        ...(output ? { output } : {}),
+      });
       if (delivered.length) await ref.current?.sessionSyscalls?.acknowledge?.(delivered).catch(() => undefined);
       return ret;
     });

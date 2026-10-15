@@ -63,6 +63,7 @@ import type { OAuthClientResolver } from "../../connectors/oauth.ts";
 import type { SkillBundleStore } from "../../skills/skill-bundle-store.ts";
 import type { BrokeredLayerTool, DeploymentLayerRuntime } from "../../deployment/load-layer.ts";
 import type { FileArtifactStore } from "../../files/file-artifact-store.ts";
+import type { ToolOutputStore } from "../../sessions/tool-output.ts";
 import type { DeployService } from "../../deploy/deploy-service.ts";
 import type { AclStore } from "../../acl/acl-store.ts";
 import type { SwarmService, SwarmTurn } from "../../swarms/swarm-service.ts";
@@ -127,6 +128,7 @@ export interface OrchestratorDeps {
   sessionSyscalls?: SessionSyscallsFactory;
   workspace: WorkspaceStore;
   files: FileArtifactStore;
+  toolOutput?: ToolOutputStore;
   sandbox: Sandbox;
   sandboxResources?: SandboxResources;
   modelGateway: ModelGateway;

@@ -136,7 +136,6 @@ export type EntryType =
   | "text"
   | "tool_call"
   | "tool_result"
-  | "soul"
   | "system"
   | "delivery"
   | "approval_request"

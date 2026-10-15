@@ -15,12 +15,12 @@ const ITEM_KINDS = [
   "RuntimeChange",
 ] as const;
 
-type ItemKind = (typeof ITEM_KINDS)[number];
+export type ItemKind = (typeof ITEM_KINDS)[number];
 
-const WAKE_CAUSES = ["cron", "webhook", "child_done", "system"] as const;
+export const WAKE_CAUSES = ["cron", "webhook", "child_done", "system"] as const;
 
 const USER_ITEM_KINDS: readonly ItemKind[] = ["UserMessage", "SteeringMessage"];
-const DELIVER_TOOL = "deliver";
+export const DELIVER_TOOL = "deliver";
 
 const sqlList = (values: readonly string[]): string => values.map((value) => `'${value}'`).join(", ");
 

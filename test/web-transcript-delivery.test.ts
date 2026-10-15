@@ -6,6 +6,7 @@ import { createMemoryRunStore } from "../src/runs/memory-run-store.ts";
 import { withWebTranscriptDeliveries } from "../src/delivery/web-transcript-delivery.ts";
 import { wireRunResultDeliveries } from "../src/delivery/run-result-delivery.ts";
 import { createTranscriptSource } from "../src/sessions/transcript-source.ts";
+import { AGENT_OPENED_TEXT, reconstructMessagesFromHistory } from "../src/harness/replay.ts";
 import { sleep } from "../src/util/async.ts";
 import type { DeliveryStore } from "../src/delivery/delivery-store.ts";
 import type { SessionStore } from "../src/sessions/session-store.ts";
@@ -61,13 +62,32 @@ test("enqueue stays a plain insert; the drain writes the text durably before the
   assert.equal(drained.length, 1, "the delivery is visible once its text is durable");
 
   const entries = await sessions.getEntries(session.id);
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]!.type, "assistant");
-  assert.deepEqual(entries[0]!.payload, {
-    text: "Reminder: standup in 10 minutes",
-    deliveryKey: "agent:main:cron:c1:100",
-    via: "cron",
-  });
+  const callId = "agent:main:cron:c1:100";
+  assert.deepEqual(
+    entries.map((e) => [e.type, e.payload]),
+    [
+      [
+        "tool_call",
+        {
+          tool: "deliver",
+          callId,
+          text: "Reminder: standup in 10 minutes",
+          via: "cron",
+        },
+      ],
+      ["tool_result", { tool: "deliver", callId, result: "delivered" }],
+    ],
+  );
+
+  const [opening, call, result] = reconstructMessagesFromHistory(entries);
+  assert.deepEqual(opening!.content, [{ type: "text", text: AGENT_OPENED_TEXT }]);
+  assert.equal(call!.role, "assistant");
+  const block = call!.content[0] as { type: string; name?: string; arguments?: { text?: string; via?: string } };
+  assert.equal(block.type, "toolCall");
+  assert.equal(block.name, "deliver");
+  assert.equal(block.arguments?.text, "Reminder: standup in 10 minutes");
+  assert.equal(block.arguments?.via, "cron");
+  assert.equal(result!.role, "toolResult");
 });
 
 test("the recorded entry renders through the transcript source", async () => {
@@ -83,8 +103,13 @@ test("the recorded entry renders through the transcript source", async () => {
   await deliveries.pending("web");
 
   const projected = (await createTranscriptSource(sessions).forRender(session.id)).entries;
-  assert.equal(projected.length, 1);
-  assert.equal(projected[0]!.type, "assistant");
+  assert.deepEqual(
+    projected.map((e) => [e.type, (e.payload as { tool?: string }).tool]),
+    [
+      ["tool_call", "deliver"],
+      ["tool_result", "deliver"],
+    ],
+  );
   assert.equal((projected[0]!.payload as { text?: string }).text, "cron reply body");
 });
 
@@ -103,7 +128,7 @@ test("repeated drains and a restarted decorator never duplicate the transcript e
   const restarted = withWebTranscriptDeliveries(inner, sessions);
   await restarted.pending("web");
 
-  assert.equal((await sessions.getEntries(session.id)).length, 1, "one entry across drains and restarts");
+  assert.equal((await sessions.getEntries(session.id)).length, 2, "one delivery across drains and restarts");
 });
 
 test("a failed transcript write converges on retry: one entry", async () => {
@@ -133,7 +158,7 @@ test("a failed transcript write converges on retry: one entry", async () => {
   const drained = await deliveries.pending("web");
   assert.equal(drained.length, 1, "the retry dedupes on the entry and delivers");
 
-  assert.equal((await sessions.getEntries(session.id)).length, 1);
+  assert.equal((await sessions.getEntries(session.id)).length, 2);
 });
 
 test("a busy session lease holds the delivery back, unacked, until the write lands", async () => {
@@ -153,7 +178,7 @@ test("a busy session lease holds the delivery back, unacked, until the write lan
   await sessions.releaseLease(lease!);
   const drained = await deliveries.pending("web");
   assert.equal(drained.length, 1);
-  assert.equal((await sessions.getEntries(session.id)).length, 1);
+  assert.equal((await sessions.getEntries(session.id)).length, 2);
 });
 
 test("a lease wedged past the giveup window degrades to a loud nudge-only delivery", async () => {
@@ -336,7 +361,7 @@ test("another run's failure record never suppresses this run's note", async () =
   const { lease } = await sessions.acquireLease(session.id, "turn");
   await sessions.append(lease!, {
     type: "system",
-    payload: { kind: "turn_failure", message: "earlier run, delivered note", deliveryKey: "run:other" },
+    payload: { kind: "turn_failure", message: "earlier run, delivered note", runId: "earlier-run" },
     scopeLabel: SCOPE,
   });
   await sessions.append(lease!, {
@@ -387,7 +412,7 @@ test("a recovered attachments-only reply is nudged, never silently settled away"
   assert.equal((await sessions.getEntries(session.id)).length, 0);
 });
 
-test("a recovered reply the turn never recorded is written into the transcript, in the agent's plain voice", async () => {
+test("a recovered reply the turn never recorded is written into the transcript as the agent's delivery", async () => {
   const { sessions, inner, deliveries } = wired();
   const session = await webSession(sessions);
   await terminalRun(deliveries, inner, { status: "ok", sessionId: session.id, reply: "recovered reply" });
@@ -395,7 +420,33 @@ test("a recovered reply the turn never recorded is written into the transcript, 
   const drained = await deliveries.pending("web");
   assert.equal(drained.length, 1);
   const entries = await sessions.getEntries(session.id);
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0]!.type, "assistant");
-  assert.deepEqual(entries[0]!.payload, { text: "recovered reply", deliveryKey: drained[0]!.idempotencyKey });
+  const key = drained[0]!.idempotencyKey;
+  assert.deepEqual(
+    entries.map((e) => [e.type, e.payload]),
+    [
+      ["tool_call", { tool: "deliver", callId: key, text: "recovered reply" }],
+      ["tool_result", { tool: "deliver", callId: key, result: "delivered" }],
+    ],
+  );
+  const model = JSON.stringify(reconstructMessagesFromHistory(entries));
+  assert.match(model, /recovered reply/);
+  assert.doesNotMatch(model, /"via"/, "the turn's own reply carries no delivery badge");
+});
+
+test("a delivery marks the web conversation unread for its participant", async () => {
+  const { sessions, deliveries } = wired();
+  const session = await webSession(sessions);
+  await sessions.addParticipant(session.id, "alice@example.com");
+  await sessions.updateParticipantView(session.id, "alice@example.com", { readAt: 1 });
+  assert.notEqual((await sessions.getForParticipant(session.id, "alice@example.com"))!.unread, true);
+
+  await deliveries.enqueue({
+    destination: webDestination(),
+    text: "Reminder: standup in 10 minutes",
+    idempotencyKey: "agent:main:cron:c1:900",
+    provenance: cronProvenance(),
+  });
+  await deliveries.pending("web");
+
+  assert.equal((await sessions.getForParticipant(session.id, "alice@example.com"))!.unread, true);
 });

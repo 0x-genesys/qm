@@ -23,7 +23,10 @@ async function withSchema(fn: (raw: Pool, url: string) => Promise<void>): Promis
   const raw = new pg.Pool({ connectionString: url.toString() });
   try {
     createPostgresSessionStore(url.toString());
-    await applyPgMigrations(raw, registeredPgMigrations(url.toString()));
+    await applyPgMigrations(
+      raw,
+      registeredPgMigrations(url.toString()).filter((migration) => migration.id < "sessions/store/0035"),
+    );
     await fn(raw, url.toString());
   } finally {
     await raw.end();

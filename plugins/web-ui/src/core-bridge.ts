@@ -407,7 +407,6 @@ export interface SessionEntry {
     | "text"
     | "tool_call"
     | "tool_result"
-    | "soul"
     | "system"
     | "approval_request"
     | "approval_resolved"
@@ -2028,6 +2027,7 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
     const payload = e.payload as {
       text?: string;
       display?: string;
+      tool?: string;
       callId?: string;
       attachments?: Array<{ name?: string; mimetype?: string; sizeBytes?: number; artifactId?: string }>;
       files?: Array<{ name?: string; mimetype?: string; sizeBytes?: number; artifactId?: string }>;
@@ -2047,6 +2047,15 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
         spillHeldPosts();
         flushWork("", e.createdAt);
         out.push(decision as unknown as AgentMessage);
+      }
+      continue;
+    }
+    if ((e.type === "tool_call" || e.type === "tool_result") && payload?.tool === "deliver") {
+      if (e.type === "tool_call") {
+        spillHeldPosts();
+        deliveryFiles.push(...deliveredFilesFromAttachments(payload?.files));
+        flushWork(text, e.createdAt, true, undefined, false, e.seq === undefined ? [] : [e.seq]);
+        posted = false;
       }
       continue;
     }

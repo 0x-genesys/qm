@@ -265,12 +265,16 @@ for (const shutdown of [false, true]) {
       assert.equal(result.stopped, true);
       const entries = sink.entries as unknown as SessionEntry[];
       const types = entries.map((entry) => entry.type);
-      assert.deepEqual(types.slice(0, 3), ["user", "tool_call", "tool_result"]);
+      assert.deepEqual(types.slice(0, 3), shutdown ? ["user", "tool_call"] : ["user", "tool_call", "tool_result"]);
       const stoppedEntries = entries.filter((entry) => entry.type === "assistant");
       const partial = findTrailingPartialTurn(entries, "do the thing");
       if (shutdown) {
         assert.deepEqual(stoppedEntries, [], "shutdown must not close the turn with a stop marker");
-        assert.equal((entries[2]!.payload as { interrupted?: unknown }).interrupted, true);
+        assert.equal(
+          entries.some((entry) => entry.type === "tool_result"),
+          false,
+          "the call stays open for the resumed turn to answer",
+        );
         assert.ok(partial, "the resumed attempt finds the open turn");
         assert.notEqual(resumeStrategy(entries, partial).kind, "restart");
         assert.equal(turnAtSeq(entries, partial.userSeq)?.answer, undefined);

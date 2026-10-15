@@ -176,32 +176,18 @@ test("the deployment turn wall-clock reaches the harness and a per-turn cap repl
   assert.equal((await freshApp().app.turn(dm("!wallclock"))).reply, "wallclock:0");
 });
 
-test("inbound file problems ride a durable file_event entry — off the reply and the model context", async () => {
+test("inbound file problems stay off the reply, the model context and the session log", async () => {
   const { app, sessions } = freshApp();
   const note = 'skipped "screenshot.png" — too many files in one message (max 10)';
   const res = await app.turn(dm("what's your favorite color", { inboundNotes: [note] }));
   assert.equal(res.status, "ok", res.reason);
-
   assert.doesNotMatch(res.reply ?? "", /too many files|skipped|screenshot\.png/);
-
   const found = await app.getSession(res.sessionId!);
-  const fileEvent = found!.entries.find(
-    (e) => e.type === "system" && (e.payload as { kind?: string } | null)?.kind === "file_event",
-  );
-  assert.ok(fileEvent, "expected a durable file_event system entry");
-  const payload = fileEvent!.payload as { direction: string; issues: string[]; text: string };
-  assert.equal(payload.direction, "in");
-  assert.ok(
-    payload.issues.some((i) => i.includes("screenshot.png")),
-    "the dropped file is named in the durable record",
-  );
-  assert.match(payload.text, /screenshot\.png/);
-
+  assert.ok(!found!.entries.some((e) => e.type === "system"), "no system entry is written for them");
   const reqs = (await sessions.listLlmRequests(res.sessionId!)) as Array<{ model: string; promptEnvelope: unknown }>;
   for (const r of reqs.filter((request) => request.model !== "mock-security")) {
     assert.doesNotMatch(JSON.stringify(r.promptEnvelope), /too many files|screenshot\.png/);
   }
-
   assert.equal((res as { fileNotes?: unknown }).fileNotes, undefined);
 });
 
@@ -4332,6 +4318,30 @@ test("narration reaches the live activity feed before its tool call", async () =
   );
   assert.deepEqual(view?.activity?.[0]?.payload, { text: "I'll check the first item." });
   assert.deepEqual(view?.activity?.at(-1)?.payload, { streamOffset: "I'll check the first item.\n\n".length });
+});
+
+test("public text phases reach run activity with exact stream offsets but are not stored in session history", async () => {
+  const { app, runs } = freshApp();
+  const result = await app.turn(dm("!phased-reply"));
+  assert.equal(result.status, "ok");
+  assert.equal(result.reply, "All clear.");
+  const run = (await runs.list()).find((entry) => entry.request.text === "!phased-reply");
+  assert.ok(run);
+  const view = await app.getRun(run.id);
+  const history = await app.getSession(result.sessionId!);
+  const expected = [
+    { phase: "commentary", streamOffset: 0 },
+    { phase: "final_answer", streamOffset: "Checking.\n\n".length },
+  ];
+  assert.deepEqual(
+    view?.activity?.filter((entry) => entry.type === "text_start").map((entry) => entry.payload),
+    expected,
+  );
+  assert.deepEqual(
+    history?.entries.filter((entry) => entry.type === "text_start"),
+    [],
+  );
+  assert.equal(view?.partial, "Checking.\n\nAll clear.");
 });
 
 function fixtureScreen(): SecurityScreener {

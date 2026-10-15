@@ -91,7 +91,11 @@ for (const action of ["read", "react", "post"] as const) {
       turn.onDelta?.("Building the website now.");
       turn.onToolCallStart?.("slack");
       assert.equal((await built.deliveries.pending("slack")).length, 0);
-      await turn.emit({ type: "tool_call", payload: { tool: "slack", action }, scopeLabel: turn.scopeLabel });
+      await turn.emit({
+        type: "tool_call",
+        payload: { tool: "slack", callId: `slack-${action}`, action },
+        scopeLabel: turn.scopeLabel,
+      });
       started();
       await block;
     };

@@ -28,7 +28,7 @@ import {
   entrySearchAuthor,
   entrySearchText,
   matchesSearchTerms,
-  SEARCHABLE_ENTRY_TYPES,
+  searchEntryType,
   searchTerms,
 } from "./entry-search.ts";
 import {
@@ -36,6 +36,7 @@ import {
   cronIdOf,
   entryWithinTenure,
   isOverheardEntry,
+  DuplicateCallError,
   promptEnvelopeBody,
   sessionBucket,
   sessionCategory,
@@ -43,6 +44,7 @@ import {
   userMessagePreview,
   isWebThread,
 } from "./session-store.ts";
+import { entryFromItem, isDeliveryCall, itemFromEntry } from "./items.ts";
 import { SECURITY_SCREEN_STEP, screenPayloadFromEnvelope } from "../security/security-posture.ts";
 
 function toParticipantWindow(
@@ -107,7 +109,7 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
     const log = all.filter((e) => e.type === "user");
     const lastActivityAt = log.length ? Math.max(s.createdAt, ...log.map((e) => e.createdAt)) : s.createdAt;
     const visible = view ? all.some((e) => entryWithinTenure(e, view)) : false;
-    const replies = all.filter((e) => e.type === "assistant" || e.type === "delivery");
+    const replies = all.filter((e) => e.type === "assistant" || e.type === "text" || isDeliveryCall(e));
     const lastReply = replies.length ? Math.max(...replies.map((e) => e.createdAt)) : null;
     const unread = lastReply !== null && lastReply > (view?.readAt ?? 0) && isWebThread(s.threadRef);
     return {
@@ -265,25 +267,41 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
       const log = entries.get(lease.sessionId);
       if (!log) throw new Error(`unknown session: ${lease.sessionId}`);
       const copied = structuredClone(batch);
-      return copied.map((entry) => {
+      const scopeLabel = sessions.get(lease.sessionId)?.scopeId ?? (copied[0]?.scopeLabel as ScopeId);
+      const items = copied.map((entry) => itemFromEntry(entry.type, entry.payload));
+      const calls = new Set(
+        log.flatMap((e) => {
+          const id = (e.payload as { callId?: unknown } | null)?.callId;
+          return (e.type === "tool_call" || e.type === "tool_result") && typeof id === "string"
+            ? [`${e.type}:${id}`]
+            : [];
+        }),
+      );
+      for (const [index, item] of items.entries()) {
+        if (!item.callId) continue;
+        const key = `${copied[index]!.type}:${item.callId}`;
+        if (calls.has(key)) throw new DuplicateCallError(lease.sessionId, [item.callId]);
+        calls.add(key);
+      }
+      return items.map((item) => {
         const seq = log.length;
-        const full: SessionEntry = {
+        const full = entryFromItem({
           sessionId: lease.sessionId,
           seq,
-          parentSeq: seq === 0 ? null : seq - 1,
-          type: entry.type,
-          payload: entry.payload,
-          scopeLabel: entry.scopeLabel as ScopeId,
+          kind: item.kind,
+          body: item.body,
+          scopeLabel,
           createdAt: now(),
-        };
+        });
         log.push(full);
-        const text = SEARCHABLE_ENTRY_TYPES.has(full.type) ? entrySearchText(full.payload) : null;
-        if (text?.trim()) {
+        const searchType = searchEntryType(full);
+        const text = searchType ? entrySearchText(full.payload) : null;
+        if (searchType && text?.trim()) {
           const index = searchIndex.get(full.sessionId) ?? [];
           const author = entrySearchAuthor(full);
           index.push({
             seq: full.seq,
-            type: full.type,
+            type: searchType,
             text,
             createdAt: full.createdAt,
             ...(author ? { author } : {}),
@@ -304,9 +322,8 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
     async countEntriesBefore(sessionId, beforeSeq, principalId) {
       const win = principalId === undefined ? undefined : windows.get(sessionId)?.get(principalId);
       if (principalId !== undefined && !win) return 0;
-      return (entries.get(sessionId) ?? []).filter(
-        (e) => e.seq < beforeSeq && e.type !== "soul" && (!win || entryWithinTenure(e, win)),
-      ).length;
+      return (entries.get(sessionId) ?? []).filter((e) => e.seq < beforeSeq && (!win || entryWithinTenure(e, win)))
+        .length;
     },
 
     async getContextWindow(sessionId) {
@@ -539,7 +556,6 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
           if (!matchesSearchTerms(row.text, terms)) continue;
           hits.push({
             sessionId,
-            entryScopeLabel: entry.scopeLabel,
             scopeId: session.scopeId,
             ...((win.title ?? session.title) != null ? { title: win.title ?? session.title } : {}),
             ...(session.channelName ? { channelName: session.channelName } : {}),
@@ -582,8 +598,7 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
     async missingSearchEntries(sessionId): Promise<number> {
       const indexed = new Set((searchIndex.get(sessionId) ?? []).map((row) => row.seq));
       return (entries.get(sessionId) ?? []).filter(
-        (entry) =>
-          SEARCHABLE_ENTRY_TYPES.has(entry.type) && entrySearchText(entry.payload)?.trim() && !indexed.has(entry.seq),
+        (entry) => searchEntryType(entry) && entrySearchText(entry.payload)?.trim() && !indexed.has(entry.seq),
       ).length;
     },
 
@@ -591,7 +606,7 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
       const log = entries.get(sessionId) ?? [];
       for (let i = log.length - 1; i >= 0; i--) {
         const e = log[i]!;
-        if (!SEARCHABLE_ENTRY_TYPES.has(e.type)) continue;
+        if (!searchEntryType(e)) continue;
         const text = entrySearchText(e.payload);
         if (text && text.trim()) return e.seq;
       }

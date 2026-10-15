@@ -8,7 +8,6 @@ import { sleep } from "../util/async.ts";
 import { pgTextSafe } from "../util/text.ts";
 import { createMemoryAdvisoryLock, type AdvisoryLock } from "../persistence/advisory-lock.ts";
 import { errMessage, swallowAs } from "../util/errors.ts";
-import { filterHistoryForAudience } from "../resolution/context-filter.ts";
 import { randomUUID } from "node:crypto";
 import { hashId } from "../util/crypto.ts";
 import { canonicalJson } from "../util/objects.ts";
@@ -549,12 +548,7 @@ export function createSessionSyscalls(deps: SessionSyscallDeps): SessionSyscalls
           ),
         );
         const allowed = views.slice(1).map((view) => new Set(view.map((entry) => entry.seq)));
-        return filterHistoryForAudience(
-          (views[0] ?? []).filter((entry) => allowed.every((seqs) => seqs.has(entry.seq))),
-          audience,
-          binding.scopeId,
-          binding.orgScopeId ?? binding.scopeId,
-        );
+        return (views[0] ?? []).filter((entry) => allowed.every((seqs) => seqs.has(entry.seq)));
       }
 
       async function currentCaller(): Promise<OrchestratorInput> {
@@ -1178,7 +1172,7 @@ export async function deliverSubagentMail(deps: SubagentMailDeps, run: Run): Pro
   if (outputSeq !== undefined && outputSeq !== null) {
     for (const id of new Set([prepared.actor.id, ...prepared.conversation.audience.map((person) => person.id)])) {
       const visible = await deps.sessions.visibleEntries(child.id, id);
-      if (!visible.some((entry) => entry.seq === outputSeq && entry.scopeLabel === child.scopeId))
+      if (!visible.some((entry) => entry.seq === outputSeq))
         throw new Error("the current parent audience cannot read this child result");
     }
   }

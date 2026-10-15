@@ -205,7 +205,7 @@ function stepBlocks(e: SessionEntry, step: ReplayStep): Positioned[] {
 }
 
 export function recordedToolArguments(p: Record<string, unknown>): Record<string, unknown> {
-  const { tool: _tool, callId: _c, rerun, step: _s, wire: _w, ...recorded } = p;
+  const { tool: _tool, callId: _c, rerun, result: _r, step: _s, wire: _w, ...recorded } = p;
   const input = (rerun as { input?: unknown } | undefined)?.input;
   if (isObj(input)) return { ...input, retrySafe: true };
   if (typeof recorded.bytes !== "number" || typeof recorded.text === "string") return recorded;
@@ -224,10 +224,20 @@ function resultContent(content: StoredResultContent[]): ToolResultMessage["conte
   );
 }
 
-function toolResultMessage(call: ToolCall, re: SessionEntry | undefined, at: number): ToolResultMessage {
+function toolResultMessage(
+  call: ToolCall,
+  recordedCall: SessionEntry | undefined,
+  re: SessionEntry | undefined,
+  at: number,
+): ToolResultMessage {
   const base = { role: "toolResult" as const, toolCallId: call.id, toolName: call.name };
   const text = (value: string) => [{ type: "text" as const, text: value }];
-  if (!re) return { ...base, content: text(INTERRUPTED_TOOL_RESULT), isError: true, timestamp: at };
+  if (!re) {
+    const recorded = (recordedCall?.payload as { result?: unknown } | null)?.result;
+    return typeof recorded === "string"
+      ? { ...base, content: text(recorded), isError: false, timestamp: at }
+      : { ...base, content: text(INTERRUPTED_TOOL_RESULT), isError: true, timestamp: at };
+  }
   const p = (re.payload ?? {}) as { interrupted?: unknown; isError?: unknown; result?: unknown; wire?: ToolResultWire };
   if (p.interrupted === true)
     return { ...base, content: text(INTERRUPTED_TOOL_RESULT), isError: true, timestamp: re.createdAt };
@@ -241,10 +251,11 @@ function toolResultMessage(call: ToolCall, re: SessionEntry | undefined, at: num
 
 export function reconstructMessagesFromHistory(history: readonly SessionEntry[]): PiReplayMessage[] {
   const resultByCallId = new Map<string, SessionEntry>();
+  const callById = new Map<string, SessionEntry>();
   for (const e of history) {
-    if (e.type !== "tool_result") continue;
+    if (e.type !== "tool_result" && e.type !== "tool_call") continue;
     const cid = (e.payload as { callId?: unknown } | null)?.callId;
-    if (typeof cid === "string" && cid) resultByCallId.set(cid, e);
+    if (typeof cid === "string" && cid) (e.type === "tool_call" ? callById : resultByCallId).set(cid, e);
   }
   const raw: PiReplayMessage[] = [];
   const stepped = new Set<PiReplayMessage>();
@@ -358,7 +369,8 @@ export function reconstructMessagesFromHistory(history: readonly SessionEntry[])
     out.push(m);
     if (m.role !== "assistant") continue;
     for (const c of m.content)
-      if (c.type === "toolCall") out.push(toolResultMessage(c, resultByCallId.get(c.id), m.timestamp));
+      if (c.type === "toolCall")
+        out.push(toolResultMessage(c, callById.get(c.id), resultByCallId.get(c.id), m.timestamp));
   }
   if (out[0] && out[0].role !== "user")
     out.unshift({ role: "user", content: [{ type: "text", text: AGENT_OPENED_TEXT }], timestamp: out[0].timestamp });
@@ -425,7 +437,6 @@ export function replayPreamble(history: SessionEntry[]): string {
       }
     } else if (e.type === "user" && textOf(e)) lines.push(`User: ${textOf(e)}`);
     else if (e.type === "assistant" && textOf(e)) lines.push(`Assistant: ${textOf(e)}`);
-    else if (e.type === "delivery" && textOf(e)) lines.push(deliveryNote(textOf(e)));
   }
   if (!lines.length) return "";
   return [

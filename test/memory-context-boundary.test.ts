@@ -195,7 +195,11 @@ for (const operation of ["read", "search"] as const)
             content = "- TRANSIENT_SENTINEL";
             const result =
               operation === "read" ? await turn.tools.memoryRead() : await turn.tools.memorySearch("SENTINEL");
-            await turn.emit({ type: "tool_result", scopeLabel: turn.scopeLabel, payload: { text: result } });
+            await turn.emit({
+              type: "tool_result",
+              scopeLabel: turn.scopeLabel,
+              payload: { tool: "memory", callId: "memory-1", text: result },
+            });
           }
           return base.turns.runTurn(turn);
         },

@@ -63,6 +63,7 @@ export function contextWindowFromEntries(entries: SessionEntry[]): ContextWindow
 export interface Lease {
   sessionId: string;
   token: string;
+  turnId?: string;
 }
 
 export type LeaseHolder = "turn" | "compaction" | "fork" | "backfill";
@@ -121,6 +122,7 @@ export interface NewEntry {
   type: EntryType;
   payload: unknown;
   scopeLabel: ScopeId;
+  author?: string;
 }
 
 interface ParticipantViewPatch {
@@ -388,7 +390,6 @@ export interface DistinctScope {
 }
 
 export interface EntrySearchHit extends Pick<Session, "scopeId" | "title" | "channelName" | "surface" | "archived"> {
-  entryScopeLabel: ScopeId;
   sessionId: string;
   seq: number;
   type: EntryType;
@@ -544,9 +545,11 @@ export function isOverheardEntry(e: Pick<SessionEntry, "type" | "payload">): boo
   return e.type === "user" && (e.payload as { overheard?: unknown } | null)?.overheard === true;
 }
 
-export function entryDeliveryKey(entry: Pick<SessionEntry, "payload">): string | undefined {
-  const key = (entry.payload as { deliveryKey?: unknown } | null)?.deliveryKey;
-  return typeof key === "string" ? key : undefined;
+export class DuplicateCallError extends Error {
+  constructor(sessionId: string, callIds: readonly string[], options?: { cause?: unknown }) {
+    super(`session ${sessionId} already records one of calls ${callIds.join(", ")}`, options);
+    this.name = "DuplicateCallError";
+  }
 }
 
 interface AddParticipantOptions {
