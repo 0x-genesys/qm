@@ -1542,7 +1542,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     name: "subagents",
     label: "subagents",
     description:
-      "Start and coordinate subagents: background workers you spawn for a task. A subagent does not get its own sidebar entry and does not inherit this conversation, so give it a complete standalone task with the context and authorization it needs. Its final answer comes back to you as an internal message. " +
+      "Start and coordinate subagents: background workers you spawn for a task. A subagent does not get its own sidebar entry and does not inherit this conversation, so give it a complete standalone task with the context and authorization it needs. State only authorization that actually exists; never claim approval or consent nobody gave. Its final answer comes back to you as an internal message. " +
       "`open` starts a subagent with `task`. `followup_task` gives an existing subagent more work in `task` and starts a turn if it is idle; active work is queued safely. " +
       '`send_message` passes information to one of your subagents, a sibling subagent, or your parent (target="parent") without starting a turn; with interrupt:true it stops a subagent\'s current run. ' +
       "`read` with no target lists your subagents; with a target it reads that subagent's transcript. " +

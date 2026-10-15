@@ -1447,6 +1447,7 @@ test("an org admin's turn carries org-notebook write (token claim + prompt hint)
     adminTurn({ text: "!sysprompt", conversation: { kind: "dm", threadRef: "dm:admin-alice:t2" } }),
   );
   assert.match(adminPrompt.reply ?? "", /## Acting for an org admin/);
+  assert.match(adminPrompt.reply ?? "", /use the hand-off skill even if admin access could reach it/);
   assert.match(adminPrompt.reply ?? "", /System administration is not limited to the admin dashboard/);
   assert.match(adminPrompt.reply ?? "", /including resources owned by other users/);
   assert.match(adminPrompt.reply ?? "", /Ordinary resource-owner restrictions do not by themselves prohibit/);
