@@ -1,3 +1,20 @@
+export const ITEMS_COPY_REPAIR_SQL = [
+  String.raw`CREATE OR REPLACE FUNCTION items_copy_payload(t text) RETURNS jsonb
+             LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $items_copy_payload$
+             DECLARE r text;
+             BEGIN
+               IF t IS NULL OR pg_input_is_valid(t, 'jsonb') THEN RETURN t::jsonb; END IF;
+               r := regexp_replace(t, '(?<!\\)((?:\\\\)*)\\u0000', '\1', 'g');
+               IF NOT pg_input_is_valid(r, 'jsonb') THEN
+                 r := regexp_replace(regexp_replace(r,
+                   '(?<!\\)((?:\\\\)*)\\u[dD][89abAB][0-9a-fA-F]{2}(?!\\u[dD][c-fC-F][0-9a-fA-F]{2})', '\1\\ufffd', 'g'),
+                   '(?<!\\)((?:\\\\)*)(?<!\\u[dD][89abAB][0-9a-fA-F]{2})\\u[dD][c-fC-F][0-9a-fA-F]{2}', '\1\\ufffd', 'g');
+               END IF;
+               RETURN r::jsonb;
+             END $items_copy_payload$`,
+  `CREATE OR REPLACE FUNCTION items_copy_payload(j jsonb) RETURNS jsonb LANGUAGE sql IMMUTABLE PARALLEL SAFE AS 'SELECT j'`,
+];
+
 export interface ItemsCopyOptions {
   delta?: boolean;
   bucket?: { index: number; count: number };
@@ -17,7 +34,7 @@ const str = (key: string): string =>
   `CASE WHEN jsonb_typeof(n.body -> '${key}') = 'string' THEN n.body ->> '${key}' END`;
 const isType = (key: string, type: string): string => `jsonb_typeof(n.body -> '${key}') = '${type}'`;
 
-const NORMALIZE = `  CROSS JOIN LATERAL (SELECT e.payload::jsonb AS j OFFSET 0) parsed
+const NORMALIZE = `  CROSS JOIN LATERAL (SELECT items_copy_payload(e.payload) AS j OFFSET 0) parsed
   CROSS JOIN LATERAL (
     SELECT CASE WHEN parsed.j IS NULL OR jsonb_typeof(parsed.j) = 'null' THEN '{}'::jsonb
                 WHEN jsonb_typeof(parsed.j) = 'object' THEN parsed.j
@@ -98,7 +115,7 @@ const HOIST = `  LEFT JOIN legacy_tape_steps l ON l.session_id = e.session_id AN
            CASE WHEN k.kind = 'Retraction' AND ${isType("ts", "string")} THEN
              (SELECT max(u.seq) FROM session_entries u
                WHERE u.session_id = e.session_id AND u.seq < e.seq AND u.type = 'user'
-                 AND u.payload::jsonb ->> 'ts' = n.body ->> 'ts') END AS target_seq
+                 AND items_copy_payload(u.payload) ->> 'ts' = n.body ->> 'ts') END AS target_seq
     OFFSET 0
   ) a
   CROSS JOIN LATERAL (
@@ -137,7 +154,7 @@ const SELECT = `SELECT ${TENANT}, e.session_id, e.seq,
        CASE WHEN t.run_is_uuid THEN (n.body ->> 'runId')::uuid END,
        k.kind,
        a.author,
-       CASE WHEN k.kind IN ('ToolCall', 'ToolResult') THEN COALESCE(NULLIF(${str("callId")}, ''), 'missing-call:' || e.seq) END,
+       CASE WHEN k.kind IN ('ToolCall', 'ToolResult') THEN NULLIF(${str("callId")}, '') END,
        CASE WHEN k.kind IN ('Elicitation', 'ElicitationResponse') THEN
          COALESCE(NULLIF(${str("requestId")}, ''), 'missing-elicit:' || e.seq) END,
        CASE WHEN k.kind = 'Wake' THEN
@@ -169,14 +186,28 @@ export function itemsCopySql(opts: ItemsCopyOptions = {}): string {
     : `  FROM session_entries e
 `;
   const bucket = opts.bucket ? `${bucketPredicate(opts.delta ? "sess.id" : "e.session_id", opts.bucket)}\n   AND ` : "";
+  return insertRows(`${SELECT}
+${from}${NORMALIZE}${KIND}${HOIST} WHERE ${bucket}k.kind IS NOT NULL`);
+}
+
+function insertRows(rows: string): string {
   return `WITH inserted AS (
-INSERT INTO items(${COLUMNS})
-${SELECT}
-${from}${NORMALIZE}${KIND}${HOIST} WHERE ${bucket}k.kind IS NOT NULL
-RETURNING kind, author
-)
-SELECT count(*)::int AS rows,
-       count(*) FILTER (WHERE kind IN ${AUTHOR_KINDS_SQL})::int AS author_eligible,
-       count(*) FILTER (WHERE kind IN ${AUTHOR_KINDS_SQL} AND author IS NULL)::int AS author_null
-  FROM inserted`;
+    INSERT INTO items(${COLUMNS}) ${rows} RETURNING kind,author
+  ) SELECT count(*)::int AS rows,
+           count(*) FILTER (WHERE kind IN ${AUTHOR_KINDS_SQL})::int AS author_eligible,
+           count(*) FILTER (WHERE kind IN ${AUTHOR_KINDS_SQL} AND author IS NULL)::int AS author_null
+      FROM inserted`;
+}
+
+export function itemsSelectedRowsSql(): string {
+  return `SELECT * FROM (
+    ${SELECT}
+    FROM pg_temp.items_copy_batch b
+    JOIN session_entries e ON (e.session_id,e.seq)=(b.session_id,b.seq)
+    ${NORMALIZE}${KIND}${HOIST} WHERE k.kind IS NOT NULL
+  ) AS mapped(${COLUMNS})`;
+}
+
+export function itemsCopySelectedSql(): string {
+  return insertRows(itemsSelectedRowsSql());
 }

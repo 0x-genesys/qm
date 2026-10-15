@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { applyPgMigrations, registeredPgMigrations } from "../src/persistence/pg-pool.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
-import { itemsCopySql } from "../src/sessions/items-copy.ts";
+import { itemsCopySql, itemsCopySelectedSql, itemsSelectedRowsSql } from "../src/sessions/items-copy.ts";
 import { ITEM_INDEXES } from "../src/sessions/items-schema.ts";
 import { scopeId } from "../src/types.ts";
 
@@ -173,7 +173,7 @@ test("items copy maps every legacy type, hoists fields into columns and strips t
       [at(7).call_id, at(7).tool, at(7).text, at(7).is_error, at(7).body],
       ["c1", "execute", "out: hello\nerr: boom", true, { stderr: "nope" }],
     );
-    assert.equal(at(8).call_id, "missing-call:8");
+    assert.equal(at(8).call_id, null);
     assert.deepEqual(
       [at(9).turn_id, at(9).text, at(9).variant, at(9).body],
       [null, "done", null, { runId: "not-a-uuid", via: "cron" }],
@@ -194,7 +194,7 @@ test("items copy maps every legacy type, hoists fields into columns and strips t
     assert.deepEqual(at(23).body, { value: 5 });
     assert.deepEqual(
       [at(24).call_id, at(24).text, at(24).body],
-      ["missing-call:24", null, { result: { ok: true }, stdout: "kept" }],
+      [null, null, { result: { ok: true }, stdout: "kept" }],
     );
     assert.deepEqual([at(25).text, at(25).body], [null, {}]);
   });
@@ -345,4 +345,111 @@ test("the startup migration copies existing history and builds the indexes", { s
         ]),
     },
   );
+});
+
+test(
+  "items copy repairs unsupported JSON escapes, preserves literals and rejects other broken payloads",
+  { skip },
+  async () => {
+    await withSchema(async (raw) => {
+      await seed(raw, "repair", []);
+      const payloads = [
+        String.raw`{"text":"nul\u0000end"}`,
+        String.raw`{"text":"high\ud800end"}`,
+        String.raw`{"text":"low\udc00end"}`,
+        String.raw`{"text":"pair\ud83d\ude00"}`,
+        String.raw`{"text":"literal\\u0000"}`,
+        null,
+        "7",
+        "true",
+      ];
+      for (const [seq, payload] of payloads.entries())
+        await raw.query(
+          "INSERT INTO session_entries(session_id,seq,type,payload,scope_label,created_at) VALUES('repair',$1,'user',$2,'personal:test',1)",
+          [seq, payload],
+        );
+      assert.equal(await copyAll(raw, 1), 8);
+      const result = await items(raw, "repair");
+      assert.deepEqual(
+        result.slice(0, 5).map((r) => r.text),
+        ["nulend", "high�end", "low�end", "pair😀", String.raw`literal\u0000`],
+      );
+      assert.deepEqual(
+        result.slice(5).map((r) => r.body),
+        [{}, { value: 7 }, { value: true }],
+      );
+      await raw.query("UPDATE session_entries SET payload='not json' WHERE seq=0");
+      await raw.query("DELETE FROM items");
+      await assert.rejects(copyAll(raw, 1), /invalid input syntax/);
+      assert.equal((await raw.query("SELECT count(*)::int AS n FROM items")).rows[0].n, 0);
+    });
+  },
+);
+
+test("selected-key copying uses the same mapping on TEXT and JSONB without copying other rows", { skip }, async () => {
+  await withSchema(async (raw) => {
+    await seed(raw, "selected", [
+      ["user", { text: "one" }],
+      ["assistant", { text: "two" }],
+      ["soul", {}],
+    ]);
+    const client = await raw.connect();
+    try {
+      await client.query("CREATE TEMP TABLE items_copy_batch(session_id text,seq int,PRIMARY KEY(session_id,seq))");
+      await client.query("INSERT INTO items_copy_batch VALUES('selected',1),('selected',2)");
+      assert.equal((await client.query(itemsCopySelectedSql())).rows[0].rows, 1);
+      assert.deepEqual(
+        (await items(raw, "selected")).map((r) => r.text),
+        ["two"],
+      );
+      const expected = (await client.query(itemsSelectedRowsSql())).rows[0];
+      assert.equal(expected.kind, "AgentMessage");
+      assert.equal(expected.text, "two");
+      await client.query(
+        "CREATE TEMP TABLE source_rows AS SELECT session_id,seq,type,payload,created_at FROM session_entries",
+      );
+      await client.query("CREATE TEMP TABLE session_entries AS SELECT * FROM source_rows WITH NO DATA");
+      await client.query("ALTER TABLE pg_temp.session_entries ALTER COLUMN payload TYPE jsonb USING payload::jsonb");
+      await client.query(
+        "INSERT INTO pg_temp.session_entries SELECT session_id,seq,type,payload::jsonb,created_at FROM source_rows",
+      );
+      await client.query("DELETE FROM items");
+      assert.equal((await client.query(itemsCopySelectedSql())).rows[0].rows, 1);
+      assert.equal((await client.query(itemsSelectedRowsSql())).rows[0].text, "two");
+    } finally {
+      client.release();
+    }
+  });
+});
+
+test("items copy preserves missing call IDs as NULL and still constrains present IDs", { skip }, async () => {
+  await withSchema(async (raw) => {
+    await seed(raw, "nullable-calls", [
+      ["tool_call", { tool: "execute", command: "echo hello" }],
+      ["tool_result", { tool: "execute", result: "hello" }],
+      ["tool_call", { tool: "execute", callId: "" }],
+      ["tool_result", { tool: "execute", callId: null }],
+      ["tool_call", { tool: "execute", callId: "real-call" }],
+      ["tool_result", { tool: "execute", callId: "real-call" }],
+    ]);
+    await copyAll(raw, 1);
+    const rows = await items(raw, "nullable-calls");
+    assert.deepEqual(
+      rows.map((row) => row.call_id),
+      [null, null, null, null, "real-call", "real-call"],
+    );
+    assert.ok(rows.every((row) => !("callId" in row.body)));
+    await assert.rejects(
+      raw.query("UPDATE items SET call_id='' WHERE session_id='nullable-calls' AND seq=0"),
+      /check constraint/,
+    );
+    await assert.rejects(
+      raw.query("UPDATE items SET call_id='real-call' WHERE session_id='nullable-calls' AND seq=0"),
+      /unique constraint/,
+    );
+    await assert.rejects(
+      raw.query("UPDATE items SET kind='UserMessage',tool=NULL WHERE session_id='nullable-calls' AND seq=4"),
+      /items_call_id_kind/,
+    );
+  });
 });

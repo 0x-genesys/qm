@@ -1,3 +1,5 @@
+import { itemsCopySql, ITEMS_COPY_REPAIR_SQL } from "./items-copy.ts";
+
 const ITEM_KINDS = [
   "UserMessage",
   "SteeringMessage",
@@ -92,7 +94,7 @@ export const ITEMS_TABLES_SQL: readonly string[] = [
      body JSONB NOT NULL CHECK (jsonb_typeof(body) = 'object'),
      created_at TIMESTAMPTZ NOT NULL,
      PRIMARY KEY (tenant_id, session_id, seq),
-     CONSTRAINT items_call_id_kind CHECK ((call_id IS NOT NULL) = (kind IN ('ToolCall', 'ToolResult'))),
+     CONSTRAINT items_call_id_kind CHECK (call_id IS NULL OR kind IN ('ToolCall', 'ToolResult')),
      CONSTRAINT items_elicit_id_kind CHECK ((elicit_id IS NOT NULL) = (kind IN ('Elicitation', 'ElicitationResponse'))),
      CONSTRAINT items_wake_cause_kind CHECK ((wake_cause IS NOT NULL) = (kind = 'Wake')),
      CONSTRAINT items_error_code_kind CHECK ((error_code IS NOT NULL) = (kind = 'Error')),
@@ -127,3 +129,19 @@ export const ITEM_INDEXES: readonly ItemIndex[] = [
 export function itemIndexSql(index: ItemIndex, opts: { concurrently?: boolean } = {}): string {
   return `CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${opts.concurrently ? "CONCURRENTLY " : ""}IF NOT EXISTS ${index.name} ON ${index.on}`;
 }
+
+export const itemsMigration = {
+  id: "sessions/store/0035-items",
+  statements: [
+    `DO $operator$ BEGIN
+             IF to_regclass('items_copy_ops.state') IS NOT NULL THEN
+               RAISE EXCEPTION 'An items copy is staged; complete the coordinated cutover before applying this migration';
+             END IF;
+           END $operator$`,
+    ...ITEMS_TABLES_SQL,
+    ...ITEMS_COPY_REPAIR_SQL,
+    `SET LOCAL statement_timeout = 0`,
+    itemsCopySql({ delta: true }),
+    ...ITEM_INDEXES.map((index) => itemIndexSql(index)),
+  ],
+};

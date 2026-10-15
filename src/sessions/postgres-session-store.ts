@@ -1,3 +1,4 @@
+import { DIRECTORY_MIGRATIONS } from "../directory/postgres-directory-store.ts";
 import { randomUUID } from "node:crypto";
 import {
   createPgPool,
@@ -40,8 +41,7 @@ import type {
   StoreOptions,
 } from "./session-store.ts";
 import { tsPrefixQuery } from "./entry-search.ts";
-import { itemsCopySql } from "./items-copy.ts";
-import { ITEM_INDEXES, itemIndexSql, ITEMS_TABLES_SQL } from "./items-schema.ts";
+import { itemsMigration } from "./items-schema.ts";
 import {
   DROP_SESSION_TAPE_SQL,
   LEGACY_TAPE_STEPS_SIZE_GUARD_SQL,
@@ -334,6 +334,7 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
   const { pool, q } = createPgPool(
     connectionString,
     [
+      ...DIRECTORY_MIGRATIONS,
       {
         id: "sessions/store/0001",
         expectedChecksum: "cf56c9f6488806677a229698193ef6dd7cb74300c343bdb1930c17702c5ccf2f",
@@ -865,15 +866,7 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
            )`,
         ],
       },
-      {
-        id: "sessions/store/0035-items",
-        statements: [
-          ...ITEMS_TABLES_SQL,
-          `SET LOCAL statement_timeout = 0`,
-          itemsCopySql({ delta: true }),
-          ...ITEM_INDEXES.map((index) => itemIndexSql(index)),
-        ],
-      },
+      itemsMigration,
     ],
     [
       {
