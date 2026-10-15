@@ -39,7 +39,7 @@ test(
       await writer.query("UPDATE session_entries SET payload='broken' WHERE session_id='z' AND seq=2");
       const checkpoint = await op.status();
       await assert.rejects(op.copyBatch(), /invalid input syntax/);
-      assert.equal((await op.status()).cursor_seq, checkpoint.cursor_seq);
+      assert.equal((await op.status()).scanned, checkpoint.scanned);
       await writer.query("UPDATE session_entries SET payload='{\"text\":\"fixed\"}' WHERE session_id='z' AND seq=2");
       await writer.query(insertSession, ["a"]);
       await writer.query(insertEntry, ["a", 0, '{"text":"lower key"}']);
@@ -49,6 +49,7 @@ test(
       await assert.rejects(writer.query("TRUNCATE session_entries"), /TRUNCATE is disabled/);
       const resumed = new ItemsCopyOperator(client, 2);
       while (await resumed.copyBatch()) continue;
+      assert.equal(await resumed.completeCopy(), true);
       assert.equal((await resumed.status()).phase, "catchup");
       await writer.query("BEGIN");
       await writer.query(insertSession, ["late"]);

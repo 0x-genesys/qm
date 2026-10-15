@@ -3,6 +3,7 @@ import { pgMigrationChecksum } from "../../src/persistence/pg-pool.ts";
 import { createHash } from "node:crypto";
 import { parseArgs } from "node:util";
 import { pathToFileURL } from "node:url";
+import { sleep } from "../../src/util/async.ts";
 import { ITEMS_TABLES_SQL, ITEM_INDEXES, itemIndexSql, itemsMigration } from "../../src/sessions/items-schema.ts";
 import { itemsCopySelectedSql, itemsSelectedRowsSql, ITEMS_COPY_REPAIR_SQL } from "../../src/sessions/items-copy.ts";
 
@@ -11,6 +12,9 @@ const fingerprint = createHash("sha256")
   .digest("hex");
 const state = "items_copy_ops.state";
 const dirty = "items_copy_ops.dirty";
+const slices = "items_copy_ops.slices";
+const SLICES_SQL = `CREATE TABLE IF NOT EXISTS ${slices}(slice int PRIMARY KEY,hi_session text,cursor_session text,cursor_seq int,
+  scanned bigint NOT NULL DEFAULT 0,copied bigint NOT NULL DEFAULT 0,done boolean NOT NULL DEFAULT false)`;
 
 export class ItemsCopyOperator {
   readonly client: pg.Client;
@@ -22,15 +26,16 @@ export class ItemsCopyOperator {
       throw new Error("batch must be between 1 and 10000");
   }
 
-  async transaction<T>(run: () => Promise<T>): Promise<T> {
+  async transaction<T>(run: () => Promise<T>, shared = false): Promise<T> {
     await this.client.query(
       "BEGIN; SET LOCAL lock_timeout='2s'; SET LOCAL statement_timeout='120s'; SET LOCAL search_path=public",
     );
     try {
-      const {
-        rows: [lock],
-      } = await this.client.query("SELECT pg_try_advisory_xact_lock(hashtext('qm:schema-migrations')) AS acquired");
-      if (!lock.acquired) throw new Error("schema migration is running; retry after it completes");
+      const lock = `SELECT pg_try_advisory_xact_lock${shared ? "_shared" : ""}(hashtext('qm:schema-migrations')) AS acquired`;
+      for (let attempt = 0; !(await this.client.query(lock)).rows[0].acquired; attempt++) {
+        if (attempt >= 300) throw new Error("schema migration is running; retry after it completes");
+        await sleep(1000);
+      }
       const result = await run();
       await this.client.query("COMMIT");
       return result;
@@ -68,6 +73,8 @@ export class ItemsCopyOperator {
         `CREATE TABLE ${dirty}(session_id text PRIMARY KEY,version bigint NOT NULL DEFAULT 1,copy_version bigint,cursor_seq int,touched_at timestamptz NOT NULL DEFAULT now())`,
       );
       await this.client.query(`CREATE INDEX dirty_oldest ON ${dirty}(touched_at,session_id)`);
+      await this.client.query(SLICES_SQL);
+      await this.client.query(`INSERT INTO ${slices}(slice) VALUES(0)`);
       await this.client.query(`CREATE FUNCTION items_copy_ops.capture() RETURNS trigger LANGUAGE plpgsql AS $capture$
         BEGIN
           IF TG_OP='TRUNCATE' THEN RAISE EXCEPTION 'TRUNCATE is disabled during items copy'; END IF;
@@ -104,7 +111,7 @@ export class ItemsCopyOperator {
     });
   }
 
-  async assertState(phases: string[]) {
+  async assertState(phases: string[], lock: "UPDATE" | "SHARE" = "UPDATE") {
     const {
       rows: [cutover],
     } = await this.client.query(
@@ -114,7 +121,7 @@ export class ItemsCopyOperator {
     const {
       rows: [s],
     } = await this.client.query(
-      `SELECT *,source_oid='public.session_entries'::regclass AND target_oid='public.items'::regclass AND tenant_id=(SELECT id FROM public.qm_tenant) AS same FROM ${state} FOR UPDATE`,
+      `SELECT *,source_oid='public.session_entries'::regclass AND target_oid='public.items'::regclass AND tenant_id=(SELECT id FROM public.qm_tenant) AS same FROM ${state} FOR ${lock}`,
     );
     if (!s?.same || s.fingerprint !== fingerprint || !phases.includes(s.phase))
       throw new Error("copy source, target, mapping or phase changed; inspect status");
@@ -140,13 +147,64 @@ export class ItemsCopyOperator {
     return (await this.client.query(itemsCopySelectedSql())).rows[0];
   }
 
-  async copyBatch() {
+  async split(workers: number) {
+    if (!Number.isSafeInteger(workers) || workers < 1 || workers > 32)
+      throw new Error("workers must be between 1 and 32");
     return this.transaction(async () => {
       const s = await this.assertState(["copy"]);
-      const params = s.cursor_session === null ? [this.batch] : [s.cursor_session, s.cursor_seq, this.batch];
+      if (!(await this.client.query(`SELECT to_regclass('${slices}') AS t`)).rows[0].t) {
+        await this.client.query(SLICES_SQL);
+        await this.client.query(`INSERT INTO ${slices}(slice,cursor_session,cursor_seq) VALUES(0,$1,$2)`, [
+          s.cursor_session,
+          s.cursor_seq,
+        ]);
+      }
+      const { rows } = await this.client.query(`SELECT * FROM ${slices} ORDER BY slice FOR UPDATE`);
+      const open = rows.filter((r) => !r.done);
+      if (rows.length === workers || workers === 1) return rows.length;
+      if (open.length !== 1)
+        throw new Error(`copy is already split into ${rows.length} slices; rerun with --workers ${rows.length}`);
+      const [from] = open;
+      const {
+        rows: [{ reltuples }],
+      } = await this.client.query("SELECT reltuples FROM pg_class WHERE oid='public.session_entries'::regclass");
+      const {
+        rows: [{ bounds }],
+      } = await this.client.query(
+        `SELECT COALESCE(array_agg(DISTINCT b ORDER BY b),'{}') AS bounds FROM unnest((
+           SELECT percentile_disc((SELECT array_agg(i::float8/$1) FROM generate_series(1,$1-1) i)) WITHIN GROUP (ORDER BY session_id)
+             FROM public.session_entries TABLESAMPLE SYSTEM($2)
+            WHERE ($3::text IS NULL OR session_id>$3) AND ($4::text IS NULL OR session_id<$4))) b
+          WHERE b IS NOT NULL AND ($3::text IS NULL OR b>$3)`,
+        [workers, Number(reltuples) > 1e6 ? 0.2 : 100, from.cursor_session, from.hi_session],
+      );
+      const his = [...bounds, from.hi_session];
+      const base = Math.max(...rows.map((r) => r.slice)) + 1;
+      await this.client.query(`UPDATE ${slices} SET hi_session=$2 WHERE slice=$1`, [from.slice, his[0]]);
+      for (const [i, lo] of bounds.entries())
+        await this.client.query(
+          `INSERT INTO ${slices}(slice,hi_session,cursor_session,cursor_seq) VALUES($1,$2,$3,-1)`,
+          [base + i, his[i + 1], lo],
+        );
+      return rows.length + bounds.length;
+    });
+  }
+
+  async copyBatch(slice = 0) {
+    return this.transaction(async () => {
+      await this.assertState(["copy"], "SHARE");
+      const {
+        rows: [sl],
+      } = await this.client.query(`SELECT * FROM ${slices} WHERE slice=$1 FOR UPDATE`, [slice]);
+      if (!sl || sl.done) return 0;
+      const params: unknown[] = [];
+      const where: string[] = [];
+      if (sl.cursor_session !== null)
+        where.push(`(session_id,seq)>($${params.push(sl.cursor_session)},$${params.push(sl.cursor_seq)})`);
+      if (sl.hi_session !== null) where.push(`session_id<$${params.push(sl.hi_session)}`);
       await this.client.query(
         `INSERT INTO pg_temp.items_copy_batch SELECT session_id,seq FROM public.session_entries
-        ${s.cursor_session === null ? "" : "WHERE (session_id,seq)>($1,$2)"} ORDER BY session_id,seq LIMIT $${params.length}`,
+        ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY session_id,seq LIMIT $${params.push(this.batch)}`,
         params,
       );
       const {
@@ -155,15 +213,27 @@ export class ItemsCopyOperator {
         "SELECT session_id,seq,(SELECT count(*)::int FROM pg_temp.items_copy_batch) AS n FROM pg_temp.items_copy_batch ORDER BY session_id DESC,seq DESC LIMIT 1",
       );
       if (!last) {
-        await this.client.query(`UPDATE ${state} SET phase='catchup',updated_at=now()`);
+        await this.client.query(`UPDATE ${slices} SET done=true WHERE slice=$1`, [slice]);
         return 0;
       }
       const copied = await this.replaceSelected();
       await this.client.query(
-        `UPDATE ${state} SET cursor_session=$1,cursor_seq=$2,scanned=scanned+$3,copied=copied+$4,updated_at=now()`,
-        [last.session_id, last.seq, last.n, copied.rows],
+        `UPDATE ${slices} SET cursor_session=$2,cursor_seq=$3,scanned=scanned+$4,copied=copied+$5 WHERE slice=$1`,
+        [slice, last.session_id, last.seq, last.n, copied.rows],
       );
       return last.n as number;
+    }, true);
+  }
+
+  async completeCopy() {
+    return this.transaction(async () => {
+      await this.assertState(["copy"]);
+      const {
+        rows: [open],
+      } = await this.client.query(`SELECT count(*)::int AS n FROM ${slices} WHERE NOT done`);
+      if (open.n) return false;
+      await this.client.query(`UPDATE ${state} SET phase='catchup',updated_at=now()`);
+      return true;
     });
   }
 
@@ -313,7 +383,7 @@ export class ItemsCopyOperator {
         }
       }
       await this.client.query("DROP FUNCTION IF EXISTS items_copy_ops.capture()");
-      await this.client.query(`DROP TABLE IF EXISTS ${dirty},${state}`);
+      await this.client.query(`DROP TABLE IF EXISTS ${dirty},${state},${slices}`);
       await this.client.query("DROP SCHEMA IF EXISTS items_copy_ops");
     });
   }
@@ -329,8 +399,11 @@ export class ItemsCopyOperator {
 
   async status() {
     return (
-      await this.client.query(`SELECT phase,scanned,copied AS initial_copied,cursor_session,cursor_seq,updated_at,
-      (SELECT count(*) FROM ${dirty}) AS queued,pg_total_relation_size('public.items') AS bytes FROM ${state}`)
+      await this.client
+        .query(`SELECT st.phase,st.scanned+sl.scanned AS scanned,st.copied+sl.copied AS initial_copied,sl.slices,sl.done,
+      st.updated_at,(SELECT count(*) FROM ${dirty}) AS queued,pg_total_relation_size('public.items') AS bytes
+      FROM ${state} st,(SELECT COALESCE(sum(scanned),0) AS scanned,COALESCE(sum(copied),0) AS copied,count(*)::int AS slices,
+        count(*) FILTER (WHERE done)::int AS done FROM ${slices}) sl`)
     ).rows[0];
   }
 }
@@ -338,12 +411,16 @@ export class ItemsCopyOperator {
 async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
-    options: { batch: { type: "string", default: "2000" }, "writers-stopped": { type: "boolean", default: false } },
+    options: {
+      batch: { type: "string", default: "2000" },
+      workers: { type: "string", default: "1" },
+      "writers-stopped": { type: "boolean", default: false },
+    },
   });
   const action = positionals[0];
   if (!["prepare", "copy", "catchup", "verify", "status", "report", "finish", "cleanup"].includes(action ?? ""))
     throw new Error(
-      "usage: node scripts/ops/items-copy.ts prepare|copy|catchup|verify|status|report|finish|cleanup [--batch 2000] [--writers-stopped]",
+      "usage: node scripts/ops/items-copy.ts prepare|copy|catchup|verify|status|report|finish|cleanup [--batch 2000] [--workers 1] [--writers-stopped]",
     );
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL must name the direct Postgres endpoint");
   const client = new pg.Client({ connectionString: process.env.DATABASE_URL, application_name: "qm-items-copy" });
@@ -365,11 +442,35 @@ async function main() {
     if (action === "verify") await op.verify();
     if (action === "finish") await op.finish(values["writers-stopped"]);
     if (action === "report") console.log(JSON.stringify(await op.report()));
-    if (action === "copy" || action === "catchup") {
+    if (action === "copy") {
+      await op.split(Number(values.workers));
+      let failed: unknown = null;
+      await Promise.all(
+        (await client.query(`SELECT slice FROM ${slices} WHERE NOT done ORDER BY slice`)).rows.map(
+          async ({ slice }) => {
+            const worker = new pg.Client({
+              connectionString: process.env.DATABASE_URL,
+              application_name: "qm-items-copy",
+            });
+            await worker.connect();
+            try {
+              const w = new ItemsCopyOperator(worker, op.batch);
+              for (let batches = 1; failed === null && (await w.copyBatch(slice)); batches++)
+                if (batches % 20 === 0) console.log(JSON.stringify({ slice, ...(await w.status()) }));
+            } catch (error) {
+              failed ??= error;
+            } finally {
+              await worker.end();
+            }
+          },
+        ),
+      );
+      if (failed !== null) throw failed;
+      await op.completeCopy();
+    }
+    if (action === "catchup") {
       let batches = 0;
-      while (await (action === "copy" ? op.copyBatch() : op.catchupBatch())) {
-        if (++batches % 20 === 0) console.log(JSON.stringify(await op.status()));
-      }
+      while (await op.catchupBatch()) if (++batches % 20 === 0) console.log(JSON.stringify(await op.status()));
     }
     console.log(JSON.stringify(await op.status()));
   } finally {
