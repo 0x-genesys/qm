@@ -54,6 +54,7 @@ export type CronCreateResult =
       recipient?: { principalId: string; displayName: string };
       channel?: { channelId: string; name: string };
       group?: { groupId: string };
+      warning?: string;
     }
   | {
       ok: false;
@@ -323,6 +324,31 @@ function validateUnattendedGrants(grants: string[]): string | null {
   return null;
 }
 
+// Conservative, cheap heuristic: does this cron's task text look like it needs
+// admin-plane reads that scheduled (unattended) fires will be refused? False
+// negatives are fine; noisy false positives are not — so match only on fairly
+// explicit admin-read phrasing.
+const ADMIN_READ_TASK_PATTERN =
+  /\badmin\b|\baudit log|\busage (?:report|metrics|stats|summary|grind)|\btranscripts?\b|\bsession (?:transcripts?|metrics|reads?)\b/i;
+
+export const CRON_UNATTENDED_GRANT_WARNING =
+  "Warning: this cron's task appears to need admin reads, but scheduled fires run unattended and will be " +
+  "refused — admin unattended reads require a personal-scope cron with unattendedGrants. Ask the owner now " +
+  "whether to set up a standing grant / re-rig at personal scope, rather than letting the first unattended fire fail.";
+
+export function cronCreateUnattendedWarning(
+  task: string | undefined,
+  ownerScopeId: string,
+  unattendedGrants: string[] | undefined,
+  capability: Pick<CapabilityClaims, "liveActor">,
+): string | undefined {
+  if (capability.liveActor !== true) return undefined;
+  if (typeof task !== "string" || !ADMIN_READ_TASK_PATTERN.test(task)) return undefined;
+  const armed = ownerScopeId.startsWith("personal:") && (unattendedGrants?.length ?? 0) > 0;
+  if (armed) return undefined;
+  return CRON_UNATTENDED_GRANT_WARNING;
+}
+
 export function createControlService(app: App, scheduler?: Scheduler, admin?: AdminService): ControlService {
   const notifyEdit = (
     cron: Cron,
@@ -499,12 +525,14 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
               typeof req.title === "string" ? `a scheduled message ("${req.title}")` : "a recurring scheduled message",
           });
         }
+        const warning = cronCreateUnattendedWarning(req.action, ownerScopeId, req.unattendedGrants, capability);
         return {
           ok: true,
           cron,
           ...(resolvedRecipient ? { recipient: resolvedRecipient } : {}),
           ...(resolvedChannel ? { channel: resolvedChannel } : {}),
           ...(resolvedGroup ? { group: resolvedGroup } : {}),
+          ...(warning ? { warning } : {}),
         };
       } catch (e) {
         return { ok: false, code: "cron_create_failed", message: errMessage(e) };

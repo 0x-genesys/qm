@@ -6,7 +6,11 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildApp, type BuiltApp } from "../src/wiring.ts";
-import { createControlService, type ControlService } from "../src/api/control-service.ts";
+import {
+  createControlService,
+  CRON_UNATTENDED_GRANT_WARNING,
+  type ControlService,
+} from "../src/api/control-service.ts";
 import { scopeId, type ScopeId } from "../src/types.ts";
 import { CAPABILITY_TTL_MS, type CapabilityClaims } from "../src/auth/capability-token.ts";
 import { testConfig } from "./support/test-config.ts";
@@ -1050,4 +1054,49 @@ test("queued cron rechecks its runtime after admission and preserves the overrid
     }),
     /runtime is no longer available/,
   );
+});
+
+test("cron create warns when a task looks like it needs admin reads but fires will run unattended", async () => {
+  const { control } = setup();
+  const schedule = { everyMs: 3_600_000 };
+
+  // Live turn, admin-flavored task, no unattendedGrants → warning.
+  const bare = await control.createCron(
+    { schedule, action: "read the admin usage report and summarize it" },
+    claims("U1", scopeId("personal", "U1"), { liveActor: true }),
+  );
+  assert.ok(bare.ok);
+  assert.equal(bare.warning, CRON_UNATTENDED_GRANT_WARNING);
+
+  // Admin-flavored task on a shared (non-personal) scope → warning even with grants absent.
+  const shared = await control.createCron(
+    { schedule, action: "review session transcripts nightly" },
+    claims("U1", scopeId("channel", "C9"), { liveActor: true }),
+  );
+  assert.ok(shared.ok);
+  assert.equal(shared.warning, CRON_UNATTENDED_GRANT_WARNING);
+
+  // Personal-scope cron with unattendedGrants from a live admin owner → no warning.
+  const armed = await control.createCron(
+    { schedule, action: "scan admin audit logs", unattendedGrants: ["admin.audit.read"] },
+    claims("admin-alice", scopeId("personal", "admin-alice"), { liveActor: true }),
+  );
+  assert.ok(armed.ok);
+  assert.equal(armed.warning, undefined);
+
+  // Benign task → no warning (conservative heuristic).
+  const benign = await control.createCron(
+    { schedule, action: "remind the team to submit standup notes" },
+    claims("U1", scopeId("personal", "U1"), { liveActor: true }),
+  );
+  assert.ok(benign.ok);
+  assert.equal(benign.warning, undefined);
+
+  // Not a live turn → no warning.
+  const unattendedCreate = await control.createCron(
+    { schedule, action: "read the admin usage report" },
+    claims("U1"),
+  );
+  assert.ok(unattendedCreate.ok);
+  assert.equal(unattendedCreate.warning, undefined);
 });

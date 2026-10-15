@@ -272,12 +272,14 @@ function fmtCronCreated(r: {
   recipient?: { displayName: string };
   channel?: { name: string };
   group?: { groupId: string };
+  warning?: string;
 }): string {
   let to = "";
   if (r.recipient) to = `\nAddressed to ${r.recipient.displayName} (DM).`;
   else if (r.channel) to = `\nAddressed to #${r.channel.name}.`;
   else if (r.group) to = `\nAddressed to a group DM.`;
-  return `Created cron ${fmtCronLine(r.cron)}${to}`;
+  const warning = r.warning ? `\n${r.warning}` : "";
+  return `Created cron ${fmtCronLine(r.cron)}${to}${warning}`;
 }
 
 function fmtCronRunLine(entry: CronFireLogEntry): string {
@@ -2324,6 +2326,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       '— it runs at their own personal scope and DMs them, even from a channel. Don\'t bury "send this to Slack" inside `task`; a cron with no destination ' +
       "runs but has nowhere external to post. Use action=retarget to move an existing cron's delivery to a " +
       "different destinationKey. Pass unfurlLinks=false when Slack should not show link previews for the delivered message.\n" +
+      "PERMISSIONS AT CREATE TIME: scheduled fires run unattended — live-turn-only claims (notably admin-plane reads: usage, transcripts, sessions, metrics, audit) do NOT carry over, and the first fire will be refused. When an admin schedules a cron whose task assumes those permissions, proactively ask at creation time whether to establish the standing grant (scope=personal + unattendedGrants) rather than letting the first unattended fire fail; a create response may include a `warning` line about this — always relay it to the user.\n" +
       "ACCESS — a cron belongs to whoever creates it and runs as them, with what its conversation has been granted " +
       "plus, where they share Open with it, their own keychain. Everyone in the conversation " +
       "can see it; only its owner can change it unless they share write access (action=share, permission=write). " +
