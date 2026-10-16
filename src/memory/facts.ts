@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ScopeId } from "../types.ts";
+import type { ModelRequestContext } from "../model/provider-endpoints.ts";
 import { dateStr } from "./notebook.ts";
 
 export type MemorySensitivity = "ordinary" | "unknown" | "sensitive" | "restricted";
@@ -21,6 +22,7 @@ export interface MemoryFact extends MemoryProvenance {
 export interface MemoryCaptureMetadata {
   conversationScopeId?: ScopeId;
   sessionId?: string;
+  requestContext?: ModelRequestContext;
   sensitivity?: MemorySensitivity;
   inheritedFacts?: readonly MemoryProvenance[];
 }

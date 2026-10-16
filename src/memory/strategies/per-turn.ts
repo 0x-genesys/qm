@@ -5,6 +5,7 @@ import type { ScopeId } from "../../types.ts";
 import { bullets } from "../notebook.ts";
 import { parseSensitivity, SENSITIVITY_PROMPT } from "../classification.ts";
 import { UNTRACKED_PROVENANCE, type MemoryCaptureMetadata } from "../facts.ts";
+import type { ModelRequestContext } from "../../model/provider-endpoints.ts";
 
 export const DEFAULT_CAPTURE_QUIET_MS = 180_000;
 const DEFAULT_CAPTURE_MAX_TURNS = 10;
@@ -42,17 +43,14 @@ export function parseFacts(out: string): string[] {
 
 async function extractFacts(
   harness: HarnessModelUtilities,
-  burst: Burst,
+  turns: Array<{ input: string; reply: string }>,
+  requestContext: ModelRequestContext,
 ): Promise<{ facts: string[]; sensitivity: NonNullable<MemoryCaptureMetadata["sensitivity"]> }> {
   if (!harness.oneShot) return { facts: [], sensitivity: "unknown" };
   try {
-    const transcript = burst.turns
-      .map((t) => `User said:\n${t.input}\n\nAssistant replied:\n${t.reply}`)
-      .join("\n\n---\n\n");
+    const transcript = turns.map((t) => `User said:\n${t.input}\n\nAssistant replied:\n${t.reply}`).join("\n\n---\n\n");
     const out = await harness.oneShot(MEMORY_EXTRACTION_PROMPT, transcript, {
-      sessionId: burst.sessionId,
-      actorId: burst.actorId,
-      scopeId: burst.conversationScopeId,
+      ...requestContext,
       purpose: "memory_capture",
     });
     return {
@@ -69,6 +67,7 @@ interface Burst extends MemoryCaptureMetadata {
   actorId?: string;
   conversationScopeId: ScopeId;
   sessionId?: string;
+  requestContext: ModelRequestContext;
   idempotencyKey?: string;
   turns: Array<{ input: string; reply: string }>;
   timer?: NodeJS.Timeout;
@@ -82,6 +81,7 @@ type TurnEndCtx = MemoryCaptureMetadata & {
   autonomous?: boolean;
   conversationScopeId?: ScopeId;
   sessionId?: string;
+  requestContext: ModelRequestContext;
   idempotencyKey?: string;
 };
 
@@ -100,6 +100,7 @@ function createBurstBuffer(
     autonomous,
     conversationScopeId,
     sessionId,
+    requestContext,
     idempotencyKey,
     inheritedFacts,
   }) => {
@@ -107,6 +108,7 @@ function createBurstBuffer(
     const burst: Burst = {
       scopeId,
       conversationScopeId: conversationScopeId ?? scopeId,
+      requestContext,
       turns: [{ input, reply }],
       ...(inheritedFacts !== undefined ? { inheritedFacts: structuredClone(inheritedFacts) } : {}),
       ...(actorId !== undefined ? { actorId } : {}),
@@ -162,7 +164,7 @@ export function createPerTurnStrategy(deps: {
   onCaptureError?: (e: unknown, scopeId: ScopeId) => void;
 }): MemoryStrategy {
   async function flush(burst: Burst): Promise<void> {
-    const { facts, sensitivity } = await extractFacts(deps.harness, burst);
+    const { facts, sensitivity } = await extractFacts(deps.harness, burst.turns, burst.requestContext);
     if (!facts.length) return;
     const at = Date.now();
     await deps.memory.capture(burst.scopeId, facts, at, burst.actorId, { ...burstCaptureContext(burst), sensitivity });

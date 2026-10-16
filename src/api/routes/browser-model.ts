@@ -3,8 +3,7 @@ import { orgId } from "../../config.ts";
 import { scopeId } from "../../types.ts";
 import { resolveBrowserModel } from "../../model/browser-model.ts";
 import { BrowserCompletionError, nativeBrowserCompletion } from "../../model/browser-completion.ts";
-import { modelGatewayHeaders } from "../../model/provider-endpoints.ts";
-import { sessionRequestContext } from "../../sessions/session-store.ts";
+import { modelGatewayHeaders, type ModelRequestContext } from "../../model/provider-endpoints.ts";
 import { BROWSER_MODEL_AUD } from "../../auth/capability-token.ts";
 import { sendJson } from "../http.ts";
 import type { ApiCtx, Route } from "./route.ts";
@@ -43,11 +42,11 @@ async function browserModel(ctx: ApiCtx): Promise<void> {
     Object.keys(input).some((key) => !REQUEST_FIELDS.has(key))
   )
     return sendJson(res, 400, { error: "invalid browser model request" });
-  const requestContext = {
-    ...sessionRequestContext(
-      { id: capability.sessionId, scopeId: capability.scopeId, threadRef: capability.threadRef },
-      capability.actorId,
-    ),
+  const requestContext: ModelRequestContext = {
+    sessionId: capability.sessionId,
+    actorId: capability.actorId,
+    scopeId: capability.scopeId,
+    origin: capability.origin,
     purpose: "browser",
   };
   const controller = new AbortController();

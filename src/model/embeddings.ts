@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import type { EmbeddingModel } from "./model-overlay.ts";
-import { modelGatewayRequest, type ModelGatewayTransportConfig } from "./provider-endpoints.ts";
+import {
+  modelGatewayRequest,
+  type ModelGatewayTransportConfig,
+  type ModelRequestPurpose,
+} from "./provider-endpoints.ts";
 import { providerTurnError } from "../harness/provider-error.ts";
 import { httpFailure } from "../util/errors.ts";
 
@@ -28,10 +32,9 @@ export function createMemoryEmbedder(
   apiKey: string | null,
   gateway?: ModelGatewayTransportConfig,
   fetchImpl: typeof fetch = fetch,
+  purpose: ModelRequestPurpose = "embedding",
 ): MemoryEmbedder {
-  const routed = modelGatewayRequest(model.provider === "qm:gateway" ? gateway : undefined, model, {
-    purpose: "embedding",
-  });
+  const routed = modelGatewayRequest(model.provider === "qm:gateway" ? gateway : undefined, model, { purpose });
   const key = routed?.apiKey ?? apiKey;
   if (!key) throw new Error("Configure an organization credential for the embedding model");
   const url = `${(routed?.model ?? model).baseUrl}/embeddings`;

@@ -73,8 +73,7 @@ test("the shared classifier routes through the configured harness, model, and co
   assert.deepEqual(
     await classify('[{"source":"tool_result:read","content":"quarterly data"}]', "alice", org, undefined, {
       mode: "enforce",
-      sessionId: "session-1",
-      thread: "agent:main:webhook:deploys",
+      requestContext: { sessionId: "session-1", actorId: "alice", scopeId: org, origin: "webhook" },
     }),
     {
       decision: "auto",
@@ -203,7 +202,13 @@ for (const origin of ["human", "direct", "automation", "ambient"] as const) {
     const request = `Inspect this transcript. ${"😀".repeat(3000)}`;
     const classify = (...args: Parameters<typeof classifyModel>) =>
       Promise.all([classifyModel(...args), classifyProxy(...args)]);
-    await classify(payload, "alice", org, undefined, { mode: "enforce", hook: "tool_response", origin, request });
+    await classify(payload, "alice", org, undefined, {
+      mode: "enforce",
+      hook: "tool_response",
+      origin,
+      request,
+      requestContext: {},
+    });
     const envelope = JSON.parse(modelPayload);
     assert.equal(envelope.payload, payload);
     assert.equal(envelope.request.origin, origin);
@@ -213,10 +218,16 @@ for (const origin of ["human", "direct", "automation", "ambient"] as const) {
     assert.equal(envelope.request.truncated, true);
     assert.equal(proxyCalls[0]?.payload, payload);
     assert.deepEqual(proxyCalls[0]?.metadata?.request, envelope.request);
-    await classify(payload, "alice", org, undefined, { mode: "enforce", hook: "user_input", origin, request });
+    await classify(payload, "alice", org, undefined, {
+      mode: "enforce",
+      hook: "user_input",
+      origin,
+      request,
+      requestContext: {},
+    });
     assert.equal(modelPayload, payload, "inbound screening does not change");
     assert.equal(proxyCalls[1]?.metadata?.request, undefined);
-    await classify(payload, "alice", org, undefined, { mode: "enforce", hook: "tool_response" });
+    await classify(payload, "alice", org, undefined, { mode: "enforce", hook: "tool_response", requestContext: {} });
     assert.equal(modelPayload, payload, "missing context remains compatible");
   });
 }
@@ -249,7 +260,7 @@ test("request context survives retries and captured screening replay without cha
     async (record) => {
       await sessions.recordLlmRequest(session.id, { ...record, scopeLabel: org });
     },
-    { mode: "enforce", hook: "tool_response", request },
+    { mode: "enforce", hook: "tool_response", request, requestContext: {} },
   );
   assert.equal(verdict?.decision, "auto");
   assert.equal(calls.length, 2);

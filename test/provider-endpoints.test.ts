@@ -140,17 +140,16 @@ test("gateway-mapped built-in models send session-affinity headers", () => {
   }
 });
 
-test("model gateway headers carry only known, header-safe request context", () => {
+test("model gateway headers carry only attestable request context", () => {
   const config = { apiKey: "gateway-key", apiKeyHeader: "api-key" };
   assert.deepEqual(modelGatewayHeaders(config), { "api-key": "gateway-key" });
   assert.deepEqual(
     modelGatewayHeaders(config, {
-      sessionId: "session-1",
+      sessionId: "",
       actorId: "owner@example.com\r\nx-qm-scope: org:other",
       scopeId: "channel:café",
       purpose: "turn",
-      origin: "",
     }),
-    { "api-key": "gateway-key", "x-qm-session-id": "session-1", "x-qm-purpose": "turn" },
+    { "api-key": "gateway-key", "x-qm-purpose": "turn" },
   );
 });

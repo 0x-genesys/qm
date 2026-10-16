@@ -126,6 +126,7 @@ async function runTurn(
       } as unknown as ToolContext,
       scopeLabel: "personal:tester" as HarnessTurnInput["scopeLabel"],
       orgScopeId: "org:test" as HarnessTurnInput["orgScopeId"],
+      requestContext: {},
       emit: async (e: NewEntry) => {
         const appended: SessionEntry = {
           sessionId: "fidelity",

@@ -20,7 +20,14 @@ const restricted: MemoryProvenance[] = [
 ];
 
 const scope = "personal:alice";
-const turn = { scopeId: scope, actorId: "alice", input: "I prefer short replies", reply: "Noted", sessionId: "s1" };
+const turn = {
+  scopeId: scope,
+  actorId: "alice",
+  input: "I prefer short replies",
+  reply: "Noted",
+  sessionId: "s1",
+  requestContext: { sessionId: "s1", actorId: "alice", scopeId: scope },
+};
 
 test("production strategy classifies automatic capture in the existing extraction call", async () => {
   const { memory, facts } = await fixture();
@@ -35,7 +42,7 @@ test("production strategy classifies automatic capture in the existing extractio
     },
   });
   await strategy.onTurnEnd!({ ...turn, inheritedFacts: [] });
-  assert.deepEqual(requestContexts, [{ sessionId: "s1", actorId: "alice", scopeId: scope, purpose: "memory_capture" }]);
+  assert.deepEqual(requestContexts, [{ ...turn.requestContext, purpose: "memory_capture" }]);
   assert.ok((await facts(scope)).every((fact) => fact.sensitivity === "ordinary" && !fact.sourceUnknown));
   assert.deepEqual((await facts(scope))[0]!.sources, [scope]);
 });
@@ -161,10 +168,10 @@ test("an edit is classified and folds the turn's exposure into the fact", async 
     },
   }).edit!(scope, [{ id: fact!.id, text: "Plain fact, now with a salary" }], "alice", {
     conversationScopeId: "group:private",
-    sessionId: "s1",
+    requestContext: turn.requestContext,
     inheritedFacts: restricted,
   });
-  assert.deepEqual(requestContext, { sessionId: "s1", actorId: "alice", purpose: "memory_classification" });
+  assert.deepEqual(requestContext, { ...turn.requestContext, purpose: "memory_classification" });
   const [edited] = await facts(scope);
   assert.equal(edited!.sensitivity, "restricted");
   assert.deepEqual(edited!.sources.toSorted(), ["group:private", scope].toSorted());

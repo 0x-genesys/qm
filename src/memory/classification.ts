@@ -23,7 +23,6 @@ export function parseSensitivity(value: string | undefined): Sensitivity {
 async function classify(
   harness: HarnessModelUtilities,
   texts: string[],
-  author: string | undefined,
   context: MemoryCaptureMetadata | undefined,
 ): Promise<Sensitivity> {
   try {
@@ -31,7 +30,7 @@ async function classify(
       await harness.oneShot?.(
         `${SENSITIVITY_PROMPT}\nOutput ONLY one label for the entire list.`,
         JSON.stringify(texts),
-        { sessionId: context?.sessionId, actorId: author, purpose: "memory_classification" },
+        { ...context?.requestContext, purpose: "memory_classification" },
       ),
     );
   } catch (e) {
@@ -50,7 +49,7 @@ export function classifiedMemory(base: MemoryService, harness: HarnessModelUtili
     async capture(scope, facts, at, author, context) {
       let sensitivity = context?.sensitivity;
       if (context?.mode !== "automatic" || sensitivity === undefined)
-        sensitivity = stricter(sensitivity, await classify(harness, facts, author, context));
+        sensitivity = stricter(sensitivity, await classify(harness, facts, context));
       return base.capture(scope, facts, at, author, {
         ...context,
         mode: context?.mode ?? "explicit",
@@ -65,7 +64,6 @@ export function classifiedMemory(base: MemoryService, harness: HarnessModelUtili
               await classify(
                 harness,
                 edits.map((edit) => edit.text),
-                author,
                 context,
               ),
             );

@@ -244,7 +244,12 @@ test("decision hooks tell the model gateway whose turn they classify, and a dire
     actorId: "owner@example.com",
     scopeLabel: "channel:C123",
     sessionId: "session-cron",
-    threadRef: "agent:main:cron:nightly",
+    requestContext: {
+      sessionId: "session-cron",
+      actorId: "owner@example.com",
+      scopeId: "channel:C123",
+      origin: "cron",
+    },
   });
   assert.deepEqual(verdict?.runtime, { modelId: "m-deep" });
   assert.deepEqual(Object.fromEntries(calls.map((call) => [call.url, call.headers])), {
@@ -431,7 +436,11 @@ test("decision hooks load active rules for the hook, decide, and audit every ver
     ),
   } as never;
   const decide = createDecisionHooks(store, fixed({ keep: 0.2, deep: 0.8 }), audit);
-  const verdict = await decide("turn_start", "refactor the scheduler", { scopeLabel: "personal:a", sessionId: "s1" });
+  const verdict = await decide("turn_start", "refactor the scheduler", {
+    scopeLabel: "personal:a",
+    sessionId: "s1",
+    requestContext: {},
+  });
   assert.deepEqual(asked, ["turn_start"]);
   assert.deepEqual(verdict?.runtime, { modelId: "m-deep" });
   assert.deepEqual(
@@ -445,6 +454,7 @@ test("decision hooks load active rules for the hook, decide, and audit every ver
     await createDecisionHooks(undefined, fixed({}), audit)("turn_start", "x", {
       scopeLabel: "s",
       sessionId: "s",
+      requestContext: {},
     }),
     undefined,
   );

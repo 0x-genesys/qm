@@ -3,7 +3,6 @@ import { createHash } from "node:crypto";
 import type { EntryType, ScopeId, Session, SessionEntry, SessionType, SpawnMeta } from "../types.ts";
 import { sleep } from "../util/async.ts";
 import type { GoalRecord } from "../harness/goal.ts";
-import type { ModelRequestContext } from "../model/provider-endpoints.ts";
 
 export function promptEnvelopeBody(envelope: unknown): { hash: string; body: string } | null {
   if (envelope == null) return null;
@@ -362,16 +361,21 @@ export function sessionOrigin(threadRef: string | null | undefined): SessionOrig
   return "conversation";
 }
 
-export function sessionRequestContext(
-  session: Partial<Pick<Session, "id" | "scopeId" | "threadRef">>,
-  actorId?: string,
-): ModelRequestContext {
-  return {
-    sessionId: session.id,
-    actorId,
-    scopeId: session.scopeId,
-    origin: session.threadRef ? sessionOrigin(session.threadRef) : undefined,
-  };
+export async function originThroughParents(
+  session: Pick<Session, "id" | "threadRef" | "parentSessionId">,
+  get: (id: string) => Session | null | undefined | Promise<Session | null | undefined>,
+): Promise<SessionOrigin> {
+  let origin = sessionOrigin(session.threadRef);
+  let ancestor = session;
+  const visited = new Set([session.id]);
+  while (origin === "conversation" && ancestor.parentSessionId && visited.size < 64) {
+    const parent = await get(ancestor.parentSessionId);
+    if (!parent || visited.has(parent.id)) break;
+    visited.add(parent.id);
+    ancestor = parent;
+    origin = sessionOrigin(parent.threadRef);
+  }
+  return origin;
 }
 
 export function sessionCategory(origin: SessionOrigin): SessionCategory {

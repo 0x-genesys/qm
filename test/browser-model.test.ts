@@ -66,7 +66,7 @@ test("browser inference uses the company gateway with scoped model authorization
     aud: BROWSER_MODEL_AUD,
     browserAccount: "company" as const,
     sessionId: "session-browser",
-    threadRef: "dm:U1:browser",
+    origin: "conversation" as const,
     exp: Date.now() + 60_000,
   };
   const token = await mintCapabilityToken(claims, TEST_CAPABILITY_SECRET);
@@ -180,7 +180,7 @@ test("gateway deployment provisions a browser token without exposing the company
   assert.equal(claims?.aud, BROWSER_MODEL_AUD);
   assert.equal(claims?.browserModel, model);
   assert.equal(claims?.scopeId, "personal:U1");
-  assert.equal(claims?.threadRef, "dm:U1:browser");
+  assert.equal(claims?.origin, "conversation");
   assert.equal(claims?.sessionId, result.sessionId);
 });
 

@@ -730,6 +730,12 @@ async function agentMemory(ctx: ApiCtx): Promise<void> {
           : "memory capture is not enabled for this conversation",
     });
   }
+  const requestContext = {
+    sessionId: capability.sessionId,
+    actorId: capability.actorId,
+    scopeId: capability.scopeId,
+    origin: capability.origin,
+  };
 
   if (method === "POST" && pathname === "/v1/memory/facts") {
     const facts = parseFacts(body);
@@ -739,6 +745,7 @@ async function agentMemory(ctx: ApiCtx): Promise<void> {
       actorId: capability.actorId,
       conversationScopeId: capability.scopeId,
       ...(capability.sessionId ? { sessionId: capability.sessionId } : {}),
+      requestContext,
     });
     audit(deps, {
       principalId: capability.actorId,
@@ -751,7 +758,7 @@ async function agentMemory(ctx: ApiCtx): Promise<void> {
   if (method === "PATCH" && pathname === "/v1/memory/facts") {
     const edits = parseEdits(body);
     if (typeof edits === "string") return sendJson(res, 400, { error: "bad_request", message: edits });
-    await memory.edit?.(write, edits, capability.actorId, { conversationScopeId: capability.scopeId });
+    await memory.edit?.(write, edits, capability.actorId, { conversationScopeId: capability.scopeId, requestContext });
     audit(deps, {
       principalId: capability.actorId,
       action: "memory.agent.edit",

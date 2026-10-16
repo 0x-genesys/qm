@@ -116,7 +116,10 @@ export function createModelVerifier(input: {
       fingerprint,
       async probe(signal) {
         if (isEmbeddingModel(model)) {
-          await createMemoryEmbedder(model, key, input.modelGateway, input.fetchImpl).embed(["verification"], signal);
+          await createMemoryEmbedder(model, key, input.modelGateway, input.fetchImpl, "probe").embed(
+            ["verification"],
+            signal,
+          );
           return;
         }
         const run = input.probe ?? probeModel;

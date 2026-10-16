@@ -376,6 +376,7 @@ async function runTurn(
       tools: {} as HarnessTurnInput["tools"],
       scopeLabel: "personal:tester" as HarnessTurnInput["scopeLabel"],
       orgScopeId: "org:test" as HarnessTurnInput["orgScopeId"],
+      requestContext: {},
       runtime: { modelId, fastMode },
       ...(!gateway && modelId === ASTRA.id ? { providerKeys: { openai: "sk-openai-direct" } } : {}),
       emit: async (entry: NewEntry) => ({ ...entry, seq: seq++, createdAt: Date.now() }) as unknown as SessionEntry,
@@ -549,6 +550,7 @@ test("compaction retries a refused summary on the configured fallback model", as
   try {
     const text = await harness.models.compactHistory!({
       session: { id: "compact-fallback" } as HarnessTurnInput["session"],
+      requestContext: {},
       history: [
         { seq: 1, kind: "user", payload: { text: "hello" }, createdAt: 1 },
         { seq: 2, kind: "assistant", payload: { text: "hi" }, createdAt: 2 },

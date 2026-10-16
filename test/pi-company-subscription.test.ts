@@ -29,7 +29,7 @@ test("company utility calls on a plain OpenAI id are served by the ChatGPT subsc
   const urls = recordFetch(t);
   await assert.rejects(
     async () =>
-      companyHarness({ openai: "sk-metered", "openai-codex": subscriptionToken }).models.oneShot?.("system", "hi"),
+      companyHarness({ openai: "sk-metered", "openai-codex": subscriptionToken }).models.oneShot?.("system", "hi", {}),
     /offline test response/,
   );
   assert.ok(
@@ -41,7 +41,7 @@ test("company utility calls on a plain OpenAI id are served by the ChatGPT subsc
 
 test("an unavailable company ChatGPT token fails closed instead of falling back to the metered key", async (t) => {
   const urls = recordFetch(t);
-  assert.equal(await companyHarness({ openai: "sk-metered" }).models.oneShot?.("system", "hi"), undefined);
+  assert.equal(await companyHarness({ openai: "sk-metered" }).models.oneShot?.("system", "hi", {}), undefined);
   assert.deepEqual(urls, []);
 });
 
@@ -52,7 +52,7 @@ test("without a company subscription a plain OpenAI id stays metered", async (t)
     captureRequests: false,
     resolveProviderKeys: async () => ({ openai: "sk-metered" }),
   });
-  await assert.rejects(async () => harness.models.oneShot?.("system", "hi"), /offline test response/);
+  await assert.rejects(async () => harness.models.oneShot?.("system", "hi", {}), /offline test response/);
   assert.ok(
     urls.some((url) => new URL(url).hostname === "api.openai.com"),
     JSON.stringify(urls),
@@ -68,7 +68,7 @@ test("a subscription-only deployment's default utility model is served by the Ch
     resolveProviderKeys: async () => ({ "openai-codex": subscriptionToken }),
     companyModelId: codexSubscriptionModelId,
   });
-  await assert.rejects(async () => harness.models.oneShot?.("system", "hi"), /offline test response/);
+  await assert.rejects(async () => harness.models.oneShot?.("system", "hi", {}), /offline test response/);
   assert.ok(
     urls.some((url) => url.startsWith("https://chatgpt.com/backend-api/")),
     JSON.stringify(urls),
