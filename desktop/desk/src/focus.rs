@@ -115,6 +115,7 @@ pub fn check_current() -> Result<(), Failure> {
     if !screen_available() {
         return Err(Failure::new(ErrorCode::ActionFailed, "Screen is locked or console session unavailable"));
     }
+    crate::intervention::check_current()?;
     if frontmost() != Some(expected) {
         return Err(Failure::new(ErrorCode::ActionFailed, "Foreground app changed during background input; stopped"));
     }
