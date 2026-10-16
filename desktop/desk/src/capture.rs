@@ -175,7 +175,10 @@ fn collect(rx: Receiver<Result<Part, String>>) -> Result<(Rect, Vec<Piece>), Str
 
 fn size(r: Rect) -> Result<(usize, usize), String> {
     let (w, h) = (r.w.round(), r.h.round());
-    let usable = [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()) && (1.0..=MAX_EDGE).contains(&w) && (1.0..=MAX_EDGE).contains(&h);
+    let usable = [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite())
+        && (1.0..=MAX_EDGE).contains(&w)
+        && (1.0..=MAX_EDGE).contains(&h)
+        && w * h <= 64_000_000.0;
     if usable {
         Ok((w as usize, h as usize))
     } else {
