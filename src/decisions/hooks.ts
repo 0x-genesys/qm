@@ -125,19 +125,16 @@ export function createTurnEndHook(decide: ReturnType<typeof createDecisionHooks>
       return result;
     }
     if (!switched.handoff) return result;
-    const fromSeq = input.history.at(-1)?.seq;
-    if (typeof fromSeq === "number") {
-      await input.emit({
-        type: "system",
-        scopeLabel: input.scopeLabel,
-        payload: {
-          kind: "retraction",
-          fromSeq,
-          cause: error ? "provider_refusal" : "refusal_reply",
-          decisionRule: decision.ruleId,
-        },
-      });
-    }
+    await input.emit({
+      type: "system",
+      scopeLabel: input.scopeLabel,
+      payload: {
+        kind: "retraction",
+        fromSeq: input.history.at(-1)?.seq ?? -1,
+        cause: error ? "provider_refusal" : "refusal_reply",
+        decisionRule: decision.ruleId,
+      },
+    });
     await input.emit({
       type: "tool_result",
       scopeLabel: input.scopeLabel,

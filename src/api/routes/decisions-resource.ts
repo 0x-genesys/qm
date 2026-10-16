@@ -4,6 +4,7 @@ import { parseScopeId } from "../../types.ts";
 import { errMessage } from "../../util/errors.ts";
 import type { AdminResource } from "./admin-resources.ts";
 import { audit } from "./shared.ts";
+import { validateRuntimeChoice } from "../runtime-config.ts";
 
 export const decisionsResource: AdminResource = {
   id: "decisions",
@@ -44,6 +45,11 @@ export const decisionsResource: AdminResource = {
         const providers = typeof named === "string" ? await store.providers([named]) : [];
         const parsed = parseDecisionRule(body.rule, providers);
         if ("error" in parsed) return parsed;
+        for (const option of Object.values(parsed.rule.options)) {
+          if (!option.runtime) continue;
+          const error = validateRuntimeChoice({ harnessId: "pi", ...option.runtime });
+          if (error) return { error };
+        }
         await store.saveRule(parsed.rule, by);
         change = ["decision.rule.save", `${parsed.rule.id}:${parsed.rule.mode}`];
       } else return { error: "send provider, removeProvider, rule or removeRule" };

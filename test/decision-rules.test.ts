@@ -339,7 +339,7 @@ test("most_confident hook points follow the likeliest enforced verdict and error
   assert.equal(failing.decisive?.action, "continue", "a failed classifier falls back to its onError option");
 });
 
-test("the decisions resource accepts runtime targets outside the base model catalog", async () => {
+test("the decisions resource validates targets with the runtime validator", async () => {
   const { ADMIN_RESOURCE_BY_ID } = await import("../src/api/routes/admin-resources.ts");
   const { selectableBaseModels } = await import("../src/model/pi-models.ts");
   const saved: DecisionRule[] = [];
@@ -366,13 +366,12 @@ test("the decisions resource accepts runtime targets outside the base model cata
       { id: "admin@x.com" },
       "org:default-org",
     );
-  assert.deepEqual(await apply({ rule: route() }), { ok: true });
+  assert.equal(err(await apply({ rule: route() })), "model_not_supported");
   assert.deepEqual(await apply({ rule }, { actorId: "admin@x.com" }), { ok: true });
   assert.deepEqual(await apply({ rule: { ...rule, mode: "observe" } }), { ok: true });
   assert.deepEqual(
     saved.map((r) => [r.id, r.mode]),
     [
-      ["router:admin@x.com", "enforce"],
       ["router:admin@x.com", "enforce"],
       ["router:admin@x.com", "observe"],
     ],
@@ -382,7 +381,6 @@ test("the decisions resource accepts runtime targets outside the base model cata
 test("decision model suggestions include registered custom runtime models", async (t) => {
   const { decisionsResource } = await import("../src/api/routes/decisions-resource.ts");
   const { setCustomProviders } = await import("../src/model/custom-providers.ts");
-  const { builtInModelCatalog } = await import("../src/model/model-catalog.ts");
   const { selectableBaseModels } = await import("../src/model/pi-models.ts");
   t.after(() => setCustomProviders([]));
   setCustomProviders([
@@ -395,13 +393,30 @@ test("decision model suggestions include registered custom runtime models", asyn
     },
   ]);
   assert.ok(!selectableBaseModels().some((m) => m.id === "decision-custom-model"));
-  const deps = { decisions: { providers: async () => [], rules: async () => [] } };
+  const saved: DecisionRule[] = [];
+  const deps = {
+    decisions: {
+      providers: async () => PROVIDERS,
+      rules: async () => saved,
+      saveRule: async (r: DecisionRule) => {
+        saved.push(r);
+      },
+    },
+  };
   const result = (await decisionsResource.get!(deps as never, "org:example")) as { models: string[] };
-  assert.deepEqual(
-    result.models,
-    builtInModelCatalog().map((m) => m.id),
-  );
   assert.ok(result.models.includes("decision-custom-model"));
+  const rule = route();
+  rule.options.deep!.runtime!.modelId = "decision-custom-model";
+  assert.deepEqual(
+    await decisionsResource.apply({ body: { rule }, deps } as never, { id: "admin@example.com" }, "org:example"),
+    { ok: true },
+  );
+  assert.equal(saved[0]?.options.deep?.runtime?.modelId, "decision-custom-model");
+  rule.options.deep!.runtime!.effortLevel = "unsupported-effort";
+  assert.equal(
+    err(await decisionsResource.apply({ body: { rule }, deps } as never, { id: "admin@example.com" }, "org:example")),
+    "effort_not_supported",
+  );
 });
 
 test("decision hooks load active rules for the hook, decide, and audit every verdict", async () => {

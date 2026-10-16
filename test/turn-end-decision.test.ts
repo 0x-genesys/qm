@@ -103,20 +103,37 @@ test("a structured refusal retraction records the provider cause", async () => {
   assert.equal(marker.payload.cause, "provider_refusal");
 });
 
-test("no history means no retraction marker", async () => {
-  const entries: unknown[] = [];
+test("a first-message refusal is retracted before the fallback resumes", async () => {
+  const entries = [
+    entry(0, "user", { text: "Please do the task" }),
+    entry(1, "text", {
+      text: "I cannot help with that request.",
+      step: { id: "refused", api: "openai", provider: "openai", model: choice.modelId, index: 0 },
+    }),
+  ];
   const hook = createTurnEndHook(async () => decision);
-  await hook(
+  const result = await hook(
     turn({
       runtimeControl: async () => ({ ok: true, handoff: { choice: fallback, lifetime: "task" } }),
-      emit: async (entry_) => {
-        entries.push(entry_);
-        return entry_ as never;
+      emit: async (next) => {
+        const stored = entry(entries.length, next.type, next.payload);
+        entries.push(stored);
+        return stored;
       },
     }),
     { reply: "I cannot help with that request." },
   );
-  assert.equal(entries.length, 2);
+  assert.deepEqual(result.runtimeHandoff, { choice: fallback, lifetime: "task" });
+  assert.deepEqual(entries[2]?.payload, {
+    kind: "retraction",
+    fromSeq: -1,
+    cause: "refusal_reply",
+    decisionRule: "refusal",
+  });
+  assert.deepEqual(
+    forModelContext(entries).map((e) => e.seq),
+    [0, 3, 4],
+  );
 });
 
 test("retraction drops the refused turn's run output from model context", () => {
