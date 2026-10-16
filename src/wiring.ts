@@ -1312,12 +1312,23 @@ export function buildApp(
   // every other personal credential.
   const userModelCredentials = createUserModelCredentialStore({ keychain: credentialStore });
   const keychain: Keychain | undefined = keychainKeyMaterial ? credentialStore : undefined;
-  const deploymentBrokerSlugs = new Set((config.brokerCredentials ?? []).map((c) => c.slug));
   const serviceCreds = withDeploymentCredentials(
     credentialStore,
     scopeId("org", config.orgId),
     config.brokerCredentials ?? [],
   );
+  if (config.brokerCredentials?.length) {
+    const reserved = new Set(config.brokerCredentials.map((c) => c.slug));
+    void credentialStore.listServiceCredentials(scopeId("org", config.orgId)).then(
+      (stored) => {
+        const shadowed = stored.filter((c) => reserved.has(c.slug)).map((c) => c.slug);
+        if (shadowed.length)
+          console.warn(`[broker-credentials] BROKER_CREDENTIALS overrides stored credentials: ${shadowed.join(", ")}`);
+      },
+      (error) =>
+        console.warn(`[broker-credentials] could not check for overridden stored credentials: ${errMessage(error)}`),
+    );
+  }
   const mcpToolService = createMcpToolService({
     servers: mcpServers,
     audit: auditLog,
@@ -1507,9 +1518,12 @@ export function buildApp(
             }
           : {}),
         credential: async (slug) => {
-          if (deploymentBrokerSlugs.has(slug)) return null;
-          const rec = await keychain?.getServiceCredentialSecret(scopeId("org", config.orgId), slug);
-          return rec ? { host: rec.host, enabled: rec.enabled, header: brokerCredentialAuthHeader(rec) } : null;
+          const rec = keychain
+            ? await serviceCreds.getServiceCredentialSecret(scopeId("org", config.orgId), slug)
+            : null;
+          return rec && rec.source !== "deployment"
+            ? { host: rec.host, enabled: rec.enabled, header: brokerCredentialAuthHeader(rec) }
+            : null;
         },
       }),
     auditLog,
@@ -2155,7 +2169,7 @@ export function buildApp(
               {
                 serviceCredential: async (slug) => {
                   const record = await serviceCreds.getServiceCredentialSecret(scopeId("org", config.orgId), slug);
-                  return record && record.delivery !== "env" ? record : undefined;
+                  return record && record.delivery !== "env" && record.source !== "deployment" ? record : undefined;
                 },
                 connectorToken: async (host, principalId) =>
                   (await keychain.connectorAccessToken(host, principalId)) ?? undefined,
