@@ -256,7 +256,8 @@ app.getAXState({disableDiffing}) the visible part of the focused window's access
   Ids stay stable across observations of the same window.
   By default only new (+) or changed (~) lines are shown, plus removed ids; when most lines changed, or with
   disableDiffing: true, the whole tree is shown.
-app.getScreenshot() a JPEG of the window. app.getAXStateAndScreenshot({disableDiffing}) both.
+app.getScreenshot() a JPEG covering the window and its visible menus/panels. app.getAXStateAndScreenshot({disableDiffing}) both.
+  Screenshot pixel targets are translated automatically, including panels extending beyond the main window.
 
 Actions return as soon as the input is sent. The next observation first waits for the UI to settle
 (until about a second after the last action, longer while a progress indicator shows); observe to see the result.

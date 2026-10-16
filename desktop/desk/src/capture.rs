@@ -327,6 +327,7 @@ mod tests {
     #[test]
     fn unusable_frames_are_refused_before_allocating() {
         for frame in [
+            r(0.0, 0.0, 32768.0, 32768.0),
             r(0.0, 0.0, 0.0, 10.0),
             r(0.0, 0.0, 10.0, 0.2),
             r(f64::NAN, 0.0, 10.0, 10.0),
