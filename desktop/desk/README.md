@@ -26,6 +26,8 @@ All running apps can be observed and controlled, subject to macOS permissions.
 - **Events posted to a background app.** `CGEventPostToPid` clicks and keys might be ignored, or land in the wrong window, when the app isn't frontmost. If nothing happens, add `{"type":"raise"}` first; that does take focus.
 - **Screenshots.** They use `CGWindowListCreateImage`, deprecated in macOS 14 in favour of ScreenCaptureKit. On macOS 15+ it may return nothing or prompt monthly. `pixels_per_point` also needs checking on a Retina screen.
 - **`_AXUIElementGetWindow`** (private, widely used) maps the AX window to a window id for capture and event targeting.
+- **Clipboard.** `paste` replaces the general pasteboard for the moment it takes the app to read it, then restores the previous contents. It waits for the read by running the run loop on desk's main thread, where the pasteboard calls its data provider; this has not yet been exercised on a Mac.
+- **Keyboard layout.** `type_text` reads the current layout with `TISCopyCurrentKeyboardLayoutInputSource` and `UCKeyTranslate` on desk's main thread (TIS calls are main-thread only on recent macOS).
 - **`AXManualAccessibility`** is set on each app so Electron and Chrome apps expose their trees.
 - **Speed.** Each element costs about 7 AX round trips, so big windows may take seconds. Skipping offscreen subtrees and the 6,000-element read cap bound this.
 - **Universal binary:** `cargo build --release --target aarch64-apple-darwin --target x86_64-apple-darwin`, then `lipo`.
