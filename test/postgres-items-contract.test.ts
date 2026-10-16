@@ -128,7 +128,7 @@ test("pg items reject a second call with the same call id, leaving the log untou
     const session = await store.getOrCreateByThread("web:calls", "dm", scope);
     const { lease } = await store.acquireLease(session.id);
     assert.ok(lease);
-    const callId = Array.from({ length: 512 }, () => randomUUID()).join("");
+    const callId = "cron:1";
     const call = {
       type: "tool_call" as const,
       payload: { tool: "deliver", callId, text: "hi" },
