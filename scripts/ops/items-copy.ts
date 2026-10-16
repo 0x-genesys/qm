@@ -279,6 +279,39 @@ export class ItemsCopyOperator {
     return batch.n || 1;
   }
 
+  async indexes() {
+    await this.transaction(async () => {
+      await this.assertState(["catchup", "verified"]);
+    });
+    let acquired = false;
+    try {
+      for (let attempt = 0; !acquired; attempt++) {
+        acquired = (
+          await this.client.query("SELECT pg_try_advisory_lock_shared(hashtext('qm:schema-migrations')) AS ok")
+        ).rows[0].ok;
+        if (!acquired) {
+          if (attempt >= 300) throw new Error("schema migration is running; retry after it completes");
+          await sleep(1000);
+        }
+      }
+      await this.client.query("SET search_path=public; SET statement_timeout=0; SET lock_timeout='5s'");
+      for (const index of ITEM_INDEXES) {
+        const {
+          rows: [existing],
+        } = await this.client.query(
+          "SELECT i.indisvalid, i.indrelid='public.items'::regclass AS ours FROM pg_index i WHERE indexrelid=to_regclass($1)",
+          [`public.${index.name}`],
+        );
+        if (existing && !existing.ours) throw new Error(`index ${index.name} belongs to another table`);
+        if (existing?.indisvalid) continue;
+        if (existing) await this.client.query(`DROP INDEX CONCURRENTLY public.${index.name}`);
+        await this.client.query(itemIndexSql(index).replace("INDEX IF NOT EXISTS", "INDEX CONCURRENTLY IF NOT EXISTS"));
+      }
+    } finally {
+      if (acquired) await this.client.query("SELECT pg_advisory_unlock_shared(hashtext('qm:schema-migrations'))");
+    }
+  }
+
   async finish(writersStopped: boolean) {
     if (!writersStopped)
       throw new Error("finish requires --writers-stopped; keep old writers stopped through the items cutover");
@@ -295,7 +328,15 @@ export class ItemsCopyOperator {
       );
       if (leases.n) throw new Error("active session leases remain; drain writers before finishing the copy");
       while (await this.drainBatch()) continue;
-      for (const index of ITEM_INDEXES) await this.client.query(itemIndexSql(index));
+      const {
+        rows: [{ valid }],
+      } = await this.client.query(
+        `SELECT count(*)::int AS valid FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid
+          WHERE i.indrelid='public.items'::regclass AND i.indisvalid AND c.relname=ANY($1)`,
+        [ITEM_INDEXES.map((index) => index.name)],
+      );
+      if (valid !== ITEM_INDEXES.length)
+        throw new Error("build the items indexes before stopping writers: run indexes");
       const checksum = pgMigrationChecksum(itemsMigration.statements);
       const {
         rows: [recorded],
@@ -376,7 +417,13 @@ export class ItemsCopyOperator {
         "SELECT EXISTS(SELECT 1 FROM public.qm_schema_migrations WHERE id LIKE 'sessions/store/%items-cutover') AS done",
       );
       if (!cutover.done) throw new Error("cleanup requires the items cutover migration to be applied");
-      for (const table of ["session_entries", "participants", "directory_members", "legacy_tape_steps"]) {
+      for (const table of [
+        "session_entries",
+        "legacy_session_entries",
+        "participants",
+        "directory_members",
+        "legacy_tape_steps",
+      ]) {
         if ((await this.client.query("SELECT to_regclass($1) AS relation", [`public.${table}`])).rows[0].relation) {
           await this.client.query(`DROP TRIGGER IF EXISTS items_copy_capture ON public.${table}`);
           await this.client.query(`DROP TRIGGER IF EXISTS items_copy_no_truncate ON public.${table}`);
@@ -418,9 +465,11 @@ async function main() {
     },
   });
   const action = positionals[0];
-  if (!["prepare", "copy", "catchup", "verify", "status", "report", "finish", "cleanup"].includes(action ?? ""))
+  if (
+    !["prepare", "copy", "catchup", "indexes", "verify", "status", "report", "finish", "cleanup"].includes(action ?? "")
+  )
     throw new Error(
-      "usage: node scripts/ops/items-copy.ts prepare|copy|catchup|verify|status|report|finish|cleanup [--batch 2000] [--workers 1] [--writers-stopped]",
+      "usage: node scripts/ops/items-copy.ts prepare|copy|catchup|indexes|verify|status|report|finish|cleanup [--batch 2000] [--workers 1] [--writers-stopped]",
     );
   if (!process.env.DATABASE_URL) throw new Error("DATABASE_URL must name the direct Postgres endpoint");
   const client = new pg.Client({ connectionString: process.env.DATABASE_URL, application_name: "qm-items-copy" });
@@ -439,6 +488,7 @@ async function main() {
       return;
     }
     if (action === "prepare") await op.prepare();
+    if (action === "indexes") await op.indexes();
     if (action === "verify") await op.verify();
     if (action === "finish") await op.finish(values["writers-stopped"]);
     if (action === "report") console.log(JSON.stringify(await op.report()));

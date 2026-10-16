@@ -155,6 +155,9 @@ test(
       await assert.rejects(resumed.catchupBatch(), /capture is missing or disabled/);
       await client.query("ALTER TABLE session_entries ENABLE TRIGGER items_copy_capture");
       await resumed.verify();
+      await assert.rejects(resumed.finish(true), /build the items indexes/);
+      await resumed.indexes();
+      await resumed.indexes();
       await resumed.finish(true);
       assert.equal((await resumed.status()).phase, "ready");
       assert.equal(
