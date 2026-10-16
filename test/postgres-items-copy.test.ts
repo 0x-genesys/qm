@@ -483,6 +483,7 @@ test("items copy preserves stopped-turn records", { skip }, async () => {
     await raw.query("INSERT INTO participants(session_id, principal_id, valid_from) VALUES ('stopped', 'u:ann', 0)");
     await raw.query(itemsCopySql());
     const [row] = await items(raw, "stopped");
+    assert.ok(row);
     assert.equal(row.kind, "Stop");
     assert.equal(row.turn_id, runId);
     assert.equal(row.author, "u:ann");
@@ -492,10 +493,11 @@ test("items copy preserves stopped-turn records", { skip }, async () => {
 
 test("items copy maps goal cancellation notices to system wakes", { skip }, async () => {
   await withSchema(async (raw) => {
-    const body = { objective: "A sample goal", cancelledBy: "u:ann" };
-    await seed(raw, "cancelled-goal", [["system", { kind: "goal_cancelled", ...body }]]);
+    const body = { kind: "goal_cancelled", objective: "A sample goal", cancelledBy: "u:ann" };
+    await seed(raw, "cancelled-goal", [["system", body]]);
     await raw.query(itemsCopySql());
     const [row] = await items(raw, "cancelled-goal");
+    assert.ok(row);
     assert.equal(row.kind, "Wake");
     assert.equal(row.wake_cause, "system");
     assert.equal(row.author, null);
