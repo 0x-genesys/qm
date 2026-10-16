@@ -1,9 +1,11 @@
 use crate::cancellation;
 use crate::protocol::*;
+use crate::text::{self, Key, Stroke};
 use base64::Engine;
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
+use core_foundation::data::CFData;
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
 use core_foundation::string::{CFString, CFStringRef};
@@ -17,7 +19,7 @@ use foreign_types::ForeignType;
 use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 type El = CFType;
 
@@ -44,6 +46,28 @@ extern "C" {
     fn CGEventSetLocation(e: *mut c_void, p: CGPoint);
 }
 
+#[link(name = "Carbon", kind = "framework")]
+extern "C" {
+    fn TISCopyCurrentKeyboardLayoutInputSource() -> CFTypeRef;
+    fn TISCopyCurrentASCIICapableKeyboardLayoutInputSource() -> CFTypeRef;
+    fn TISGetInputSourceProperty(source: CFTypeRef, key: CFStringRef) -> CFTypeRef;
+    static kTISPropertyUnicodeKeyLayoutData: CFStringRef;
+    fn LMGetKbdType() -> u8;
+    #[allow(clippy::too_many_arguments)]
+    fn UCKeyTranslate(
+        layout: *const u8,
+        code: u16,
+        action: u16,
+        modifiers: u32,
+        keyboard: u32,
+        options: u32,
+        dead: *mut u32,
+        max: usize,
+        len: *mut usize,
+        out: *mut u16,
+    ) -> i32;
+}
+
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
     fn CFHash(cf: CFTypeRef) -> usize;
@@ -53,6 +77,8 @@ const MAX_NODES: usize = 800;
 const MAX_DEPTH: usize = 60;
 const BORING: &[&str] = &["AXShowMenu", "AXScrollToVisible", "AXShowDefaultUI", "AXShowAlternateUI"];
 const BUSY: &[&str] = &["AXBusyIndicator", "AXProgressIndicator"];
+/// The UI gets this long after the last action before an observation reads it.
+const SETTLE: Duration = Duration::from_millis(1000);
 
 struct App {
     name: String,
@@ -73,6 +99,8 @@ struct Snapshot {
 #[derive(Default)]
 pub struct Desk {
     cache: HashMap<i32, Snapshot>,
+    /// When each app was last acted on and not observed since.
+    touched: HashMap<i32, Instant>,
 }
 
 fn fail(code: ErrorCode, m: impl Into<String>) -> Failure {
@@ -220,6 +248,67 @@ fn key(pid: i32, code: u16, flags: CGEventFlags, text: Option<&str>, hold: u32) 
         post(e, pid);
     }
     Ok(())
+}
+
+fn layout_data(source: CFTypeRef) -> Option<CFData> {
+    if source.is_null() {
+        return None;
+    }
+    let source = unsafe { CFType::wrap_under_create_rule(source) };
+    let data = unsafe { TISGetInputSourceProperty(source.as_CFTypeRef(), kTISPropertyUnicodeKeyLayoutData) };
+    (!data.is_null()).then(|| unsafe { CFData::wrap_under_get_rule(data as _) })
+}
+
+/// Which key and modifiers type each character on the user's current keyboard layout.
+/// Empty if the layout cannot be read; typing then falls back to sending plain text.
+fn keyboard() -> HashMap<char, Stroke> {
+    let Some(data) = layout_data(unsafe { TISCopyCurrentKeyboardLayoutInputSource() })
+        .or_else(|| layout_data(unsafe { TISCopyCurrentASCIICapableKeyboardLayoutInputSource() }))
+    else {
+        return HashMap::new();
+    };
+    let kind = unsafe { LMGetKbdType() } as u32;
+    text::layout(|code, shift, option| {
+        let modifiers = if shift { 2 } else { 0 } | if option { 8 } else { 0 };
+        let (mut dead, mut len, mut out) = (0u32, 0usize, [0u16; 4]);
+        let status =
+            unsafe { UCKeyTranslate(data.bytes().as_ptr(), code, 0, modifiers, kind, 0, &mut dead, out.len(), &mut len, out.as_mut_ptr()) };
+        if status != 0 || dead != 0 {
+            return None;
+        }
+        let mut chars = char::decode_utf16(out[..len].iter().copied());
+        match (chars.next(), chars.next()) {
+            (Some(Ok(c)), None) => Some(c),
+            _ => None,
+        }
+    })
+}
+
+fn type_text(pid: i32, s: &str) -> Result<(), Failure> {
+    for k in text::plan(s, &keyboard()) {
+        match k {
+            Key::Return => key(pid, text::RETURN, CGEventFlags::empty(), None, 0)?,
+            Key::Tab => key(pid, text::TAB, CGEventFlags::empty(), None, 0)?,
+            Key::Mapped(c, stroke) => {
+                let mut mods = vec![];
+                if stroke.shift {
+                    mods.push(Modifier::Shift);
+                }
+                if stroke.option {
+                    mods.push(Modifier::Option);
+                }
+                key(pid, stroke.code, flags(&mods), Some(&c.to_string()), 0)?
+            }
+            Key::Unicode(c) => key(pid, 0, CGEventFlags::empty(), Some(&c.to_string()), 0)?,
+        }
+    }
+    Ok(())
+}
+
+fn paste(pid: i32, s: &str, format: PasteFormat) -> Result<(), Failure> {
+    let v = keyboard().get(&'v').map_or(9, |k| k.code);
+    let cmd_v = || key(pid, v, CGEventFlags::CGEventFlagCommand, Some("v"), 0);
+    crate::pasteboard::paste(s, format, cmd_v, &cancellation::cancelled)
 }
 
 fn active() -> Result<(), Failure> {
@@ -485,6 +574,18 @@ fn select(e: &El, text: &str, prefix: &str, suffix: &str, selection: Selection) 
     }
 }
 
+/// Wait until `SETTLE` has passed since the last action, then up to about 5 s more while the
+/// window shows a busy or progress indicator.
+fn settle(w: &El, since: Instant) {
+    cancellation::wait(SETTLE.saturating_sub(since.elapsed()));
+    for _ in 0..16 {
+        if cancellation::cancelled() || !busy(w, 0, &mut 0) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
 fn png(img: &core_graphics::image::CGImage) -> Option<(String, u32, u32)> {
     let (w, h, row) = (img.width(), img.height(), img.bytes_per_row());
     if img.bits_per_pixel() != 32 {
@@ -549,6 +650,10 @@ impl Desk {
     }
 
     fn observe(&mut self, app: &App, shot: bool, diff: bool) -> Result<Observation, Failure> {
+        if let Some(at) = self.touched.remove(&app.pid) {
+            let (_, w) = window(app)?;
+            settle(&w, at);
+        }
         let (_, w) = window(app)?;
         let win = window_id(&w);
         let f = frame(&w).unwrap_or(Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
@@ -616,16 +721,6 @@ impl Desk {
         Ok(obs)
     }
 
-    fn settle(&self, w: &El) {
-        cancellation::wait(Duration::from_millis(1000));
-        for _ in 0..16 {
-            if cancellation::cancelled() || !busy(w, 0, &mut 0) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(300));
-        }
-    }
-
     fn act(
         &mut self,
         query: &str,
@@ -654,7 +749,10 @@ impl Desk {
             }
             completed += 1;
         }
-        self.settle(&w);
+        let attempted = (completed as usize + 1).min(actions.len());
+        if actions[..attempted].iter().any(|a| !matches!(a, Action::Wait { .. })) {
+            self.touched.insert(app.pid, Instant::now());
+        }
         let (observation, observation_failure) = match observe {
             Some((shot, diff)) => match self.observe(&app, shot, diff) {
                 Ok(observation) => (Some(observation), None),
@@ -721,12 +819,8 @@ impl Desk {
             Action::Click { target, button, count, modifiers, hold_ms } => {
                 click_at(pid, win, self.point(pid, *target)?, *button, *count, modifiers, *hold_ms)
             }
-            Action::TypeText { text } => {
-                for c in text.chars() {
-                    key(pid, 0, CGEventFlags::empty(), Some(&c.to_string()), 0)?;
-                }
-                Ok(())
-            }
+            Action::TypeText { text } => type_text(pid, text),
+            Action::Paste { text, format } => paste(pid, text, *format),
             Action::SelectText { index, text, prefix, suffix, selection } => {
                 select(&self.element(pid, *index)?, text, prefix, suffix, *selection)
             }

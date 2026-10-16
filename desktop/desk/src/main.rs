@@ -1,5 +1,10 @@
 mod cancellation;
 mod protocol;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod text;
+
+#[cfg(target_os = "macos")]
+mod pasteboard;
 
 #[cfg(target_os = "macos")]
 mod mac;

@@ -16,6 +16,7 @@ Command  = permissions { prompt?: bool = false }
 Action   = click       { target: Target, button?: left|right|middle = left, count?: u8 = 1,
                          modifiers?: [command|shift|option|control], hold_ms?: u32 = 0 }
          | type_text   { text: string }
+         | paste       { text: string, format?: text|markdown|html = text }   // "md" is accepted for markdown
          | press_key   { key: string, hold_ms?: u32 = 0 }           // a chord such as "cmd+shift+t"
          | scroll      { target?: Target, direction: up|down|left|right, amount?: Amount = { "pages": 1 } }
          | select_text { index: u32, text: string, prefix?: string, suffix?: string,
@@ -59,7 +60,7 @@ Rect        { x, y, w, h }                   // global screen points, top-left o
 Screenshot  { png_base64, width, height, pixels_per_point }
 Failure     { code: ErrorCode, message: string, action: u32? }   // action = index of the failed action in a batch
 ErrorCode   = bad_request | unsupported_platform | permission_missing | app_not_found
-            | no_window | bad_index | unknown_key | action_failed
+            | no_window | bad_index | unknown_key | action_failed | paste_conflict
 ```
 
 ## Observation semantics
@@ -72,7 +73,7 @@ ErrorCode   = bad_request | unsupported_platform | permission_missing | app_not_
   Divide PNG pixels by `pixels_per_point` before sending a `point`.
 - Observe before acting; absent snapshots are rejected. Ids are stable: an element keeps its id across observations of the same window for as long as it is the same AX object. A different window starts ids again. `index` in actions means this id, from the latest observation of that app.
 - With `diff` (the default) and an earlier observation of the same window, `tree` holds only new or changed lines, `removed` lists ids that disappeared and `diffed` is true. Otherwise `tree` is the whole tree.
-- After the actions, `act` waits 1 s, then up to 5 s more while the window shows a busy or progress indicator, whether or not it observes.
+- `act` returns as soon as its actions are sent. The next observation of that app (`observe`, or `act` with `observe`) first waits until 1 s has passed since the last action, then up to 5 s more while the window shows a busy or progress indicator. An observation with no action since the previous one does not wait. A batch of only `wait` actions does not count as an action.
 - A batch stops at the first failed action. `acted.completed` counts what ran; the observation or `observation_failure` comes back without losing the completion count.
 
 ## Pacing
@@ -82,7 +83,9 @@ With `pace: true`, before each `click`, `scroll` and `drag`, desk writes `pointe
 ## How actions are delivered
 
 - `click` on an index, left button, single: `AXPress` if the element offers it (no pointer, no focus change); otherwise a synthetic click at the element's center.
-- Other clicks, `drag`, `scroll`, `type_text`, `press_key`: CGEvents posted to the app's pid (`CGEventPostToPid`). The real pointer does not move and the app is not brought forward. Some apps ignore events while in the background; then send `raise` first.
+- Other clicks, `drag`, `scroll`, `type_text`, `press_key`, and the Cmd+V of `paste`: CGEvents posted to the app's pid (`CGEventPostToPid`). The real pointer does not move and the app is not brought forward. Some apps ignore events while in the background; then send `raise` first.
+- `type_text` sends each character with the key code and Shift/Option flags that type it on the user's current keyboard layout, plus the character itself. `\n`, `\r\n` and `\r` press Return and `\t` presses Tab. Characters the layout cannot type (emoji, other scripts, dead-key accents) are sent as text on key code 0.
+- `paste` puts the text on the general pasteboard (plain text, plus HTML for `markdown` and `html`; markdown is converted to HTML), presses Cmd+V and, once the app has read it, restores the previous clipboard. The data is promised lazily so desk knows when the app reads it, and it is marked `org.nspasteboard.TransientType` so clipboard managers skip it. If the app does not read it within 3 s the action fails with `action_failed` (nothing was pasted). If the clipboard changes for another reason meanwhile, desk keeps that new content and fails with `paste_conflict`, because the app may have pasted it instead.
 - `click` holds `modifiers` and keeps the button down for `hold_ms`. `press_key` holds the key for `hold_ms`.
 - `scroll` sends pixel wheel events in 120 px steps; a page is 85% of the target element's height (or width), else the window's.
 - `select_text` finds `text` in the element's `AXValue` (the occurrence preceded by `prefix` and followed by `suffix`), focuses the element and sets `AXSelectedTextRange` to the text or a caret before or after it.

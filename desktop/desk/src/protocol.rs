@@ -62,6 +62,11 @@ pub enum Action {
     TypeText {
         text: String,
     },
+    Paste {
+        text: String,
+        #[serde(default)]
+        format: PasteFormat,
+    },
     PressKey {
         key: String,
         #[serde(default)]
@@ -145,6 +150,16 @@ impl Default for Amount {
     fn default() -> Self {
         Amount::Pages(1.0)
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PasteFormat {
+    #[default]
+    Text,
+    #[serde(alias = "md")]
+    Markdown,
+    Html,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +260,7 @@ pub enum ErrorCode {
     BadIndex,
     UnknownKey,
     ActionFailed,
+    PasteConflict,
 }
 
 impl Failure {

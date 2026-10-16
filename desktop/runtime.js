@@ -170,7 +170,11 @@
     }
 
     typeText(text) {
-      return this.#act({ type: "type_text", text });
+      return this.#act({ type: "type_text", text: String(text) });
+    }
+
+    paste(text, { format = "text" } = {}) {
+      return this.#act({ type: "paste", text: String(text), format });
     }
 
     raise() {
@@ -208,7 +212,8 @@ app.getAXState({disableDiffing}) the focused window's accessibility tree. Lines 
   By default only changed or new lines are shown, plus removed ids; disableDiffing: true shows the whole tree.
 app.getScreenshot() a JPEG of the window. app.getAXStateAndScreenshot({disableDiffing}) both.
 
-Actions (each waits about a second, longer while a progress indicator shows; observe again to see the result):
+Actions return as soon as the input is sent. The next observation first waits for the UI to settle
+(until about a second after the last action, longer while a progress indicator shows); observe to see the result.
 app.click(target, {mouseButton: left|right|middle, clickCount, key: "cmd+shift", durationMs})
   target is an element id from the tree or [x, y] in pixels of the latest screenshot.
 app.drag([x, y], [x, y]) screenshot pixels.
@@ -217,7 +222,10 @@ app.selectText(id, text, {prefix, suffix, selectionType: text|cursor_before|curs
 app.setValue(id, value) writes the element's value directly.
 app.performSecondaryAction(id, action) runs an action the element lists, e.g. "ShowMenu", "Increment".
 app.pressKey("cmd+shift+t", {durationMs}) key names: letters, digits, punctuation, return, tab, space, delete, escape, arrows, home, end, pageup, pagedown, f1-f12.
-app.typeText(text)
+app.typeText(text) types with the keyboard. "\n" presses Return and "\t" presses Tab, so they can submit
+  a form or send a chat message; use paste for multi-line text.
+app.paste(text, {format: text|markdown|html}) pastes through the clipboard, then restores the user's clipboard.
+  Prefer it for long, multi-line or formatted text. Needs a focused text field.
 app.raise() brings the window to the front; use when an app ignores background input.
 app.wait(ms)
 
