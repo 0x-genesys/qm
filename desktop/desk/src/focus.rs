@@ -86,6 +86,21 @@ impl Focus {
         Ok(guard)
     }
 
+    pub fn finish(&mut self) -> Result<(), Failure> {
+        EXPECTED_FOREGROUND.store(0, Ordering::Release);
+        if !std::mem::replace(&mut self.activated, false) {
+            return Ok(());
+        }
+        let until = Instant::now() + Duration::from_millis(80);
+        while Instant::now() < until && !crate::cancellation::cancelled() {
+            std::thread::sleep(Duration::from_millis(8));
+        }
+        if frontmost() != Some(self.target) {
+            synthetic_focus(self.target, 0, 2)?;
+        }
+        Ok(())
+    }
+
     pub fn check(&self) -> Result<(), Failure> {
         check_current()?;
         if let Some(intervention) = &self.intervention {
@@ -112,15 +127,8 @@ pub fn check_current() -> Result<(), Failure> {
 
 impl Drop for Focus {
     fn drop(&mut self) {
-        EXPECTED_FOREGROUND.store(0, Ordering::Release);
-        if self.activated {
-            let until = Instant::now() + Duration::from_millis(80);
-            while Instant::now() < until && !crate::cancellation::cancelled() {
-                std::thread::sleep(Duration::from_millis(8));
-            }
-            if frontmost() != Some(self.target) {
-                let _ = synthetic_focus(self.target, 0, 2);
-            }
+        if let Err(error) = self.finish() {
+            eprintln!("Background focus cleanup failed: {}", error.message);
         }
     }
 }

@@ -1304,7 +1304,13 @@ impl Desk {
                 }
             }
             if matches!(a, Action::Raise) {
-                drop(focus.take());
+                if let Some(mut guard) = focus.take() {
+                    if let Err(mut error) = guard.finish() {
+                        error.action = Some(i as u32);
+                        failure = Some(error);
+                        break;
+                    }
+                }
             }
             let paced =
                 focus.as_ref().map_or(Ok(()), |f| f.check()).and_then(|_| self.validate_window(&app)).and_then(|_| match pace.as_mut() {
@@ -1327,7 +1333,15 @@ impl Desk {
             completed += 1;
             previous = Instant::now();
         }
-        drop(focus.take());
+        if let Some(mut guard) = focus.take() {
+            if let Err(error) = guard.finish() {
+                if let Some(failure) = &mut failure {
+                    failure.message += &format!("; background focus cleanup also failed: {}", error.message);
+                } else {
+                    failure = Some(error);
+                }
+            }
+        }
         let attempted = (completed as usize + 1).min(actions.len());
         if actions[..attempted].iter().any(|a| !matches!(a, Action::Wait { .. })) {
             self.touched.insert(app.pid, Instant::now());

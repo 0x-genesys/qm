@@ -97,7 +97,7 @@ reached`.
   fill. Only if that attribute is refused and a web area is still empty does it set `AXEnhancedUserInterface` and wait
   again. Whichever it turned on is set back to off when desk exits; attributes that were already on are left alone.
 - `point` targets are **window-relative points** (origin = window top-left).
-  The screenshot covers its own `frame`: the window plus the app's menus, popovers and sheets in front of it, so it can reach past the window.
+  On macOS 14+, the screenshot covers its own `frame`: the window plus the app's menus, popovers and sheets in front of it, so it can reach past the window. On macOS 12.3–13 it covers only the main window.
   It is captured at nominal resolution, so one PNG pixel is about one point; `pixels_per_point` says what it really was.
   To send a `point`, divide PNG pixels by `pixels_per_point`, then add the screenshot `frame` origin minus the observation `frame` origin.
 - Observe before acting; absent snapshots are rejected. Ids are stable: an element keeps its id across observations of the same window for as long as it is the same AX object, including while it is scrolled out of view for up to 30 observations. When the app replaces an object (a re-render), the new one inherits the id if exactly one old object and exactly one new object have the same role, subrole, identifier, name and ancestry, the old object is gone, and neither sits inside a list, table, outline, row or cell. An inherited id's line is always marked `~` in a diff. Acting on an id whose object is gone looks for that single replacement first and fails with `bad_index` if there is none. A different window starts ids again. `index` in actions means this id, from the latest observation of that app.

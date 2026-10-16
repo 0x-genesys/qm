@@ -66,30 +66,34 @@ impl Intervention {
                 },
             );
             let Ok(tap) = tap else {
-                let _ = ready_tx.send(false);
+                let _ = ready_tx.send(Err("Could not create the target-input event tap"));
                 return;
             };
             let Ok(source) = tap.mach_port.create_runloop_source(0) else {
-                let _ = ready_tx.send(false);
+                let _ = ready_tx.send(Err("Could not create the target-input run-loop source"));
                 return;
             };
             let runloop = CFRunLoop::get_current();
             runloop.add_source(&source, unsafe { kCFRunLoopDefaultMode });
             tap.enable();
-            if ready_tx.send(true).is_ok() {
+            if ready_tx.send(Ok(())).is_ok() {
                 while !quit.load(Ordering::Acquire) {
                     CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, Duration::from_millis(30), false);
                 }
             }
             runloop.remove_source(&source, unsafe { kCFRunLoopDefaultMode });
         });
-        match ready_rx.recv_timeout(Duration::from_millis(350)) {
-            Ok(true) => Ok(Self { stop, thread: Some(thread) }),
-            _ => {
-                stop.store(true, Ordering::Release);
-                Err(Failure::new(ErrorCode::ActionFailed, "Cannot monitor input to target app"))
-            }
+        let ready = ready_rx.recv_timeout(Duration::from_millis(350));
+        if matches!(ready, Ok(Ok(()))) {
+            return Ok(Self { stop, thread: Some(thread) });
         }
+        stop.store(true, Ordering::Release);
+        let message = match ready {
+            Ok(Err(message)) => message,
+            Err(mpsc::RecvTimeoutError::Timeout) => "Target-input monitoring did not start within 350 ms",
+            _ => "Target-input monitoring stopped before initialization",
+        };
+        Err(Failure::new(ErrorCode::ActionFailed, message))
     }
 
     pub fn check(&self) -> Result<(), Failure> {
