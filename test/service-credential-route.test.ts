@@ -312,6 +312,7 @@ test("partial credential updates preserve capability lists while explicit empty 
           slug: "k",
           name: "Renamed",
           host: "h.example",
+          secret: "s", // clearing injection and the capability lists rebinds: the secret must be re-supplied
           injection: {},
           allowedMethods: [],
           allowedPathPrefixes: [],
@@ -334,6 +335,147 @@ test("partial credential updates preserve capability lists while explicit empty 
     );
     loaded = (await getCfg(srv.base)).serviceCredentials[0]!;
     assert.equal(loaded.enabled, false, "omitting enabled preserves a disabled credential");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("credential edits that redirect or unwrap the stored secret require re-supplying it", async () => {
+  const srv = start();
+  try {
+    await putCred(srv.base, {
+      slug: "k",
+      name: "K",
+      secret: "s",
+      host: "api.example.com",
+      allowedMethods: ["GET", "POST"],
+      allowedPathPrefixes: ["/search/"],
+    });
+    let loaded = (await getCfg(srv.base)).serviceCredentials[0]!;
+
+    const denied = async (patch: Record<string, unknown>) => {
+      const r = await putCred(srv.base, {
+        slug: "k",
+        name: "K",
+        host: "api.example.com",
+        allowedMethods: ["GET", "POST"],
+        allowedPathPrefixes: ["/search/"],
+        expectedUpdatedAt: loaded.updatedAt,
+        ...patch,
+      });
+      assert.equal(r.status, 400, JSON.stringify(patch));
+      assert.match(await r.text(), /credential_rebind_requires_secret/);
+    };
+
+    await denied({ host: "evil.example.com" });
+    await denied({ delivery: "env", envKey: "K_API_KEY", host: "" });
+    await denied({ injection: { header: "X-Key" } });
+    await denied({ allowedMethods: ["GET", "POST", "DELETE"] });
+    await denied({ allowedPathPrefixes: ["/search/", "/admin/"] });
+    await denied({ allowedMethods: [], allowedPathPrefixes: [] }); // clearing the lists broadens
+
+    // narrowing and other secret-free edits still land without the secret
+    const narrowed = await putCred(srv.base, {
+      slug: "k",
+      name: "K renamed",
+      host: "api.example.com",
+      allowedMethods: ["GET"],
+      allowedPathPrefixes: ["/search/"],
+      enabled: false,
+      deployments: false,
+      grantees: ["org:default-org", "personal:alice@default-org"],
+      expectedUpdatedAt: loaded.updatedAt,
+    });
+    assert.equal(narrowed.status, 200, "the denials wrote nothing; the loaded revision still applies");
+    loaded = (await getCfg(srv.base)).serviceCredentials[0]!;
+    assert.equal(loaded.name, "K renamed");
+    assert.deepEqual(loaded.allowedMethods, ["GET"]);
+    assert.equal(loaded.enabled, false);
+    assert.equal(loaded.deployments, false);
+    assert.deepEqual(loaded.grantees, ["org:default-org", "personal:alice@default-org"]);
+    assert.equal(loaded.hasSecret, true);
+
+    // re-supplying the secret confirms a rebind
+    const rebound = await putCred(srv.base, {
+      slug: "k",
+      name: "K renamed",
+      secret: "s",
+      host: "api2.example.com",
+      allowedMethods: ["GET"],
+      allowedPathPrefixes: ["/search/"],
+      expectedUpdatedAt: loaded.updatedAt,
+    });
+    assert.equal(rebound.status, 200);
+    loaded = (await getCfg(srv.base)).serviceCredentials[0]!;
+    assert.equal(loaded.host, "api2.example.com");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("env-delivered credentials need the secret to change envKey or flip back to broker", async () => {
+  const srv = start();
+  try {
+    assert.equal(
+      (
+        await putCred(srv.base, {
+          slug: "steel",
+          name: "Steel",
+          secret: "s",
+          delivery: "env",
+          envKey: "STEEL_KEY",
+          host: "",
+        })
+      ).status,
+      200,
+    );
+    let loaded = (await getCfg(srv.base)).serviceCredentials[0]!;
+    assert.equal(loaded.envKey, "STEEL_KEY");
+
+    const envKeyFlip = await putCred(srv.base, {
+      slug: "steel",
+      name: "Steel",
+      delivery: "env",
+      envKey: "STEEL_KEY_2",
+      expectedUpdatedAt: loaded.updatedAt,
+    });
+    assert.equal(envKeyFlip.status, 400);
+    assert.match(await envKeyFlip.text(), /credential_rebind_requires_secret/);
+
+    const toBroker = await putCred(srv.base, {
+      slug: "steel",
+      name: "Steel",
+      delivery: "broker",
+      host: "api.steel.example",
+      expectedUpdatedAt: loaded.updatedAt,
+    });
+    assert.equal(toBroker.status, 400);
+    assert.match(await toBroker.text(), /credential_rebind_requires_secret/);
+
+    // renaming with the same envKey stays secret-free
+    const renamed = await putCred(srv.base, {
+      slug: "steel",
+      name: "Steel renamed",
+      delivery: "env",
+      envKey: "STEEL_KEY",
+      expectedUpdatedAt: loaded.updatedAt,
+    });
+    assert.equal(renamed.status, 200);
+    loaded = (await getCfg(srv.base)).serviceCredentials[0]!;
+    assert.equal(loaded.name, "Steel renamed");
+
+    // re-supplying the secret confirms the envKey change
+    const withSecret = await putCred(srv.base, {
+      slug: "steel",
+      name: "Steel renamed",
+      secret: "s",
+      delivery: "env",
+      envKey: "STEEL_KEY_2",
+      expectedUpdatedAt: loaded.updatedAt,
+    });
+    assert.equal(withSecret.status, 200);
+    loaded = (await getCfg(srv.base)).serviceCredentials[0]!;
+    assert.equal(loaded.envKey, "STEEL_KEY_2");
   } finally {
     await srv.close();
   }
@@ -475,6 +617,7 @@ test("credential rollback preserves a concurrent credential update", async () =>
         {
           slug: "k",
           name: "Concurrent",
+          secret: "s", // re-hosting a live credential now requires the writer to re-supply its secret
           host: "concurrent.example",
           updatedBy: "concurrent-governor",
         },
@@ -525,6 +668,7 @@ test("failed credential creation does not delete a concurrent update of the new 
           {
             slug: "new",
             name: "Concurrent",
+            secret: "s", // re-hosting a live credential now requires the writer to re-supply its secret
             host: "concurrent.example",
             updatedBy: "concurrent-governor",
           },

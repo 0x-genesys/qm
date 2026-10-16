@@ -105,13 +105,13 @@ test("conditional compensation never overwrites newer update, create, or delete 
   const original = (await cfg.listServiceCredentials(ORG)).find((credential) => credential.slug === "updated")!;
   const forwardVersion = await cfg.setServiceCredentialIfCurrent(
     ORG,
-    { slug: "updated", name: "Forward", host: "forward.example" },
+    { slug: "updated", name: "Forward", secret: "old", host: "forward.example" },
     original.updatedAt,
   );
   assert.notEqual(forwardVersion, null);
   const concurrentVersion = await cfg.setServiceCredentialIfCurrent(
     ORG,
-    { slug: "updated", name: "Concurrent", host: "concurrent.example" },
+    { slug: "updated", name: "Concurrent", secret: "old", host: "concurrent.example" },
     forwardVersion!,
   );
   assert.notEqual(concurrentVersion, null);
@@ -138,7 +138,7 @@ test("conditional compensation never overwrites newer update, create, or delete 
   assert.notEqual(
     await cfg.setServiceCredentialIfCurrent(
       ORG,
-      { slug: "created", name: "Concurrent", host: "two.example" },
+      { slug: "created", name: "Concurrent", secret: "one", host: "two.example" },
       createdVersion!,
     ),
     null,
@@ -284,4 +284,73 @@ test("a service credential is available to published apps by default; the switch
   });
   assert.equal((await cfg.listServiceCredentials(ORG))[0]!.deployments, false);
   assert.equal((await cfg.getServiceCredentialSecret(ORG, "acme-data"))!.deployments, false);
+});
+
+test("rebinding an existing credential requires a fresh secret at the store level", async () => {
+  const cfg = store();
+  const base = { slug: "serp", name: "SERP", secret: "key-1", host: "api.example.com" };
+  await cfg.setServiceCredential(ORG, {
+    ...base,
+    allowedMethods: ["GET", "POST"],
+    allowedPathPrefixes: ["/search/", "/v2/"],
+  });
+
+  const edit = (patch: Record<string, unknown>) =>
+    cfg.setServiceCredential(ORG, {
+      slug: "serp",
+      name: "SERP",
+      host: "api.example.com",
+      allowedMethods: ["GET", "POST"],
+      allowedPathPrefixes: ["/search/", "/v2/"],
+      ...patch,
+    });
+
+  await assert.rejects(edit({ host: "evil.example" }), /changing host would redirect or unwrap/);
+  await assert.rejects(edit({ injection: { header: "X-Key" } }), /redirect or unwrap/);
+  await assert.rejects(edit({ delivery: "env", envKey: "SERP_KEY", host: "" }), /redirect or unwrap/);
+  await assert.rejects(edit({ allowedMethods: ["GET", "DELETE"] }), /redirect or unwrap/);
+  await assert.rejects(edit({ allowedPathPrefixes: ["/search/", "/admin/"] }), /redirect or unwrap/);
+  await assert.rejects(edit({ allowedMethods: [], allowedPathPrefixes: [] }), /redirect or unwrap/);
+
+  // envKey changes move where the secret lands, too
+  await cfg.setServiceCredential(ORG, {
+    slug: "steel",
+    name: "Steel",
+    delivery: "env",
+    envKey: "STEEL_KEY",
+    secret: "s",
+    host: "",
+  });
+  await assert.rejects(
+    cfg.setServiceCredential(ORG, {
+      slug: "steel",
+      name: "Steel",
+      delivery: "env",
+      envKey: "STEEL_KEY_2",
+      host: "",
+    }),
+    /redirect or unwrap/,
+  );
+
+  // narrowing and secret-free edits keep the stored secret
+  await cfg.setServiceCredential(ORG, {
+    slug: "serp",
+    name: "SERP narrowed",
+    host: "api.example.com",
+    allowedMethods: ["GET"],
+    allowedPathPrefixes: ["/search/"],
+    enabled: false,
+    deployments: false,
+  });
+  const pub = (await cfg.listServiceCredentials(ORG)).find((credential) => credential.slug === "serp")!;
+  assert.equal(pub.name, "SERP narrowed");
+  assert.equal(pub.enabled, false);
+  assert.equal(pub.deployments, false);
+  assert.equal((await cfg.getServiceCredentialSecret(ORG, "serp"))?.secret, "key-1");
+
+  // a fresh secret confirms the rebind
+  await cfg.setServiceCredential(ORG, { ...base, name: "SERP rotated", secret: "key-2", host: "api2.example.com" });
+  const dec = await cfg.getServiceCredentialSecret(ORG, "serp");
+  assert.equal(dec?.host, "api2.example.com");
+  assert.equal(dec?.secret, "key-2");
 });
