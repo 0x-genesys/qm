@@ -95,6 +95,7 @@ const getCfg = async (base: string) =>
     serviceCredentials: Array<{
       slug: string;
       name: string;
+      envKey?: string;
       host: string;
       deployments?: boolean;
       hasSecret: boolean;
@@ -374,7 +375,6 @@ test("credential edits that redirect or unwrap the stored secret require re-supp
     await denied({ allowedPathPrefixes: ["/search/", "/admin/"] });
     await denied({ allowedMethods: [], allowedPathPrefixes: [] }); // clearing the lists broadens
 
-    // narrowing and other secret-free edits still land without the secret
     const narrowed = await putCred(srv.base, {
       slug: "k",
       name: "K renamed",
@@ -395,7 +395,6 @@ test("credential edits that redirect or unwrap the stored secret require re-supp
     assert.deepEqual(loaded.grantees, ["org:default-org", "personal:alice@default-org"]);
     assert.equal(loaded.hasSecret, true);
 
-    // re-supplying the secret confirms a rebind
     const rebound = await putCred(srv.base, {
       slug: "k",
       name: "K renamed",
@@ -452,7 +451,6 @@ test("env-delivered credentials need the secret to change envKey or flip back to
     assert.equal(toBroker.status, 400);
     assert.match(await toBroker.text(), /credential_rebind_requires_secret/);
 
-    // renaming with the same envKey stays secret-free
     const renamed = await putCred(srv.base, {
       slug: "steel",
       name: "Steel renamed",
@@ -464,7 +462,6 @@ test("env-delivered credentials need the secret to change envKey or flip back to
     loaded = (await getCfg(srv.base)).serviceCredentials[0]!;
     assert.equal(loaded.name, "Steel renamed");
 
-    // re-supplying the secret confirms the envKey change
     const withSecret = await putCred(srv.base, {
       slug: "steel",
       name: "Steel renamed",

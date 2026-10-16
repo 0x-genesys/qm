@@ -312,7 +312,6 @@ test("rebinding an existing credential requires a fresh secret at the store leve
   await assert.rejects(edit({ allowedPathPrefixes: ["/search/", "/admin/"] }), /redirect or unwrap/);
   await assert.rejects(edit({ allowedMethods: [], allowedPathPrefixes: [] }), /redirect or unwrap/);
 
-  // envKey changes move where the secret lands, too
   await cfg.setServiceCredential(ORG, {
     slug: "steel",
     name: "Steel",
@@ -332,7 +331,6 @@ test("rebinding an existing credential requires a fresh secret at the store leve
     /redirect or unwrap/,
   );
 
-  // narrowing and secret-free edits keep the stored secret
   await cfg.setServiceCredential(ORG, {
     slug: "serp",
     name: "SERP narrowed",
@@ -348,7 +346,6 @@ test("rebinding an existing credential requires a fresh secret at the store leve
   assert.equal(pub.deployments, false);
   assert.equal((await cfg.getServiceCredentialSecret(ORG, "serp"))?.secret, "key-1");
 
-  // a fresh secret confirms the rebind
   await cfg.setServiceCredential(ORG, { ...base, name: "SERP rotated", secret: "key-2", host: "api2.example.com" });
   const dec = await cfg.getServiceCredentialSecret(ORG, "serp");
   assert.equal(dec?.host, "api2.example.com");
