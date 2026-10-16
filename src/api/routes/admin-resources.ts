@@ -30,6 +30,7 @@ import {
   credentialInjectionError,
   isValidCredentialSlug,
   isValidServiceCredentialEnvKey,
+  serviceCredentialRebinds,
   type CredentialInjection,
   type DecryptedServiceCredential,
   type PublicServiceCredential,
@@ -1176,6 +1177,15 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         enabled: typeof b.enabled === "boolean" ? b.enabled : (existing?.enabled ?? true),
         updatedBy: actor.id,
       };
+      if (existing && !(typeof b.secret === "string" && b.secret.trim())) {
+        const rebinds = serviceCredentialRebinds(existing, input);
+        if (rebinds.length)
+          return {
+            error: `Changing ${rebinds.join(", ")} redirects or unwraps the stored secret, so the edit needs the secret re-supplied. Paste the secret again to confirm the change, or keep those fields as loaded (name, enabled, deployments, grantees, and narrowed allowedMethods/allowedPathPrefixes need no secret).`,
+            code: "credential_rebind_requires_secret",
+            status: 400,
+          };
+      }
       if (existing) {
         mutationVersion = await deps.serviceCreds.setServiceCredentialIfCurrent(
           scope,
