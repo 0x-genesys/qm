@@ -455,7 +455,6 @@ fn type_text(pid: i32, s: &str) -> Result<(), Failure> {
     Ok(())
 }
 
-/// The focused field's text and selection, read before Cmd+V and compared after it.
 struct Field {
     element: El,
     value: String,
@@ -477,11 +476,15 @@ fn paste(pid: i32, ax: &El, s: &str, format: PasteFormat) -> Result<(), Failure>
         None => chord("v")?.0,
     };
     let before = field(ax);
-    let pasted = text::payload(s, format).0;
+    let pasted = text::expected(s, format);
     let mut check = || {
         use crate::pasteboard::Check;
         match (&before, field(ax)) {
-            (Some(b), Some(now)) if now.element == b.element && text::inserted(&b.value, b.selection, &now.value, &pasted) => Check::Landed,
+            (Some(b), Some(now))
+                if now.element == b.element && pasted.iter().any(|p| text::inserted(&b.value, b.selection, &now.value, p)) =>
+            {
+                Check::Landed
+            }
             (Some(_), Some(_)) => Check::NotYet,
             _ => Check::Unreadable,
         }

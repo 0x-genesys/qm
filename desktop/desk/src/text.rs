@@ -62,6 +62,12 @@ pub fn payload(text: &str, format: PasteFormat) -> (String, Option<String>) {
     }
 }
 
+pub fn expected(text: &str, format: PasteFormat) -> Vec<String> {
+    let (plain, html) = payload(text, format);
+    let rendered = html.map(|h| strip_html(&h)).filter(|r| *r != plain);
+    std::iter::once(plain).chain(rendered).collect()
+}
+
 fn norm(s: &[u16]) -> String {
     String::from_utf16_lossy(s).replace("\r\n", "\n").replace(['\r', '\u{2028}', '\u{2029}'], "\n").replace('\u{a0}', " ")
 }
@@ -71,15 +77,10 @@ fn insertion(before: &[char], pasted: &[char], after: &[char]) -> bool {
         return false;
     }
     let common = before.iter().zip(after).take_while(|(x, y)| x == y).count();
-    (common.saturating_sub(pasted.len())..=common).any(|i| {
-        after[..i] == before[..i] && after[i..i + pasted.len()] == *pasted && after[i + pasted.len()..] == before[i..]
-    })
+    (common.saturating_sub(pasted.len())..=common)
+        .any(|i| after[..i] == before[..i] && after[i..i + pasted.len()] == *pasted && after[i + pasted.len()..] == before[i..])
 }
 
-/// Whether `after` is exactly `before` with `pasted` inserted at the selection (UTF-16
-/// `[start, length]`), or at one place when the selection is unknown. Only line endings
-/// (CR, CRLF, U+2028, U+2029 count as LF) and non-breaking spaces (as spaces) are normalised.
-/// This is the evidence desk needs before it restores the user's clipboard.
 pub fn inserted(before: &str, selection: Option<(usize, usize)>, after: &str, pasted: &str) -> bool {
     let b: Vec<u16> = before.encode_utf16().collect();
     let after = norm(&after.encode_utf16().collect::<Vec<_>>());
@@ -196,5 +197,7 @@ mod tests {
         assert!(!inserted("ab", Some((5, 0)), "aXYb", "XY"), "stale selection");
         assert!(!inserted("ab", Some((1, 0)), "ab", ""), "nothing expected");
         assert!(inserted("é", Some((1, 0)), "é😀", "😀"), "UTF-16 offsets");
+        assert_eq!(expected("**hi** there", PasteFormat::Markdown), vec!["**hi** there".to_string(), "hi there".to_string()]);
+        assert_eq!(expected("plain", PasteFormat::Text), vec!["plain".to_string()]);
     }
 }
