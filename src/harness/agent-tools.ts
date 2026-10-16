@@ -387,7 +387,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       orgScopeId: ref.orgScopeId ?? ref.scopeLabel,
       sourceScopeId,
     });
-    if (type === "tool_result" && ref.shutdown?.aborted && isObj(payload)) payload = { ...payload, interrupted: true };
+    if (type === "tool_result" && isObj(payload)) {
+      if (ref.shutdown?.aborted) payload = { ...payload, interrupted: true, stop: { kind: "shutdown" } };
+      else if (ref.abortSignal?.aborted) payload = { ...payload, stopped: true };
+    }
     await ref.emit({ type, payload, scopeLabel });
   };
 
@@ -1542,7 +1545,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     name: "subagents",
     label: "subagents",
     description:
-      "Start and coordinate subagents: background workers you spawn for a task. A subagent does not get its own sidebar entry and does not inherit this conversation, so give it a complete standalone task with the context and authorization it needs. Its final answer comes back to you as an internal message. " +
+      "Start and coordinate subagents: background workers you spawn for a task. A subagent does not get its own sidebar entry or see this conversation, so pass what it needs to know. Brief it as you would a colleague just as capable as you are, if not more so: the goal, why it matters, what you already know, and any real limits. Leave the approach to them; keep it short and state preferences as preferences. Its final answer comes back to you as an internal message. " +
       "`open` starts a subagent with `task`. `followup_task` gives an existing subagent more work in `task` and starts a turn if it is idle; active work is queued safely. " +
       '`send_message` passes information to one of your subagents, a sibling subagent, or your parent (target="parent") without starting a turn; with interrupt:true it stops a subagent\'s current run. ' +
       "`read` with no target lists your subagents; with a target it reads that subagent's transcript. " +
@@ -1572,7 +1575,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       ),
       task: Type.Optional(
         Type.String({
-          description: "open and followup_task: the complete standalone instruction the subagent works from.",
+          description: "open and followup_task: the short task brief, with relevant context and real limits.",
         }),
       ),
       name: Type.Optional(Type.String({ description: "open: short title for the subagent (default: from task)." })),
@@ -2935,7 +2938,9 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       "context it is shared by ALL of that person's sessions, not tied to the session that " +
       "wrote it. Never store session pins or 'for this session' notes here: ALL pinning goes " +
       "through the pins self-API (POST /v1/pins), which routes by context — the session's own " +
-      "pins in the web UI, native pinning in Slack. `edit` swaps one exact passage `old` for `new` " +
+      "pins in the web UI, native pinning in Slack. To keep a skill in this scope's per-turn skills shortlist, " +
+      'pin it instead of writing guidance: PUT $AGENT_API_URL/v1/pinned-skills with header "x-agent-capability: $AGENT_API_TOKEN" ' +
+      'and body {"names": [...]}, the full list. `edit` swaps one exact passage `old` for `new` ' +
       "and fails unless `old` appears exactly once in that scope's guidance; prefer it for small changes. " +
       "`replace` REPLACES that scope's entire guidance with `content` — include everything that " +
       "should remain. Org-wide policy is always layered above and " +
@@ -4190,6 +4195,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
               callId,
               d.timeoutMs ?? CLIENT_TOOL_DEFAULT_TIMEOUT_MS,
               ref.abortSignal,
+              d.name,
             );
             if (outcome === "timeout" || outcome === "cancelled")
               return recordCoreAuthoredResult(
@@ -4203,6 +4209,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
               { tool: d.name, client: true },
               {
                 ...text(outcome.content || "[empty result]"),
+                content: [
+                  ...text(outcome.content || "[empty result]").content,
+                  ...(outcome.images ?? []).map((image) => ({ type: "image" as const, ...image })),
+                ],
                 ...(outcome.structured === undefined ? {} : { details: { structured: outcome.structured } }),
               },
               "client page",
@@ -4407,15 +4417,14 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
   };
   const mcpNames = new Set(mcpTools.map((t) => t.name));
   const active = opts?.readOnly ? tools.filter((t) => READ_ONLY_TOOL_NAMES.has(t.name) || mcpNames.has(t.name)) : tools;
-  return active.map((t) =>
-    withRetrySafety(
-      withRuntimeBarrier(
-        withToolBodyTiming(withToolApprovalGate(validateSandboxTool(t), ref, { recordCall, recordResult }), ref),
-        ref,
-      ),
-      retryMarks,
-    ),
-  );
+  const clientNames = new Set(clientTools.map((tool) => tool.name));
+  return active.map((tool) => {
+    const wrapped = withRuntimeBarrier(
+      withToolBodyTiming(withToolApprovalGate(validateSandboxTool(tool), ref, { recordCall, recordResult }), ref),
+      ref,
+    );
+    return clientNames.has(tool.name) ? wrapped : withRetrySafety(wrapped, retryMarks);
+  });
 }
 
 const RETRY_SAFE_FIELD = "retrySafe";

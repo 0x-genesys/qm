@@ -1,3 +1,4 @@
+import { desktopTurnId, serveDesktopRun } from "./desktop-computer.ts";
 import { reportHandledError, reportRequestTiming, stopBrowserErrors } from "./browser-errors.ts";
 import { captureMessage, stopAnalytics } from "./product-analytics.ts";
 import { streamedAnswer } from "./timeline.ts";
@@ -350,6 +351,7 @@ export interface TranscriptPage {
   earlierEntries?: number;
   pins?: SessionPin[];
   goal?: GoalStripState;
+  runtime?: TurnRuntime;
 }
 
 export async function fetchTranscript(
@@ -445,6 +447,18 @@ export interface WorkBlock {
   activity: ToolActivity[];
   pendingApprovals?: PendingApproval[];
   goal?: GoalStripState;
+  runtime?: TurnRuntime;
+}
+
+export interface TurnRuntime {
+  harnessId: string;
+  modelId: string;
+  label?: string;
+  change?: { rule: string } | { agent: "task" | "scope" };
+}
+
+export function switchedDefault(runtime: TurnRuntime | null | undefined): boolean {
+  return !!runtime?.change && "agent" in runtime.change && runtime.change.agent === "scope";
 }
 
 export function workPausedForApproval(work: WorkBlock): boolean {
@@ -491,6 +505,7 @@ export type AssistantWork = AssistantMessage & {
 export interface RunPoll {
   status: "pending" | "running" | "done" | "failed";
   goal?: GoalStripState;
+  runtime?: TurnRuntime;
   input?: {
     runId: string;
     seq: number | null;
@@ -766,6 +781,95 @@ export function putUiState(
   return api("/api/ui-state", { method: "PUT", body: JSON.stringify({ key, value, updatedAt }), ...init });
 }
 
+const PIN_LATEST_PROMPT_KEY = "pin-latest-prompt";
+const ALWAYS_STEER_KEY = "always-steer";
+
+type ChatPrefKey = typeof PIN_LATEST_PROMPT_KEY | typeof ALWAYS_STEER_KEY;
+
+const CHAT_PREF_DEFAULTS: Record<ChatPrefKey, boolean> = {
+  [PIN_LATEST_PROMPT_KEY]: true,
+  [ALWAYS_STEER_KEY]: false,
+};
+
+const CHAT_PREF_CACHE_PREFIX = "chat-pref:";
+
+const chatPrefValues = new Map<ChatPrefKey, boolean>();
+const chatPrefTouched = new Set<ChatPrefKey>();
+const chatPrefListeners = new Set<() => void>();
+
+function cachedChatPref(key: ChatPrefKey): boolean {
+  try {
+    const raw = localStorage.getItem(CHAT_PREF_CACHE_PREFIX + key);
+    if (raw === "1") return true;
+    if (raw === "0") return false;
+  } catch {
+    void 0;
+  }
+  return CHAT_PREF_DEFAULTS[key];
+}
+
+function readChatPref(key: ChatPrefKey): boolean {
+  let value = chatPrefValues.get(key);
+  if (value === undefined) {
+    value = cachedChatPref(key);
+    chatPrefValues.set(key, value);
+  }
+  return value;
+}
+
+function applyChatPref(key: ChatPrefKey, value: boolean): void {
+  const changed = readChatPref(key) !== value;
+  chatPrefValues.set(key, value);
+  try {
+    if (value === CHAT_PREF_DEFAULTS[key]) localStorage.removeItem(CHAT_PREF_CACHE_PREFIX + key);
+    else localStorage.setItem(CHAT_PREF_CACHE_PREFIX + key, value ? "1" : "0");
+  } catch {
+    void 0;
+  }
+  if (changed) for (const listener of chatPrefListeners) listener();
+}
+
+function writeChatPref(key: ChatPrefKey, value: boolean): void {
+  chatPrefTouched.add(key);
+  applyChatPref(key, value);
+  void putUiState(key, value, Date.now()).catch((error: unknown) => reportHandledError("web:save_chat_pref", error));
+}
+
+export function pinLatestPrompt(): boolean {
+  return readChatPref(PIN_LATEST_PROMPT_KEY);
+}
+
+export function alwaysSteer(): boolean {
+  return readChatPref(ALWAYS_STEER_KEY);
+}
+
+export function setPinLatestPrompt(value: boolean): void {
+  writeChatPref(PIN_LATEST_PROMPT_KEY, value);
+}
+
+export function setAlwaysSteer(value: boolean): void {
+  writeChatPref(ALWAYS_STEER_KEY, value);
+}
+
+export function onChatPrefsChange(listener: () => void): () => void {
+  chatPrefListeners.add(listener);
+  return () => chatPrefListeners.delete(listener);
+}
+
+export async function loadChatPrefs(): Promise<void> {
+  await Promise.all(
+    (Object.keys(CHAT_PREF_DEFAULTS) as ChatPrefKey[]).map(async (key) => {
+      try {
+        const rec = await fetchUiState(key);
+        if (chatPrefTouched.has(key)) return;
+        applyChatPref(key, typeof rec.value === "boolean" ? rec.value : CHAT_PREF_DEFAULTS[key]);
+      } catch (error) {
+        reportHandledError("web:load_chat_pref", error);
+      }
+    }),
+  );
+}
+
 export async function api<T = unknown>(path: string, init?: RequestInit): Promise<T> {
   const r = await webFetch(withBase(path), { headers: { "content-type": "application/json" }, ...init });
   const text = await r.text();
@@ -779,6 +883,14 @@ export async function api<T = unknown>(path: string, init?: RequestInit): Promis
     const details = body as { message?: string; reason?: string; error?: string } | null;
     const msg = details?.message ?? details?.reason ?? details?.error ?? `HTTP ${r.status}`;
     throw new ApiError(msg, r.status, body);
+  }
+  if (path === "/api/turn" && typeof init?.body === "string") {
+    const request = JSON.parse(init.body) as { desktopClientId?: string };
+    const response = body as { runId?: string } | null;
+    if (request.desktopClientId && response?.runId)
+      void serveDesktopRun(response.runId, request.desktopClientId, withBase, api).catch((error) =>
+        reportHandledError("desktop-computer", error),
+      );
   }
   return body as T;
 }
@@ -1099,15 +1211,15 @@ function turnRequestBody(
   const { idempotencyKey, attachments = [] } = send;
   const turnOptions = getTurnOptions?.() ?? {};
   const thinkingLevel =
-    !turnOptions.harness || harnessSupportsEffort(turnOptions.harness)
+    turnOptions.harness && harnessSupportsEffort(turnOptions.harness)
       ? (turnOptions.effortLevel ?? agent.state.thinkingLevel ?? defaultEffortForModel(model))
       : undefined;
   const timezone = browserTimezone();
   return {
+    desktopClientId: desktopTurnId(),
     text,
     threadRef,
-    ...(turnOptions.harness ? { harness: turnOptions.harness } : {}),
-    model: model.id,
+    ...(turnOptions.harness ? { harness: turnOptions.harness, model: model.id } : {}),
     ...(thinkingLevel ? { thinkingLevel } : {}),
     ...(typeof turnOptions.fastMode === "boolean" ? { fastMode: turnOptions.fastMode } : {}),
     ...(timezone ? { timezone } : {}),
@@ -1187,7 +1299,7 @@ async function drive(
       method: "POST",
       body: JSON.stringify({
         ...turnRequestBody(threadRef, text, model, agent, getTurnOptions, { idempotencyKey, attachments }),
-        ...(opener ? { proactiveOpener: true } : {}),
+        ...(opener ? { proactiveOpener: true, desktopClientId: undefined } : {}),
       }),
     });
 
@@ -1384,6 +1496,10 @@ function applyRun(
   setWorkStale(work, run.stale === true, notify);
   if (work && run.goal && JSON.stringify(run.goal) !== JSON.stringify(work.goal)) {
     work.goal = run.goal;
+    notify?.();
+  }
+  if (work && run.runtime && JSON.stringify(run.runtime) !== JSON.stringify(work.runtime)) {
+    work.runtime = run.runtime;
     notify?.();
   }
   const p = typeof run.partial === "string" ? run.partial : "";
@@ -1928,12 +2044,20 @@ export function appendConsumedSteers(messages: AgentMessage[], work: WorkBlock):
   }
 }
 
+function isFinishedReplyEntry(entry: SessionEntry): boolean {
+  if (entry.type !== "text") return false;
+  const step = (entry.payload as { step?: { stopReason?: unknown } } | null)?.step;
+  if (step?.stopReason !== "stop") return false;
+  return Boolean((entry.payload as { text?: string } | null)?.text?.trim());
+}
+
 export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): AgentMessage[] {
   const out: AgentMessage[] = [];
   const userByTs = new Map<string, HistoryUserMessage>();
   let pending: ToolActivity[] = [];
   let deliveryFiles: DeliveredFile[] = [];
   let posted = false;
+  let stoppedShown = false;
   const heldPosts = new Map<string, { text: string; activity: ToolActivity }>();
   const spillHeldPosts = (): void => {
     for (const held of heldPosts.values()) pending.push(held.activity);
@@ -1976,6 +2100,7 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
     entrySeqs: number[] = [],
   ): void => {
     if (!text && !pending.length && !deliveryFiles.length && !stopped) return;
+    if (stopped) stoppedShown = true;
     entrySeqs = [...entrySeqs, ...pending.map((entry) => entry.seq)];
     const deliveredSilence = (a: ToolActivity): boolean => {
       if (a.type !== "tool_result") return false;
@@ -2050,6 +2175,12 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
       }
       continue;
     }
+    if (isFinishedReplyEntry(e)) {
+      spillHeldPosts();
+      flushWork(text, e.createdAt, true, undefined, false, e.seq === undefined ? [] : [e.seq]);
+      posted = false;
+      continue;
+    }
     if (e.type !== "user" && ACTIVITY_TYPES.has(e.type)) {
       const activity: ToolActivity = {
         seq: e.seq ?? out.length,
@@ -2094,6 +2225,7 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
       continue;
     }
     if (e.type === "user") {
+      if (!payload?.steered) stoppedShown = false;
       if (payload?.hidden) continue;
       if (!payload?.steered) {
         posted = false;
@@ -2139,6 +2271,13 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
     } else if (e.type === "delivery") {
       appendDeliveryFiles(deliveredFilesFromAttachments(payload?.files));
     } else if (e.type === "system") {
+      if ((e.payload as { kind?: unknown } | null)?.kind === "turn_stopped") {
+        spillHeldPosts();
+        if (pending.length || !stoppedShown)
+          flushWork("", e.createdAt, !posted, undefined, true, e.seq === undefined ? [] : [e.seq]);
+        posted = false;
+        continue;
+      }
       const goalNote = goalCancelledPayload(e.payload);
       if (goalNote) {
         spillHeldPosts();

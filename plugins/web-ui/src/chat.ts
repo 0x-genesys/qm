@@ -115,8 +115,12 @@ import {
   type SubagentMailRef,
   type ToolActivity,
   type TurnOptions,
+  type TurnRuntime,
   type WorkBlock,
   fileContentUrl,
+  onChatPrefsChange,
+  pinLatestPrompt,
+  switchedDefault,
 } from "./core-bridge";
 import {
   buildTimeline,
@@ -150,6 +154,8 @@ import {
 import {
   attachmentGallery,
   avatarTpl,
+  brandMark,
+  brandName,
   browserRenderableImage,
   chipBadge,
   copyText,
@@ -273,7 +279,8 @@ export function createChatSurface(
     ctx.composer.state.error = message;
   });
   let pendingFork: { index: number } | null = null;
-  const transcriptViewport = createTranscriptViewport();
+  const transcriptViewport = createTranscriptViewport({ pinPrompt: pinLatestPrompt });
+  const stopPrefsWatch = onChatPrefsChange(() => transcriptViewport.refresh());
   let preserveConnectionScroll = isConnectionReturn();
   let connectionReturnMessageCount: number | null = null;
   const transcriptFetcher = dependencies.fetchTranscript ?? fetchTranscript;
@@ -293,6 +300,7 @@ export function createChatSurface(
     rememberedContextName: null as string | null,
     liveWork: null as WorkBlock | null,
     goal: null as GoalStripState | null,
+    turnRuntime: null as TurnRuntime | null,
     pendingSend: null as string | null,
     normalStreamFn: null as Agent["streamFn"] | null,
     onWork: null as ((work: WorkBlock) => void) | null,
@@ -307,6 +315,7 @@ export function createChatSurface(
     pins: [] as SessionPin[],
     pinsExpanded: false,
     labelSpeakers: false,
+    assistantSpeakerLabel: "",
   };
 
   const inlineSteers = new Map<number, { message: AgentMessage; index: number }>();
@@ -350,6 +359,7 @@ export function createChatSurface(
     }
     const viewer = appState.me?.displayName?.trim().toLowerCase();
     chatState.labelSpeakers = names.size > 1 || (Boolean(viewer) && [...names].some((n) => n.toLowerCase() !== viewer));
+    chatState.assistantSpeakerLabel = chatState.labelSpeakers ? brandName() : "";
   }
 
   function speakerLabelFor(message: AgentMessage): string | undefined {
@@ -369,7 +379,10 @@ export function createChatSurface(
     if (!speaker) return nothing;
     const member = speakerMember(message);
     return html`<div class="speaker-label">
-      ${avatarTpl({ key: member?.principalId ?? speaker, name: speaker, avatarUrl: member?.avatarUrl })}${speaker}
+      ${avatarTpl({ key: member?.principalId ?? speaker, name: speaker, avatarUrl: member?.avatarUrl })}<span
+        title=${speaker}
+        >${speaker.split(/\s+/, 1)[0]!.toLowerCase()}</span
+      >
     </div>`;
   }
   let transcriptRefreshGeneration = 0;
@@ -549,6 +562,7 @@ export function createChatSurface(
     chatState.loadingEarlier = false;
     chatState.pins = [];
     chatState.goal = null;
+    chatState.turnRuntime = null;
     chatState.host = document.createElement("div");
     chatState.host.className = "custom-chat";
 
@@ -688,14 +702,19 @@ export function createChatSurface(
   function currentTurnOptions(): TurnOptions {
     const selected = ctx.composer.currentModelOption();
     if (!selected) throw new Error("No model is available");
+    const target = { scopeId: chatState.scopeId, channelName: chatState.contextName };
+    if (ctx.composer.followsDefault()) return target;
     const harness = selected.harnessId;
     return {
       ...(harnessSupportsEffort(harness) ? { effortLevel: ctx.composer.state.effortLevel } : {}),
       ...(harnessSupportsFastMode(harness) ? { fastMode: ctx.composer.state.fastMode } : {}),
       harness,
-      scopeId: chatState.scopeId,
-      channelName: chatState.contextName,
+      ...target,
     };
+  }
+
+  function turnRuntime(): TurnRuntime | null {
+    return chatState.turnRuntime;
   }
 
   function inheritedHeader(): TemplateResult | typeof nothing {
@@ -778,6 +797,7 @@ export function createChatSurface(
 
   function dispose(): void {
     redrawHooks.delete(redrawForConnector);
+    stopPrefsWatch();
     teardownActiveChat();
   }
 
@@ -893,6 +913,7 @@ export function createChatSurface(
         return drawActiveChat(agent);
       chatState.pins = page.pins ?? [];
       chatState.goal = page.goal ?? null;
+      if (page.runtime) chatState.turnRuntime = page.runtime;
       const split = inheritedTranscript(chatState.forkSession ?? {}, page.entries ?? []);
       const messages = entriesToMessages(split.current, transcriptModel());
       const refreshedInherited = inheritedRefreshEntries(
@@ -917,6 +938,15 @@ export function createChatSurface(
     return (work: WorkBlock) => {
       if (agent !== chatState.agent) return;
       appendConsumedSteers(agent.state.messages, work);
+      if (
+        work.runtime &&
+        switchedDefault(work.runtime) &&
+        (work.runtime.harnessId !== chatState.turnRuntime?.harnessId ||
+          work.runtime.modelId !== chatState.turnRuntime.modelId)
+      )
+        void ctx.composer.followScopeDefault(agent);
+      if (work.runtime) chatState.turnRuntime = work.runtime;
+      else if (work !== chatState.liveWork) chatState.turnRuntime = null;
       chatState.liveWork = work;
       syncWorkTicker();
       scheduleStreamDraw(agent);
@@ -1122,6 +1152,7 @@ export function createChatSurface(
       chatState.inheritedExpanded = false;
       chatState.pins = [];
       chatState.goal = null;
+      chatState.turnRuntime = null;
     }
     syncLocation();
 
@@ -1312,6 +1343,11 @@ export function createChatSurface(
         </div>
       </article>
     `;
+  }
+
+  function setTurnRuntime(runtime: TurnRuntime | null): void {
+    chatState.turnRuntime = runtime;
+    if (chatState.agent) drawActiveChat(chatState.agent);
   }
 
   function setGoal(goal: GoalStripState | null): void {
@@ -1732,7 +1768,10 @@ export function createChatSurface(
     const forkable = Boolean(chatState.threadRef && chatState.sessionId && chatState.agent);
     const forking = pendingFork !== null;
     const speaker = speakerLabelFor(message);
-    const speakerLabel = speaker && `${speaker}\n${speakerMember(message)?.avatarUrl ?? ""}`;
+    const speakerLabel =
+      message.role === "assistant" && chatState.labelSpeakers
+        ? chatState.assistantSpeakerLabel
+        : speaker && `${speaker}\n${speakerMember(message)?.avatarUrl ?? ""}`;
     const edited = Boolean((message as { edited?: boolean }).edited);
     const deleted = Boolean((message as { deleted?: boolean }).deleted);
     const day = new Date().toDateString();
@@ -1829,7 +1868,7 @@ export function createChatSurface(
         });
       return html`
         <article
-          class="message-row user-row ${steered ? "steered-row" : ""}"
+          class="message-row user-row ${speaker ? "named-user-row" : ""} ${steered ? "steered-row" : ""}"
           data-index=${index}
           data-entry-seqs=${messageEntrySeqs(message).join(" ")}
         >
@@ -1949,12 +1988,17 @@ export function createChatSurface(
         });
       return html`
         <article
-          class="message-row assistant-row ${isStreaming ? "streaming" : ""}"
+          class="message-row assistant-row ${chatState.labelSpeakers ? "named-assistant-row" : ""} ${isStreaming ? "streaming" : ""}"
           data-index=${index}
           data-entry-seqs=${messageEntrySeqs(message)
             .filter((seq) => !inlineSteers.has(seq))
             .join(" ")}
         >
+          ${
+            chatState.labelSpeakers
+              ? html`<div class="speaker-label">${brandMark()}<span>${chatState.assistantSpeakerLabel}</span></div>`
+              : nothing
+          }
           <div class="assistant-body">
             ${workView} ${assistantContent(msg, isStreaming, showWork)} ${assistantFileList(deliveredFiles)}
             ${msg.stopReason === "error" && msg.errorMessage ? html`<div class="composer-error inline">${msg.errorMessage}</div>` : nothing}
@@ -3478,6 +3522,7 @@ export function createChatSurface(
     stopLiveRun,
     isStopping: () => runSlot.stopGeneration === runSlot.generation,
     currentTurnOptions,
+    turnRuntime,
     newChat,
     teardown: teardownActiveChat,
     resetChatState,
@@ -3506,6 +3551,7 @@ export function createChatSurface(
     setTranscriptWindow,
     setPins,
     setGoal,
+    setTurnRuntime,
     requestBackgroundPanel,
     activePendingApprovals,
     hasUnresolvedApproval,
