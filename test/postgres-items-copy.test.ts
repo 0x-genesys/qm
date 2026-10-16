@@ -540,3 +540,36 @@ test("oversized legacy call identifiers become NULL without dropping history", {
     );
   });
 });
+
+test("ambiguous legacy IDs are cleared across calls and results, including across batches", { skip }, async () => {
+  await withSchema(async (raw) => {
+    await seed(raw, "ambiguous", [
+      ["tool_call", { tool: "execute", callId: "repeated-result", command: "preserved" }],
+      ["tool_result", { tool: "execute", callId: "repeated-result", result: "first" }],
+      ["tool_result", { tool: "execute", callId: "repeated-result", result: "second" }],
+      ["tool_call", { tool: "execute", callId: "repeated-call" }],
+      ["tool_call", { tool: "execute", callId: "repeated-call" }],
+      ["tool_result", { tool: "execute", callId: "repeated-call", result: "third" }],
+      ["tool_call", { tool: "execute", callId: "valid-pair" }],
+      ["tool_result", { tool: "execute", callId: "valid-pair", result: "valid" }],
+    ]);
+    await seed(raw, "other-session", [["tool_call", { tool: "execute", callId: "repeated-call" }]]);
+    await raw.query("CREATE TEMP TABLE items_copy_batch(session_id text,seq int,PRIMARY KEY(session_id,seq))");
+    await raw.query("INSERT INTO items_copy_batch VALUES ('ambiguous',0),('ambiguous',1)");
+    await raw.query(itemsCopySelectedSql());
+    assert.deepEqual(
+      (await items(raw, "ambiguous")).map((row) => row.call_id),
+      [null, null],
+    );
+    await raw.query("TRUNCATE items");
+    await raw.query(itemsCopySql());
+    const rows = await items(raw, "ambiguous");
+    assert.deepEqual(
+      rows.map((row) => row.call_id),
+      [null, null, null, null, null, null, "valid-pair", "valid-pair"],
+    );
+    assert.equal(rows[0]!.body.command, "preserved");
+    assert.deepEqual([rows[1]!.text, rows[2]!.text, rows[5]!.text], ["first", "second", "third"]);
+    assert.equal((await items(raw, "other-session"))[0]!.call_id, "repeated-call");
+  });
+});

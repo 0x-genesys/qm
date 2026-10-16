@@ -46,6 +46,24 @@ const NORMALIZE = `  CROSS JOIN LATERAL (SELECT items_copy_payload(e.payload) AS
   ) n
 `;
 
+function ambiguousCallsSql(selected: boolean): string {
+  return `SELECT DISTINCT session_id, call_id FROM (
+    SELECT e.session_id, e.type, n.body ->> 'callId' AS call_id
+    FROM session_entries e
+    ${NORMALIZE}
+    WHERE e.type IN ('tool_call', 'tool_result')
+      ${selected ? "AND e.session_id IN (SELECT DISTINCT session_id FROM pg_temp.items_copy_batch)" : ""}
+      AND jsonb_typeof(n.body -> 'callId') = 'string'
+      AND octet_length(n.body ->> 'callId') BETWEEN 1 AND 1024
+    GROUP BY e.session_id, e.type, n.body ->> 'callId'
+    HAVING count(*) > 1
+  ) repeated`;
+}
+
+const CALL_IDS = `  LEFT JOIN ambiguous_calls ambiguous
+    ON ambiguous.session_id=e.session_id AND ambiguous.call_id=n.body ->> 'callId'
+`;
+
 const KIND = `  CROSS JOIN LATERAL (
     SELECT (CASE e.type
               WHEN 'user' THEN CASE WHEN n.body @> '{"steered":true}' THEN 'SteeringMessage' ELSE 'UserMessage' END
@@ -157,7 +175,7 @@ const SELECT = `SELECT ${TENANT}, e.session_id, e.seq,
        CASE WHEN t.run_is_uuid THEN (n.body ->> 'runId')::uuid END,
        k.kind,
        a.author,
-       CASE WHEN k.kind IN ('ToolCall', 'ToolResult') AND octet_length(${str("callId")}) <= 1024
+       CASE WHEN k.kind IN ('ToolCall', 'ToolResult') AND octet_length(${str("callId")}) <= 1024 AND ambiguous.call_id IS NULL
             THEN NULLIF(${str("callId")}, '') END,
        CASE WHEN k.kind IN ('Elicitation', 'ElicitationResponse') THEN
          COALESCE(NULLIF(${str("requestId")}, ''), 'missing-elicit:' || e.seq) END,
@@ -190,8 +208,9 @@ export function itemsCopySql(opts: ItemsCopyOptions = {}): string {
     : `  FROM session_entries e
 `;
   const bucket = opts.bucket ? `${bucketPredicate(opts.delta ? "sess.id" : "e.session_id", opts.bucket)}\n   AND ` : "";
-  return insertRows(`${SELECT}
-${from}${NORMALIZE}${KIND}${HOIST} WHERE ${bucket}k.kind IS NOT NULL`);
+  return insertRows(`WITH ambiguous_calls AS MATERIALIZED (${ambiguousCallsSql(false)})
+${SELECT}
+${from}${NORMALIZE}${KIND}${CALL_IDS}${HOIST} WHERE ${bucket}k.kind IS NOT NULL`);
 }
 
 function insertRows(rows: string): string {
@@ -204,11 +223,12 @@ function insertRows(rows: string): string {
 }
 
 export function itemsSelectedRowsSql(): string {
-  return `SELECT * FROM (
+  return `WITH ambiguous_calls AS MATERIALIZED (${ambiguousCallsSql(true)})
+  SELECT * FROM (
     ${SELECT}
     FROM pg_temp.items_copy_batch b
     JOIN session_entries e ON (e.session_id,e.seq)=(b.session_id,b.seq)
-    ${NORMALIZE}${KIND}${HOIST} WHERE k.kind IS NOT NULL
+    ${NORMALIZE}${KIND}${CALL_IDS}${HOIST} WHERE k.kind IS NOT NULL
   ) AS mapped(${COLUMNS})`;
 }
 
