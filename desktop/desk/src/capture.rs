@@ -33,6 +33,7 @@ extern "C" {
 }
 
 const TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_EDGE: f64 = 32_768.0;
 
 struct Piece {
     image: CGImage,
@@ -49,6 +50,7 @@ enum Part {
 type Parts = Sender<Result<Part, String>>;
 
 pub fn window(id: u32, panels: &[u32], frame: Rect) -> Result<Screenshot, String> {
+    size(frame)?;
     if AnyClass::get(c"SCScreenshotManager").is_none() {
         return legacy(id, frame);
     }
@@ -64,7 +66,7 @@ pub fn window(id: u32, panels: &[u32], frame: Rect) -> Result<Screenshot, String
     unsafe { SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(true, false, &block) };
     drop(block);
     let (area, pieces) = collect(rx)?;
-    let image = compose(area, &pieces).ok_or("Could not compose the screenshot.")?;
+    let image = compose(area, &pieces)?;
     encode(&image, area)
 }
 
@@ -170,10 +172,26 @@ fn collect(rx: Receiver<Result<Part, String>>) -> Result<(Rect, Vec<Piece>), Str
     }
 }
 
-fn compose(area: Rect, pieces: &[Piece]) -> Option<CGImage> {
-    let space = CGColorSpace::create_with_name(unsafe { kCGColorSpaceSRGB })?;
-    let (w, h) = (area.w.round().max(1.0), area.h.round().max(1.0));
-    let context = CGContext::create_bitmap_context(None, w as usize, h as usize, 8, 0, &space, kCGImageAlphaPremultipliedLast);
+fn size(r: Rect) -> Result<(usize, usize), String> {
+    let (w, h) = (r.w.round(), r.h.round());
+    let usable = [r.x, r.y, r.w, r.h].iter().all(|v| v.is_finite()) && (1.0..=MAX_EDGE).contains(&w) && (1.0..=MAX_EDGE).contains(&h);
+    if usable {
+        Ok((w as usize, h as usize))
+    } else {
+        Err(format!("The window frame {}x{} is not a size that can be captured.", r.w, r.h))
+    }
+}
+
+fn compose(area: Rect, pieces: &[Piece]) -> Result<CGImage, String> {
+    let (w, h) = size(area)?;
+    let failed = || "Could not compose the screenshot.".to_string();
+    let space = CGColorSpace::create_with_name(unsafe { kCGColorSpaceSRGB }).ok_or_else(failed)?;
+    let context = CGContext::create_bitmap_context(None, w, h, 8, 0, &space, kCGImageAlphaPremultipliedLast);
+    let h = h as f64;
+    context.clear_rect(core_graphics::geometry::CGRect::new(
+        &core_graphics::geometry::CGPoint::new(0.0, 0.0),
+        &core_graphics::geometry::CGSize::new(w as f64, h),
+    ));
     for p in pieces {
         let at = Rect { x: p.at.x - area.x, y: h - (p.at.y - area.y) - p.at.h, w: p.at.w, h: p.at.h };
         context.draw_image(
@@ -184,7 +202,7 @@ fn compose(area: Rect, pieces: &[Piece]) -> Option<CGImage> {
             &p.image,
         );
     }
-    context.create_image()
+    context.create_image().ok_or_else(failed)
 }
 
 fn reason(error: *mut NSError) -> String {
@@ -300,6 +318,63 @@ mod tests {
         let (ids, area) = associated(r(0.0, 0.0, 100.0, 100.0), &[(7, r(200.0, 0.0, 50.0, 50.0), true)]);
         assert_eq!(ids, vec![7]);
         assert_eq!(tuple(area), (0.0, 0.0, 250.0, 100.0));
+    }
+
+    #[test]
+    fn unusable_frames_are_refused_before_allocating() {
+        for frame in [
+            r(0.0, 0.0, 0.0, 10.0),
+            r(0.0, 0.0, 10.0, 0.2),
+            r(f64::NAN, 0.0, 10.0, 10.0),
+            r(0.0, 0.0, f64::INFINITY, 10.0),
+            r(0.0, 0.0, 1e9, 10.0),
+            r(0.0, 0.0, -5.0, 10.0),
+        ] {
+            assert!(size(frame).is_err(), "{frame:?}");
+            assert!(compose(frame, &[]).is_err(), "{frame:?}");
+        }
+        assert_eq!(size(r(-3.0, -4.0, 10.4, 20.6)), Ok((10, 21)));
+    }
+
+    fn tile(w: usize, h: usize, bands: &[[f64; 3]]) -> CGImage {
+        let space = CGColorSpace::create_with_name(unsafe { kCGColorSpaceSRGB }).unwrap();
+        let context = CGContext::create_bitmap_context(None, w, h, 8, 0, &space, kCGImageAlphaPremultipliedLast);
+        let band = h as f64 / bands.len() as f64;
+        for (i, [red, green, blue]) in bands.iter().enumerate() {
+            context.set_rgb_fill_color(*red, *green, *blue, 1.0);
+            let y = h as f64 - (i as f64 + 1.0) * band;
+            context.fill_rect(core_graphics::geometry::CGRect::new(
+                &core_graphics::geometry::CGPoint::new(0.0, y),
+                &core_graphics::geometry::CGSize::new(w as f64, band),
+            ));
+        }
+        context.create_image().unwrap()
+    }
+
+    fn pixel(image: &CGImage, x: usize, y: usize) -> [u8; 4] {
+        let data = image.data();
+        let i = y * image.bytes_per_row() + x * 4;
+        data.bytes()[i..i + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn compose_places_tiles_top_down_at_their_screen_positions() {
+        let (green, red, blue) = ([0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]);
+        let area = r(-5.0, -20.0, 10.0, 50.0);
+        let pieces = [
+            Piece { image: tile(10, 20, &[green, red]), at: r(-5.0, -20.0, 10.0, 20.0) },
+            Piece { image: tile(10, 20, &[blue]), at: r(-5.0, 10.0, 10.0, 20.0) },
+        ];
+        let image = compose(area, &pieces).unwrap();
+        assert_eq!((image.width(), image.height()), (10, 50));
+        assert_eq!(pixel(&image, 5, 0), [0, 255, 0, 255]);
+        assert_eq!(pixel(&image, 5, 9), [0, 255, 0, 255]);
+        assert_eq!(pixel(&image, 5, 10), [255, 0, 0, 255]);
+        assert_eq!(pixel(&image, 5, 19), [255, 0, 0, 255]);
+        assert_eq!(pixel(&image, 5, 20), [0, 0, 0, 0]);
+        assert_eq!(pixel(&image, 5, 29), [0, 0, 0, 0]);
+        assert_eq!(pixel(&image, 5, 30), [0, 0, 255, 255]);
+        assert_eq!(pixel(&image, 5, 49), [0, 0, 255, 255]);
     }
 
     #[test]
