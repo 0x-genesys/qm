@@ -64,6 +64,8 @@ def main():
                 {"type": "click", "target": {"point": {"x": args.x, "y": args.y}}},
                 {"type": "type_text", "text": marker}
             ], "pace": False, "observe": True, "screenshot": False, "diff": False}, 2)
+            desk.terminate()
+            desk.wait(timeout=2)
             time.sleep(0.5)
             stop.touch()
             witness_result = json.loads(witness.communicate(timeout=5)[0])
