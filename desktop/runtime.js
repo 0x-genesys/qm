@@ -246,7 +246,8 @@ All apps are available subject to macOS permissions.
 
 Observation (each emits into the result; pass {emit: false} to only return the data):
 app.getAXState({disableDiffing}) the visible part of the focused window's accessibility tree. Lines read
-  [id] Role "title" (description) = "value" [focused disabled selected settable] <Actions>
+  [id] Role:Subrole "name" (description) = "value" placeholder "…" url "…" [focused disabled selected checked expanded settable] <Actions>
+  Open menus and dialogs are listed first; Focus: and Selected text: lines follow the tree.
   Content scrolled out of view is summarised as "… N more offscreen; scroll to reveal".
   Ids stay stable across observations of the same window.
   By default only new (+) or changed (~) lines are shown, plus removed ids; when most lines changed, or with
@@ -258,7 +259,8 @@ Actions return as soon as the input is sent. The next observation first waits fo
 app.click(target, {mouseButton: left|right|middle, clickCount, key: "cmd+shift", durationMs})
   target is an element id from the tree or [x, y] in pixels of the latest screenshot.
   For simulated clicks, an offscreen element is scrolled into view first; if that fails, the click fails.
-  Clicking or dragging in web content may bring the app to the front.
+  Input uses app-local activation rather than automatically bringing the app to the front.
+  If the foreground app changes or you interact with the target app, the action stops.
 app.drag([x, y], [x, y]) screenshot pixels.
 app.scroll(target | null, up|down|left|right, pages = 1 | {pixels})
 app.selectText(id, text, {prefix, suffix, selectionType: text|cursor_before|cursor_after}) prefix/suffix pick among repeats.

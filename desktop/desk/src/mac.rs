@@ -256,6 +256,7 @@ fn source() -> Result<CGEventSource, Failure> {
 }
 
 fn post(e: CGEvent, pid: i32) {
+    e.set_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID, std::process::id() as i64);
     e.post_to_pid(pid);
     std::thread::sleep(Duration::from_millis(8));
 }
@@ -276,7 +277,6 @@ fn mouse(pid: i32, at: &Press, ty: CGEventType, p: CGPoint, b: CGMouseButton, cl
     e.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, clicks);
     e.set_integer_value_field(EventField::MOUSE_EVENT_NUMBER, at.number);
     in_window(&e, at.win);
-    e.set_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID, std::process::id() as i64);
     post(e, pid);
     Ok(())
 }
