@@ -571,7 +571,6 @@ fn on_current_space(win: u32) -> bool {
     })
 }
 
-
 struct Node {
     props: Props,
     raw: Option<String>,
