@@ -115,7 +115,13 @@ pub enum Check {
     Unreadable,
 }
 
-fn uncertain(board: &NSPasteboard, data: &[(String, Vec<u8>)], why: &str) -> Failure {
+const CONFLICT: &str = "The clipboard changed during the paste, probably because the user copied something. \
+The app may have pasted that instead of your text. Observe the app and check what was pasted before continuing.";
+
+fn uncertain(board: &NSPasteboard, ours: isize, data: &[(String, Vec<u8>)], why: &str) -> Failure {
+    if board.changeCount() != ours {
+        return fail(ErrorCode::PasteConflict, CONFLICT);
+    }
     let item = NSPasteboardItem::new();
     for marker in MARKERS {
         item.setData_forType(&NSData::new(), &NSString::from_str(marker));
@@ -142,7 +148,7 @@ pub fn paste(
     format: PasteFormat,
     keystroke: impl FnOnce() -> Result<(), Failure>,
     check: &mut dyn FnMut() -> Check,
-    cancelled: &dyn Fn() -> bool,
+    interrupted: &dyn Fn() -> Result<(), Failure>,
 ) -> Result<(), Failure> {
     let (plain, html) = text::payload(text, format);
     let mut data = vec![(unsafe { NSPasteboardTypeString }.to_string(), plain.into_bytes())];
@@ -173,7 +179,7 @@ pub fn paste(
     }
     let ours = board.changeCount();
     if let Err(e) = keystroke() {
-        return Err(uncertain(&board, &data, &format!("sending Cmd+V failed ({})", e.message)));
+        return Err(uncertain(&board, ours, &data, &format!("sending Cmd+V failed ({})", e.message)));
     }
 
     let start = Instant::now();
@@ -182,18 +188,14 @@ pub fn paste(
     loop {
         CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, Duration::from_millis(20), true);
         if board.changeCount() != ours {
-            return Err(fail(
-                ErrorCode::PasteConflict,
-                "The clipboard changed during the paste, probably because the user copied something. \
-The app may have pasted that instead of your text. Observe the app and check what was pasted before continuing.",
-            ));
+            return Err(fail(ErrorCode::PasteConflict, CONFLICT));
         }
-        if cancelled() {
-            return Err(uncertain(&board, &data, "the action was cancelled after Cmd+V was sent"));
+        if let Err(e) = interrupted() {
+            return Err(uncertain(&board, ours, &data, &format!("the paste was interrupted after Cmd+V was sent ({})", e.message)));
         }
         let Some(read) = provider.last_read() else {
             if start.elapsed() >= READ_TIMEOUT {
-                return Err(uncertain(&board, &data, "no app read the clipboard within 3 s of Cmd+V"));
+                return Err(uncertain(&board, ours, &data, "no app read the clipboard within 3 s of Cmd+V"));
             }
             continue;
         };
@@ -203,7 +205,7 @@ The app may have pasted that instead of your text. Observe the app and check wha
                 Check::Landed => landed = true,
                 Check::NotYet => {}
                 Check::Unreadable if read.elapsed() >= MORE_READS => {
-                    return Err(uncertain(&board, &data, "desk cannot read the text of the app's focused field"))
+                    return Err(uncertain(&board, ours, &data, "desk cannot read the text of the app's focused field"))
                 }
                 Check::Unreadable => {}
             }
@@ -212,7 +214,7 @@ The app may have pasted that instead of your text. Observe the app and check wha
             break;
         }
         if !landed && (read.elapsed() >= SHOW_TIMEOUT || start.elapsed() >= READ_TIMEOUT * 2) {
-            return Err(uncertain(&board, &data, "the clipboard was read, but the focused field does not show the pasted text"));
+            return Err(uncertain(&board, ours, &data, "the clipboard was read, but the focused field does not show the pasted text"));
         }
     }
     if board.changeCount() != ours || !restore(&board, &saved) {
