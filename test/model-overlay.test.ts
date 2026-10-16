@@ -379,7 +379,6 @@ test("Pi serves an overlay via the inherited provider endpoint and metadata driv
       tools: {} as import("../src/harness/harness.ts").HarnessTurnInput["tools"],
       scopeLabel: "personal:alice" as const,
       orgScopeId: "org:default-org" as const,
-      requestContext: {},
       emit: async (entry: Parameters<import("../src/harness/harness.ts").HarnessTurnInput["emit"]>[0]) => ({
         ...entry,
         seq: 1,

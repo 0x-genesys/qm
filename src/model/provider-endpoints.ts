@@ -1,5 +1,6 @@
 import { isGatewayModelId } from "./gateway-models.ts";
-import type { SessionOrigin } from "../sessions/session-store.ts";
+import { currentModelRequestContext } from "./request-context.ts";
+import { attestable } from "../util/text.ts";
 /**
  * Provider endpoint overrides.
  *
@@ -104,28 +105,18 @@ export type ModelRequestPurpose =
   | "browser"
   | "probe";
 
-export interface ModelRequestContext {
-  sessionId?: string;
-  actorId?: string;
-  scopeId?: string;
-  origin?: SessionOrigin;
-  purpose?: ModelRequestPurpose;
-}
-
-export const attestable = (value: unknown): value is string =>
-  typeof value === "string" && /^[\x21-\x7e]{1,256}$/.test(value);
-
 export function modelGatewayHeaders(
   config: Pick<ModelGatewayTransportConfig, "apiKey" | "apiKeyHeader">,
-  context: ModelRequestContext = {},
+  purpose?: ModelRequestPurpose,
 ): Record<string, string> {
+  const { sessionId, actorId, scopeId, origin } = currentModelRequestContext();
   const headers: Record<string, string> = { [config.apiKeyHeader]: config.apiKey };
   for (const [name, value] of Object.entries({
-    "x-qm-session-id": context.sessionId,
-    "x-qm-actor": context.actorId,
-    "x-qm-scope": context.scopeId,
-    "x-qm-purpose": context.purpose,
-    "x-qm-origin": context.origin,
+    "x-qm-session-id": sessionId,
+    "x-qm-actor": actorId,
+    "x-qm-scope": scopeId,
+    "x-qm-purpose": purpose,
+    "x-qm-origin": origin,
   }))
     if (attestable(value)) headers[name] = value;
   return headers;
@@ -134,7 +125,7 @@ export function modelGatewayHeaders(
 export function modelGatewayRequest<T extends { id: string; baseUrl: string; api?: string; compat?: object }>(
   config: ModelGatewayTransportConfig | undefined,
   model: T,
-  context?: ModelRequestContext,
+  purpose?: ModelRequestPurpose,
 ): { model: T; target: string; apiKey: string; headers: Record<string, string> } | undefined {
   const target = config?.models[model.id];
   if (!target || !config) {
@@ -152,6 +143,6 @@ export function modelGatewayRequest<T extends { id: string; baseUrl: string; api
     },
     target,
     apiKey: config.apiKey,
-    headers: modelGatewayHeaders(config, context),
+    headers: modelGatewayHeaders(config, purpose),
   };
 }

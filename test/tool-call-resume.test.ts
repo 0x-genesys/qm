@@ -60,7 +60,6 @@ function turnFor(
     tools,
     scopeLabel: personal,
     orgScopeId: scopeId("org", ORG),
-    requestContext: {},
     emit: async (entry) => {
       sink.push({ type: entry.type, payload: entry.payload });
       return { ...entry, sessionId: "s1", seq: seq++, parentSeq: null, createdAt: 1000 + seq } as SessionEntry;

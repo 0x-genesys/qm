@@ -1,10 +1,6 @@
 import { posix } from "node:path";
 import { asError, type DecisionBackend, type DecisionProvider, type DecisionQuestion } from "./decisions.ts";
-import {
-  modelGatewayHeaders,
-  type ModelGatewayTransportConfig,
-  type ModelRequestContext,
-} from "../model/provider-endpoints.ts";
+import { modelGatewayHeaders, type ModelGatewayTransportConfig } from "../model/provider-endpoints.ts";
 
 const MAX_RESPONSE_BYTES = 1_000_000;
 
@@ -156,16 +152,10 @@ export function createDecisionBackend(opts: {
   fetch?: typeof fetch;
 }): DecisionBackend {
   const fetchImpl = opts.fetch ?? fetch;
-  const endpoint = async (
-    provider: DecisionProvider,
-    requestContext?: ModelRequestContext,
-  ): Promise<{ base: string; auth: Record<string, string> }> => {
+  const endpoint = async (provider: DecisionProvider): Promise<{ base: string; auth: Record<string, string> }> => {
     if (!provider.baseUrl) {
       if (!opts.gateway) throw new Error(`decision provider ${provider.id}: no model gateway is configured`);
-      return {
-        base: opts.gateway.url,
-        auth: modelGatewayHeaders(opts.gateway, { ...requestContext, purpose: "decision" }),
-      };
+      return { base: opts.gateway.url, auth: modelGatewayHeaders(opts.gateway, "decision") };
     }
     const rec = await opts.credential(provider.credential!);
     if (!rec?.enabled)
@@ -178,7 +168,7 @@ export function createDecisionBackend(opts: {
     return { base: provider.baseUrl, auth: rec.headers };
   };
   return {
-    async choose({ questions, state, model, signal, requestContext }) {
+    async choose({ questions, state, model, signal }) {
       signal.throwIfAborted();
       const aborted = new Promise<never>((_, reject) =>
         signal.addEventListener("abort", () => reject(signal.reason as Error), { once: true }),
@@ -188,7 +178,7 @@ export function createDecisionBackend(opts: {
         (p) => p.id === model.provider,
       );
       if (!provider) throw new Error(`decision provider ${model.provider} is not configured`);
-      const { base, auth } = await Promise.race([endpoint(provider, requestContext), aborted]);
+      const { base, auth } = await Promise.race([endpoint(provider), aborted]);
       const keys = Object.keys(questions);
       const wire = PROTOCOLS[provider.protocol];
       const url = new URL(base);

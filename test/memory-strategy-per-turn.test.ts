@@ -27,7 +27,7 @@ test("per-turn via oneShot sends the extraction prompt + the exact user/reply fr
   };
   const { memory } = freshMemory();
   const strategy = createPerTurnStrategy({ harness, memory });
-  await strategy.onTurnEnd!({ requestContext: {}, scopeId: SCOPE, input: "hi", reply: "hello" });
+  await strategy.onTurnEnd!({ scopeId: SCOPE, input: "hi", reply: "hello" });
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0]!.system, MEMORY_EXTRACTION_PROMPT);
@@ -48,22 +48,9 @@ test("autonomous and system-actor turns capture nothing; only a human turn extra
   };
   const { memory } = freshMemory();
   const strategy = createPerTurnStrategy({ harness, memory });
-  await strategy.onTurnEnd!({
-    requestContext: {},
-    scopeId: SCOPE,
-    input: "trigger",
-    reply: "queued",
-    actorId: "system:ambient:acme",
-  });
-  await strategy.onTurnEnd!({
-    requestContext: {},
-    scopeId: SCOPE,
-    input: "[cron wake]",
-    reply: "done",
-    actorId: "U1",
-    autonomous: true,
-  });
-  await strategy.onTurnEnd!({ requestContext: {}, scopeId: SCOPE, input: "hi", reply: "hello", actorId: "U1" });
+  await strategy.onTurnEnd!({ scopeId: SCOPE, input: "trigger", reply: "queued", actorId: "system:ambient:acme" });
+  await strategy.onTurnEnd!({ scopeId: SCOPE, input: "[cron wake]", reply: "done", actorId: "U1", autonomous: true });
+  await strategy.onTurnEnd!({ scopeId: SCOPE, input: "hi", reply: "hello", actorId: "U1" });
 
   assert.deepEqual(systems, [MEMORY_EXTRACTION_PROMPT], "one extraction, for the human turn only");
 });
@@ -82,7 +69,7 @@ test("per-turn swallows extraction failures and captures nothing", async () => {
   };
   const { memory } = freshMemory();
   const strategy = createPerTurnStrategy({ harness, memory });
-  await strategy.onTurnEnd!({ requestContext: {}, scopeId: SCOPE, input: "hi", reply: "hello" });
+  await strategy.onTurnEnd!({ scopeId: SCOPE, input: "hi", reply: "hello" });
   assert.equal(await memory.read(SCOPE), "", "nothing captured");
 });
 
@@ -92,7 +79,7 @@ test("per-turn does not capture when the model says NONE", async () => {
   };
   const { memory } = freshMemory();
   const strategy = createPerTurnStrategy({ harness, memory });
-  await strategy.onTurnEnd!({ requestContext: {}, scopeId: SCOPE, input: "hi", reply: "hello" });
+  await strategy.onTurnEnd!({ scopeId: SCOPE, input: "hi", reply: "hello" });
   assert.equal(await memory.read(SCOPE), "");
 });
 
@@ -118,15 +105,8 @@ test("debounced: an autonomous turn is skipped and never joins the live actor's 
   };
   const { memory } = freshMemory();
   const strategy = createPerTurnStrategy({ harness, memory, captureQuietMs: 30, captureMaxTurns: 10 });
-  await strategy.onTurnEnd!({
-    requestContext: {},
-    scopeId: SCOPE,
-    input: "[cron wake]",
-    reply: "done",
-    actorId: "U1",
-    autonomous: true,
-  });
-  await strategy.onTurnEnd!({ requestContext: {}, scopeId: SCOPE, input: "hi", reply: "hello", actorId: "U1" });
+  await strategy.onTurnEnd!({ scopeId: SCOPE, input: "[cron wake]", reply: "done", actorId: "U1", autonomous: true });
+  await strategy.onTurnEnd!({ scopeId: SCOPE, input: "hi", reply: "hello", actorId: "U1" });
   await new Promise((r) => setTimeout(r, 120));
 
   assert.deepEqual(calls, ["User said:\nhi\n\nAssistant replied:\nhello"], "one flush, the live turn only");
@@ -147,7 +127,6 @@ test("automatic capture carries the full turn and delivery context", async () =>
     memory: wrapped,
   });
   await strategy.onTurnEnd!({
-    requestContext: {},
     scopeId: SCOPE,
     conversationScopeId: "channel:C1",
     actorId: "U1",

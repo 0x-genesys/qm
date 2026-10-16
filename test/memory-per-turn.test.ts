@@ -29,7 +29,7 @@ for (const origin of [CHANNEL, GROUP, DM]) {
     await memory.capture(PERSONAL, ["Existing fact"], Date.now());
     const before = await memory.read(PERSONAL);
     const strategy = createPerTurnStrategy({ harness: createMockHarness().models, memory });
-    await strategy.onTurnEnd!({ requestContext: {}, scopeId: origin, input: INPUT, reply: REPLY, actorId: ACTOR });
+    await strategy.onTurnEnd!({ scopeId: origin, input: INPUT, reply: REPLY, actorId: ACTOR });
     assert.match(await memory.read(origin), /task list is ship the launch/);
     if (origin !== PERSONAL) assert.equal(await memory.read(PERSONAL), before);
     else assert.equal((await memory.read(PERSONAL)).split("task list is ship the launch").length - 1, 1);
@@ -40,7 +40,6 @@ test("redirected capture writes only to the resolved target, not the speaker's n
   const { memory } = freshMemory();
   const strategy = createPerTurnStrategy({ harness: createMockHarness().models, memory });
   await strategy.onTurnEnd!({
-    requestContext: {},
     scopeId: "personal:U2",
     conversationScopeId: CHANNEL,
     input: INPUT,
@@ -55,20 +54,8 @@ test("redirected capture writes only to the resolved target, not the speaker's n
 test("burst debounce: turns within the quiet window flush as one extraction after it elapses", async () => {
   const { memory } = freshMemory();
   const strategy = createPerTurnStrategy({ harness: createMockHarness().models, memory, captureQuietMs: 30 });
-  await strategy.onTurnEnd!({
-    requestContext: {},
-    scopeId: DM,
-    input: "remember that fact one is alpha",
-    reply: REPLY,
-    actorId: ACTOR,
-  });
-  await strategy.onTurnEnd!({
-    requestContext: {},
-    scopeId: DM,
-    input: "remember that fact two is beta",
-    reply: REPLY,
-    actorId: ACTOR,
-  });
+  await strategy.onTurnEnd!({ scopeId: DM, input: "remember that fact one is alpha", reply: REPLY, actorId: ACTOR });
+  await strategy.onTurnEnd!({ scopeId: DM, input: "remember that fact two is beta", reply: REPLY, actorId: ACTOR });
 
   assert.equal(await memory.read(DM), "", "nothing captured before the quiet window elapses");
   await new Promise((r) => setTimeout(r, 120));
@@ -85,20 +72,8 @@ test("burst debounce: a full burst flushes immediately at captureMaxTurns", asyn
     captureQuietMs: 60_000,
     captureMaxTurns: 2,
   });
-  await strategy.onTurnEnd!({
-    requestContext: {},
-    scopeId: DM,
-    input: "remember that fact one is alpha",
-    reply: REPLY,
-    actorId: ACTOR,
-  });
-  await strategy.onTurnEnd!({
-    requestContext: {},
-    scopeId: DM,
-    input: "remember that fact two is beta",
-    reply: REPLY,
-    actorId: ACTOR,
-  });
+  await strategy.onTurnEnd!({ scopeId: DM, input: "remember that fact one is alpha", reply: REPLY, actorId: ACTOR });
+  await strategy.onTurnEnd!({ scopeId: DM, input: "remember that fact two is beta", reply: REPLY, actorId: ACTOR });
 
   const body = await memory.read(DM);
   assert.match(body, /fact one is alpha/, "cap reached — no waiting on the quiet window");
@@ -109,14 +84,12 @@ test("burst debounce: different speakers in one channel keep separate bursts in 
   const { memory } = freshMemory();
   const strategy = createPerTurnStrategy({ harness: createMockHarness().models, memory, captureQuietMs: 30 });
   await strategy.onTurnEnd!({
-    requestContext: {},
     scopeId: CHANNEL,
     input: "remember that my task list is ship the launch",
     reply: REPLY,
     actorId: ACTOR,
   });
   await strategy.onTurnEnd!({
-    requestContext: {},
     scopeId: CHANNEL,
     input: "remember that my task list is write the memo",
     reply: REPLY,
@@ -133,13 +106,7 @@ test("burst debounce: different speakers in one channel keep separate bursts in 
 test("a channel turn by a system actor captures nothing anywhere", async () => {
   const { memory } = freshMemory();
   const strategy = createPerTurnStrategy({ harness: createMockHarness().models, memory });
-  await strategy.onTurnEnd!({
-    requestContext: {},
-    scopeId: CHANNEL,
-    input: INPUT,
-    reply: REPLY,
-    actorId: "system:ambient:acme",
-  });
+  await strategy.onTurnEnd!({ scopeId: CHANNEL, input: INPUT, reply: REPLY, actorId: "system:ambient:acme" });
 
   assert.equal(await memory.read(CHANNEL), "", "origin scope receives nothing");
   assert.equal(
@@ -152,14 +119,7 @@ test("a channel turn by a system actor captures nothing anywhere", async () => {
 test("an autonomous (triggered) channel turn captures nothing, even for a human actor", async () => {
   const { memory } = freshMemory();
   const strategy = createPerTurnStrategy({ harness: createMockHarness().models, memory });
-  await strategy.onTurnEnd!({
-    requestContext: {},
-    scopeId: CHANNEL,
-    input: INPUT,
-    reply: REPLY,
-    actorId: ACTOR,
-    autonomous: true,
-  });
+  await strategy.onTurnEnd!({ scopeId: CHANNEL, input: INPUT, reply: REPLY, actorId: ACTOR, autonomous: true });
 
   assert.equal(await memory.read(CHANNEL), "", "origin scope receives nothing on a triggered wake");
   assert.equal(await memory.read(PERSONAL), "", "owner notebook remains untouched on a triggered wake");

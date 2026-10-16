@@ -10,7 +10,6 @@ import {
 import { estimateCostUsd } from "../../ratelimit/budget.ts";
 import type { HarnessLlmRequestRecord } from "../../harness/harness.ts";
 import { swallowAs } from "../../util/errors.ts";
-import type { ModelRequestContext } from "../../model/provider-endpoints.ts";
 import { sleep } from "../../util/async.ts";
 import { headSlice } from "../../util/text.ts";
 import type { OrchestratorDeps } from "./types.ts";
@@ -35,7 +34,7 @@ interface SecurityScreenContext {
   origin?: TurnOrigin["kind"];
   requestId?: string;
   request?: string;
-  requestContext: ModelRequestContext;
+  sessionId?: string;
   runId?: string;
   thread?: string;
 }
@@ -93,7 +92,7 @@ export function createSecurityClassifier(deps: OrchestratorDeps): SecurityClassi
           sources: screenSources(payload),
           ...(context.surface ? { surface: context.surface } : {}),
           ...(context.origin ? { origin: context.origin } : {}),
-          ...(context.requestContext.sessionId ? { sessionId: context.requestContext.sessionId } : {}),
+          ...(context.sessionId ? { sessionId: context.sessionId } : {}),
           ...(context.runId ? { runId: context.runId } : {}),
           ...(context.thread ? { thread: context.thread } : {}),
           requestId,
@@ -129,7 +128,6 @@ export function createSecurityClassifier(deps: OrchestratorDeps): SecurityClassi
             }
           : {}),
         signal,
-        requestContext: context.requestContext,
         recordModelCall: (rec) => {
           deps.modelGateway.recordCall({ at: Date.now(), scopeLabel, ...rec });
           if (!observe) void deps.budget?.record(actorId, estimateCostUsd(rec.inputTokens));

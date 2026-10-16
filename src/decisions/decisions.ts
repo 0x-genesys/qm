@@ -1,5 +1,3 @@
-import type { ModelRequestContext } from "../model/provider-endpoints.ts";
-
 const DECISION_HOOK_POINTS = {
   user_input: { actions: ["allow", "block"], decide: "most_restrictive" },
   tool_response: { actions: ["allow", "block"], decide: "most_restrictive" },
@@ -73,7 +71,6 @@ export interface DecisionBackend {
     state: string;
     model: DecisionModelRef;
     signal: AbortSignal;
-    requestContext?: ModelRequestContext;
   }): Promise<Record<string, Record<string, number> | Error>>;
 }
 
@@ -265,7 +262,6 @@ async function runGroup(
   state: string,
   backend: DecisionBackend,
   signal: AbortSignal,
-  requestContext?: ModelRequestContext,
 ): Promise<DecisionResult[]> {
   let answers: Record<string, Record<string, number> | Error>;
   try {
@@ -282,7 +278,6 @@ async function runGroup(
       state: state.slice(0, MAX_STATE_CHARS).toWellFormed(),
       model: rules[0]!.model,
       signal,
-      requestContext,
     });
   } catch (error) {
     return rules.map((r) => settle(r, asError(error)));
@@ -310,16 +305,13 @@ export async function runHook(
   state: string,
   backend: DecisionBackend,
   signal: AbortSignal,
-  requestContext?: ModelRequestContext,
 ): Promise<{ decisive?: DecisionResult; results: DecisionResult[] }> {
   const groups = new Map<string, DecisionRule[]>();
   for (const rule of rules.filter((r) => r.hook === hook)) {
     const key = JSON.stringify([rule.model.provider, rule.model.model]);
     groups.set(key, [...(groups.get(key) ?? []), rule]);
   }
-  const results = (
-    await Promise.all([...groups.values()].map((g) => runGroup(g, state, backend, signal, requestContext)))
-  ).flat();
+  const results = (await Promise.all([...groups.values()].map((g) => runGroup(g, state, backend, signal)))).flat();
   const confident = DECISION_HOOK_POINTS[hook].decide === "most_confident";
   const weight = (r: DecisionResult) => {
     if (!confident) return rank(hook, r.action);

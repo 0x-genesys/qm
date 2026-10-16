@@ -32,7 +32,6 @@ test("compaction leaves the session goal on its row and writes no goal entries",
     for (let round = 0; round < 2; round++) {
       const rebuilt = await compaction.compactContextIfNeeded({
         session,
-        requestContext: {},
         lease,
         visibleHistory: forModelContext((await sessions.getContextWindow(session.id)).entries),
         scopeId: scope,
@@ -81,7 +80,6 @@ test("background compaction cannot revive an older goal over one closed while it
   } as unknown as OrchestratorDeps);
   compaction.scheduleBackgroundCompaction({
     sessionId: session.id,
-    requestContext: {},
     scopeId: scope,
     orgScopeId: "org:test",
     actorId: "test",

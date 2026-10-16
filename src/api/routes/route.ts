@@ -7,6 +7,7 @@ import type { ServerDeps } from "../deps.ts";
 import type { SourceAuth } from "../../auth/source-auth.ts";
 import type { CapabilityClaims } from "../../auth/capability-token.ts";
 import type { PortalIdentity } from "../../auth/portal-identity.ts";
+import { withModelRequestContext } from "../../model/request-context.ts";
 
 export interface BaseCtx {
   req: IncomingMessage;
@@ -46,5 +47,5 @@ export function withActor<C extends BaseCtx>(actor: RouteActor, routes: Route<C>
 
 export async function run<C extends BaseCtx>(route: Route<C>, params: Record<string, string>, ctx: C): Promise<void> {
   ctx.params = params;
-  await route.handle(ctx);
+  await withModelRequestContext(ctx.capability ?? {}, () => route.handle(ctx));
 }

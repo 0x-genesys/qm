@@ -95,7 +95,6 @@ function harnessTurn(overrides: Partial<HarnessTurnInput> = {}): {
     tools: {} as unknown as HarnessTurnInput["tools"],
     scopeLabel: scope,
     orgScopeId: scope,
-    requestContext: {},
     readOnly: true,
     emit: async (entry: NewEntry) => {
       const saved = {
@@ -484,7 +483,6 @@ test("the claude harness offers compaction and detection so a utility role canno
   const summary = await harness.models.compactHistory!({
     session: { id: "session-1" } as HarnessTurnInput["session"],
     history: [],
-    requestContext: {},
     recordModelCall: () => {},
   });
   assert.equal(summary, "a compact summary of the thread");
@@ -495,7 +493,6 @@ test("the claude harness offers compaction and detection so a utility role canno
   };
   const verdict = await harness.models.shouldRespond!({
     session: { id: "session-1" } as HarnessTurnInput["session"],
-    requestContext: {},
     message: "hey bot, can you check this?",
     recentContext: "",
     systemPrompt: "be brief",
@@ -537,7 +534,6 @@ for (const terminal of [{ stop_reason: "max_tokens" }, { is_error: true }]) {
       harness.models.compactHistory!({
         session: { id: "summary-session" } as HarnessTurnInput["session"],
         history: [],
-        requestContext: {},
         recordModelCall: () => {},
       }),
       /did not complete/,

@@ -1554,7 +1554,6 @@ export function buildApp(
       ...(input.runtimeActorId ? { actorId: input.runtimeActorId } : {}),
       scopeLabel: input.scopeLabel,
       sessionId: input.session.id,
-      requestContext: input.requestContext,
       ...(input.runId ? { runId: input.runId } : {}),
       ...(input.cancel ? { cancel: input.cancel } : {}),
     });
@@ -2268,7 +2267,6 @@ export function buildApp(
           modelId,
           systemPrompt,
           signal,
-          requestContext: { actorId },
           recordModelCall: (rec) => {
             modelGateway.recordCall({ at: Date.now(), scopeLabel, ...rec });
             void budget?.record(actorId, estimateCostUsd(rec.inputTokens));
@@ -2345,7 +2343,7 @@ export function buildApp(
     ...(harness.models.judge
       ? {
           ambientJudge: (s: string, pr: string, signal?: AbortSignal) =>
-            harness.models.judge!(s, pr, { purpose: "ambient_judge" }, signal),
+            harness.models.judge!(s, pr, signal, "ambient_judge"),
         }
       : {}),
     ...(screenSecurity ? { screenSecurity } : {}),

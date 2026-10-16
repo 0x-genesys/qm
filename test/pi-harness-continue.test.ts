@@ -43,7 +43,6 @@ function turnInput(sink: Sink, overrides: Partial<HarnessTurnInput>): HarnessTur
     tools: {} as HarnessTurnInput["tools"],
     scopeLabel: "personal:tester" as HarnessTurnInput["scopeLabel"],
     orgScopeId: "org:test" as HarnessTurnInput["orgScopeId"],
-    requestContext: {},
     emit: async (e: NewEntry) => {
       const appended = { ...e, seq: seq++, createdAt: Date.now() };
       sink.entries.push({ seq: appended.seq, type: e.type, payload: e.payload });

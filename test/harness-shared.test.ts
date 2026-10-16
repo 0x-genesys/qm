@@ -82,8 +82,8 @@ test("one-shot LLM records do not inherit synthetic turn coordinates", async () 
 test("judge overrides the model while oneShot keeps the harness default", async () => {
   const { turns, runPrompt } = capturingRunPrompt();
   const utilities = oneShotModelUtilities(oneShotRunner(runPrompt), "cheap-judge-model");
-  await utilities.oneShot!("s", "p", {});
-  await utilities.judge!("s", "p", {});
+  await utilities.oneShot!("s", "p");
+  await utilities.judge!("s", "p");
   assert.deepEqual(
     turns.map((turn) => turn.runtime?.modelId),
     [undefined, "cheap-judge-model"],
@@ -93,7 +93,7 @@ test("judge overrides the model while oneShot keeps the harness default", async 
 test("without a configured judge model, judge falls back to the harness default model", async () => {
   const { turns, runPrompt } = capturingRunPrompt();
   const utilities = oneShotModelUtilities(oneShotRunner(runPrompt));
-  await utilities.judge!("s", "p", {});
+  await utilities.judge!("s", "p");
   assert.equal(turns[0]!.runtime, undefined);
 });
 
@@ -101,7 +101,7 @@ test("routing judge cancellation reaches the model turn", async () => {
   const { turns, runPrompt } = capturingRunPrompt();
   const utilities = oneShotModelUtilities(oneShotRunner(runPrompt));
   const controller = new AbortController();
-  await utilities.judge!("s", "p", {}, controller.signal);
+  await utilities.judge!("s", "p", controller.signal);
   assert.equal(turns[0]!.cancel, controller.signal);
   controller.abort();
   assert.equal(turns[0]!.cancel?.aborted, true);
@@ -115,7 +115,6 @@ test("security screening passes the abort signal and instrumentation through the
   const verdict = await utilities.screenSecurity!({
     payload: "suspicious payload",
     signal: controller.signal,
-    requestContext: {},
     recordModelCall,
   });
   assert.deepEqual(verdict, { decision: "auto" });
@@ -136,7 +135,6 @@ test("shared harness security screens use auxiliary coordinates", async () => {
   const verdict = await utilities.screenSecurity!({
     payload: "suspicious payload",
     signal: new AbortController().signal,
-    requestContext: {},
     recordModelCall: () => {},
     recordLlmRequest: (rec) => {
       recorded.push(rec);

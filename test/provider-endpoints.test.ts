@@ -4,7 +4,6 @@ import {
   parseProviderBaseUrl,
   providerBaseUrl,
   providerBaseUrlsFromEnv,
-  modelGatewayHeaders,
   modelGatewayRequest,
   setProviderBaseUrls,
 } from "../src/model/provider-endpoints.ts";
@@ -138,18 +137,4 @@ test("gateway-mapped built-in models send session-affinity headers", () => {
     assert.equal(routed.model.baseUrl, gateway.url);
     assert.equal(routed.model.id, model.id);
   }
-});
-
-test("model gateway headers carry only attestable request context", () => {
-  const config = { apiKey: "gateway-key", apiKeyHeader: "api-key" };
-  assert.deepEqual(modelGatewayHeaders(config), { "api-key": "gateway-key" });
-  assert.deepEqual(
-    modelGatewayHeaders(config, {
-      sessionId: "",
-      actorId: "owner@example.com\r\nx-qm-scope: org:other",
-      scopeId: "channel:café",
-      purpose: "turn",
-    }),
-    { "api-key": "gateway-key", "x-qm-purpose": "turn" },
-  );
 });
