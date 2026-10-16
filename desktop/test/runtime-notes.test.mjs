@@ -61,7 +61,6 @@ test("unknown apps have no invented notes, and a new runtime emits notes again",
   assert.match(next.__drain().text, /App usage notes/);
 });
 
-
 test("setValue forwards explicit submission and rejects invalid options before sending", async () => {
   const calls = [];
   const window = runtime((command) => calls.push(JSON.parse(JSON.stringify(command))));

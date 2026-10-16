@@ -32,7 +32,7 @@ Amount   = { "pages": f64 } | { "pixels": u32 }
 Point    = { x: f64, y: f64 }
 ```
 
-`app` matches a running app's name or bundle id, case-insensitive. An installed app that is not running is opened in the background (`open -g`) first. A `press_key` chord is modifiers (`cmd`, `shift`, `opt`/`alt`, `ctrl`) joined by `+` and ending in a key, which is a letter, digit, punctuation, `return`, `tab`, `space`, `delete`, `escape`, `forwarddelete`, `home`, `end`, `pageup`, `pagedown`, arrows (`left` …), or `f1`–`f12`.
+`app` matches a running app's name or bundle id, case-insensitive. An installed app that is not running is opened in the background (`open -g`) first. A `press_key` chord is modifiers (`cmd`, `shift`, `opt`/`alt`, `ctrl`) joined by `+` and ending in a key, which is a letter, digit, punctuation, `return`, `tab`, `space`, `delete`, `escape`, `forwarddelete`, `home`, `end`, `pageup`, `pagedown`, arrows (`left` …), or `f1`–`f20`. Keypad names such as `KP_Enter`, `KP_0` and `KP_Add`, X11 punctuation names such as `exclam`, and side-specific modifier names such as `Control_R` are also accepted.
 
 Example:
 
@@ -86,7 +86,7 @@ ErrorCode   = bad_request | unsupported_platform | permission_missing | app_not_
 - The tree is capped at about 60,000 characters of lines and 6,000 AX elements read (`truncated: true`). The characters
   are shared fairly: siblings that fit are shown whole, and the rest split what is left evenly, so one long list cannot
   starve the containers after it. Every container cut short gets `… N more not shown; the observation size limit was
-  reached`.
+reached`.
 - A web area, or a childless group or scroll area, covering at least 40% of the window with nothing readable inside gets
   `… nothing readable inside; the app may draw this area itself (for example a canvas). Use the screenshot and point targets`.
 - Each element's attributes are read in one batched call; actions and settability only for elements that are walked.
