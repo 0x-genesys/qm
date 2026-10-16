@@ -1,4 +1,5 @@
 import type { MemoryEmbedder } from "./model/embeddings.ts";
+import { nonDeploymentCredential, withDeploymentCredentials } from "./credentials/deployment-credentials.ts";
 import { resolveEmbeddingModel } from "./model/pi-models.ts";
 import { createPostgresTeamStore, type TeamStore } from "./teams/teams.ts";
 import { brokerCredentialAuthHeader } from "./api/credential-broker.ts";
@@ -1311,6 +1312,23 @@ export function buildApp(
   // every other personal credential.
   const userModelCredentials = createUserModelCredentialStore({ keychain: credentialStore });
   const keychain: Keychain | undefined = keychainKeyMaterial ? credentialStore : undefined;
+  const serviceCreds = withDeploymentCredentials(
+    credentialStore,
+    scopeId("org", config.orgId),
+    config.brokerCredentials ?? [],
+  );
+  if (config.brokerCredentials?.length) {
+    const reserved = new Set(config.brokerCredentials.map((c) => c.slug));
+    void credentialStore.listServiceCredentials(scopeId("org", config.orgId)).then(
+      (stored) => {
+        const shadowed = stored.filter((c) => reserved.has(c.slug)).map((c) => c.slug);
+        if (shadowed.length)
+          console.warn(`[broker-credentials] BROKER_CREDENTIALS overrides stored credentials: ${shadowed.join(", ")}`);
+      },
+      (error) =>
+        console.warn(`[broker-credentials] could not check for overridden stored credentials: ${errMessage(error)}`),
+    );
+  }
   const mcpToolService = createMcpToolService({
     servers: mcpServers,
     audit: auditLog,
@@ -1500,7 +1518,9 @@ export function buildApp(
             }
           : {}),
         credential: async (slug) => {
-          const rec = await keychain?.getServiceCredentialSecret(scopeId("org", config.orgId), slug);
+          const rec = keychain
+            ? nonDeploymentCredential(await serviceCreds.getServiceCredentialSecret(scopeId("org", config.orgId), slug))
+            : null;
           return rec ? { host: rec.host, enabled: rec.enabled, header: brokerCredentialAuthHeader(rec) } : null;
         },
       }),
@@ -1850,7 +1870,7 @@ export function buildApp(
             };
             const orgScope = scopeId("org", config.orgId);
             const credentials = await deploymentCredentialSlugs(
-              await credentialStore.listServiceCredentials(orgScope),
+              await serviceCreds.listServiceCredentials(orgScope),
               orgScope,
               acl,
             );
@@ -2105,7 +2125,7 @@ export function buildApp(
     connectorStatusCache,
     resolveConnectorClient: resolveClient,
     ...(keychain ? { keychain } : {}),
-    serviceCreds: credentialStore,
+    serviceCreds,
     deliveries,
     approvals,
     approvalGrants: artifactMap<CommandApprovalGrant>("approval_grants"),
@@ -2146,7 +2166,9 @@ export function buildApp(
             resolvePackAuth(
               {
                 serviceCredential: async (slug) => {
-                  const record = await keychain.getServiceCredentialSecret(scopeId("org", config.orgId), slug);
+                  const record = nonDeploymentCredential(
+                    await serviceCreds.getServiceCredentialSecret(scopeId("org", config.orgId), slug),
+                  );
                   return record && record.delivery !== "env" ? record : undefined;
                 },
                 connectorToken: async (host, principalId) =>
@@ -2980,7 +3002,7 @@ export function buildApp(
     workspace,
     memory,
     ...(keychain ? { keychain } : {}),
-    serviceCreds: credentialStore,
+    serviceCreds,
     deliveries,
     ...(keychainApprovals ? { keychainApprovals } : {}),
     ...(askResolution ? { fireAskResolution: askResolution } : {}),
