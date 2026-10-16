@@ -1,10 +1,10 @@
 mod cancellation;
 #[cfg(target_os = "macos")]
 mod focus;
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-mod keys;
 #[cfg(target_os = "macos")]
 mod intervention;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod keys;
 mod protocol;
 mod text;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
