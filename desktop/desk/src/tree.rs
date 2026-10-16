@@ -33,14 +33,15 @@ pub struct Rendered {
     pub removed: Vec<u32>,
 }
 
-pub fn render(lines: &[(Key, String)], base: Option<&HashMap<Key, String>>) -> Rendered {
+pub fn render(lines: &[(Key, String)], base: Option<&HashMap<Key, String>>, moved: &HashSet<u32>) -> Rendered {
     let full = || Rendered { tree: lines.iter().map(|(_, l)| format!("{l}\n")).collect(), diffed: false, removed: vec![] };
     let Some(base) = base else { return full() };
     let mut tree = String::new();
     let mut changed = 0;
     for (key, line) in lines {
+        let rebound = matches!(key, Key::Element(id) if moved.contains(id));
         let mark = match base.get(key) {
-            Some(old) if old == line => continue,
+            Some(old) if old == line && !rebound => continue,
             Some(_) => "~",
             None => "+",
         };
@@ -67,6 +68,7 @@ const TEXT_ROLES: &[&str] = &["AXStaticText", "AXTextArea", "AXTextField", "AXHe
 const TOGGLES: &[&str] = &["AXCheckBox", "AXRadioButton", "AXSwitch", "AXToggle", "AXMenuItem"];
 const QUIET_SUBROLES: &[&str] = &["AXUnknown", "AXStandardWindow", "AXTextAttachment"];
 pub const MAX_TEXT: usize = 1000;
+const FOLDS: &[&str] = &["AXHeading", "AXLink"];
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Props {
@@ -117,6 +119,15 @@ impl Props {
         }
     }
 
+    fn heading_level(&self) -> Option<usize> {
+        let level = self.value.as_deref()?.parse::<usize>().ok()?;
+        (self.role == "AXHeading" && (1..=6).contains(&level)).then_some(level)
+    }
+
+    pub fn folds_text(&self) -> bool {
+        FOLDS.contains(&self.role.as_str()) && self.title.is_none() && self.label.is_none()
+    }
+
     pub fn plain_text(&self) -> bool {
         self.role == "AXStaticText" && self.actions.is_empty() && !self.focused && !self.selected && self.text().is_some()
     }
@@ -128,7 +139,7 @@ impl Props {
     pub fn describe(&self) -> (String, bool) {
         let toggle = self.toggle();
         let name = self.name();
-        let value = self.value.as_deref().filter(|v| Some(*v) != name && toggle.is_none());
+        let value = self.value.as_deref().filter(|v| Some(*v) != name && toggle.is_none() && self.heading_level().is_none());
         let description = self.description.as_deref().filter(|d| Some(*d) != name);
         let placeholder = self.placeholder.as_deref().filter(|_| value.is_none());
         let keep = name.is_some()
@@ -142,11 +153,15 @@ impl Props {
             || self.selected
             || self.settable
             || !self.actions.is_empty();
-        let mut s = short(&self.role).to_string();
-        if let Some(sub) = self.subrole.as_deref().filter(|s| !QUIET_SUBROLES.contains(s)) {
+        let level = self.heading_level().filter(|_| name.is_some());
+        let mut s = match level {
+            Some(l) => format!("{} {}", "#".repeat(l), clip(name.unwrap_or_default(), MAX_TEXT)),
+            None => short(&self.role).to_string(),
+        };
+        if let Some(sub) = self.subrole.as_deref().filter(|s| !QUIET_SUBROLES.contains(s) && level.is_none()) {
             s += &format!(":{}", short(sub));
         }
-        if let Some(n) = name {
+        if let Some(n) = name.filter(|_| level.is_none()) {
             s += &format!(" \"{}\"", clip(n, 80));
         }
         if let Some(d) = description {
@@ -192,7 +207,7 @@ impl Props {
     }
 }
 
-pub fn merged_text(parts: &[(String, Option<Rect>)]) -> String {
+pub fn joined_text(parts: &[(String, Option<Rect>)]) -> String {
     let mut out = String::new();
     let mut last: Option<Rect> = None;
     for (text, f) in parts {
@@ -203,17 +218,144 @@ pub fn merged_text(parts: &[(String, Option<Rect>)]) -> String {
         out += text;
         last = f.or(last);
     }
-    format!("StaticText = \"{}\"", clip(out.trim(), MAX_TEXT))
+    out.trim().to_string()
+}
+
+pub fn merged_text(parts: &[(String, Option<Rect>)]) -> String {
+    format!("StaticText = \"{}\"", clip(&joined_text(parts), MAX_TEXT))
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Item {
+    pub key: Key,
+    pub text: String,
+    pub kids: Vec<Item>,
+}
+
+impl Item {
+    pub fn leaf(key: Key, text: String) -> Item {
+        Item { key, text, kids: vec![] }
+    }
+}
+
+const MAX_INDENT: usize = 50;
+const CUT_NOTE: usize = 64;
+
+fn indent(depth: usize) -> String {
+    "  ".repeat(depth.min(MAX_INDENT))
+}
+
+impl Item {
+    fn line(&self, depth: usize) -> String {
+        match self.key {
+            Key::Element(id) => format!("{}[{id}] {}", indent(depth), self.text),
+            _ => format!("{}{}", indent(depth), self.text),
+        }
+    }
+
+    pub fn renumber(&mut self, moved: &HashMap<u32, u32>) {
+        if let Key::Element(id) = self.key {
+            self.key = Key::Element(*moved.get(&id).unwrap_or(&id));
+        }
+        if let Key::Note(a, n) = self.key {
+            self.key = Key::Note(*moved.get(&a).unwrap_or(&a), n);
+        }
+        self.kids.iter_mut().for_each(|k| k.renumber(moved));
+    }
+}
+
+fn own(it: &Item, depth: usize) -> usize {
+    it.line(depth).len() + 1
+}
+
+fn size(it: &Item, depth: usize) -> usize {
+    own(it, depth) + it.kids.iter().map(|k| size(k, depth + 1)).sum::<usize>()
+}
+
+fn anchor_of(key: Key, parent: u32) -> u32 {
+    match key {
+        Key::Element(id) => id,
+        _ => parent,
+    }
+}
+
+fn emit(it: &Item, depth: usize, out: &mut Vec<(Key, String)>) {
+    out.push((it.key, it.line(depth)));
+    for k in &it.kids {
+        emit(k, depth + 1, out);
+    }
+}
+
+fn cut_note(anchor: u32, depth: usize, n: usize, out: &mut Vec<(Key, String)>) {
+    out.push((Key::Note(anchor, u32::MAX), format!("{}… {n} more not shown; the observation size limit was reached", indent(depth))));
+}
+
+fn fit(items: &[Item], depth: usize, anchor: u32, budget: usize, out: &mut Vec<(Key, String)>) -> bool {
+    let sizes: Vec<usize> = items.iter().map(|i| size(i, depth)).collect();
+    if sizes.iter().sum::<usize>() <= budget {
+        items.iter().for_each(|i| emit(i, depth, out));
+        return false;
+    }
+    let floor: Vec<usize> =
+        items.iter().map(|i| own(i, depth) + if i.kids.is_empty() { 0 } else { indent(depth + 1).len() + CUT_NOTE }).collect();
+    if floor.iter().sum::<usize>() > budget {
+        let room = budget.saturating_sub(indent(depth).len() + CUT_NOTE);
+        let mut used = 0;
+        let mut shown = 0;
+        for (i, it) in items.iter().enumerate() {
+            if used + floor[i] > room {
+                break;
+            }
+            used += floor[i];
+            shown += 1;
+            out.push((it.key, it.line(depth)));
+            if !it.kids.is_empty() {
+                cut_note(anchor_of(it.key, anchor), depth + 1, it.kids.len(), out);
+            }
+        }
+        cut_note(anchor, depth, items.len() - shown, out);
+        return true;
+    }
+    let allowance = |cap: usize| -> Vec<usize> { sizes.iter().zip(&floor).map(|(&s, &f)| s.min(cap).max(f)).collect() };
+    let (mut lo, mut hi) = (0, *sizes.iter().max().unwrap_or(&0));
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if allowance(mid).iter().sum::<usize>() <= budget {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    for (it, give) in items.iter().zip(allowance(lo)) {
+        if size(it, depth) <= give {
+            emit(it, depth, out);
+        } else {
+            out.push((it.key, it.line(depth)));
+            fit(&it.kids, depth + 1, anchor_of(it.key, anchor), give - own(it, depth), out);
+        }
+    }
+    true
+}
+
+pub fn layout(items: &[Item], budget: usize) -> (Vec<(Key, String)>, bool) {
+    let mut out = vec![];
+    let cut = fit(items, 0, ROOT, budget, &mut out);
+    (out, cut)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Locator(pub u64);
+pub struct Locator {
+    hash: u64,
+    pub rebindable: bool,
+}
+
+const COLLECTIONS: &[&str] = &["AXRow", "AXOutlineRow", "AXCell", "AXList", "AXTable", "AXOutline", "AXBrowser", "AXGrid"];
 
 impl Locator {
-    pub const ROOT: Locator = Locator(0xcbf2_9ce4_8422_2325);
+    pub const ROOT: Locator = Locator { hash: 0xcbf2_9ce4_8422_2325, rebindable: true };
 
     pub fn child(self, p: &Props) -> Locator {
-        let mut h = self.0;
+        let mut h = self.hash;
         let mut eat = |s: &str| {
             for b in s.bytes().chain([0xff]) {
                 h ^= b as u64;
@@ -227,7 +369,7 @@ impl Locator {
         if p.name().is_none() && p.identifier.is_none() {
             eat(p.description.as_deref().unwrap_or(""));
         }
-        Locator(h)
+        Locator { hash: h, rebindable: self.rebindable && !COLLECTIONS.contains(&p.role.as_str()) }
     }
 }
 
@@ -248,12 +390,13 @@ pub struct Ids<T> {
     by_hash: HashMap<usize, Vec<usize>>,
     by_locator: HashMap<Locator, Vec<usize>>,
     taken: HashSet<u32>,
+    fresh: Vec<(u32, Locator)>,
     pub next: u32,
 }
 
 impl<T: PartialEq + Clone> Ids<T> {
     pub fn new() -> Self {
-        Ids { known: vec![], by_hash: HashMap::new(), by_locator: HashMap::new(), taken: HashSet::new(), next: 0 }
+        Ids { known: vec![], by_hash: HashMap::new(), by_locator: HashMap::new(), taken: HashSet::new(), fresh: vec![], next: 0 }
     }
 
     fn add(&mut self, e: Entry<T>) {
@@ -263,29 +406,58 @@ impl<T: PartialEq + Clone> Ids<T> {
         self.known.push(e);
     }
 
-    pub fn assign(&mut self, el: &T, hash: usize, locator: Locator, dead: impl Fn(&T) -> bool) -> u32 {
-        let same = self
-            .by_hash
-            .get(&hash)
-            .and_then(|c| c.iter().copied().find(|&i| !self.taken.contains(&self.known[i].id) && self.known[i].el == *el));
-        let reborn = || {
-            let open: Vec<usize> =
-                self.by_locator.get(&locator)?.iter().copied().filter(|&i| !self.taken.contains(&self.known[i].id)).collect();
-            match open[..] {
-                [i] if dead(&self.known[i].el) => Some(i),
-                _ => None,
-            }
-        };
-        let id = match same.or_else(reborn) {
+    pub fn assign(&mut self, el: &T, hash: usize, locator: Locator) -> u32 {
+        let same = self.by_hash.get(&hash).and_then(|c| {
+            c.iter().copied().find(|&i| !self.known[i].now && !self.taken.contains(&self.known[i].id) && self.known[i].el == *el)
+        });
+        let id = match same {
             Some(i) => self.known[i].id,
             None => {
                 self.next += 1;
+                self.fresh.push((self.next - 1, locator));
                 self.next - 1
             }
         };
         self.taken.insert(id);
         self.add(Entry { id, el: el.clone(), hash, locator, idle: 0, now: true });
         id
+    }
+
+    pub fn rebind(&mut self, dead: impl Fn(&T) -> bool) -> HashMap<u32, u32> {
+        let mut count: HashMap<Locator, usize> = HashMap::new();
+        for (_, l) in &self.fresh {
+            *count.entry(*l).or_default() += 1;
+        }
+        let mut moved = HashMap::new();
+        for (new, locator) in std::mem::take(&mut self.fresh) {
+            if count[&locator] != 1 || !locator.rebindable {
+                continue;
+            }
+            let old: HashSet<u32> = self.by_locator[&locator]
+                .iter()
+                .map(|&i| &self.known[i])
+                .filter(|e| !e.now && !self.taken.contains(&e.id))
+                .map(|e| e.id)
+                .collect();
+            let [id] = old.into_iter().collect::<Vec<_>>()[..] else { continue };
+            let gone = self.by_locator[&locator].iter().filter(|&&i| self.known[i].id == id).all(|&i| dead(&self.known[i].el));
+            if !gone {
+                continue;
+            }
+            for &i in &self.by_locator[&locator] {
+                if self.known[i].id == new && self.known[i].now {
+                    self.known[i].id = id;
+                }
+            }
+            self.taken.remove(&new);
+            self.taken.insert(id);
+            moved.insert(new, id);
+        }
+        moved
+    }
+
+    pub fn seen(&self, el: &T, hash: usize) -> bool {
+        self.by_hash.get(&hash).is_some_and(|c| c.iter().any(|&i| self.known[i].now && self.known[i].el == *el))
     }
 
     pub fn carry(self) -> Ids<T> {
@@ -310,10 +482,6 @@ impl<T: PartialEq + Clone> Ids<T> {
             next.add(e);
         }
         next
-    }
-
-    pub fn seen(&self, el: &T, hash: usize) -> bool {
-        self.by_hash.get(&hash).is_some_and(|c| c.iter().any(|&i| self.known[i].now && self.known[i].el == *el))
     }
 
     pub fn locator(&self, id: u32) -> Option<Locator> {
@@ -377,7 +545,7 @@ mod tests {
 
     #[test]
     fn renders_the_whole_tree_without_a_base() {
-        let out = render(&lines(&[(Key::Element(0), "[0] Button \"OK\"")]), None);
+        let out = render(&lines(&[(Key::Element(0), "[0] Button \"OK\"")]), None, &HashSet::new());
         assert_eq!(out.tree, "[0] Button \"OK\"\n");
         assert!(!out.diffed);
     }
@@ -400,7 +568,7 @@ mod tests {
             (Key::Element(4), "[4] E"),
             (Key::Element(5), "  [5] F"),
         ]);
-        let out = render(&after, Some(&base));
+        let out = render(&after, Some(&base), &HashSet::new());
         assert!(out.diffed);
         assert_eq!(out.tree, "~ [1] B changed\n+   [5] F\n");
         assert_eq!(out.removed, vec![3]);
@@ -410,7 +578,7 @@ mod tests {
     fn falls_back_to_the_whole_tree_when_most_lines_changed() {
         let base: HashMap<Key, String> = lines(&[(Key::Element(0), "[0] A"), (Key::Element(1), "[1] B")]).into_iter().collect();
         let after = lines(&[(Key::Element(0), "[0] A2"), (Key::Element(1), "[1] B2"), (Key::Element(2), "[2] C")]);
-        let out = render(&after, Some(&base));
+        let out = render(&after, Some(&base), &HashSet::new());
         assert!(!out.diffed);
         assert_eq!(out.tree, "[0] A2\n[1] B2\n[2] C\n");
         assert!(out.removed.is_empty());
@@ -420,9 +588,69 @@ mod tests {
     fn reports_no_change_as_an_empty_diff() {
         let after = lines(&[(Key::Element(0), "[0] A")]);
         let base: HashMap<Key, String> = after.iter().cloned().collect();
-        let out = render(&after, Some(&base));
+        let out = render(&after, Some(&base), &HashSet::new());
         assert!(out.diffed);
         assert_eq!(out.tree, "");
+    }
+
+    fn item(id: u32, text: &str, kids: Vec<Item>) -> Item {
+        Item { key: Key::Element(id), text: text.into(), kids }
+    }
+
+    fn texts(out: &[(Key, String)]) -> Vec<&str> {
+        out.iter().map(|(_, l)| l.as_str()).collect()
+    }
+
+    #[test]
+    fn lays_out_everything_within_budget() {
+        let tree = vec![item(0, "A", vec![item(1, "B", vec![])]), item(2, "C", vec![])];
+        let (out, cut) = layout(&tree, 1000);
+        assert!(!cut);
+        assert_eq!(texts(&out), vec!["[0] A", "  [1] B", "[2] C"]);
+    }
+
+    #[test]
+    fn shares_the_budget_between_siblings() {
+        let rows = |base: u32| (0..200).map(|i| item(base + i, &format!("Row {}", "x".repeat(20)), vec![])).collect();
+        let tree = vec![item(1000, "Sidebar", rows(0)), item(2000, "Content", rows(300)), item(3000, "Footer", vec![])];
+        let (out, cut) = layout(&tree, 4000);
+        assert!(cut);
+        let total: usize = out.iter().map(|(_, l)| l.len() + 1).sum();
+        assert!(total <= 4000 + CUT_NOTE, "{total}");
+        let lines = texts(&out);
+        assert!(lines.contains(&"[3000] Footer"), "a later sibling is not starved");
+        let count = |r: std::ops::Range<u32>| out.iter().filter(|(k, _)| matches!(k, Key::Element(i) if r.contains(i))).count();
+        let (sidebar, content) = (count(0..200), count(300..500));
+        assert!(sidebar > 20 && content > 20, "{sidebar} {content}");
+        assert!(out
+            .iter()
+            .any(|(k, l)| *k == Key::Note(1000, u32::MAX) && l.ends_with("more not shown; the observation size limit was reached")));
+        assert!(out.iter().any(|(k, _)| *k == Key::Note(2000, u32::MAX)));
+    }
+
+    #[test]
+    fn keeps_a_prefix_when_even_single_lines_do_not_fit() {
+        let tree: Vec<Item> = (0..50).map(|i| item(i, &"y".repeat(40), vec![])).collect();
+        let (out, cut) = layout(&tree, 500);
+        assert!(cut);
+        assert_eq!(out.first().unwrap().0, Key::Element(0));
+        let (key, last) = out.last().unwrap();
+        assert_eq!(*key, Key::Note(ROOT, u32::MAX));
+        assert!(last.starts_with(&format!("… {} more", 50 - (out.len() - 1))));
+    }
+
+    #[test]
+    fn writes_headings_as_markdown() {
+        let mut h = props("AXHeading");
+        h.title = Some("Getting started".into());
+        h.value = Some("2".into());
+        assert_eq!(h.describe().0, "## Getting started");
+        h.actions = vec!["AXPress".into()];
+        assert_eq!(h.describe().0, "## Getting started <Press>");
+        let mut bare = props("AXHeading");
+        bare.value = Some("2".into());
+        assert!(bare.folds_text());
+        assert_eq!(bare.describe(), ("Heading".into(), false), "no text: folded away");
     }
 
     fn props(role: &str) -> Props {
@@ -516,15 +744,15 @@ mod tests {
     #[test]
     fn ids_survive_offscreen_pruning() {
         let mut ids: Ids<&str> = Ids::new();
-        let a = ids.assign(&"a", 1, loc("a"), |_| false);
-        let b = ids.assign(&"b", 2, loc("b"), |_| false);
+        let a = ids.assign(&"a", 1, loc("a"));
+        let b = ids.assign(&"b", 2, loc("b"));
         let mut ids = ids.carry();
-        assert_eq!(ids.assign(&"a", 1, loc("a"), |_| false), a);
+        assert_eq!(ids.assign(&"a", 1, loc("a")), a);
         let mut ids = ids.carry();
-        let c = ids.assign(&"c", 3, loc("c"), |_| false);
+        let c = ids.assign(&"c", 3, loc("c"));
         let mut ids = ids.carry();
-        assert_eq!(ids.assign(&"b", 2, loc("b"), |_| false), b, "scrolled back: same id");
-        assert_eq!(ids.assign(&"c", 3, loc("c"), |_| false), c);
+        assert_eq!(ids.assign(&"b", 2, loc("b")), b, "scrolled back: same id");
+        assert_eq!(ids.assign(&"c", 3, loc("c")), c);
         assert_eq!(ids.next, 3);
         assert!(ids.seen(&"b", 2) && !ids.seen(&"a", 1), "only this walk counts as seen");
     }
@@ -532,34 +760,73 @@ mod tests {
     #[test]
     fn parked_ids_expire() {
         let mut ids: Ids<&str> = Ids::new();
-        ids.assign(&"a", 1, loc("a"), |_| false);
+        ids.assign(&"a", 1, loc("a"));
         for _ in 0..=PARK_OBSERVATIONS + 1 {
             ids = ids.carry();
         }
-        assert_eq!(ids.assign(&"a", 1, loc("a"), |_| false), 1, "forgotten after too long");
+        assert_eq!(ids.assign(&"a", 1, loc("a")), 1, "forgotten after too long");
     }
 
     #[test]
     fn rebuilt_elements_inherit_ids_by_locator() {
         let mut ids: Ids<&str> = Ids::new();
-        let send = ids.assign(&"send-v1", 10, loc("Send"), |_| false);
+        let send = ids.assign(&"send-v1", 10, loc("Send"));
+        assert!(ids.rebind(|_| true).is_empty(), "nothing to inherit from on the first walk");
         let mut ids = ids.carry();
-        assert_eq!(ids.assign(&"send-v2", 11, loc("Send"), |e| *e == "send-v1"), send, "old object is dead");
+        let fresh = ids.assign(&"send-v2", 11, loc("Send"));
+        assert_eq!(ids.rebind(|e| *e == "send-v1"), HashMap::from([(fresh, send)]), "old object is dead");
         let mut ids = ids.carry();
-        assert_eq!(ids.assign(&"send-v2", 11, loc("Send"), |_| false), send, "the new object is what is remembered");
+        assert_eq!(ids.assign(&"send-v2", 11, loc("Send")), send, "the new object is what is remembered");
         let mut ids = ids.carry();
-        assert_ne!(ids.assign(&"send-v3", 12, loc("Send"), |_| false), send, "old object still alive: a second button");
+        ids.assign(&"send-v3", 12, loc("Send"));
+        assert!(ids.rebind(|_| false).is_empty(), "old object still alive: a second button");
     }
 
     #[test]
     fn ambiguous_locators_get_new_ids() {
         let mut ids: Ids<&str> = Ids::new();
-        let row1 = ids.assign(&"row1", 1, loc("Row"), |_| false);
-        ids.assign(&"row2", 2, loc("Row"), |_| false);
+        let row1 = ids.assign(&"row1", 1, loc("Row"));
+        ids.assign(&"row2", 2, loc("Row"));
         let mut ids = ids.carry();
-        let fresh = ids.assign(&"row3", 3, loc("Row"), |_| true);
-        assert!(fresh >= 2 && fresh != row1);
-        assert_eq!(ids.assign(&"row1", 1, loc("Row"), |_| true), row1, "same object still matches directly");
+        ids.assign(&"row3", 3, loc("Row"));
+        assert!(ids.rebind(|_| true).is_empty(), "two old candidates");
+        let mut ids = ids.carry();
+        assert_eq!(ids.assign(&"row1", 1, loc("Row")), row1, "same object still matches directly");
+    }
+
+    #[test]
+    fn one_old_two_new_is_ambiguous() {
+        let mut ids: Ids<&str> = Ids::new();
+        let send = ids.assign(&"send", 1, loc("Send"));
+        let mut ids = ids.carry();
+        let a = ids.assign(&"send-a", 2, loc("Send"));
+        let b = ids.assign(&"send-b", 3, loc("Send"));
+        assert!(ids.rebind(|_| true).is_empty());
+        assert!(a != send && b != send);
+    }
+
+    #[test]
+    fn collection_items_never_inherit_ids() {
+        let mut row = props("AXRow");
+        row.identifier = None;
+        let mut reply = props("AXButton");
+        reply.title = Some("Reply".into());
+        let inside = Locator::ROOT.child(&props("AXTable")).child(&row).child(&reply);
+        assert!(!inside.rebindable);
+        let mut ids: Ids<&str> = Ids::new();
+        ids.assign(&"reply-row1", 1, inside);
+        let mut ids = ids.carry();
+        ids.assign(&"reply-row11", 2, inside);
+        assert!(ids.rebind(|_| true).is_empty());
+    }
+
+    #[test]
+    fn rebound_lines_count_as_changed() {
+        let base: HashMap<Key, String> =
+            lines(&[(Key::Element(0), "[0] A"), (Key::Element(1), "[1] B"), (Key::Element(2), "[2] C")]).into_iter().collect();
+        let after = lines(&[(Key::Element(0), "[0] A"), (Key::Element(1), "[1] B"), (Key::Element(2), "[2] C")]);
+        let out = render(&after, Some(&base), &HashSet::from([1]));
+        assert_eq!(out.tree, "~ [1] B\n");
     }
 
     #[test]

@@ -1,13 +1,14 @@
 use crate::cancellation;
 use crate::protocol::*;
 use crate::text::{self, Key as TextKey, Stroke};
-use crate::tree::{self, Key, Locator, Props, ROOT};
+use crate::tree::{self, Item, Key, Locator, Props, ROOT};
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::data::CFData;
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
+use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop, CFRunLoopSource};
 use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, CGMouseButton, EventField, ScrollEventUnit};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
@@ -28,6 +29,9 @@ extern "C" {
     fn AXUIElementCopyAttributeValue(e: CFTypeRef, a: CFStringRef, v: *mut CFTypeRef) -> i32;
     fn AXUIElementCopyMultipleAttributeValues(e: CFTypeRef, names: CFTypeRef, options: u32, v: *mut CFTypeRef) -> i32;
     fn AXValueGetTypeID() -> usize;
+    fn AXObserverCreate(pid: i32, cb: extern "C" fn(CFTypeRef, CFTypeRef, CFStringRef, *mut c_void), out: *mut CFTypeRef) -> i32;
+    fn AXObserverAddNotification(o: CFTypeRef, e: CFTypeRef, name: CFStringRef, refcon: *mut c_void) -> i32;
+    fn AXObserverGetRunLoopSource(o: CFTypeRef) -> core_foundation::runloop::CFRunLoopSourceRef;
     fn AXValueGetType(v: CFTypeRef) -> u32;
     fn AXUIElementSetAttributeValue(e: CFTypeRef, a: CFStringRef, v: CFTypeRef) -> i32;
     fn AXUIElementIsAttributeSettable(e: CFTypeRef, a: CFStringRef, v: *mut bool) -> i32;
@@ -84,7 +88,6 @@ const MAX_TREE_CHARS: usize = 60_000;
 const MAX_VISITS: usize = 6_000;
 const MAX_BUSY_VISITS: usize = 800;
 const MAX_DEPTH: usize = 200;
-const MAX_INDENT: usize = 50;
 const CLIPS: &[&str] = &["AXScrollArea", "AXWebArea"];
 const BORING: &[&str] = &["AXShowMenu", "AXScrollToVisible", "AXShowDefaultUI", "AXShowAlternateUI"];
 const SPARSE: &[&str] = &["AXWebArea", "AXGroup", "AXScrollArea", "AXLayoutArea", "AXUnknown"];
@@ -115,6 +118,64 @@ const PRESS_MS: u64 = 50;
 const HOVER_MS: u64 = 30;
 static EVENT_NUMBER: AtomicI64 = AtomicI64::new(1);
 const SETTLE: Duration = Duration::from_millis(1000);
+const SETTLE_MIN: Duration = Duration::from_millis(200);
+const SETTLE_QUIET: Duration = Duration::from_millis(300);
+const SETTLE_MAX: Duration = Duration::from_millis(2000);
+const NOTICES: &[&str] = &[
+    "AXCreated",
+    "AXUIElementDestroyed",
+    "AXValueChanged",
+    "AXTitleChanged",
+    "AXLayoutChanged",
+    "AXFocusedUIElementChanged",
+    "AXSelectedChildrenChanged",
+    "AXSelectedTextChanged",
+    "AXMenuOpened",
+    "AXMenuClosed",
+    "AXWindowCreated",
+    "AXLoadComplete",
+];
+static NOTICED: AtomicI64 = AtomicI64::new(0);
+static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+fn now_ms() -> i64 {
+    EPOCH.get_or_init(Instant::now).elapsed().as_millis() as i64
+}
+
+extern "C" fn noticed(_: CFTypeRef, _: CFTypeRef, _: CFStringRef, _: *mut c_void) {
+    NOTICED.store(now_ms(), Ordering::Relaxed);
+}
+
+struct Observer {
+    _observer: CFType,
+    source: CFRunLoopSource,
+}
+
+impl Observer {
+    fn new(pid: i32, ax: &El) -> Option<Observer> {
+        let mut o: CFTypeRef = std::ptr::null();
+        if unsafe { AXObserverCreate(pid, noticed, &mut o) } != 0 || o.is_null() {
+            return None;
+        }
+        let observer = unsafe { CFType::wrap_under_create_rule(o) };
+        let added = NOTICES
+            .iter()
+            .filter(|n| unsafe { AXObserverAddNotification(o, ax.as_CFTypeRef(), cfs(n).as_concrete_TypeRef(), std::ptr::null_mut()) } == 0)
+            .count();
+        if added == 0 {
+            return None;
+        }
+        let source = unsafe { CFRunLoopSource::wrap_under_get_rule(AXObserverGetRunLoopSource(o)) };
+        CFRunLoop::get_current().add_source(&source, unsafe { kCFRunLoopDefaultMode });
+        Some(Observer { _observer: observer, source })
+    }
+}
+
+impl Drop for Observer {
+    fn drop(&mut self) {
+        CFRunLoop::get_current().remove_source(&self.source, unsafe { kCFRunLoopDefaultMode });
+    }
+}
 
 struct App {
     name: String,
@@ -136,14 +197,17 @@ struct Snapshot {
 pub struct Desk {
     cache: HashMap<i32, Snapshot>,
     touched: HashMap<i32, Instant>,
-    enabled: HashSet<i32>,
-    enhanced: HashSet<i32>,
+    enabled: HashMap<i32, Vec<(&'static str, bool)>>,
+    observers: HashMap<i32, Observer>,
 }
 
 impl Drop for Desk {
     fn drop(&mut self) {
-        for pid in &self.enhanced {
-            set_attr(&app_element(*pid), "AXEnhancedUserInterface", &CFBoolean::false_value().as_CFType());
+        for (pid, prior) in &self.enabled {
+            let ax = app_element(*pid);
+            for (name, was) in prior {
+                set_attr(&ax, name, &CFBoolean::from(*was).as_CFType());
+            }
         }
     }
 }
@@ -678,9 +742,7 @@ fn extras(ax: &El, main: &El) -> Vec<El> {
 struct Walk {
     ids: tree::Ids<El>,
     elements: Vec<(u32, El)>,
-    lines: Vec<(Key, String)>,
     notes: HashMap<u32, u32>,
-    chars: usize,
     truncated: bool,
     visited: usize,
     window: Rect,
@@ -688,31 +750,38 @@ struct Walk {
 
 impl Walk {
     fn id(&mut self, e: &El, locator: Locator) -> u32 {
-        let id = self.ids.assign(e, unsafe { CFHash(e.as_CFTypeRef()) }, locator, dead);
+        let id = self.ids.assign(e, unsafe { CFHash(e.as_CFTypeRef()) }, locator);
         self.elements.push((id, e.clone()));
         id
     }
 
     fn full(&self) -> bool {
-        self.chars >= MAX_TREE_CHARS || self.visited >= MAX_VISITS || cancellation::cancelled()
+        self.visited >= MAX_VISITS || cancellation::cancelled()
     }
 
-    fn push(&mut self, key: Key, indent: usize, s: String) {
-        let line = format!("{}{s}", "  ".repeat(indent));
-        self.chars += line.len() + 1;
-        self.lines.push((key, line));
-    }
-
-    fn note(&mut self, anchor: u32, indent: usize, s: String) {
+    fn note(&mut self, anchor: u32, s: String) -> Item {
         let seq = self.notes.entry(anchor).or_default();
         let key = Key::Note(anchor, *seq);
         *seq += 1;
-        self.push(key, indent, s);
+        Item::leaf(key, s)
+    }
+
+    fn fold(&mut self, n: &mut Node) {
+        if !n.props.folds_text() || n.children.is_empty() || n.children.len() > 20 {
+            return;
+        }
+        self.visited += n.children.len();
+        let kids: Vec<Node> = n.children.iter().map(|c| complete(c, fetch(c))).collect();
+        if kids.iter().all(|k| k.props.plain_text() && k.children.is_empty()) {
+            let parts: Vec<(String, Option<Rect>)> = kids.iter().filter_map(|k| Some((k.raw.clone()?, k.frame))).collect();
+            n.props.title = Some(tree::joined_text(&parts)).filter(|t| !t.is_empty());
+            n.children.clear();
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn visit(&mut self, e: &El, n: Node, depth: usize, indent: usize, anchor: u32, clip: Rect, at: Locator, force: bool) {
-        if depth > MAX_DEPTH || indent > MAX_INDENT {
+    fn visit(&mut self, e: &El, mut n: Node, depth: usize, anchor: u32, clip: Rect, at: Locator, force: bool, out: &mut Vec<Item>) {
+        if depth > MAX_DEPTH {
             self.truncated = true;
             return;
         }
@@ -720,60 +789,57 @@ impl Walk {
         if self.ids.seen(e, hash) {
             return;
         }
+        let locator = at.child(&n.props);
+        self.fold(&mut n);
         let (s, keep) = n.props.describe();
         let keep = keep || force;
         let clip = narrow(clip, &n.props.role, n.frame);
-        let locator = at.child(&n.props);
         let drawn = n.props.role == "AXWebArea" || n.children.is_empty();
-        let before = self.lines.len();
-        let (indent, anchor) = if keep {
-            let id = self.id(e, locator);
-            self.push(Key::Element(id), indent, format!("[{id}] {s}"));
-            (indent + 1, id)
-        } else {
-            (indent, anchor)
-        };
-        self.children(&n.children, depth + 1, indent, anchor, clip, locator);
-        let inside = self.lines.len() - before - keep as usize;
-        if drawn
+        let (anchor, mut kids) = if keep { (self.id(e, locator), vec![]) } else { (anchor, vec![]) };
+        self.children(&n.children, depth + 1, anchor, clip, locator, &mut kids);
+        if kids.is_empty()
+            && drawn
             && !self.truncated
             && SPARSE.contains(&n.props.role.as_str())
-            && n.frame.is_some_and(|f| tree::sparse(f, self.window, inside))
+            && n.frame.is_some_and(|f| tree::sparse(f, self.window, 0))
         {
-            self.note(
-                anchor,
-                indent,
-                "… nothing readable inside; the app may draw this area itself (for example a canvas). Use the screenshot and point targets"
-                    .into(),
-            );
+            let note =
+                "… nothing readable inside; the app may draw this area itself (for example a canvas). Use the screenshot and point targets";
+            kids.push(self.note(anchor, note.into()));
+        }
+        if keep {
+            out.push(Item { key: Key::Element(anchor), text: s, kids });
+        } else {
+            out.extend(kids);
         }
     }
 
-    fn text_run(&mut self, run: &mut Vec<(El, Node)>, depth: usize, indent: usize, anchor: u32, clip: Rect, at: Locator) {
+    fn text_run(&mut self, run: &mut Vec<(El, Node)>, depth: usize, anchor: u32, clip: Rect, at: Locator, out: &mut Vec<Item>) {
         match run.len() {
             0 => {}
             1 => {
                 let (e, n) = run.pop().unwrap();
-                self.visit(&e, n, depth, indent, anchor, clip, at, false);
+                self.visit(&e, n, depth, anchor, clip, at, false, out);
             }
             _ => {
                 let texts: Vec<(String, Option<Rect>)> = run.iter().filter_map(|(_, n)| Some((n.raw.clone()?, n.frame))).collect();
                 let (first, n) = &run[0];
                 let id = self.id(first, at.child(&n.props));
-                self.push(Key::Element(id), indent, format!("[{id}] {}", tree::merged_text(&texts)));
+                out.push(Item::leaf(Key::Element(id), tree::merged_text(&texts)));
             }
         }
         run.clear();
     }
 
-    fn children(&mut self, kids: &[El], depth: usize, indent: usize, anchor: u32, clip: Rect, at: Locator) {
+    fn children(&mut self, kids: &[El], depth: usize, anchor: u32, clip: Rect, at: Locator, out: &mut Vec<Item>) {
         let mut hidden = 0;
         let mut run: Vec<(El, Node)> = vec![];
         for (i, c) in kids.iter().enumerate() {
             if self.full() {
                 self.truncated = true;
-                self.text_run(&mut run, depth, indent, anchor, clip, at);
-                self.note(anchor, indent, format!("… {} more not shown; the observation size limit was reached", kids.len() - i));
+                self.text_run(&mut run, depth, anchor, clip, at, out);
+                let note = format!("… {} more not shown; the observation size limit was reached", kids.len() - i);
+                out.push(self.note(anchor, note));
                 break;
             }
             self.visited += 1;
@@ -787,12 +853,12 @@ impl Walk {
                 run.push((c.clone(), n));
                 continue;
             }
-            self.text_run(&mut run, depth, indent, anchor, clip, at);
-            self.visit(c, n, depth, indent, anchor, clip, at, false);
+            self.text_run(&mut run, depth, anchor, clip, at, out);
+            self.visit(c, n, depth, anchor, clip, at, false, out);
         }
-        self.text_run(&mut run, depth, indent, anchor, clip, at);
+        self.text_run(&mut run, depth, anchor, clip, at, out);
         if hidden > 0 {
-            self.note(anchor, indent, format!("… {hidden} more offscreen; scroll to reveal"));
+            out.push(self.note(anchor, format!("… {hidden} more offscreen; scroll to reveal")));
         }
     }
 }
@@ -838,19 +904,28 @@ fn narrow(clip: Rect, role: &str, f: Option<Rect>) -> Rect {
 }
 
 fn visible_rect(e: &El, f: Rect, window: Rect) -> Option<Rect> {
-    let mut clip = window;
+    let mut clips = vec![];
+    let mut root = None;
     let mut parent = attr(e, "AXParent");
     for _ in 0..MAX_DEPTH {
         let Some(p) = parent else { break };
         let role = str_attr(&p, "AXRole").unwrap_or_default();
-        if role == "AXWindow" {
+        if role == "AXWindow" || role == "AXApplication" {
+            root = Some((role, p));
             break;
         }
         if CLIPS.contains(&role.as_str()) {
-            clip = narrow(clip, &role, frame(&p));
+            clips.push((role, frame(&p)));
         }
         parent = attr(&p, "AXParent");
     }
+    let everywhere = Rect { x: -1e9, y: -1e9, w: 2e9, h: 2e9 };
+    let base = match root {
+        Some((role, w)) if role == "AXWindow" => frame(&w).unwrap_or(window),
+        Some(_) => everywhere,
+        None => window,
+    };
+    let clip = clips.iter().rev().fold(base, |c, (role, f)| narrow(c, role, *f));
     tree::visible(f, clip)
 }
 
@@ -887,8 +962,27 @@ fn select(e: &El, text: &str, prefix: &str, suffix: &str, selection: Selection) 
     }
 }
 
-fn settle(w: &El, since: Instant) {
-    cancellation::wait(SETTLE.saturating_sub(since.elapsed()));
+fn quiet(since: Instant) {
+    let start = now_ms() - since.elapsed().as_millis() as i64;
+    loop {
+        CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, Duration::from_millis(50), false);
+        let elapsed = since.elapsed();
+        let last = NOTICED.load(Ordering::Relaxed).max(start);
+        if cancellation::cancelled() || elapsed >= SETTLE_MAX {
+            return;
+        }
+        if elapsed >= SETTLE_MIN && now_ms() - last >= SETTLE_QUIET.as_millis() as i64 {
+            return;
+        }
+    }
+}
+
+fn settle(w: &El, since: Instant, observed: bool) {
+    if observed {
+        quiet(since);
+    } else {
+        cancellation::wait(SETTLE.saturating_sub(since.elapsed()));
+    }
     for _ in 0..16 {
         if cancellation::cancelled() || !busy(w, 0, &mut 0) {
             return;
@@ -941,74 +1035,99 @@ impl Desk {
     }
 
     fn enable(&mut self, pid: i32, ax: &El, w: &El) {
-        if !self.enabled.insert(pid) {
+        if self.enabled.contains_key(&pid) {
             return;
         }
-        let yes = CFBoolean::true_value().as_CFType();
-        if set_attr(ax, "AXManualAccessibility", &yes) != 0 && set_attr(ax, "AXEnhancedUserInterface", &yes) == 0 {
-            self.enhanced.insert(pid);
-        }
-        for _ in 0..10 {
-            if cancellation::cancelled() || !empty_web(w, 0, &mut 0) {
-                return;
+        let mut prior = vec![];
+        let mut turn_on = |name: &'static str| {
+            let was = bool_attr(ax, name);
+            let on = was == Some(true) || set_attr(ax, name, &CFBoolean::true_value().as_CFType()) == 0;
+            if on && was != Some(true) {
+                prior.push((name, false));
             }
-            cancellation::wait(Duration::from_millis(100));
+            on
+        };
+        let manual = turn_on("AXManualAccessibility");
+        let wait = || {
+            for _ in 0..10 {
+                if cancellation::cancelled() || !empty_web(w, 0, &mut 0) {
+                    return true;
+                }
+                cancellation::wait(Duration::from_millis(100));
+            }
+            false
+        };
+        if !wait() && !manual {
+            turn_on("AXEnhancedUserInterface");
+            wait();
         }
+        self.enabled.insert(pid, prior);
     }
 
     fn observe(&mut self, app: &App, shot: bool, diff: bool) -> Result<Observation, Failure> {
         if let Some(at) = self.touched.remove(&app.pid) {
             let (_, w) = window(app)?;
-            settle(&w, at);
+            settle(&w, at, self.observers.contains_key(&app.pid));
         }
         let (ax, w) = window(app)?;
         self.enable(app.pid, &ax, &w);
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.observers.entry(app.pid) {
+            if let Some(o) = Observer::new(app.pid, &ax) {
+                slot.insert(o);
+            }
+        }
         let win = window_id(&w);
         let f = frame(&w).unwrap_or(Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
         let mut prev = self.cache.remove(&app.pid).filter(|s| s.window == win);
         let mut walk = Walk {
             ids: prev.as_mut().map(|p| std::mem::take(&mut p.ids)).unwrap_or_default(),
             elements: vec![],
-            lines: vec![],
             notes: HashMap::new(),
-            chars: 0,
             truncated: false,
             visited: 0,
             window: f,
         };
+        let mut items = vec![];
         let everywhere = Rect { x: -1e9, y: -1e9, w: 2e9, h: 2e9 };
         let others = extras(&ax, &w);
         if !others.is_empty() {
-            walk.push(Key::Section(0), 0, "Open menus and other windows of this app:".into());
+            items.push(Item::leaf(Key::Section(0), "Open menus and other windows of this app:".into()));
             for o in &others {
                 let n = complete(o, fetch(o));
-                walk.visit(o, n, 0, 0, ROOT, everywhere, Locator::ROOT, true);
+                walk.visit(o, n, 0, ROOT, everywhere, Locator::ROOT, true, &mut items);
             }
             let title = str_attr(&w, "AXTitle").unwrap_or_default();
-            walk.push(Key::Section(1), 0, format!("Window \"{}\":", tree::clip(&title, 80)));
+            items.push(Item::leaf(Key::Section(1), format!("Window \"{}\":", tree::clip(&title, 80))));
         }
         let kids = attr(&w, "AXChildren").map(list).unwrap_or_default();
-        walk.children(&kids, 0, 0, ROOT, if f.w > 0.0 && f.h > 0.0 { f } else { everywhere }, Locator::ROOT);
+        walk.children(&kids, 0, ROOT, if f.w > 0.0 && f.h > 0.0 { f } else { everywhere }, Locator::ROOT, &mut items);
+        let moved = walk.ids.rebind(dead);
+        items.iter_mut().for_each(|i| i.renumber(&moved));
+        for (id, _) in walk.elements.iter_mut() {
+            *id = *moved.get(id).unwrap_or(id);
+        }
+        let (mut lines, cut) = tree::layout(&items, MAX_TREE_CHARS);
         if let Some(focus) = attr(&ax, "AXFocusedUIElement") {
             let what = match walk.elements.iter().find(|(_, e)| *e == focus) {
-                Some((id, _)) => format!("[{id}]"),
-                None => format!("{} (not in the tree above)", complete(&focus, fetch(&focus)).props.describe().0),
+                Some((id, _)) if lines.iter().any(|(k, _)| *k == Key::Element(*id)) => format!("[{id}]"),
+                _ => format!("{} (not in the tree above)", complete(&focus, fetch(&focus)).props.describe().0),
             };
-            walk.push(Key::Info(0), 0, format!("Focus: {what}"));
+            lines.push((Key::Info(0), format!("Focus: {what}")));
             if let Some(sel) = str_attr(&focus, "AXSelectedText") {
-                walk.push(Key::Info(1), 0, format!("Selected text: \"{}\"", tree::clip(&sel, tree::MAX_TEXT)));
+                lines.push((Key::Info(1), format!("Selected text: \"{}\"", tree::clip(&sel, tree::MAX_TEXT))));
             }
         }
         let screenshot = if shot { Some(capture(&w, f)?) } else { None };
-        let rendered = tree::render(&walk.lines, prev.as_ref().filter(|_| diff).map(|p| &p.lines));
+        let moved: HashSet<u32> = moved.into_values().collect();
+        let rendered = tree::render(&lines, prev.as_ref().filter(|_| diff).map(|p| &p.lines), &moved);
         let obs = Observation {
             app: app.name.clone(),
             bundle_id: app.bundle.clone(),
             pid: app.pid,
             window: str_attr(&w, "AXTitle").unwrap_or_default(),
             frame: f,
-            elements: walk.elements.len() as u32,
-            truncated: walk.truncated,
+            elements: lines.iter().filter(|(k, _)| matches!(k, Key::Element(_))).count() as u32,
+            truncated: walk.truncated || cut,
             diffed: rendered.diffed,
             tree: rendered.tree,
             removed: rendered.removed,
@@ -1021,7 +1140,7 @@ impl Desk {
                 window_element: w.clone(),
                 origin: (f.x, f.y),
                 elements: walk.elements,
-                lines: walk.lines.into_iter().collect(),
+                lines: lines.into_iter().collect(),
                 ids: walk.ids.carry(),
             },
         );
@@ -1113,7 +1232,7 @@ impl Desk {
             return Ok(e);
         }
         let gone = || fail(ErrorCode::BadIndex, format!("element {index} is gone and no single replacement was found; observe again"));
-        let target = s.ids.locator(index).ok_or_else(gone)?;
+        let target = s.ids.locator(index).filter(|l| l.rebindable).ok_or_else(gone)?;
         let mut roots: Vec<(El, Locator)> =
             attr(&s.window_element, "AXChildren").map(list).unwrap_or_default().into_iter().map(|c| (c, Locator::ROOT)).collect();
         roots.extend(extras(&app_element(pid), &s.window_element).into_iter().map(|o| (o, Locator::ROOT)));
@@ -1316,7 +1435,6 @@ fn resolve(query: &str) -> Result<App, Failure> {
 fn window(app: &App) -> Result<(El, El), Failure> {
     let ax = unsafe { CFType::wrap_under_create_rule(AXUIElementCreateApplication(app.pid)) };
     unsafe { AXUIElementSetMessagingTimeout(ax.as_CFTypeRef(), 1.5) };
-    set_attr(&ax, "AXManualAccessibility", &CFBoolean::true_value().as_CFType());
     let w = window_of(&ax).ok_or_else(|| fail(ErrorCode::NoWindow, format!("{} has no open window", app.name)))?;
     if bool_attr(&ax, "AXHidden") == Some(true) || bool_attr(&w, "AXMinimized") == Some(true) {
         return Err(fail(ErrorCode::NoWindow, "App is hidden or window is minimized; show it and observe again"));
