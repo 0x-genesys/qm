@@ -190,6 +190,8 @@ export interface PublicServiceCredential {
   deployments: boolean;
   enabled: boolean;
   hasSecret: boolean;
+  maxRequestsPerDay?: number;
+  source?: "deployment";
   updatedBy?: string;
   updatedAt: number;
 }
@@ -206,6 +208,7 @@ export interface DecryptedServiceCredential {
   allowedPathPrefixes?: string[];
   deployments: boolean;
   enabled: boolean;
+  maxRequestsPerDay?: number;
 }
 
 export function isValidCredentialSlug(slug: string): boolean {
