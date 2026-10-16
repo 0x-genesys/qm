@@ -595,10 +595,7 @@ impl Walk {
             return;
         }
         let (s, keep, role) = line(e);
-        let clip = match f {
-            Some(f) if CLIPS.contains(&role.as_str()) => tree::intersect(f, clip).unwrap_or(clip),
-            _ => clip,
-        };
+        let clip = narrow(clip, &role, f);
         let (indent, anchor) = if keep {
             let id = self.id(e);
             self.push(Key::Element(id), indent, format!("[{id}] {s}"));
@@ -635,6 +632,13 @@ impl Walk {
     }
 }
 
+fn narrow(clip: Rect, role: &str, f: Option<Rect>) -> Rect {
+    match f {
+        Some(f) if CLIPS.contains(&role) => tree::intersect(f, clip).unwrap_or(clip),
+        _ => clip,
+    }
+}
+
 fn visible_rect(e: &El, f: Rect, window: Rect) -> Option<Rect> {
     let mut clip = window;
     let mut parent = attr(e, "AXParent");
@@ -645,9 +649,7 @@ fn visible_rect(e: &El, f: Rect, window: Rect) -> Option<Rect> {
             break;
         }
         if CLIPS.contains(&role.as_str()) {
-            if let Some(pf) = frame(&p) {
-                clip = tree::intersect(clip, pf)?;
-            }
+            clip = narrow(clip, &role, frame(&p));
         }
         parent = attr(&p, "AXParent");
     }
