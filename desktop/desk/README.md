@@ -23,7 +23,7 @@ All running apps can be observed and controlled, subject to macOS permissions.
 
 ## Platform considerations
 
-- **Events posted to a background app.** `CGEventPostToPid` clicks and keys might be ignored, or land in the wrong window, when the app isn't frontmost. If nothing happens, add `{"type":"raise"}` first; that does take focus.
+- **Background input is experimental.** Desk sends target-only synthetic activation and input without raising the app, but some apps may ignore it. `{"type":"raise"}` is an explicit foreground action. Live Mac verification is still required.
 - **Screenshots.** They use `CGWindowListCreateImage`, deprecated in macOS 14 in favour of ScreenCaptureKit. On macOS 15+ it may return nothing or prompt monthly. `pixels_per_point` also needs checking on a Retina screen.
 - **`_AXUIElementGetWindow`** (private, widely used) maps the AX window to a window id for capture and event targeting.
 - **Clipboard.** `paste` replaces the general pasteboard for the moment it takes the app to read it, then restores the previous contents. It waits for the read by running the run loop on desk's main thread, where the pasteboard calls its data provider; this has not yet been exercised on a Mac.
