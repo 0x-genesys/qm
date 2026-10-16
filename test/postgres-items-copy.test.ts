@@ -510,3 +510,24 @@ test("items copy maps goal cancellation notices to system wakes", { skip }, asyn
     assert.deepEqual(selected.body, body);
   });
 });
+
+test("long call identifiers remain intact and unique within their item kind", { skip }, async () => {
+  await withSchema(async (raw) => {
+    const callId = Array.from({ length: 512 }, () => randomUUID()).join("");
+    await seed(raw, "long-calls", [
+      ["tool_call", { tool: "execute", callId }],
+      ["tool_result", { tool: "execute", callId, result: "done" }],
+      ["tool_call", { tool: "execute", callId: `${callId}x` }],
+    ]);
+    await raw.query(itemsCopySql());
+    assert.deepEqual(
+      (await items(raw, "long-calls")).map((row) => row.call_id),
+      [callId, callId, `${callId}x`],
+    );
+    await assert.rejects(
+      raw.query(`INSERT INTO items(tenant_id,session_id,seq,kind,call_id,body,created_at)
+      SELECT tenant_id,session_id,99,kind,call_id,body,created_at FROM items WHERE session_id='long-calls' AND seq=0`),
+      /items_one_call_per_kind/,
+    );
+  });
+});
