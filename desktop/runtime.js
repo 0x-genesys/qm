@@ -3,6 +3,25 @@
   const TEXT_LIMIT = 100_000;
   const IMAGE_BUDGET = 800_000;
   const IMAGE_EDGE = 1568;
+  const appNotes = new Map([
+    [
+      "com.google.Chrome",
+      "Cmd+L focuses the address bar rather than page content. Use a screenshot when a page exposes little useful accessibility text.",
+    ],
+    [
+      "com.tinyspeck.slackmacgap",
+      "Return usually sends a message; Shift+Return inserts a line break. Message and channel panes can update independently, so observe the pane you intend to edit.",
+    ],
+    [
+      "notion.id",
+      "Pages are edited as separate blocks. Click the intended block before typing; neighboring block text is not necessarily one editable value.",
+    ],
+    [
+      "com.apple.finder",
+      "Changing folders or switching view modes changes the item layout. Observe the new view before selecting file or folder targets.",
+    ],
+  ]);
+  const notedApps = new Set();
   let emitted = new WeakSet();
   let text = [];
   let images = [];
@@ -96,6 +115,14 @@
 
     async #observe(screenshot, diff, emit, tree = true) {
       const o = await desk({ type: "observe", app: this.name, screenshot, diff });
+      const note = appNotes.get(o.bundle_id);
+      if (emit && note && !notedApps.has(o.bundle_id)) {
+        const line = `App usage notes (${o.bundle_id}): ${note}`;
+        if (size + line.length <= TEXT_LIMIT) {
+          say(line);
+          notedApps.add(o.bundle_id);
+        }
+      }
       if (emit && tree) say(stateText(o));
       if (o.screenshot) {
         const image = await jpeg(o.screenshot);
