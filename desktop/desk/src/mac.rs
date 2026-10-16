@@ -256,24 +256,12 @@ fn hit(ax: &El, p: CGPoint) -> Option<(El, bool)> {
     None
 }
 
-fn prepare(pid: i32, ax: &El, win: u32, p: CGPoint, activate: bool) -> Result<Press, Failure> {
+fn prepare(pid: i32, ax: &El, win: u32, p: CGPoint) -> Result<Press, Failure> {
     active()?;
-    let (win, web) = match hit(ax, p) {
-        Some((w, web)) if window_id(&w) != 0 => (window_id(&w), web),
-        _ => (win, false),
+    let win = match hit(ax, p) {
+        Some((w, _web)) if window_id(&w) != 0 => window_id(&w),
+        _ => win,
     };
-    if activate && web && bool_attr(ax, "AXFrontmost") == Some(false) {
-        let status = set_attr(ax, "AXFrontmost", &CFBoolean::true_value().as_CFType());
-        if status != 0 {
-            return Err(fail(ErrorCode::ActionFailed, format!("bringing the app forward for a web click failed (AXError {status})")));
-        }
-        for _ in 0..20 {
-            if bool_attr(ax, "AXFrontmost") == Some(true) {
-                break;
-            }
-            cancellation::wait(Duration::from_millis(25));
-        }
-    }
     mouse(pid, &Press { win, number: 0 }, CGEventType::MouseMoved, p, CGMouseButton::Left, 0, CGEventFlags::empty())?;
     cancellation::wait(Duration::from_millis(HOVER_MS));
     Ok(Press { win, number: EVENT_NUMBER.fetch_add(1, Ordering::Relaxed) })
@@ -380,7 +368,7 @@ fn active() -> Result<(), Failure> {
     if cancellation::cancelled() {
         Err(fail(ErrorCode::ActionFailed, "Computer action cancelled"))
     } else {
-        Ok(())
+        crate::focus::check_current()
     }
 }
 
@@ -504,9 +492,21 @@ fn center(w: &El) -> CGPoint {
 }
 
 fn window_of(app: &El) -> Option<El> {
-    attr(app, "AXFocusedWindow")
-        .or_else(|| attr(app, "AXMainWindow"))
-        .or_else(|| attr(app, "AXWindows").and_then(|w| list(w).into_iter().next()))
+    let candidates = [attr(app, "AXFocusedWindow"), attr(app, "AXMainWindow")]
+        .into_iter()
+        .flatten()
+        .chain(attr(app, "AXWindows").into_iter().flat_map(list));
+    for window in candidates {
+        if bool_attr(&window, "AXMinimized") == Some(true) || window_id(&window) == 0 {
+            continue;
+        }
+        let sheet = attr(&window, "AXSheets").into_iter().flat_map(list).next();
+        if let Some(sheet) = sheet.filter(|sheet| window_id(sheet) != 0) {
+            return Some(sheet);
+        }
+        return Some(window);
+    }
+    None
 }
 
 fn window_id(w: &El) -> u32 {
@@ -833,24 +833,38 @@ impl Desk {
         }
         let (ax, w) = window(&app)?;
         let win = window_id(&w);
+        let mut focus = if actions.iter().any(|a| !matches!(a, Action::Wait { .. } | Action::Raise)) {
+            Some(crate::focus::Focus::begin(app.pid, win)?)
+        } else {
+            None
+        };
         let mut completed = 0;
         let mut failure = None;
         for (i, a) in actions.iter().enumerate() {
-            let paced = self.validate_window(&app).and_then(|_| match pace.as_mut() {
-                Some(p) => match self.aim(app.pid, &w, a) {
-                    Ok(Some(at)) => p(i as u32, Point { x: at.x, y: at.y }),
-                    Ok(None) => Ok(()),
-                    Err(e) => Err(e),
-                },
-                None => Ok(()),
-            });
-            if let Err(mut e) = paced.and_then(|_| self.validate_window(&app)).and_then(|_| self.step(&app, &ax, &w, win, a)) {
+            if matches!(a, Action::Raise) {
+                drop(focus.take());
+            }
+            let paced =
+                focus.as_ref().map_or(Ok(()), |f| f.check()).and_then(|_| self.validate_window(&app)).and_then(|_| match pace.as_mut() {
+                    Some(p) => match self.aim(app.pid, &w, a) {
+                        Ok(Some(at)) => p(i as u32, Point { x: at.x, y: at.y }),
+                        Ok(None) => Ok(()),
+                        Err(e) => Err(e),
+                    },
+                    None => Ok(()),
+                });
+            if let Err(mut e) = paced
+                .and_then(|_| self.validate_window(&app))
+                .and_then(|_| self.step(&app, &ax, &w, win, a))
+                .and_then(|_| focus.as_ref().map_or(Ok(()), |f| f.check()))
+            {
                 e.action = Some(i as u32);
                 failure = Some(e);
                 break;
             }
             completed += 1;
         }
+        drop(focus.take());
         let attempted = (completed as usize + 1).min(actions.len());
         if actions[..attempted].iter().any(|a| !matches!(a, Action::Wait { .. })) {
             self.touched.insert(app.pid, Instant::now());
@@ -942,12 +956,12 @@ impl Desk {
                     perform(&e, "AXPress")
                 } else {
                     let p = self.point(pid, Target::Index(*i))?;
-                    click_at(pid, prepare(pid, ax, win, p, true)?, p, Button::Left, 1, &[], 0)
+                    click_at(pid, prepare(pid, ax, win, p)?, p, Button::Left, 1, &[], 0)
                 }
             }
             Action::Click { target, button, count, modifiers, hold_ms } => {
                 let p = self.point(pid, *target)?;
-                click_at(pid, prepare(pid, ax, win, p, true)?, p, *button, *count, modifiers, *hold_ms)
+                click_at(pid, prepare(pid, ax, win, p)?, p, *button, *count, modifiers, *hold_ms)
             }
             Action::TypeText { text } => type_text(pid, text),
             Action::Paste { text, format } => paste(pid, text, *format),
@@ -968,7 +982,7 @@ impl Desk {
                     _ => frame(w),
                 }
                 .unwrap_or(Rect { x: 0.0, y: 0.0, w: 600.0, h: 600.0 });
-                let scroll_win = prepare(pid, ax, win, p, false)?.win;
+                let scroll_win = prepare(pid, ax, win, p)?.win;
                 let vertical = matches!(direction, Direction::Up | Direction::Down);
                 let mut left = match amount {
                     Amount::Pixels(n) => *n as i32,
@@ -995,7 +1009,7 @@ impl Desk {
             Action::Drag { from, to } => {
                 let (a, b) = (self.point(pid, Target::Point(*from))?, self.point(pid, Target::Point(*to))?);
                 let none = CGEventFlags::empty();
-                let press = prepare(pid, ax, win, a, true)?;
+                let press = prepare(pid, ax, win, a)?;
                 mouse(pid, &press, CGEventType::LeftMouseDown, a, CGMouseButton::Left, 1, none)?;
                 let mut last = a;
                 let dragged = (|| {
@@ -1072,6 +1086,9 @@ fn window(app: &App) -> Result<(El, El), Failure> {
     unsafe { AXUIElementSetMessagingTimeout(ax.as_CFTypeRef(), 1.5) };
     set_attr(&ax, "AXManualAccessibility", &CFBoolean::true_value().as_CFType());
     let w = window_of(&ax).ok_or_else(|| fail(ErrorCode::NoWindow, format!("{} has no open window", app.name)))?;
+    if bool_attr(&ax, "AXHidden") == Some(true) || bool_attr(&w, "AXMinimized") == Some(true) {
+        return Err(fail(ErrorCode::NoWindow, "App is hidden or window is minimized; show it and observe again"));
+    }
     Ok((ax, w))
 }
 
