@@ -133,7 +133,7 @@ export function nonDeploymentCredential<T extends { source?: "deployment" }>(rec
   return record && record.source !== "deployment" ? record : null;
 }
 
-export function reservedSlugError(slug: string): Error {
+function reservedSlugError(slug: string): Error {
   return new Error(`credential "${slug}" is supplied by this deployment and cannot be changed here`);
 }
 
