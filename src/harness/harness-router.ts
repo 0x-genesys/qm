@@ -314,8 +314,14 @@ export function createHarnessRouter(
         }
         lastHarness.set(input.session.id, choice.harnessId);
         const judge = adapter.models?.judge;
+        let firstSeq: number | undefined;
         const dispatched: HarnessTurnInput = {
           ...input,
+          emit: async (entry) => {
+            const stored = await input.emit(entry);
+            firstSeq ??= stored.seq;
+            return stored;
+          },
           runtime: choice,
           tools: input.runtimeControl
             ? { ...input.tools, runtime: (request, signal) => input.runtimeControl!(choice, request, signal) }
@@ -326,6 +332,8 @@ export function createHarnessRouter(
               }
             : {}),
         };
+        const bounded = (): HarnessTurnInput =>
+          firstSeq === undefined ? dispatched : { ...dispatched, turnStartSeq: firstSeq - 1 };
         let result: HarnessTurnResult;
         try {
           result = await (adapter.profile.capabilities.has("goal-enforcement")
@@ -336,7 +344,7 @@ export function createHarnessRouter(
             throw error;
           let recovered: HarnessTurnResult;
           try {
-            recovered = await afterTurn(dispatched, { reply: "" }, error);
+            recovered = await afterTurn(bounded(), { reply: "" }, error);
           } catch (recoveryError) {
             throw new AggregateError([error, recoveryError], "Provider refusal recovery failed", {
               cause: recoveryError,
@@ -346,7 +354,7 @@ export function createHarnessRouter(
           return recovered;
         }
         return afterTurn && turnCompleted(result) && !result.silent && result.reply.trim() && !input.cancel?.aborted
-          ? afterTurn(dispatched, result)
+          ? afterTurn(bounded(), result)
           : result;
       },
       async resetSession(sessionId) {

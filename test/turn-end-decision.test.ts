@@ -58,7 +58,7 @@ test("post-response decisions use the runtime service and journal a recoverable 
   });
   const result = await hook(
     turn({
-      history: [entry(7, "user", { text: "Please do the task" })],
+      turnStartSeq: 7,
       runtimeControl: async (_active, request) => {
         requests.push(request);
         return { ok: true, handoff: { choice: fallback, lifetime: "task" } };
@@ -87,7 +87,7 @@ test("a structured refusal retraction records the provider cause", async () => {
   const hook = createTurnEndHook(async () => decision);
   await hook(
     turn({
-      history: [entry(4, "user", { text: "Please do the task" })],
+      turnStartSeq: 4,
       runtimeControl: async () => ({ ok: true, handoff: { choice: fallback, lifetime: "task" } }),
       emit: async (entry_) => {
         entries.push(entry_);
@@ -114,6 +114,7 @@ test("a first-message refusal is retracted before the fallback resumes", async (
   const hook = createTurnEndHook(async () => decision);
   const result = await hook(
     turn({
+      turnStartSeq: -1,
       runtimeControl: async () => ({ ok: true, handoff: { choice: fallback, lifetime: "task" } }),
       emit: async (next) => {
         const stored = entry(entries.length, next.type, next.payload);
@@ -133,6 +134,54 @@ test("a first-message refusal is retracted before the fallback resumes", async (
   assert.deepEqual(
     forModelContext(entries).map((e) => e.seq),
     [0, 3, 4],
+  );
+});
+
+test("router retracts only output the refused turn persisted, even when older output is hidden from history", async () => {
+  const step = { id: "old", api: "openai", provider: "openai", model: choice.modelId, index: 0 };
+  const journal: SessionEntry[] = [
+    entry(0, "user", { text: "Earlier request" }),
+    entry(1, "tool_call", { tool: "execute", callId: "old-call", step }),
+    entry(2, "tool_result", { tool: "execute", callId: "old-call", result: "ok" }),
+    entry(3, "text", { text: "Earlier answer", step: { ...step, index: 1 } }),
+  ];
+  const adapter = createMockHarness();
+  adapter.turns.runTurn = async (input) => {
+    await input.emit({ type: "user", scopeLabel: input.scopeLabel, payload: { text: input.input } });
+    await input.emit({
+      type: "text",
+      scopeLabel: input.scopeLabel,
+      payload: { text: "I cannot help with that request.", step: { ...step, id: "refused" } },
+    });
+    return { reply: "I cannot help with that request." };
+  };
+  const router = createHarnessRouter(
+    new Map([["pi", adapter]]),
+    adapter,
+    () => choice,
+    createTurnEndHook(async () => decision),
+  );
+  const result = await router.turns.runTurn(
+    turn({
+      history: [],
+      runtimeControl: async () => ({ ok: true, handoff: { choice: fallback, lifetime: "task" } }),
+      emit: async (next) => {
+        const stored = entry(journal.length, next.type, next.payload);
+        journal.push(stored);
+        return stored;
+      },
+    }),
+  );
+  assert.deepEqual(result.runtimeHandoff, { choice: fallback, lifetime: "task" });
+  assert.deepEqual(journal[6]?.payload, {
+    kind: "retraction",
+    fromSeq: 3,
+    cause: "refusal_reply",
+    decisionRule: "refusal",
+  });
+  assert.deepEqual(
+    forModelContext(journal).map((e) => e.seq),
+    [0, 1, 2, 3, 4, 7, 8],
   );
 });
 

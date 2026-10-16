@@ -117,6 +117,7 @@ export interface HarnessTurnInput {
   turnWallClockMs?: number;
   systemPrompt: string;
   history: SessionEntry[];
+  turnStartSeq?: number;
   goal?: GoalRecord | null;
   goalContinuation?: boolean;
   saveGoal?(goal: GoalRecord): Promise<void>;
