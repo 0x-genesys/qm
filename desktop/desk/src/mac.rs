@@ -313,6 +313,52 @@ fn pid_of(element: &El) -> Option<i32> {
     (unsafe { AXUIElementGetPid(element.as_CFTypeRef(), &mut pid) } == 0 && pid > 0).then_some(pid)
 }
 
+pub(crate) fn set_frontmost(pid: i32) -> Result<(), Failure> {
+    let ax = app_element(pid);
+    unsafe { AXUIElementSetMessagingTimeout(ax.as_CFTypeRef(), 1.5) };
+    match set_attr(&ax, "AXFrontmost", &CFBoolean::true_value().as_CFType()) {
+        0 => Ok(()),
+        status => Err(fail(ErrorCode::ActionFailed, format!("setting AXFrontmost failed (AXError {status})"))),
+    }
+}
+
+fn keep_foreground(before: Option<i32>, pid: i32) -> Result<(), Failure> {
+    match before {
+        Some(front) if front != pid && system_focused_pid() == Some(pid) => set_frontmost(front),
+        _ => Ok(()),
+    }
+}
+
+fn reveal(app: &App) -> Result<(), Failure> {
+    let ax = app_element(app.pid);
+    let before = system_focused_pid();
+    let settle = |done: &dyn Fn() -> bool| {
+        for _ in 0..20 {
+            if done() || cancellation::cancelled() {
+                return;
+            }
+            cancellation::wait(Duration::from_millis(50));
+        }
+    };
+    let mut changed = false;
+    if bool_attr(&ax, "AXHidden") == Some(true) {
+        if let Some(running) = NSRunningApplication::runningApplicationWithProcessIdentifier(app.pid) {
+            running.unhide();
+        }
+        settle(&|| bool_attr(&ax, "AXHidden") != Some(true));
+        changed = true;
+    }
+    if let Some(w) = window_of(&ax).filter(|w| bool_attr(w, "AXMinimized") == Some(true)) {
+        set_attr(&w, "AXMinimized", &CFBoolean::false_value().as_CFType());
+        settle(&|| bool_attr(&w, "AXMinimized") != Some(true));
+        changed = true;
+    }
+    if changed {
+        keep_foreground(before, app.pid)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn system_focused_pid() -> Option<i32> {
     let system = unsafe { AXUIElementCreateSystemWide() };
     if system.is_null() {
@@ -682,21 +728,22 @@ fn center(w: &El) -> CGPoint {
 }
 
 fn window_of(app: &El) -> Option<El> {
-    let candidates = [attr(app, "AXFocusedWindow"), attr(app, "AXMainWindow")]
+    let candidates: Vec<El> = [attr(app, "AXFocusedWindow"), attr(app, "AXMainWindow")]
         .into_iter()
         .flatten()
-        .chain(attr(app, "AXWindows").into_iter().flat_map(list));
-    for window in candidates {
-        if bool_attr(&window, "AXMinimized") == Some(true) || window_id(&window) == 0 {
-            continue;
-        }
-        let sheet = attr(&window, "AXSheets").into_iter().flat_map(list).next();
-        if let Some(sheet) = sheet.filter(|sheet| window_id(sheet) != 0) {
-            return Some(sheet);
-        }
-        return Some(window);
-    }
-    None
+        .chain(attr(app, "AXWindows").into_iter().flat_map(list))
+        .filter(|w| window_id(w) != 0)
+        .collect();
+    let onscreen = onscreen_windows();
+    let shown = |w: &&El| bool_attr(w, "AXMinimized") != Some(true);
+    let window = candidates
+        .iter()
+        .filter(shown)
+        .find(|w| onscreen.contains(&i64::from(window_id(w))))
+        .or_else(|| candidates.iter().find(shown))
+        .or_else(|| candidates.first())?;
+    let sheet = attr(window, "AXSheets").into_iter().flat_map(list).next();
+    Some(sheet.filter(|sheet| window_id(sheet) != 0).unwrap_or_else(|| window.clone()))
 }
 
 fn window_id(w: &El) -> u32 {
@@ -705,15 +752,22 @@ fn window_id(w: &El) -> u32 {
     id
 }
 
-fn on_current_space(win: u32) -> bool {
+fn onscreen_windows() -> Vec<i64> {
     let Some(windows) = copy_window_info(kCGWindowListOptionOnScreenOnly, 0) else {
-        return false;
+        return vec![];
     };
-    windows.iter().any(|item| {
-        let info = unsafe { CFDictionary::<CFString, CFType>::wrap_under_get_rule(*item as _) };
-        let key = unsafe { CFString::wrap_under_get_rule(kCGWindowNumber) };
-        info.find(key).and_then(|v| v.downcast::<CFNumber>()).and_then(|n| n.to_i64()) == Some(i64::from(win))
-    })
+    windows
+        .iter()
+        .filter_map(|item| {
+            let info = unsafe { CFDictionary::<CFString, CFType>::wrap_under_get_rule(*item as _) };
+            let key = unsafe { CFString::wrap_under_get_rule(kCGWindowNumber) };
+            info.find(key).and_then(|v| v.downcast::<CFNumber>()).and_then(|n| n.to_i64())
+        })
+        .collect()
+}
+
+fn on_current_space(win: u32) -> bool {
+    onscreen_windows().contains(&i64::from(win))
 }
 
 struct Node {
@@ -1179,6 +1233,7 @@ impl Desk {
 
     fn observe(&mut self, app: &App, shot: bool, diff: bool) -> Result<Observation, Failure> {
         self.sync_app(app);
+        reveal(app)?;
         if let Some(at) = self.touched.remove(&app.pid) {
             let (_, w) = window(app)?;
             settle(&w, at, self.observers.get(&app.pid).map(|o| &*o.notices));
@@ -1586,13 +1641,7 @@ impl Desk {
                 }
                 perform(&element, &name)
             }
-            Action::Raise => {
-                let status = set_attr(ax, "AXFrontmost", &CFBoolean::true_value().as_CFType());
-                if status != 0 {
-                    return Err(fail(ErrorCode::ActionFailed, format!("setting AXFrontmost failed (AXError {status})")));
-                }
-                perform(w, "AXRaise")
-            }
+            Action::Raise => set_frontmost(app.pid).and_then(|_| perform(w, "AXRaise")),
             Action::Wait { ms } => {
                 cancellation::wait(Duration::from_millis((*ms).min(10_000) as u64));
                 Ok(())
@@ -1618,15 +1667,28 @@ fn resolve(query: &str) -> Result<App, Failure> {
     let app = match find() {
         Some(app) => app,
         None => {
+            let before = system_focused_pid();
             let flag = if query.contains('.') && !query.contains(' ') { "-b" } else { "-a" };
             let opened = std::process::Command::new("/usr/bin/open").args(["-g", flag, query]).status().is_ok_and(|s| s.success());
-            (0..25)
+            let app = (0..25)
                 .take_while(|_| opened)
                 .find_map(|_| {
                     std::thread::sleep(Duration::from_millis(200));
                     find()
                 })
-                .ok_or_else(|| fail(ErrorCode::AppNotFound, format!("could not open {query}")))?
+                .ok_or_else(|| fail(ErrorCode::AppNotFound, format!("could not open {query}")))?;
+            let ready = || {
+                NSRunningApplication::runningApplicationWithProcessIdentifier(app.pid).is_some_and(|a| a.isFinishedLaunching())
+                    && window_of(&app_element(app.pid)).is_some()
+            };
+            for _ in 0..50 {
+                if ready() || cancellation::cancelled() {
+                    break;
+                }
+                cancellation::wait(Duration::from_millis(200));
+            }
+            keep_foreground(before, app.pid)?;
+            app
         }
     };
     Ok(app)
@@ -1637,7 +1699,7 @@ fn window(app: &App) -> Result<(El, El), Failure> {
     unsafe { AXUIElementSetMessagingTimeout(ax.as_CFTypeRef(), 1.5) };
     let w = window_of(&ax).ok_or_else(|| fail(ErrorCode::NoWindow, format!("{} has no open window", app.name)))?;
     if bool_attr(&ax, "AXHidden") == Some(true) || bool_attr(&w, "AXMinimized") == Some(true) {
-        return Err(fail(ErrorCode::NoWindow, "App is hidden or window is minimized; show it and observe again"));
+        return Err(fail(ErrorCode::NoWindow, "App is hidden or window is minimized; observe again to show it"));
     }
     Ok((ax, w))
 }

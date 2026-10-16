@@ -10,10 +10,23 @@ use objc2::rc::autoreleasepool;
 use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
 use objc2_foundation::NSPoint;
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-static EXPECTED_FOREGROUND: AtomicI32 = AtomicI32::new(0);
+const MAX_RECLAIMS: u32 = 3;
+
+struct Active {
+    foreground: i32,
+    target: i32,
+    window: u32,
+    reclaims: u32,
+}
+
+static ACTIVE: Mutex<Option<Active>> = Mutex::new(None);
+
+fn active() -> MutexGuard<'static, Option<Active>> {
+    ACTIVE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
@@ -71,9 +84,9 @@ impl Focus {
             return Err(Failure::new(ErrorCode::ActionFailed, "Screen is locked or console session unavailable"));
         }
         let original = frontmost().ok_or_else(|| Failure::new(ErrorCode::ActionFailed, "Cannot identify the foreground app"))?;
-        let intervention = crate::intervention::Intervention::begin(target)?;
+        let intervention = crate::intervention::Intervention::begin(target, original)?;
         if original == target {
-            EXPECTED_FOREGROUND.store(original, Ordering::Release);
+            *active() = Some(Active { foreground: original, target, window, reclaims: 0 });
             return Ok(Self { target, activated: false, intervention: Some(intervention) });
         }
         if window == 0 {
@@ -81,13 +94,13 @@ impl Focus {
         }
         synthetic_focus(target, window, 1)?;
         let guard = Self { target, activated: true, intervention: Some(intervention) };
-        EXPECTED_FOREGROUND.store(original, Ordering::Release);
+        *active() = Some(Active { foreground: original, target, window, reclaims: 0 });
         guard.check()?;
         Ok(guard)
     }
 
     pub fn finish(&mut self) -> Result<(), Failure> {
-        EXPECTED_FOREGROUND.store(0, Ordering::Release);
+        *active() = None;
         if !std::mem::replace(&mut self.activated, false) {
             return Ok(());
         }
@@ -111,18 +124,39 @@ impl Focus {
 }
 
 pub fn check_current() -> Result<(), Failure> {
-    let expected = EXPECTED_FOREGROUND.load(Ordering::Acquire);
-    if expected == 0 {
+    let mut active = active();
+    let Some(state) = active.as_mut() else {
         return Ok(());
-    }
+    };
     if !screen_available() {
         return Err(Failure::new(ErrorCode::ActionFailed, "Screen is locked or console session unavailable"));
     }
     crate::intervention::check_current()?;
-    if frontmost() != Some(expected) {
-        return Err(Failure::new(ErrorCode::ActionFailed, "Foreground app changed during background input; stopped"));
+    match frontmost() {
+        Some(pid) if pid == state.foreground => Ok(()),
+        Some(pid) if crate::intervention::target_took_foreground(pid) => state.reclaim(),
+        _ => Err(Failure::new(ErrorCode::ActionFailed, "Foreground app changed during background input; stopped")),
     }
-    Ok(())
+}
+
+impl Active {
+    fn reclaim(&mut self) -> Result<(), Failure> {
+        if self.reclaims >= MAX_RECLAIMS {
+            return Err(Failure::new(ErrorCode::ActionFailed, "Target app keeps taking the foreground; stopped"));
+        }
+        self.reclaims += 1;
+        crate::mac::set_frontmost(self.foreground)?;
+        let until = Instant::now() + Duration::from_millis(250);
+        while frontmost() != Some(self.foreground) {
+            if Instant::now() >= until {
+                return Err(Failure::new(ErrorCode::ActionFailed, "Target app took the foreground and could not be moved back; stopped"));
+            }
+            std::thread::sleep(Duration::from_millis(8));
+        }
+        synthetic_focus(self.target, self.window, 1)?;
+        eprintln!("Target app took the foreground; returned it to pid {}", self.foreground);
+        Ok(())
+    }
 }
 
 impl Drop for Focus {
