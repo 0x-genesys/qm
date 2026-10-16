@@ -4,7 +4,7 @@ import { parseScopeId } from "../../types.ts";
 import { errMessage } from "../../util/errors.ts";
 import type { AdminResource } from "./admin-resources.ts";
 import { audit } from "./shared.ts";
-import { validateRuntimeChoice } from "../runtime-config.ts";
+import { runtimeFallback, validateRuntimeChoice } from "../runtime-config.ts";
 
 export const decisionsResource: AdminResource = {
   id: "decisions",
@@ -45,8 +45,10 @@ export const decisionsResource: AdminResource = {
         const providers = typeof named === "string" ? await store.providers([named]) : [];
         const parsed = parseDecisionRule(body.rule, providers);
         if ("error" in parsed) return parsed;
+        const approved = (await ctx.deps.config?.getApprovedHarnessesDurable()) ?? [runtimeFallback(ctx).harnessId];
         for (const option of Object.values(parsed.rule.options)) {
           if (!option.runtime) continue;
+          if (!approved.includes("pi")) return { error: "harness_not_approved" };
           const error = validateRuntimeChoice({ harnessId: "pi", ...option.runtime });
           if (error) return { error };
         }

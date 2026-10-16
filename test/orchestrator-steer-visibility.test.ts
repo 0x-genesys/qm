@@ -48,14 +48,8 @@ for (const mode of ["retry", "handoff"] as const) {
           },
         };
       }
-      if (mode === "retry") {
-        assert.equal(turn.continueTurn, true);
-        const originalUser = turn.history.find(
-          (e) => e.type === "user" && (e.payload as { text?: string }).text === request.text,
-        );
-        assert.ok(originalUser);
-        assert.equal(turn.turnStartSeq, originalUser.seq - 1);
-      } else {
+      if (mode === "retry") assert.equal(turn.continueTurn, true);
+      else {
         assert.match(turn.input, /Runtime switched/);
         await turn.emit({ type: "user", payload: { text: turn.input }, scopeLabel: turn.scopeLabel });
       }

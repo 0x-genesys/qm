@@ -412,6 +412,19 @@ test("decision model suggestions include registered custom runtime models", asyn
     { ok: true },
   );
   assert.equal(saved[0]?.options.deep?.runtime?.modelId, "decision-custom-model");
+  assert.equal(
+    err(
+      await decisionsResource.apply(
+        {
+          body: { rule },
+          deps: { ...deps, config: { getApprovedHarnessesDurable: async () => ["claude"] } },
+        } as never,
+        { id: "admin@example.com" },
+        "org:example",
+      ),
+    ),
+    "harness_not_approved",
+  );
   rule.options.deep!.runtime!.effortLevel = "unsupported-effort";
   assert.equal(
     err(await decisionsResource.apply({ body: { rule }, deps } as never, { id: "admin@example.com" }, "org:example")),
