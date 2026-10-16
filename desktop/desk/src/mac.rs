@@ -17,7 +17,7 @@ use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::{CGPoint, CGSize};
 use core_graphics::window::{copy_window_info, kCGWindowListOptionOnScreenOnly, kCGWindowNumber};
 use foreign_types::ForeignType;
-use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
+use objc2_app_kit::{NSApplicationActivationPolicy, NSRunningApplication, NSWorkspace};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
@@ -242,6 +242,7 @@ struct App {
     bundle: Option<String>,
     pid: i32,
     active: bool,
+    launched: Option<f64>,
 }
 
 struct Snapshot {
@@ -259,11 +260,18 @@ pub struct Desk {
     touched: HashMap<i32, Instant>,
     enabled: HashMap<i32, Vec<(&'static str, bool)>>,
     observers: HashMap<i32, Observer>,
+    launches: HashMap<i32, Option<f64>>,
 }
 
 impl Drop for Desk {
     fn drop(&mut self) {
         for (pid, prior) in &self.enabled {
+            let current = NSRunningApplication::runningApplicationWithProcessIdentifier(*pid)
+                .filter(|a| !a.isTerminated())
+                .map(|a| a.launchDate().map(|d| d.timeIntervalSinceReferenceDate()));
+            if current.as_ref() != self.launches.get(pid) {
+                continue;
+            }
             let ax = app_element(*pid);
             for (name, was) in prior {
                 set_attr(&ax, name, &CFBoolean::from(*was).as_CFType());
@@ -369,6 +377,7 @@ fn running() -> Vec<App> {
             bundle: a.bundleIdentifier().map(|s| s.to_string()),
             pid: a.processIdentifier(),
             active: a.isActive(),
+            launched: a.launchDate().map(|d| d.timeIntervalSinceReferenceDate()),
         })
         .collect()
 }
@@ -1099,6 +1108,17 @@ fn permissions(prompt: bool) -> Reply {
 }
 
 impl Desk {
+    fn sync_app(&mut self, app: &App) {
+        if self.launches.get(&app.pid) == Some(&app.launched) {
+            return;
+        }
+        self.cache.remove(&app.pid);
+        self.touched.remove(&app.pid);
+        self.enabled.remove(&app.pid);
+        self.observers.remove(&app.pid);
+        self.launches.insert(app.pid, app.launched);
+    }
+
     pub fn handle(&mut self, cmd: Command, pace: &mut dyn FnMut(u32, Point) -> Result<(), Failure>) -> Reply {
         objc2::rc::autoreleasepool(|_| self.handle_inner(cmd, pace))
     }
@@ -1150,6 +1170,7 @@ impl Desk {
     }
 
     fn observe(&mut self, app: &App, shot: bool, diff: bool) -> Result<Observation, Failure> {
+        self.sync_app(app);
         if let Some(at) = self.touched.remove(&app.pid) {
             let (_, w) = window(app)?;
             settle(&w, at, self.observers.get(&app.pid).map(|o| &*o.notices));
@@ -1249,6 +1270,7 @@ impl Desk {
         mut pace: Option<&mut dyn FnMut(u32, Point) -> Result<(), Failure>>,
     ) -> Result<Reply, Failure> {
         let app = resolve(query)?;
+        self.sync_app(&app);
         if !self.cache.contains_key(&app.pid) {
             return Err(fail(ErrorCode::BadIndex, "Observe this app before acting; its previous observation is no longer available"));
         }
@@ -1529,9 +1551,7 @@ impl Desk {
                 let released = mouse(pid, &press, CGEventType::LeftMouseUp, last, CGMouseButton::Left, 1, none);
                 dragged.and(released)
             }
-            Action::SetValue { index, value, submit } => {
-                input::set_value(input::keyboard_target(pid, ax).0, &self.element(pid, *index)?, *index, value, *submit)
-            }
+            Action::SetValue { index, value, submit } => input::set_value(pid, &self.element(pid, *index)?, *index, value, *submit),
             Action::Perform { index, action } => {
                 let name = if action.starts_with("AX") { action.clone() } else { format!("AX{action}") };
                 perform(&self.element(pid, *index)?, &name)

@@ -290,7 +290,8 @@ pub(super) fn set_value(pid: i32, e: &El, index: u32, value: &str, submit: Optio
         if actions(e).iter().any(|a| a == "AXConfirm") {
             perform(e, "AXConfirm")?;
         } else {
-            key(pid, chord("return")?.0, CGEventFlags::empty(), None, 0)?;
+            let target = pid_of(e).unwrap_or(pid);
+            key(target, chord("return")?.0, CGEventFlags::empty(), None, 0)?;
         }
     }
     Ok(())
