@@ -74,6 +74,7 @@ fn frontmost() -> Option<i32> {
 pub struct Focus {
     target: i32,
     activated: bool,
+    intervention: Option<crate::intervention::Intervention>,
 }
 
 impl Focus {
@@ -82,15 +83,16 @@ impl Focus {
             return Err(Failure::new(ErrorCode::ActionFailed, "Screen is locked or console session unavailable"));
         }
         let original = frontmost().ok_or_else(|| Failure::new(ErrorCode::ActionFailed, "Cannot identify the foreground app"))?;
+        let intervention = crate::intervention::Intervention::begin(target)?;
         if original == target {
             EXPECTED_FOREGROUND.store(original, Ordering::Release);
-            return Ok(Self { target, activated: false });
+            return Ok(Self { target, activated: false, intervention: Some(intervention) });
         }
         if window == 0 {
             return Err(Failure::new(ErrorCode::ActionFailed, "Background window has no ID; observe again"));
         }
         synthetic_focus(target, window, 1)?;
-        let guard = Self { target, activated: true };
+        let guard = Self { target, activated: true, intervention: Some(intervention) };
         EXPECTED_FOREGROUND.store(original, Ordering::Release);
         guard.check()?;
         Ok(guard)
@@ -98,6 +100,9 @@ impl Focus {
 
     pub fn check(&self) -> Result<(), Failure> {
         check_current()?;
+        if let Some(intervention) = &self.intervention {
+            intervention.check()?;
+        }
         Ok(())
     }
 }
