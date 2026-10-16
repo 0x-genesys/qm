@@ -76,7 +76,7 @@ test("BROKER_CREDENTIALS fails fast on any malformed entry without echoing secre
     [[{ ...entry, host: "backend.composio.dev" }], /Composio/],
     [[{ ...entry, secretEnv: "lower" }], /secretEnv/],
     [[{ ...entry, secretEnv: "MISSING_KEY" }], /MISSING_KEY is unset or empty/],
-    [[{ ...entry, allowedMethods: ["FETCH"] }], /allowedMethods is invalid/],
+    [[{ ...entry, allowedMethods: ["get"] }], /allowedMethods is invalid/],
     [[{ ...entry, allowedPathPrefixes: ["search"] }], /allowedPathPrefixes is invalid/],
     [[{ ...entry, maxRequestsPerDay: 0 }], /maxRequestsPerDay/],
     [[{ ...entry, maxRequestsPerDay: 1.5 }], /maxRequestsPerDay/],
@@ -147,6 +147,8 @@ test("deployment credentials win lookups in their org and reserve their slugs ag
   assert.doesNotMatch(JSON.stringify(listed), new RegExp(KEY));
   assert.equal(listed[0]!.deployments, false);
   assert.equal((await store.getServiceCredentialSecret(ORG, "search"))?.secret, KEY);
+  assert.equal((await store.getServiceCredentialSecret(ORG, "search"))?.source, "deployment");
+  assert.equal((await store.getServiceCredentialSecret(ORG, "stored"))?.source, undefined);
   assert.equal((await store.getServiceCredentialSecret(ORG, "stored"))?.secret, "db-secret");
   assert.equal((await store.getServiceCredentialSecret("org:other", "search"))?.secret, "db-secret");
   assert.equal((await store.listServiceCredentials("org:other")).length, 2);

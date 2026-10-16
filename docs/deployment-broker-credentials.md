@@ -43,12 +43,12 @@ error naming the entry. Errors never include secret values.
 ## Behaviour
 
 - **Who can use them:** every conversation whose participants all belong to the org, as if the credential
-  had an org-wide grant. Published apps can't use them.
+  had an org-wide grant. Admins can't narrow that. Published apps can't use them.
 - **Delivery:** broker only. They are never injected into sandbox environments.
 - **Precedence:** a deployment slug is reserved. Lookups return the deployment credential even if the
   settings database still holds one with the same slug, and admins can't create, edit or delete a stored
   credential with that slug.
-- **Not for decision providers:** a decision provider can't name a deployment credential.
+- **Broker only, everywhere:** decision providers and skill-pack Git auth can't use a deployment credential.
 - **Usage:** broker calls are logged and summarised in Settings like any other credential.
 
 ## Operating
@@ -57,3 +57,6 @@ error naming the entry. Errors never include secret values.
 2. Set `BROKER_CREDENTIALS` to the JSON array and restart the core.
 3. To rotate a key, change the secret's env var and restart. To remove a credential, drop its entry and
    restart.
+4. If the settings database already holds a credential with the same slug, the core logs a warning at startup
+   and the stored one is ignored. Delete the stored one before adding the env entry; otherwise it becomes
+   active again if the env entry is later removed.

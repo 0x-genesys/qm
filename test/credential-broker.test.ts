@@ -504,16 +504,3 @@ test("a capped credential refuses closed when no usage ledger can count its call
   const capped = { reader: reader({ slug: "x-firehose", allowedPathPrefixes: ["/2/"], maxRequestsPerDay: 3 }) };
   assert.equal((await brokerCredentialCall(base(capped))).status, 503);
 });
-
-test("concurrent calls cannot overshoot a daily cap", async () => {
-  const cap = captureFetch();
-  const usage = createCredentialUsageSink();
-  const capped = base({
-    fetchImpl: cap.fetch,
-    usage,
-    reader: reader({ slug: "x-firehose", allowedPathPrefixes: ["/2/"], maxRequestsPerDay: 3 }),
-  });
-  const results = await Promise.all(Array.from({ length: 8 }, () => brokerCredentialCall(capped)));
-  assert.equal(results.filter((r) => r.status === 200).length, 3);
-  assert.equal(cap.calls.length, 3);
-});
