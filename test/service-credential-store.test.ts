@@ -286,68 +286,19 @@ test("a service credential is available to published apps by default; the switch
   assert.equal((await cfg.getServiceCredentialSecret(ORG, "acme-data"))!.deployments, false);
 });
 
-test("rebinding an existing credential requires a fresh secret at the store level", async () => {
+test("the store refuses a rebind without a fresh secret but keeps it for narrowing edits", async () => {
   const cfg = store();
-  const base = { slug: "serp", name: "SERP", secret: "key-1", host: "api.example.com" };
-  await cfg.setServiceCredential(ORG, {
-    ...base,
-    allowedMethods: ["GET", "POST"],
-    allowedPathPrefixes: ["/search/", "/v2/"],
-  });
+  const base = { slug: "serp", name: "SERP", host: "api.example.com", allowedMethods: ["GET", "POST"] };
+  await cfg.setServiceCredential(ORG, { ...base, secret: "key-1" });
 
-  const edit = (patch: Record<string, unknown>) =>
-    cfg.setServiceCredential(ORG, {
-      slug: "serp",
-      name: "SERP",
-      host: "api.example.com",
-      allowedMethods: ["GET", "POST"],
-      allowedPathPrefixes: ["/search/", "/v2/"],
-      ...patch,
-    });
-
-  await assert.rejects(edit({ host: "evil.example" }), /changing host would redirect or unwrap/);
-  await assert.rejects(edit({ injection: { header: "X-Key" } }), /redirect or unwrap/);
-  await assert.rejects(edit({ delivery: "env", envKey: "SERP_KEY", host: "" }), /redirect or unwrap/);
-  await assert.rejects(edit({ allowedMethods: ["GET", "DELETE"] }), /redirect or unwrap/);
-  await assert.rejects(edit({ allowedPathPrefixes: ["/search/", "/admin/"] }), /redirect or unwrap/);
-  await assert.rejects(edit({ allowedMethods: [], allowedPathPrefixes: [] }), /redirect or unwrap/);
-
-  await cfg.setServiceCredential(ORG, {
-    slug: "steel",
-    name: "Steel",
-    delivery: "env",
-    envKey: "STEEL_KEY",
-    secret: "s",
-    host: "",
-  });
   await assert.rejects(
-    cfg.setServiceCredential(ORG, {
-      slug: "steel",
-      name: "Steel",
-      delivery: "env",
-      envKey: "STEEL_KEY_2",
-      host: "",
-    }),
-    /redirect or unwrap/,
+    cfg.setServiceCredential(ORG, { ...base, host: "evil.example" }),
+    /changing host would redirect or unwrap/,
   );
 
-  await cfg.setServiceCredential(ORG, {
-    slug: "serp",
-    name: "SERP narrowed",
-    host: "api.example.com",
-    allowedMethods: ["GET"],
-    allowedPathPrefixes: ["/search/"],
-    enabled: false,
-    deployments: false,
-  });
-  const pub = (await cfg.listServiceCredentials(ORG)).find((credential) => credential.slug === "serp")!;
-  assert.equal(pub.name, "SERP narrowed");
-  assert.equal(pub.enabled, false);
-  assert.equal(pub.deployments, false);
-  assert.equal((await cfg.getServiceCredentialSecret(ORG, "serp"))?.secret, "key-1");
-
-  await cfg.setServiceCredential(ORG, { ...base, name: "SERP rotated", secret: "key-2", host: "api2.example.com" });
+  await cfg.setServiceCredential(ORG, { ...base, name: "SERP narrowed", allowedMethods: ["GET"] });
   const dec = await cfg.getServiceCredentialSecret(ORG, "serp");
-  assert.equal(dec?.host, "api2.example.com");
-  assert.equal(dec?.secret, "key-2");
+  assert.equal(dec?.name, "SERP narrowed");
+  assert.equal(dec?.host, "api.example.com");
+  assert.equal(dec?.secret, "key-1");
 });

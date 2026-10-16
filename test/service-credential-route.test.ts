@@ -313,7 +313,7 @@ test("partial credential updates preserve capability lists while explicit empty 
           slug: "k",
           name: "Renamed",
           host: "h.example",
-          secret: "s", // clearing injection and the capability lists rebinds: the secret must be re-supplied
+          secret: "s",
           injection: {},
           allowedMethods: [],
           allowedPathPrefixes: [],
@@ -373,7 +373,7 @@ test("credential edits that redirect or unwrap the stored secret require re-supp
     await denied({ injection: { header: "X-Key" } });
     await denied({ allowedMethods: ["GET", "POST", "DELETE"] });
     await denied({ allowedPathPrefixes: ["/search/", "/admin/"] });
-    await denied({ allowedMethods: [], allowedPathPrefixes: [] }); // clearing the lists broadens
+    await denied({ allowedMethods: [], allowedPathPrefixes: [] });
 
     const narrowed = await putCred(srv.base, {
       slug: "k",
@@ -614,7 +614,7 @@ test("credential rollback preserves a concurrent credential update", async () =>
         {
           slug: "k",
           name: "Concurrent",
-          secret: "s", // re-hosting a live credential now requires the writer to re-supply its secret
+          secret: "s",
           host: "concurrent.example",
           updatedBy: "concurrent-governor",
         },
@@ -665,7 +665,7 @@ test("failed credential creation does not delete a concurrent update of the new 
           {
             slug: "new",
             name: "Concurrent",
-            secret: "s", // re-hosting a live credential now requires the writer to re-supply its secret
+            secret: "s",
             host: "concurrent.example",
             updatedBy: "concurrent-governor",
           },
