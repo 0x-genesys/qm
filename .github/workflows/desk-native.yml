@@ -24,3 +24,4 @@ jobs:
       - run: cargo +stable clippy --manifest-path desktop/desk/Cargo.toml --locked -- -D warnings
       - run: cargo +stable test --manifest-path desktop/desk/Cargo.toml --locked
       - run: cargo +stable build --manifest-path desktop/desk/Cargo.toml --locked --release
+      - run: swiftc desktop/desk/tests/manual/focus-witness.swift -o /tmp/desk-focus-witness
