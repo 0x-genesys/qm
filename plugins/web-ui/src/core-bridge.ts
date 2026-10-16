@@ -2044,6 +2044,13 @@ export function appendConsumedSteers(messages: AgentMessage[], work: WorkBlock):
   }
 }
 
+function isFinishedReplyEntry(entry: SessionEntry): boolean {
+  if (entry.type !== "text") return false;
+  const step = (entry.payload as { step?: { stopReason?: unknown } } | null)?.step;
+  if (step?.stopReason !== "stop") return false;
+  return Boolean((entry.payload as { text?: string } | null)?.text?.trim());
+}
+
 export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): AgentMessage[] {
   const out: AgentMessage[] = [];
   const userByTs = new Map<string, HistoryUserMessage>();
@@ -2166,6 +2173,12 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
         flushWork("", e.createdAt);
         out.push(decision as unknown as AgentMessage);
       }
+      continue;
+    }
+    if (isFinishedReplyEntry(e)) {
+      spillHeldPosts();
+      flushWork(text, e.createdAt, true, undefined, false, e.seq === undefined ? [] : [e.seq]);
+      posted = false;
       continue;
     }
     if (e.type !== "user" && ACTIVITY_TYPES.has(e.type)) {
