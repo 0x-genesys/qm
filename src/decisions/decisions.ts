@@ -114,7 +114,6 @@ export function parseDecisionProvider(raw: unknown): { provider: DecisionProvide
 export function parseDecisionRule(
   raw: unknown,
   providers: readonly DecisionProvider[],
-  modelIds: ReadonlySet<string>,
 ): { rule: DecisionRule } | { error: string } {
   if (typeof raw !== "object" || raw === null) return { error: "rule must be an object" };
   const r = raw as Record<string, unknown>;
@@ -152,8 +151,6 @@ export function parseDecisionRule(
         (rt.fastMode !== undefined && typeof rt.fastMode !== "boolean"))
     )
       return { error: `${r.id}.${key}: runtime needs modelId and optional effortLevel/fastMode` };
-    if (rt && !modelIds.has(rt.modelId as string))
-      return { error: `${r.id}.${key}: model ${String(rt.modelId)} is not in this deployment's model catalog` };
     options[key] = {
       description: o.description,
       action: o.action as DecisionAction,

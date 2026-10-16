@@ -1,5 +1,5 @@
 import { decisionCatalog, parseDecisionProvider, parseDecisionRule } from "../../decisions/decisions.ts";
-import { selectableBaseModels } from "../../model/pi-models.ts";
+import { builtInModelCatalog } from "../../model/model-catalog.ts";
 import { parseScopeId } from "../../types.ts";
 import { errMessage } from "../../util/errors.ts";
 import type { AdminResource } from "./admin-resources.ts";
@@ -15,7 +15,7 @@ export const decisionsResource: AdminResource = {
   get: async (deps, scope) =>
     deps.decisions && {
       ...decisionCatalog(),
-      models: selectableBaseModels().map((m) => m.id),
+      models: builtInModelCatalog().map((m) => m.id),
       credentials: ((await deps.serviceCreds?.listServiceCredentials(scope)) ?? []).map((c) => c.slug),
       providers: await deps.decisions.providers(),
       rules: await deps.decisions.rules(),
@@ -40,10 +40,9 @@ export const decisionsResource: AdminResource = {
         await store.saveProvider(parsed.provider, by);
         change = ["decision.provider.save", parsed.provider.id];
       } else if (body.rule !== undefined) {
-        const models = new Set(selectableBaseModels().map((m) => m.id));
         const named = (body.rule as { model?: { provider?: unknown } } | null)?.model?.provider;
         const providers = typeof named === "string" ? await store.providers([named]) : [];
-        const parsed = parseDecisionRule(body.rule, providers, models);
+        const parsed = parseDecisionRule(body.rule, providers);
         if ("error" in parsed) return parsed;
         await store.saveRule(parsed.rule, by);
         change = ["decision.rule.save", `${parsed.rule.id}:${parsed.rule.mode}`];

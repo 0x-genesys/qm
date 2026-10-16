@@ -14,8 +14,7 @@ import { createDecisionBackend } from "../src/decisions/providers.ts";
 import { turnStartState } from "../src/decisions/hooks.ts";
 
 const PROVIDERS: DecisionProvider[] = [{ id: "gw", protocol: "chat-completions" }];
-const MODELS = new Set(["m-deep"]);
-const parse = (raw: unknown) => parseDecisionRule(raw, PROVIDERS, MODELS);
+const parse = (raw: unknown) => parseDecisionRule(raw, PROVIDERS);
 const err = (r: object) => String((r as { error: string }).error);
 
 const injection = (over: Partial<DecisionRule> = {}): DecisionRule => ({
@@ -56,7 +55,7 @@ test("decision questions can exceed 500 characters", () => {
   assert.deepEqual(parse({ ...route(), question }), { rule: { ...route(), question } });
 });
 
-test("parseDecisionRule validates hooks, options, actions, onError, provider and model catalog", () => {
+test("parseDecisionRule validates hooks, options, actions, onError, provider and runtime shape", () => {
   assert.match(err(parse(injection())), /tool_response is not available yet/);
   assert.deepEqual(parse(route()), { rule: route() });
   assert.match(err(parse({ ...route(), mode: "sometimes" })), /mode must be one of off, observe, enforce/);
@@ -78,11 +77,11 @@ test("parseDecisionRule validates hooks, options, actions, onError, provider and
         ...route(),
         options: {
           keep: { description: "a", action: "keep" },
-          deep: { description: "b", action: "use_runtime", runtime: { modelId: "made-up" } },
+          deep: { description: "b", action: "use_runtime", runtime: { modelId: "" } },
         },
       }),
     ),
-    /made-up is not in this deployment's model catalog/,
+    /runtime needs modelId/,
   );
 });
 
@@ -340,7 +339,7 @@ test("most_confident hook points follow the likeliest enforced verdict and error
   assert.equal(failing.decisive?.action, "continue", "a failed classifier falls back to its onError option");
 });
 
-test("the decisions resource checks the model catalog and lets an admin's agent enforce", async () => {
+test("the decisions resource accepts runtime targets outside the base model catalog", async () => {
   const { ADMIN_RESOURCE_BY_ID } = await import("../src/api/routes/admin-resources.ts");
   const { selectableBaseModels } = await import("../src/model/pi-models.ts");
   const saved: DecisionRule[] = [];
@@ -367,16 +366,42 @@ test("the decisions resource checks the model catalog and lets an admin's agent 
       { id: "admin@x.com" },
       "org:default-org",
     );
-  assert.match(err(await apply({ rule: route() })), /m-deep is not in this deployment's model catalog/);
+  assert.deepEqual(await apply({ rule: route() }), { ok: true });
   assert.deepEqual(await apply({ rule }, { actorId: "admin@x.com" }), { ok: true });
   assert.deepEqual(await apply({ rule: { ...rule, mode: "observe" } }), { ok: true });
   assert.deepEqual(
     saved.map((r) => [r.id, r.mode]),
     [
       ["router:admin@x.com", "enforce"],
+      ["router:admin@x.com", "enforce"],
       ["router:admin@x.com", "observe"],
     ],
   );
+});
+
+test("decision model suggestions include registered custom runtime models", async (t) => {
+  const { decisionsResource } = await import("../src/api/routes/decisions-resource.ts");
+  const { setCustomProviders } = await import("../src/model/custom-providers.ts");
+  const { builtInModelCatalog } = await import("../src/model/model-catalog.ts");
+  const { selectableBaseModels } = await import("../src/model/pi-models.ts");
+  t.after(() => setCustomProviders([]));
+  setCustomProviders([
+    {
+      id: "decision-test",
+      name: "Decision test",
+      protocol: "openai",
+      baseUrl: "https://example.com/v1",
+      models: [{ id: "decision-custom-model" }],
+    },
+  ]);
+  assert.ok(!selectableBaseModels().some((m) => m.id === "decision-custom-model"));
+  const deps = { decisions: { providers: async () => [], rules: async () => [] } };
+  const result = (await decisionsResource.get!(deps as never, "org:example")) as { models: string[] };
+  assert.deepEqual(
+    result.models,
+    builtInModelCatalog().map((m) => m.id),
+  );
+  assert.ok(result.models.includes("decision-custom-model"));
 });
 
 test("decision hooks load active rules for the hook, decide, and audit every verdict", async () => {
