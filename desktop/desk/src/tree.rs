@@ -208,9 +208,9 @@ impl Props {
         if !tags.is_empty() {
             s += &format!(" [{}]", tags.join(" "));
         }
-        if !self.actions.is_empty() {
-            let a: Vec<&str> = self.actions.iter().map(|a| short(a)).collect();
-            s += &format!(" <{}>", a.join(","));
+        let secondary: Vec<&str> = self.actions.iter().filter(|a| a.as_str() != "AXPress").map(|a| short(a)).collect();
+        if !secondary.is_empty() {
+            s += &format!(" <{}>", secondary.join(","));
         }
         (s, keep)
     }
@@ -524,6 +524,14 @@ mod tests {
     }
 
     #[test]
+    fn primary_click_action_is_implicit_but_keeps_unnamed_controls() {
+        let mut p = Props { role: "AXButton".into(), actions: vec!["AXPress".into()], ..Props::default() };
+        assert_eq!(p.describe(), ("Button".into(), true));
+        p.actions.push("AXShowMenu".into());
+        assert_eq!(p.describe(), ("Button <ShowMenu>".into(), true));
+    }
+
+    #[test]
     fn finds_the_visible_part_of_a_frame() {
         assert!(shown(10.0, 120.0, 50.0, 20.0));
         let part = visible(r(10.0, 590.0, 50.0, 40.0), VIEW).unwrap();
@@ -679,7 +687,7 @@ mod tests {
         h.value = Some("2".into());
         assert_eq!(h.describe().0, "## Getting started");
         h.actions = vec!["AXPress".into()];
-        assert_eq!(h.describe().0, "## Getting started <Press>");
+        assert_eq!(h.describe().0, "## Getting started");
         let mut bare = props("AXHeading");
         bare.value = Some("2".into());
         assert!(bare.folds_text());
@@ -721,7 +729,7 @@ mod tests {
         link.title = Some("Docs".into());
         link.url = Some("https://example.com/docs".into());
         link.actions = vec!["AXPress".into()];
-        assert_eq!(link.describe().0, "Link \"Docs\" url \"https://example.com/docs\" <Press>");
+        assert_eq!(link.describe().0, "Link \"Docs\" url \"https://example.com/docs\"");
 
         let mut check = props("AXCheckBox");
         check.title = Some("Remember me".into());

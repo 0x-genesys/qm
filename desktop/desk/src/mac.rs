@@ -1554,7 +1554,15 @@ impl Desk {
             Action::SetValue { index, value, submit } => input::set_value(pid, &self.element(pid, *index)?, *index, value, *submit),
             Action::Perform { index, action } => {
                 let name = if action.starts_with("AX") { action.clone() } else { format!("AX{action}") };
-                perform(&self.element(pid, *index)?, &name)
+                let element = self.element(pid, *index)?;
+                let listed = actions(&element);
+                if !listed.contains(&name) {
+                    return Err(fail(
+                        ErrorCode::ActionFailed,
+                        format!("action {name} is not listed for element {index}; listed actions: {}", listed.join(", ")),
+                    ));
+                }
+                perform(&element, &name)
             }
             Action::Raise => {
                 let status = set_attr(ax, "AXFrontmost", &CFBoolean::true_value().as_CFType());
