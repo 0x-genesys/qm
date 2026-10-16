@@ -1,7 +1,12 @@
+import { errMessage } from "../util/errors.ts";
 import {
   credentialInjectionError,
   isComposioHost,
+  isValidBrokerHost,
+  isValidBrokerMethod,
+  isValidBrokerPathPrefix,
   isValidCredentialSlug,
+  isValidServiceCredentialEnvKey,
   type CredentialInjection,
   type DecryptedServiceCredential,
   type PublicServiceCredential,
@@ -30,7 +35,6 @@ const FIELDS = new Set([
   "allowedPathPrefixes",
   "maxRequestsPerDay",
 ]);
-const METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
 
 function stringList(value: unknown, label: string, valid: (item: string) => boolean): string[] | undefined {
   if (value === undefined) return undefined;
@@ -50,21 +54,21 @@ function parseEntry(raw: unknown, index: number, env: NodeJS.ProcessEnv): Deploy
     throw new Error(`BROKER_CREDENTIALS[${index}].slug must be lowercase kebab-case (a-z, 0-9, -)`);
   const at = `BROKER_CREDENTIALS "${slug}"`;
   const host = entry.host;
-  if (typeof host !== "string" || !/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/.test(host))
+  if (typeof host !== "string" || !isValidBrokerHost(host))
     throw new Error(`${at}: host must be a bare lowercase hostname`);
   if (isComposioHost(host)) throw new Error(`${at}: Composio hosts cannot be brokered`);
   const secretEnv = entry.secretEnv;
-  if (typeof secretEnv !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(secretEnv) || secretEnv === "BROKER_CREDENTIALS")
+  if (typeof secretEnv !== "string" || !isValidServiceCredentialEnvKey(secretEnv) || secretEnv === "BROKER_CREDENTIALS")
     throw new Error(`${at}: secretEnv must name an UPPER_SNAKE_CASE env var`);
   const secret = env[secretEnv]?.trim();
   if (!secret) throw new Error(`${at}: env var ${secretEnv} is unset or empty`);
   const injectionError = credentialInjectionError(entry.injection);
   if (injectionError) throw new Error(`${at}: ${injectionError}`);
-  const allowedMethods = stringList(entry.allowedMethods, `${at}: allowedMethods`, (m) => METHODS.has(m));
+  const allowedMethods = stringList(entry.allowedMethods, `${at}: allowedMethods`, isValidBrokerMethod);
   const allowedPathPrefixes = stringList(
     entry.allowedPathPrefixes,
     `${at}: allowedPathPrefixes`,
-    (p) => p.startsWith("/") && !/[\r\n]/.test(p),
+    isValidBrokerPathPrefix,
   );
   const cap = entry.maxRequestsPerDay;
   if (cap !== undefined && !(typeof cap === "number" && Number.isSafeInteger(cap) && cap >= 1))
@@ -90,8 +94,8 @@ export function deploymentBrokerCredentialsFromEnv(env: NodeJS.ProcessEnv): Depl
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch {
-    throw new Error("BROKER_CREDENTIALS must be a JSON array");
+  } catch (error) {
+    throw new Error(`BROKER_CREDENTIALS must be a JSON array (${errMessage(error)})`, { cause: error });
   }
   if (!Array.isArray(parsed)) throw new Error("BROKER_CREDENTIALS must be a JSON array");
   const credentials = parsed.map((entry, index) => parseEntry(entry, index, env));
@@ -116,12 +120,13 @@ function decrypted(c: DeploymentBrokerCredential): DecryptedServiceCredential {
     ...(c.maxRequestsPerDay !== undefined ? { maxRequestsPerDay: c.maxRequestsPerDay } : {}),
     deployments: false,
     enabled: true,
+    source: "deployment",
   };
 }
 
 function projected(c: DeploymentBrokerCredential): PublicServiceCredential {
   const { secret: _secret, ...rest } = decrypted(c);
-  return { ...rest, hasSecret: true, source: "deployment", updatedAt: 0 };
+  return { ...rest, hasSecret: true, updatedAt: 0 };
 }
 
 export function reservedSlugError(slug: string): Error {
