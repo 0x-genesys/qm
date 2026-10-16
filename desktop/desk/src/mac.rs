@@ -477,7 +477,7 @@ fn paste(pid: i32, ax: &El, s: &str, format: PasteFormat) -> Result<(), Failure>
         None => chord("v")?.0,
     };
     let before = field(ax);
-    let pasted = text::expected(s, format);
+    let pasted = text::payload(s, format).0;
     let mut check = || {
         use crate::pasteboard::Check;
         match (&before, field(ax)) {
