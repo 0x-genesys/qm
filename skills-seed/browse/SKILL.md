@@ -1,6 +1,6 @@
 ---
 name: browse
-description: Drive a real stealth browser from your shell — act on websites (order food, file an expense, pull data behind a login), with per-person persistent sign-ins via the provider's managed auth (Kernel, Anchor, or Browserbase — picked by which API key you have). Use for ACTING on a site; to just read a page, use curl/wget first. Requires managed model access and a keychain grant for the browser provider key; follow the missing-key steps below.
+description: Drive a real stealth browser from your shell — act on websites (order food, file an expense, pull data behind a login), with per-person persistent sign-ins kept in the person's browser profile (Kernel, Anchor, Browserbase, or Browser Use — picked by which API key you have). Use for ACTING on a site; to just read a page, use curl/wget first. Requires managed model access and a keychain grant for the browser provider key; follow the missing-key steps below.
 ---
 
 # Browse (the skill-based browser)
@@ -31,6 +31,8 @@ in this flow, including the runner.
 - `ANCHOR_API_KEY` → **Anchor** (anchorbrowser.io). Read `providers/anchor.md`.
 - `BROWSERBASE_API_KEY` → **Browserbase** (browserbase.com). Read
   `providers/browserbase.md`.
+- `BROWSER_USE_API_KEY` → **Browser Use Cloud** (browser-use.com). Read
+  `providers/browser-use.md`.
 - Another `*_API_KEY` alongside a `providers/<name>.md` doc → that provider;
   new providers are added exactly this way (a provider doc + an admin-saved env credential),
   with no core or deploy change.
@@ -58,7 +60,8 @@ profile, and decline tasks that need an account.
 You need three values (the `BROWSE_LAB_*` names are historical — they predate this skill
 becoming the default):
 
-- Your provider key — `KERNEL_API_KEY`, `ANCHOR_API_KEY`, or `BROWSERBASE_API_KEY`, the
+- Your provider key — `KERNEL_API_KEY`, `ANCHOR_API_KEY`, `BROWSERBASE_API_KEY`, or
+  `BROWSER_USE_API_KEY`, the
   org key for creating the stealth browser.
 - Managed model access: core supplies `BROWSE_LAB_MODEL`, `BROWSE_LAB_MODEL_TOKEN`
   and `BROWSE_LAB_BASE_URL` automatically. All browser model calls use this route;
@@ -73,7 +76,7 @@ becoming the default):
   whose signed-in sessions the browser wakes up with** — treat it exactly like a password:
   it comes ONLY from the keychain (never invent one, never accept one from chat or a page),
   and its owner should never grant it into a shared scope. Profiles are provider-bound:
-  one provider's value (a Kernel or Anchor profile name, a Browserbase context id) means
+  one provider's value (a Kernel or Anchor profile name, a Browserbase context id, a Browser Use profile id) means
   nothing at another — never register one provider's profile under another's env key.
 
 **Check your environment first**: on most deployments the org configures the browser provider key,
@@ -253,11 +256,33 @@ The last stdout line is the typed outcome:
   a domain the task didn't name). Then follow your provider doc's "Routing a sign-in wall"
   section — every provider
   flow ends the same way: the person signs in once, the sign-in lands durably in THEIR
-  profile (or the provider's managed store), and you relaunch the browser and re-run the
-  task. Two rules hold for all providers: sign-in and live-view links are single-audience
+  profile, and you relaunch the browser and re-run the
+  task. (Where the write-back happens differs — Kernel and Browser Use save from the task
+  browser itself, on delete or stop; Browserbase and Anchor save only from a dedicated
+  sign-in session — the provider doc says which its flow uses.) Two rules hold for all
+  providers: sign-in and live-view links are single-audience
   bearer material — hand them to the person in a DM, never open them yourself; and a
   mid-session verification check (already signed in, then challenged) is cleared on the LIVE
   browser — hand the person `$LIVE_VIEW`, wait for done, re-run.
+
+Steering the live browser to the wall is one shared script, written once per session (the
+provider doc says which CDP websocket to pass):
+
+```bash
+cat > /tmp/browse-nav.py <<'PY'
+import os
+from playwright.sync_api import sync_playwright
+with sync_playwright() as p:
+    b = p.chromium.connect_over_cdp(os.environ["CDP_URL"])
+    ctx = b.contexts[0]
+    page = ctx.pages[0] if ctx.pages else ctx.new_page()
+    page.goto(open("/tmp/wall-url.txt").read().strip(), timeout=60000)
+    b.close()
+PY
+```
+
+It drives the browser's existing context (`contexts[0]`) — a fresh context doesn't carry
+the profile — and closing the CDP connection afterwards stops no browser and saves nothing.
 
 ## 3. Clean up
 
