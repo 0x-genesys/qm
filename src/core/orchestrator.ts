@@ -3601,7 +3601,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ...(securityPolicy.toolApprovals === "all" ? { toolApprovalGate: authorizeToolCall } : {}),
             systemPrompt,
             history: continuation?.history ?? history,
-            turnStartSeq: await deps.sessions.latestEntrySeq(session.id),
+            turnStartSeq:
+              !continuation && partial ? partial.userSeq - 1 : await deps.sessions.latestEntrySeq(session.id),
             tools,
             ...(tools.commandCredentialHandles ? { commandCredentialHandles: tools.commandCredentialHandles } : {}),
             ...(resumePlan?.kind === "retry" && !continuation ? { resumeToolCall: resumePlan.call } : {}),
