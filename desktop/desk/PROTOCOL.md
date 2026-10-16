@@ -16,7 +16,7 @@ Command  = permissions { prompt?: bool = false }
 Action   = click       { target: Target, button?: left|right|middle = left, count?: u8 = 1,
                          modifiers?: [command|shift|option|control], hold_ms?: u32 = 0 }
          | type_text   { text: string }
-         | paste       { text: string, format?: text|markdown|html = text }   // "md" is accepted for markdown
+         | paste       { text: string, format?: text|markdown|html = text }
          | press_key   { key: string, hold_ms?: u32 = 0 }           // a chord such as "cmd+shift+t"
          | scroll      { target?: Target, direction: up|down|left|right, amount?: Amount = { "pages": 1 } }
          | select_text { index: u32, text: string, prefix?: string, suffix?: string,

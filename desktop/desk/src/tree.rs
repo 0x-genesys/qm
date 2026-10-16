@@ -1,12 +1,8 @@
-//! Platform-independent parts of an observation: what counts as visible, and how a tree is diffed.
-
 use crate::protocol::Rect;
 use std::collections::{HashMap, HashSet};
 
-/// Points of slack when deciding whether a zero-size frame sits on the edge of the visible area.
 const EDGE: f64 = 1.0;
 
-/// Identifies a tree line across observations: an element id, or the nth note under an element (`ROOT` for the window).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Key {
     Element(u32),
@@ -21,31 +17,12 @@ pub fn intersect(a: Rect, b: Rect) -> Option<Rect> {
     (right > x && bottom > y).then_some(Rect { x, y, w: right - x, h: bottom - y })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Place {
-    Visible,
-    /// Outside the visible area; `below` when past its bottom edge.
-    Hidden {
-        below: bool,
-    },
-}
-
-/// Where an element sits relative to `clip`, the visible part of its window and scroll areas.
-/// Chromium reports elements scrolled out of view as zero-height frames pinned to the viewport edge, so a zero-size
-/// frame counts as visible only strictly inside the clip, where it is a layout wrapper whose children may show.
-pub fn place(frame: Option<Rect>, clip: Rect) -> Place {
-    let Some(f) = frame else { return Place::Visible };
-    let (right, bottom) = (clip.x + clip.w, clip.y + clip.h);
-    let visible = if f.w > 0.0 && f.h > 0.0 {
-        intersect(f, clip).is_some()
-    } else {
-        f.x >= clip.x && f.x <= right && f.y > clip.y + EDGE && f.y < bottom - EDGE
-    };
-    if visible {
-        Place::Visible
-    } else {
-        Place::Hidden { below: f.y >= bottom - EDGE }
+pub fn visible(f: Rect, clip: Rect) -> Option<Rect> {
+    if f.w > 0.0 && f.h > 0.0 {
+        return intersect(f, clip);
     }
+    let inside = f.x >= clip.x && f.x <= clip.x + clip.w && f.y > clip.y + EDGE && f.y < clip.y + clip.h - EDGE;
+    inside.then_some(f)
 }
 
 pub struct Rendered {
@@ -54,8 +31,6 @@ pub struct Rendered {
     pub removed: Vec<u32>,
 }
 
-/// Renders `lines`, or with `base` only what changed: `+ ` new lines, `~ ` changed ones, and the element ids that
-/// disappeared. Falls back to the whole tree when more than 60% of it changed, since the diff would cost as much.
 pub fn render(lines: &[(Key, String)], base: Option<&HashMap<Key, String>>) -> Rendered {
     let full = || Rendered { tree: lines.iter().map(|(_, l)| format!("{l}\n")).collect(), diffed: false, removed: vec![] };
     let Some(base) = base else { return full() };
@@ -96,22 +71,26 @@ mod tests {
 
     const VIEW: Rect = Rect { x: 0.0, y: 100.0, w: 800.0, h: 500.0 };
 
+    fn shown(x: f64, y: f64, w: f64, h: f64) -> bool {
+        visible(r(x, y, w, h), VIEW).is_some()
+    }
+
     #[test]
-    fn places_elements_against_the_visible_area() {
-        assert_eq!(place(None, VIEW), Place::Visible);
-        assert_eq!(place(Some(r(10.0, 120.0, 50.0, 20.0)), VIEW), Place::Visible);
-        assert_eq!(place(Some(r(10.0, 590.0, 50.0, 40.0)), VIEW), Place::Visible, "partly visible");
-        assert_eq!(place(Some(r(10.0, 700.0, 50.0, 20.0)), VIEW), Place::Hidden { below: true });
-        assert_eq!(place(Some(r(10.0, 20.0, 50.0, 20.0)), VIEW), Place::Hidden { below: false });
-        assert_eq!(place(Some(r(900.0, 120.0, 50.0, 20.0)), VIEW), Place::Hidden { below: false });
+    fn finds_the_visible_part_of_a_frame() {
+        assert!(shown(10.0, 120.0, 50.0, 20.0));
+        let part = visible(r(10.0, 590.0, 50.0, 40.0), VIEW).unwrap();
+        assert_eq!((part.y, part.h), (590.0, 10.0), "partly visible");
+        assert!(!shown(10.0, 700.0, 50.0, 20.0));
+        assert!(!shown(10.0, 20.0, 50.0, 20.0));
+        assert!(!shown(900.0, 120.0, 50.0, 20.0));
     }
 
     #[test]
     fn zero_size_frames_on_the_viewport_edge_are_offscreen() {
-        assert_eq!(place(Some(r(10.0, 600.0, 120.0, 0.0)), VIEW), Place::Hidden { below: true }, "Chromium below the fold");
-        assert_eq!(place(Some(r(10.0, 100.0, 120.0, 0.0)), VIEW), Place::Hidden { below: false }, "Chromium above the fold");
-        assert_eq!(place(Some(r(10.0, 300.0, 0.0, 0.0)), VIEW), Place::Visible, "layout wrapper inside the view");
-        assert_eq!(place(Some(r(0.0, 300.0, 800.0, 0.0)), VIEW), Place::Visible, "zero-height wrapper at left edge");
+        assert!(!shown(10.0, 600.0, 120.0, 0.0), "Chromium below the fold");
+        assert!(!shown(10.0, 100.0, 120.0, 0.0), "Chromium above the fold");
+        assert_eq!(visible(r(10.0, 300.0, 0.0, 0.0), VIEW).map(|v| (v.x, v.y)), Some((10.0, 300.0)), "layout wrapper inside the view");
+        assert!(shown(0.0, 300.0, 800.0, 0.0), "zero-height wrapper at left edge");
     }
 
     #[test]

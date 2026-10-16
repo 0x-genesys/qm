@@ -1,13 +1,8 @@
-//! Platform-independent planning for `type_text` and `paste`.
-
 use crate::protocol::PasteFormat;
 use std::collections::HashMap;
 
-pub const RETURN: u16 = 36;
-pub const TAB: u16 = 48;
 const KEYPAD: &[u16] = &[65, 67, 69, 71, 75, 76, 78, 81, 82, 83, 84, 85, 86, 87, 88, 89, 91, 92];
 
-/// A physical key on the current layout and the modifiers that produce a character with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stroke {
     pub code: u16,
@@ -19,19 +14,15 @@ pub struct Stroke {
 pub enum Key {
     Return,
     Tab,
-    /// A character the layout can type, sent with its real key code and modifiers.
     Mapped(char, Stroke),
-    /// A character the layout cannot type (emoji, other scripts), sent as text on a neutral key.
     Unicode(char),
 }
 
-/// Reverse a layout: `translate(code, shift, option)` gives the character a key produces, or `None`
-/// for dead keys and keys that produce nothing. The first (fewest-modifier, main-keyboard) key wins.
 pub fn layout(translate: impl Fn(u16, bool, bool) -> Option<char>) -> HashMap<char, Stroke> {
     let mut map = HashMap::new();
     for (shift, option) in [(false, false), (true, false), (false, true), (true, true)] {
         for code in 0..128u16 {
-            if KEYPAD.contains(&code) || code == RETURN || code == TAB {
+            if KEYPAD.contains(&code) {
                 continue;
             }
             if let Some(c) = translate(code, shift, option).filter(|c| !c.is_control() && !('\u{f700}'..='\u{f8ff}').contains(c)) {
@@ -42,7 +33,6 @@ pub fn layout(translate: impl Fn(u16, bool, bool) -> Option<char>) -> HashMap<ch
     map
 }
 
-/// Turn text into keystrokes. `\n`, `\r` and `\r\n` press Return; `\t` presses Tab.
 pub fn plan(text: &str, layout: &HashMap<char, Stroke>) -> Vec<Key> {
     let mut keys = vec![];
     let mut chars = text.chars().peekable();
@@ -60,7 +50,6 @@ pub fn plan(text: &str, layout: &HashMap<char, Stroke>) -> Vec<Key> {
     keys
 }
 
-/// What a paste puts on the pasteboard: plain text always, HTML for rich formats.
 pub fn payload(text: &str, format: PasteFormat) -> (String, Option<String>) {
     match format {
         PasteFormat::Text => (text.to_string(), None),
@@ -73,7 +62,6 @@ pub fn payload(text: &str, format: PasteFormat) -> (String, Option<String>) {
     }
 }
 
-/// A readable plain-text fallback for apps that ignore HTML.
 fn strip_html(html: &str) -> String {
     let mut out = String::new();
     let mut rest = html;
@@ -108,7 +96,6 @@ fn strip_html(html: &str) -> String {
 mod tests {
     use super::*;
 
-    // A slice of the US layout: letters, digits, a few symbols, space, a dead key and a keypad digit.
     fn us(code: u16, shift: bool, option: bool) -> Option<char> {
         let base = match code {
             0 => 'a',
@@ -118,7 +105,7 @@ mod tests {
             24 => '=',
             49 => ' ',
             83 => '1',
-            14 if option => return None, // option+e is a dead key
+            14 if option => return None,
             14 => 'e',
             _ => return None,
         };
@@ -177,9 +164,7 @@ mod tests {
     }
 
     #[test]
-    fn paste_format_accepts_md_alias() {
-        let a: crate::protocol::Action = serde_json::from_str(r#"{"type":"paste","text":"x","format":"md"}"#).unwrap();
-        assert!(matches!(a, crate::protocol::Action::Paste { format: PasteFormat::Markdown, .. }));
+    fn paste_format_defaults_to_text() {
         let a: crate::protocol::Action = serde_json::from_str(r#"{"type":"paste","text":"x"}"#).unwrap();
         assert!(matches!(a, crate::protocol::Action::Paste { format: PasteFormat::Text, .. }));
     }

@@ -157,7 +157,6 @@ impl Default for Amount {
 pub enum PasteFormat {
     #[default]
     Text,
-    #[serde(alias = "md")]
     Markdown,
     Html,
 }

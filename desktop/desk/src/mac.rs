@@ -1,7 +1,7 @@
 use crate::cancellation;
 use crate::protocol::*;
 use crate::text::{self, Key as TextKey, Stroke};
-use crate::tree::{self, Key, Place, ROOT};
+use crate::tree::{self, Key, ROOT};
 use base64::Engine;
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFType, CFTypeRef, TCFType};
@@ -76,22 +76,17 @@ extern "C" {
     fn CFHash(cf: CFTypeRef) -> usize;
 }
 
-/// Characters of tree lines per observation, about 15k tokens.
 const MAX_TREE_CHARS: usize = 60_000;
-/// AX elements read per observation, kept or folded, to bound the time an observation takes.
 const MAX_VISITS: usize = 6_000;
-/// Nesting of AX elements, folded wrappers included; guards the recursion.
+const MAX_BUSY_VISITS: usize = 800;
 const MAX_DEPTH: usize = 200;
-/// Nesting of rendered lines.
 const MAX_INDENT: usize = 50;
-/// Roles whose frame bounds what their descendants can show.
 const CLIPS: &[&str] = &["AXScrollArea", "AXWebArea"];
 const BORING: &[&str] = &["AXShowMenu", "AXScrollToVisible", "AXShowDefaultUI", "AXShowAlternateUI"];
 const BUSY: &[&str] = &["AXBusyIndicator", "AXProgressIndicator"];
 const PRESS_MS: u64 = 50;
 const HOVER_MS: u64 = 30;
 static EVENT_NUMBER: AtomicI64 = AtomicI64::new(1);
-/// The UI gets this long after the last action before an observation reads it.
 const SETTLE: Duration = Duration::from_millis(1000);
 
 struct App {
@@ -113,7 +108,6 @@ struct Snapshot {
 #[derive(Default)]
 pub struct Desk {
     cache: HashMap<i32, Snapshot>,
-    /// When each app was last acted on and not observed since.
     touched: HashMap<i32, Instant>,
 }
 
@@ -239,14 +233,11 @@ fn mouse(pid: i32, at: &Press, ty: CGEventType, p: CGPoint, b: CGMouseButton, cl
     e.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, clicks);
     e.set_integer_value_field(EventField::MOUSE_EVENT_NUMBER, at.number);
     in_window(&e, at.win);
-    // Chrome 157+ accepts a posted first click into an inactive window when this names another process.
     e.set_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID, std::process::id() as i64);
     post(e, pid);
     Ok(())
 }
 
-/// Finds the target app's window under `p` (a popup, sheet or second window has its own number)
-/// and whether `p` is inside web content.
 fn hit(ax: &El, p: CGPoint) -> Option<(El, bool)> {
     let mut v: CFTypeRef = std::ptr::null();
     if unsafe { AXUIElementCopyElementAtPosition(ax.as_CFTypeRef(), p.x as f32, p.y as f32, &mut v) } != 0 || v.is_null() {
@@ -265,11 +256,6 @@ fn hit(ax: &El, p: CGPoint) -> Option<(El, bool)> {
     None
 }
 
-/// Readies a pointer sequence at `p`: picks the window number for the events, brings the app
-/// forward when a click lands in web content of an inactive app, and moves the pointer there
-/// first so hover state is set. Chromium before 157 treats a posted mouse-down in an inactive
-/// app as the click that activates the window and drops it; making the app frontmost through
-/// accessibility, as `raise` does, avoids that at the cost of taking focus.
 fn prepare(pid: i32, ax: &El, win: u32, p: CGPoint, activate: bool) -> Result<Press, Failure> {
     active()?;
     let (win, web) = match hit(ax, p) {
@@ -337,8 +323,6 @@ fn layout_data(source: CFTypeRef) -> Option<CFData> {
     (!data.is_null()).then(|| unsafe { CFData::wrap_under_get_rule(data as _) })
 }
 
-/// Which key and modifiers type each character on the user's current keyboard layout.
-/// Empty if the layout cannot be read; typing then falls back to sending plain text.
 fn keyboard() -> HashMap<char, Stroke> {
     let Some(data) = layout_data(unsafe { TISCopyCurrentKeyboardLayoutInputSource() })
         .or_else(|| layout_data(unsafe { TISCopyCurrentASCIICapableKeyboardLayoutInputSource() }))
@@ -365,8 +349,8 @@ fn keyboard() -> HashMap<char, Stroke> {
 fn type_text(pid: i32, s: &str) -> Result<(), Failure> {
     for k in text::plan(s, &keyboard()) {
         match k {
-            TextKey::Return => key(pid, text::RETURN, CGEventFlags::empty(), None, 0)?,
-            TextKey::Tab => key(pid, text::TAB, CGEventFlags::empty(), None, 0)?,
+            TextKey::Return => key(pid, chord("return")?.0, CGEventFlags::empty(), None, 0)?,
+            TextKey::Tab => key(pid, chord("tab")?.0, CGEventFlags::empty(), None, 0)?,
             TextKey::Mapped(c, stroke) => {
                 let mut mods = vec![];
                 if stroke.shift {
@@ -384,7 +368,10 @@ fn type_text(pid: i32, s: &str) -> Result<(), Failure> {
 }
 
 fn paste(pid: i32, s: &str, format: PasteFormat) -> Result<(), Failure> {
-    let v = keyboard().get(&'v').map_or(9, |k| k.code);
+    let v = match keyboard().get(&'v') {
+        Some(k) => k.code,
+        None => chord("v")?.0,
+    };
     let cmd_v = || key(pid, v, CGEventFlags::CGEventFlagCommand, Some("v"), 0);
     crate::pasteboard::paste(s, format, cmd_v, &cancellation::cancelled)
 }
@@ -623,7 +610,6 @@ impl Walk {
         self.children(e, depth + 1, indent, anchor, clip);
     }
 
-    /// Walks the children inside `clip` and sums up the rest in one note, so offscreen content costs a line, not the budget.
     fn children(&mut self, parent: &El, depth: usize, indent: usize, anchor: u32, clip: Rect) {
         let kids = attr(parent, "AXChildren").map(list).unwrap_or_default();
         let mut hidden = 0;
@@ -634,11 +620,10 @@ impl Walk {
             }
             self.visited += 1;
             let f = frame(c);
-            match tree::place(f, clip) {
-                Place::Visible => {
-                    self.visit(c, f, depth, indent, anchor, clip);
-                }
-                Place::Hidden { .. } => hidden += 1,
+            if f.is_none_or(|f| tree::visible(f, clip).is_some()) {
+                self.visit(c, f, depth, indent, anchor, clip);
+            } else {
+                hidden += 1;
             }
         }
         if hidden > 0 {
@@ -650,9 +635,8 @@ impl Walk {
     }
 }
 
-/// The part of `e` (frame `f`) not clipped by the window or an enclosing scroll or web area.
 fn visible_rect(e: &El, f: Rect, window: Rect) -> Option<Rect> {
-    let mut r = tree::intersect(f, window)?;
+    let mut clip = window;
     let mut parent = attr(e, "AXParent");
     for _ in 0..MAX_DEPTH {
         let Some(p) = parent else { break };
@@ -662,17 +646,17 @@ fn visible_rect(e: &El, f: Rect, window: Rect) -> Option<Rect> {
         }
         if CLIPS.contains(&role.as_str()) {
             if let Some(pf) = frame(&p) {
-                r = tree::intersect(r, pf)?;
+                clip = tree::intersect(clip, pf)?;
             }
         }
         parent = attr(&p, "AXParent");
     }
-    Some(r)
+    tree::visible(f, clip)
 }
 
 fn busy(e: &El, depth: usize, seen: &mut usize) -> bool {
     *seen += 1;
-    if *seen > MAX_VISITS || depth > MAX_DEPTH {
+    if *seen > MAX_BUSY_VISITS || depth > MAX_DEPTH {
         return false;
     }
     if str_attr(e, "AXRole").is_some_and(|r| BUSY.contains(&r.as_str())) {
@@ -703,8 +687,6 @@ fn select(e: &El, text: &str, prefix: &str, suffix: &str, selection: Selection) 
     }
 }
 
-/// Wait until `SETTLE` has passed since the last action, then up to about 5 s more while the
-/// window shows a busy or progress indicator.
 fn settle(w: &El, since: Instant) {
     cancellation::wait(SETTLE.saturating_sub(since.elapsed()));
     for _ in 0..16 {
@@ -917,12 +899,15 @@ impl Desk {
                 let r = match visible()? {
                     Some(r) => r,
                     None => {
-                        let _ = perform(&e, "AXScrollToVisible");
+                        let scrolled = perform(&e, "AXScrollToVisible");
                         cancellation::wait(Duration::from_millis(250));
                         visible()?.ok_or_else(|| {
+                            let why = scrolled.err().map(|e| format!(" ({})", e.message)).unwrap_or_default();
                             fail(
                                 ErrorCode::ActionFailed,
-                                format!("element {i} is offscreen and could not be scrolled into view; scroll toward it and observe again"),
+                                format!(
+                                    "element {i} is offscreen and could not be scrolled into view{why}; scroll toward it and observe again"
+                                ),
                             )
                         })?
                     }
@@ -952,8 +937,6 @@ impl Desk {
             Action::Click { target: Target::Index(i), button: Button::Left, count: 1, modifiers, hold_ms: 0 } if modifiers.is_empty() => {
                 let e = self.element(pid, *i)?;
                 if actions(&e).iter().any(|a| a == "AXPress") {
-                    // AXPress is semantic and does not need a nonzero on-screen frame.
-                    // In particular, inline web links and native menu items may not have one.
                     perform(&e, "AXPress")
                 } else {
                     let p = self.point(pid, Target::Index(*i))?;
