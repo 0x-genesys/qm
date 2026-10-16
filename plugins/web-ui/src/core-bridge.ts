@@ -1,3 +1,4 @@
+import { desktopTurnId, serveDesktopRun } from "./desktop-computer.ts";
 import { reportHandledError, reportRequestTiming, stopBrowserErrors } from "./browser-errors.ts";
 import { captureMessage, stopAnalytics } from "./product-analytics.ts";
 import { streamedAnswer } from "./timeline.ts";
@@ -883,6 +884,14 @@ export async function api<T = unknown>(path: string, init?: RequestInit): Promis
     const msg = details?.message ?? details?.reason ?? details?.error ?? `HTTP ${r.status}`;
     throw new ApiError(msg, r.status, body);
   }
+  if (path === "/api/turn" && typeof init?.body === "string") {
+    const request = JSON.parse(init.body) as { desktopClientId?: string };
+    const response = body as { runId?: string } | null;
+    if (request.desktopClientId && response?.runId)
+      void serveDesktopRun(response.runId, request.desktopClientId, withBase, api).catch((error) =>
+        reportHandledError("desktop-computer", error),
+      );
+  }
   return body as T;
 }
 
@@ -1207,6 +1216,7 @@ function turnRequestBody(
       : undefined;
   const timezone = browserTimezone();
   return {
+    desktopClientId: desktopTurnId(),
     text,
     threadRef,
     ...(turnOptions.harness ? { harness: turnOptions.harness, model: model.id } : {}),
@@ -1289,7 +1299,7 @@ async function drive(
       method: "POST",
       body: JSON.stringify({
         ...turnRequestBody(threadRef, text, model, agent, getTurnOptions, { idempotencyKey, attachments }),
-        ...(opener ? { proactiveOpener: true } : {}),
+        ...(opener ? { proactiveOpener: true, desktopClientId: undefined } : {}),
       }),
     });
 
