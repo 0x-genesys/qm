@@ -10,6 +10,7 @@ import {
 import { estimateCostUsd } from "../../ratelimit/budget.ts";
 import type { HarnessLlmRequestRecord } from "../../harness/harness.ts";
 import { swallowAs } from "../../util/errors.ts";
+import { sessionRequestContext } from "../../sessions/session-store.ts";
 import { sleep } from "../../util/async.ts";
 import { headSlice } from "../../util/text.ts";
 import type { OrchestratorDeps } from "./types.ts";
@@ -128,6 +129,10 @@ export function createSecurityClassifier(deps: OrchestratorDeps): SecurityClassi
             }
           : {}),
         signal,
+        requestContext: sessionRequestContext(
+          { id: context.sessionId, scopeId: scopeLabel, threadRef: context.thread },
+          actorId,
+        ),
         recordModelCall: (rec) => {
           deps.modelGateway.recordCall({ at: Date.now(), scopeLabel, ...rec });
           if (!observe) void deps.budget?.record(actorId, estimateCostUsd(rec.inputTokens));

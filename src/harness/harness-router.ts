@@ -16,6 +16,7 @@ import type { Harness, HarnessTurnInput, HarnessTurnResult, RuntimeChoice } from
 import { NON_INTERACTIVE_THINKING_LEVEL, NON_INTERACTIVE_FAST_MODE } from "../core/turn-options.ts";
 import { NonRetryableTurnError } from "../core/turn-error.ts";
 import { createGrindMeter } from "./grind.ts";
+import { sessionRequestContext } from "../sessions/session-store.ts";
 import {
   bankGoalTurn,
   enforceGoal,
@@ -309,6 +310,7 @@ export function createHarnessRouter(
         }
         lastHarness.set(input.session.id, choice.harnessId);
         const judge = adapter.models?.judge;
+        const requestContext = sessionRequestContext(input.session, input.runtimeActorId);
         const dispatched: HarnessTurnInput = {
           ...input,
           runtime: choice,
@@ -317,7 +319,12 @@ export function createHarnessRouter(
             : input.tools,
           ...(judge
             ? {
-                governGoal: (goalInput: GoalGovernorInput) => governGoal(judge, goalInput, input.cancel),
+                governGoal: (goalInput: GoalGovernorInput) =>
+                  governGoal(
+                    (system, prompt, signal) => judge(system, prompt, signal, requestContext),
+                    goalInput,
+                    input.cancel,
+                  ),
               }
             : {}),
         };

@@ -42,12 +42,19 @@ export function parseFacts(out: string): string[] {
 
 async function extractFacts(
   harness: HarnessModelUtilities,
-  turns: Array<{ input: string; reply: string }>,
+  burst: Burst,
 ): Promise<{ facts: string[]; sensitivity: NonNullable<MemoryCaptureMetadata["sensitivity"]> }> {
   if (!harness.oneShot) return { facts: [], sensitivity: "unknown" };
   try {
-    const transcript = turns.map((t) => `User said:\n${t.input}\n\nAssistant replied:\n${t.reply}`).join("\n\n---\n\n");
-    const out = await harness.oneShot(MEMORY_EXTRACTION_PROMPT, transcript);
+    const transcript = burst.turns
+      .map((t) => `User said:\n${t.input}\n\nAssistant replied:\n${t.reply}`)
+      .join("\n\n---\n\n");
+    const out = await harness.oneShot(MEMORY_EXTRACTION_PROMPT, transcript, {
+      sessionId: burst.sessionId,
+      actorId: burst.actorId,
+      scopeId: burst.conversationScopeId,
+      purpose: "memory_capture",
+    });
     return {
       facts: parseFacts(out ?? ""),
       sensitivity: parseSensitivity(/^SENSITIVITY: (ordinary|unknown|sensitive|restricted)\n/.exec(out ?? "")?.[1]),
@@ -155,7 +162,7 @@ export function createPerTurnStrategy(deps: {
   onCaptureError?: (e: unknown, scopeId: ScopeId) => void;
 }): MemoryStrategy {
   async function flush(burst: Burst): Promise<void> {
-    const { facts, sensitivity } = await extractFacts(deps.harness, burst.turns);
+    const { facts, sensitivity } = await extractFacts(deps.harness, burst);
     if (!facts.length) return;
     const at = Date.now();
     await deps.memory.capture(burst.scopeId, facts, at, burst.actorId, { ...burstCaptureContext(burst), sensitivity });

@@ -121,7 +121,11 @@ test("key-scoped gateway embeddings need no chat capabilities and use gateway cr
   assert.deepEqual(await embedder.embed(["query"], AbortSignal.timeout(1000)), [[0.6, 0.8]]);
   const request = calls.at(-1)!;
   assert.equal(request.url, "https://gateway.example/v1/embeddings");
-  assert.deepEqual(request.init?.headers, { "content-type": "application/json", "x-gateway-key": "gateway-key" });
+  assert.deepEqual(request.init?.headers, {
+    "content-type": "application/json",
+    "x-gateway-key": "gateway-key",
+    "x-qm-purpose": "embedding",
+  });
   assert.equal(JSON.parse(String(request.init?.body)).model, "embed");
   setGatewayModels([]);
   assert.equal(resolveEmbeddingModel("gateway/embed"), undefined);

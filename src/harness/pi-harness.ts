@@ -52,7 +52,13 @@ const TURN_EFFORT_LEVELS = new Set<string>([
   "adaptive",
 ]);
 import type { ConversationTurn, ScopeId, SessionEntry } from "../types.ts";
-import type { GapPhase, GapPhases, LlmCallUsage, LlmTransportMeta } from "../sessions/session-store.ts";
+import {
+  sessionRequestContext,
+  type GapPhase,
+  type GapPhases,
+  type LlmCallUsage,
+  type LlmTransportMeta,
+} from "../sessions/session-store.ts";
 import { NonRetryableTurnError, ProviderTurnError, TitleRejected } from "../core/turn-error.ts";
 import { providerTurnError } from "./provider-error.ts";
 import { MAX_LLM_REQUEST_BYTES } from "../core/attachments.ts";
@@ -79,6 +85,7 @@ import {
   GatewayModelUnavailableError,
   modelGatewayRequest,
   type ModelGatewayTransportConfig,
+  type ModelRequestContext,
 } from "../model/provider-endpoints.ts";
 import {
   defineHarness,
@@ -372,6 +379,7 @@ async function directAnthropicJson(
   systemPrompt: string,
   userPrompt: string,
   modelGateway?: ModelGatewayTransportConfig,
+  requestContext?: ModelRequestContext,
 ): Promise<string | undefined> {
   if (
     !String(model.provider ?? "")
@@ -380,7 +388,7 @@ async function directAnthropicJson(
   )
     return undefined;
   await modelGateway?.refresh?.();
-  const gateway = modelGatewayRequest(modelGateway, model);
+  const gateway = modelGatewayRequest(modelGateway, model, requestContext);
   const requestModel = gateway?.model ?? model;
   const requestKey = gateway?.apiKey ?? apiKey;
   const res = await fetch(`${requestModel.baseUrl}/v1/messages`, {
@@ -1136,6 +1144,7 @@ function customModelsPath(): string | null {
 export async function buildModelRuntime(
   keys: ProviderKeys | string,
   modelGateway?: ModelGatewayTransportConfig,
+  requestContext?: ModelRequestContext,
   cacheRetention?: "long",
 ): Promise<ModelRuntime> {
   await modelGateway?.refresh?.();
@@ -1166,7 +1175,7 @@ export async function buildModelRuntime(
     const getAuth = runtime.getAuth.bind(runtime);
     runtime.getAuth = (async (model, overrides) => {
       if (typeof model === "string") return getAuth(model, overrides);
-      const request = modelGatewayRequest(modelGateway, model);
+      const request = modelGatewayRequest(modelGateway, model, requestContext);
       if (request)
         return {
           auth: { apiKey: request.apiKey, headers: { ...model.headers, ...request.headers } },
@@ -1197,7 +1206,7 @@ export async function buildModelRuntime(
     model: Model<Api>,
     options: T,
   ): { model: Model<Api>; options: T } => {
-    const request = modelGatewayRequest(modelGateway, model);
+    const request = modelGatewayRequest(modelGateway, model, requestContext);
     if (!request) {
       const providerModelId =
         model.provider === CODEX_SUBSCRIPTION_PROVIDER
@@ -1258,9 +1267,14 @@ export async function oneShot(
   keys: ProviderKeys | string,
   systemPrompt: string,
   prompt: string,
-  opts?: { signal?: AbortSignal; modelGateway?: ModelGatewayTransportConfig; thinkingLevel?: LegacyThinkingLevel },
+  opts?: {
+    signal?: AbortSignal;
+    modelGateway?: ModelGatewayTransportConfig;
+    requestContext?: ModelRequestContext;
+    thinkingLevel?: LegacyThinkingLevel;
+  },
 ): Promise<string | undefined> {
-  const modelRuntime = await buildModelRuntime(keys, opts?.modelGateway);
+  const modelRuntime = await buildModelRuntime(keys, opts?.modelGateway, opts?.requestContext);
   const { resourceLoader, settingsManager, cwd, agentDir, ephemeralCwd } = await createIsolatedResources(
     prefix,
     systemPrompt,
@@ -1308,7 +1322,7 @@ export async function probeModel(
   fastMode = false,
   modelGateway?: ModelGatewayTransportConfig,
 ): Promise<void> {
-  const runtime = await buildModelRuntime(keys, modelGateway);
+  const runtime = await buildModelRuntime(keys, modelGateway, { purpose: "probe" });
   signal.throwIfAborted();
   const candidate = withRequestHeaders(model, !modelGateway?.models[model.id], fastMode);
   const response = await runtime
@@ -1579,6 +1593,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
     history: SessionEntry[],
     priorTurns: ConversationTurn[] | undefined,
     turnProviderKeys: ProviderKeys | undefined,
+    requestContext: ModelRequestContext,
     ref: TurnSession["ref"],
     tools: ToolDefinition[],
     loadImage: ReplayImageLoader | undefined,
@@ -1598,6 +1613,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
     const modelRuntime = await buildModelRuntime(
       turnProviderKeys ?? (await resolveProviderKeys()),
       turnProviderKeys ? undefined : modelGateway,
+      requestContext,
       systemCacheSplit ? "long" : undefined,
     );
     const { resourceLoader, settingsManager, cwd, agentDir, ephemeralCwd } = await createIsolatedResources(
@@ -1780,6 +1796,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           turn.history,
           turn.priorTurns,
           turn.providerKeys,
+          { ...sessionRequestContext(turn.session, turn.runtimeActorId), purpose: "turn" },
           ref,
           tools,
           turn.loadImage,
@@ -2402,7 +2419,10 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             entryCount: detect.history.length,
           });
           const out = (
-            (await oneShot("pi-detect", model, providerKeys, detectSystemPrompt, prompt, { modelGateway })) ?? ""
+            (await oneShot("pi-detect", model, providerKeys, detectSystemPrompt, prompt, {
+              modelGateway,
+              requestContext: { ...sessionRequestContext(detect.session, detect.actorId), purpose: "detect" },
+            })) ?? ""
           ).trim();
           return parseDetectVerdict(out, Boolean(detect.reactionGuidance?.trim()));
         } catch {
@@ -2413,7 +2433,10 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       async compactHistory(input: HarnessCompactInput): Promise<string> {
         const primaryId = resolveModelId();
         const providerKeys = await resolveProviderKeys();
-        const runtime = await buildModelRuntime(providerKeys, modelGateway);
+        const runtime = await buildModelRuntime(providerKeys, modelGateway, {
+          ...sessionRequestContext(input.session, input.actorId),
+          purpose: "compaction",
+        });
         const summarize = (compactModelId: string) =>
           summarizeHistory(input.history, requiredModel(compactModelId), (summaryModel, context, options) => {
             input.recordModelCall({
@@ -2451,19 +2474,29 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         return contextTokenBudgetForModel(id);
       },
 
-      async oneShot(systemPrompt: string, prompt: string): Promise<string | undefined> {
+      async oneShot(
+        systemPrompt: string,
+        prompt: string,
+        requestContext?: ModelRequestContext,
+      ): Promise<string | undefined> {
         const model = requiredModel(resolveModelId());
         const providerKeys = await resolveProviderKeys();
         if (!keyForModel(providerKeys, model)) return undefined;
-        return oneShot("pi-oneshot", model, providerKeys, systemPrompt, prompt, { modelGateway });
+        return oneShot("pi-oneshot", model, providerKeys, systemPrompt, prompt, { modelGateway, requestContext });
       },
 
-      async judge(systemPrompt: string, prompt: string, signal?: AbortSignal): Promise<string | undefined> {
+      async judge(
+        systemPrompt: string,
+        prompt: string,
+        signal?: AbortSignal,
+        requestContext?: ModelRequestContext,
+      ): Promise<string | undefined> {
         const model = requiredModel(judgeModelId());
         const providerKeys = await resolveProviderKeys();
         if (!keyForModel(providerKeys, model)) return undefined;
         return oneShot("pi-judge", model, providerKeys, systemPrompt, prompt, {
           modelGateway,
+          requestContext: { ...requestContext, purpose: "judge" },
           signal,
           thinkingLevel: "low",
         });
@@ -2474,6 +2507,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         modelId: configuredScreenModel,
         systemPrompt = SECURITY_SCREEN_SYSTEM_PROMPT,
         signal,
+        requestContext,
         recordModelCall,
         recordLlmRequest,
       }) {
@@ -2498,6 +2532,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             await oneShot("pi-security-screen", model, providerKeys, systemPrompt, payload, {
               signal,
               modelGateway,
+              requestContext: { ...requestContext, purpose: "security_screen" },
             }),
           );
         } catch (e) {
@@ -2516,7 +2551,9 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           const apiKey = keyForModel(providerKeys, model);
           if (!apiKey) return undefined;
           const prompt = `Candidates: ${candidates.join(", ")}\n\nMessage: ${text.slice(0, 2000)}`;
-          const raw = await directAnthropicJson(model, apiKey, ACK_EMOJI_PROMPT, prompt, modelGateway);
+          const raw = await directAnthropicJson(model, apiKey, ACK_EMOJI_PROMPT, prompt, modelGateway, {
+            purpose: "ack_emoji",
+          });
           if (!raw) return undefined;
           const emoji = (JSON.parse(raw.replace(/```json|```/g, "").trim()) as { emoji?: unknown }).emoji;
           return typeof emoji === "string" && candidates.includes(emoji) ? emoji : undefined;
@@ -2525,7 +2562,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         }
       },
 
-      async generateTitle(transcript: string): Promise<string | undefined> {
+      async generateTitle(transcript: string, requestContext?: ModelRequestContext): Promise<string | undefined> {
         if (!transcript.trim()) return undefined;
         const model = requiredModel(titleModelId());
         const providerKeys = await resolveProviderKeys();
@@ -2536,12 +2573,17 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           providerKeys,
           TITLE_GENERATION_PROMPT,
           titleUserPrompt(transcript),
-          { modelGateway },
+          { modelGateway, requestContext: { ...requestContext, purpose: "title" } },
         );
         return sanitizeTitle(out);
       },
 
-      async summarizeApproval(command: string, reason: string, purpose?: string): Promise<string | undefined> {
+      async summarizeApproval(
+        command: string,
+        reason: string,
+        purpose?: string,
+        requestContext?: ModelRequestContext,
+      ): Promise<string | undefined> {
         if (!command.trim()) return undefined;
         const model = requiredModel(titleModelId());
         const providerKeys = await resolveProviderKeys();
@@ -2556,7 +2598,10 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           .filter((l) => l !== undefined)
           .join("\n");
         const out = (
-          await oneShot("pi-approval-summary", model, providerKeys, APPROVAL_SUMMARY_PROMPT, prompt, { modelGateway })
+          await oneShot("pi-approval-summary", model, providerKeys, APPROVAL_SUMMARY_PROMPT, prompt, {
+            modelGateway,
+            requestContext: { ...requestContext, purpose: "approval_summary" },
+          })
         )?.trim();
         if (!out || out === "NONE") return undefined;
         return out.replace(/^["']|["']$/g, "").slice(0, 300);

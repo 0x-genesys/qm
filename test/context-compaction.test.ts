@@ -218,6 +218,7 @@ test("overflow over the injected token budget summarizes: compactHistory runs ov
   assert.equal(res.status, "ok");
 
   assert.ok(compactCalls.length >= 1, "compactHistory should be called on overflow");
+  assert.equal(compactCalls[0]!.actorId, actor.id);
   const summarized = compactCalls[0]!.history;
   assert.deepEqual(
     summarized.map((e) => e.seq),

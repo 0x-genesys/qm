@@ -24,18 +24,18 @@ const turn = { scopeId: scope, actorId: "alice", input: "I prefer short replies"
 
 test("production strategy classifies automatic capture in the existing extraction call", async () => {
   const { memory, facts } = await fixture();
-  let calls = 0;
+  const requestContexts: unknown[] = [];
   const { strategy } = createMemoryStrategy("per-turn", {
     memory,
     harness: {
-      oneShot: async () => {
-        calls++;
+      oneShot: async (_systemPrompt, _prompt, requestContext) => {
+        requestContexts.push(requestContext);
         return "SENSITIVITY: ordinary\n- Prefers short replies";
       },
     },
   });
   await strategy.onTurnEnd!({ ...turn, inheritedFacts: [] });
-  assert.equal(calls, 1);
+  assert.deepEqual(requestContexts, [{ sessionId: "s1", actorId: "alice", scopeId: scope, purpose: "memory_capture" }]);
   assert.ok((await facts(scope)).every((fact) => fact.sensitivity === "ordinary" && !fact.sourceUnknown));
   assert.deepEqual((await facts(scope))[0]!.sources, [scope]);
 });
@@ -153,12 +153,18 @@ test("an edit is classified and folds the turn's exposure into the fact", async 
     inheritedFacts: [],
   });
   const [fact] = await facts(scope);
-  await classifiedMemory(memory, { oneShot: async () => "sensitive" }).edit!(
-    scope,
-    [{ id: fact!.id, text: "Plain fact, now with a salary" }],
-    "alice",
-    { conversationScopeId: "group:private", inheritedFacts: restricted },
-  );
+  let requestContext: unknown;
+  await classifiedMemory(memory, {
+    oneShot: async (_systemPrompt, _prompt, context) => {
+      requestContext = context;
+      return "sensitive";
+    },
+  }).edit!(scope, [{ id: fact!.id, text: "Plain fact, now with a salary" }], "alice", {
+    conversationScopeId: "group:private",
+    sessionId: "s1",
+    inheritedFacts: restricted,
+  });
+  assert.deepEqual(requestContext, { sessionId: "s1", actorId: "alice", purpose: "memory_classification" });
   const [edited] = await facts(scope);
   assert.equal(edited!.sensitivity, "restricted");
   assert.deepEqual(edited!.sources.toSorted(), ["group:private", scope].toSorted());

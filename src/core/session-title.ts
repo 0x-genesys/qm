@@ -1,5 +1,6 @@
 import type { ErrorLog } from "../admin/error-log.ts";
 import type { Harness } from "../harness/harness.ts";
+import type { ModelRequestContext } from "../model/provider-endpoints.ts";
 import type { SessionStateBus } from "../runs/session-state-bus.ts";
 import type { SessionStore } from "../sessions/session-store.ts";
 import type { ScopeId } from "../types.ts";
@@ -24,13 +25,14 @@ export function createSessionTitles(deps: {
     sessionId: string,
     scopeId: ScopeId,
     transcript: string,
+    requestContext: ModelRequestContext,
     principalId?: string,
     fallbackText?: string,
   ): Promise<string | undefined> {
     if (!transcript.trim()) return undefined;
     let title: string | undefined;
     try {
-      title = await deps.harness.models.generateTitle?.(transcript);
+      title = await deps.harness.models.generateTitle?.(transcript, requestContext);
     } catch (e) {
       deps.errors?.record(
         {
@@ -64,6 +66,7 @@ export function createSessionTitles(deps: {
     session: { id: string; threadRef: string },
     scopeId: ScopeId,
     text: string,
+    requestContext: ModelRequestContext,
   ): Promise<void> | undefined {
     const fallback = fallbackSessionTitle(text);
     if (!fallback) return undefined;
@@ -72,7 +75,7 @@ export function createSessionTitles(deps: {
       .then(() => announce(session).catch(swallowAs("session title: sidebar refresh", undefined)))
       .then(async () => {
         if (!deps.harness.models.generateTitle) return;
-        if (await generateAndStore(session.id, scopeId, `User:\n${stripTurnBoilerplate(text)}`))
+        if (await generateAndStore(session.id, scopeId, `User:\n${stripTurnBoilerplate(text)}`, requestContext))
           await announce(session);
       })
       .finally(() => deps.errors?.flush())

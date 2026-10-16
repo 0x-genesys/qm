@@ -86,9 +86,34 @@ export class GatewayModelUnavailableError extends Error {
   }
 }
 
+export interface ModelRequestContext {
+  sessionId?: string;
+  actorId?: string;
+  scopeId?: string;
+  purpose?: string;
+  origin?: string;
+}
+
+export function modelGatewayHeaders(
+  config: Pick<ModelGatewayTransportConfig, "apiKey" | "apiKeyHeader">,
+  context: ModelRequestContext = {},
+): Record<string, string> {
+  const headers: Record<string, string> = { [config.apiKeyHeader]: config.apiKey };
+  for (const [name, value] of Object.entries({
+    "x-qm-session-id": context.sessionId,
+    "x-qm-actor": context.actorId,
+    "x-qm-scope": context.scopeId,
+    "x-qm-purpose": context.purpose,
+    "x-qm-origin": context.origin,
+  }))
+    if (value && [...value].every((char) => char >= " " && char <= "~")) headers[name] = value;
+  return headers;
+}
+
 export function modelGatewayRequest<T extends { id: string; baseUrl: string; api?: string; compat?: object }>(
   config: ModelGatewayTransportConfig | undefined,
   model: T,
+  context?: ModelRequestContext,
 ): { model: T; target: string; apiKey: string; headers: Record<string, string> } | undefined {
   const target = config?.models[model.id];
   if (!target || !config) {
@@ -106,6 +131,6 @@ export function modelGatewayRequest<T extends { id: string; baseUrl: string; api
     },
     target,
     apiKey: config.apiKey,
-    headers: { [config.apiKeyHeader]: config.apiKey },
+    headers: modelGatewayHeaders(config, context),
   };
 }

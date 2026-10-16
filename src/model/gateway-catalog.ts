@@ -1,5 +1,5 @@
 import { isEmbeddingModel, type EmbeddingModel } from "./model-overlay.ts";
-import type { ModelGatewayTransportConfig } from "./provider-endpoints.ts";
+import { modelGatewayHeaders, type ModelGatewayTransportConfig } from "./provider-endpoints.ts";
 import { GATEWAY_MODEL_PREFIX, GATEWAY_PROVIDER, setGatewayModels, type GatewayModel } from "./gateway-models.ts";
 import { modelOfferedInWebui, selectableBaseModels } from "./pi-models.ts";
 
@@ -109,7 +109,7 @@ async function readCatalog(
   fetcher: typeof fetch,
 ): Promise<unknown[]> {
   const response = await fetcher(url, {
-    headers: { [config.apiKeyHeader]: config.apiKey },
+    headers: modelGatewayHeaders(config),
     signal: AbortSignal.timeout(5_000),
     redirect: "error",
   });

@@ -110,6 +110,7 @@ export function createCompaction(deps: OrchestratorDeps): CompactionContext {
       const raw = await deps.harness.models.compactHistory({
         session: input.session,
         history: plan.toSummarize,
+        actorId: input.actorId,
         recordModelCall: (rec) => {
           deps.modelGateway.recordCall({ at: Date.now(), scopeLabel: summaryLabel, ...rec });
           void deps.budget?.record(input.actorId, estimateCostUsd(rec.inputTokens));

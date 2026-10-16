@@ -52,7 +52,8 @@ import { resolveEnvironmentId } from "../environments/environment-store.ts";
 import type { GapPhase, Lease, LeaseAttempt } from "../sessions/session-store.ts";
 import { SESSION_BUSY_FIRE_TEXT, SESSION_BUSY_USER_TEXT } from "./failure-copy.ts";
 import { CONFIG_DEFAULTS } from "../config.ts";
-import { acquireLeaseWithin, isOverheardEntry } from "../sessions/session-store.ts";
+import { acquireLeaseWithin, isOverheardEntry, sessionRequestContext } from "../sessions/session-store.ts";
+import type { ModelRequestContext } from "../model/provider-endpoints.ts";
 import { supportsProcessSessions, supportsScopeProfile } from "../sandbox/sandbox.ts";
 import { createBackgroundBroker } from "../connectors/background-exec-broker.ts";
 import { createMonitorBroker, readBackgroundOutputTail } from "../monitors/monitor-broker.ts";
@@ -294,6 +295,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
   const { compactContextIfNeeded, compactRecent, scheduleBackgroundCompaction } = createCompaction(deps);
 
   async function approvalSummary(
+    requestContext: ModelRequestContext,
     scopeId: ScopeId,
     command: string,
     reason: string,
@@ -302,7 +304,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     if (!deps.harness.models.summarizeApproval) return undefined;
     try {
       const summary = await Promise.race([
-        deps.harness.models.summarizeApproval(command, reason, purpose),
+        deps.harness.models.summarizeApproval(command, reason, purpose, requestContext),
         sleep(deps.approvalSummaryTimeoutMs ?? DEFAULT_APPROVAL_SUMMARY_TIMEOUT_MS).then(() => undefined),
       ]);
       return summary?.trim() || undefined;
@@ -503,6 +505,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         session.id,
         session.scopeId,
         transcript,
+        sessionRequestContext(session, principalId),
         participantIds?.length ? principalId : undefined,
         fallbackEntry ? visibleTitleEntryText(fallbackEntry) : undefined,
       );
@@ -1267,6 +1270,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         desktopClientForTurn(input) ? [desktopComputerTool] : undefined,
       );
       screenSession.id = session.id;
+      const requestContext = sessionRequestContext(session, actor.id);
       leaseMs += Date.now() - sessionStart;
       if (!input.sessionParticipantIds?.length && !automatedTurn)
         await deps.sessions.addParticipant(session.id, actor.id);
@@ -1279,7 +1283,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       let fallbackTitleWrite: Promise<void> | undefined;
       const assignSessionTitle = () => {
         if (!session.title && !syntheticInput && !input.approval)
-          fallbackTitleWrite = titles.titleFromFirstMessage(session, scopeId, titleText);
+          fallbackTitleWrite = titles.titleFromFirstMessage(session, scopeId, titleText, requestContext);
       };
 
       const isRetry = (input.attempt ?? 1) > 1;
@@ -1694,6 +1698,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               aud: BROWSER_MODEL_AUD,
               browserModel: browserSelection.model ?? "unavailable",
               browserAccount: browserSelection.account,
+              sessionId: session.id,
+              threadRef: conversation.threadRef,
               exp: Date.now() + CAPABILITY_TTL_MS,
             },
             deps.capabilitySecret ?? deps.signingSecret,
@@ -2378,6 +2384,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               ? { reactionGuidance: input.gatewayContext.reactionGuidance }
               : {}),
             history: detectHistory,
+            actorId: actor.id,
             recordModelCall: (rec) => {
               deps.modelGateway.recordCall({ at: Date.now(), scopeLabel: scopeId, ...rec });
               void deps.budget?.record(actor.id, estimateCostUsd(rec.inputTokens));
@@ -3921,7 +3928,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const tail = async (): Promise<void> => {
           try {
             if (!pausing && turnCompleted && !session.title && !fallbackTitleWrite) {
-              await titles.generateAndStore(session.id, scopeId, `User:\n${titleText}\n\nAssistant:\n${result.reply}`);
+              await titles.generateAndStore(
+                session.id,
+                scopeId,
+                `User:\n${titleText}\n\nAssistant:\n${result.reply}`,
+                requestContext,
+              );
             }
           } finally {
             await reclaimBox();
@@ -3968,7 +3980,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 ? `${command}:${hashId([pa.screenedOutput.tool, pa.screenedOutput.text, pa.screenedOutput.sourceScopeId ?? scopeId], 64)}`
                 : command,
             );
-            const summary = pa.summary ?? (await approvalSummary(scopeId, command, pa.reason, pa.purpose));
+            const summary =
+              pa.summary ?? (await approvalSummary(requestContext, scopeId, command, pa.reason, pa.purpose));
             prepared.push({
               requestId,
               record: {
@@ -4067,7 +4080,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               always: resolution.approvalGrantModes.always && (err.grantModes?.always ?? true),
             },
           };
-          const summary = await approvalSummary(scopeId, err.command, err.approvalReason);
+          const summary = await approvalSummary(requestContext, scopeId, err.command, err.approvalReason);
           try {
             await withManagedRosterVersion(async () => {
               await pending.put(requestId, {

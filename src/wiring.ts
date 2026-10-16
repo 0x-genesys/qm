@@ -1510,15 +1510,7 @@ export function buildApp(
     overrides.decisionBackend ??
       createDecisionBackend({
         providers: async (ids) => (await decisions?.providers(ids)) ?? [],
-        ...(config.modelGateway?.apiKey
-          ? {
-              gateway: {
-                url: config.modelGateway.url,
-                apiKey: config.modelGateway.apiKey,
-                ...(config.modelGateway.apiKeyHeader ? { apiKeyHeader: config.modelGateway.apiKeyHeader } : {}),
-              },
-            }
-          : {}),
+        ...(config.modelGateway ? { gateway: config.modelGateway } : {}),
         credential: async (slug) => {
           const rec = keychain
             ? nonDeploymentCredential(await serviceCreds.getServiceCredentialSecret(scopeId("org", config.orgId), slug))
@@ -1550,6 +1542,7 @@ export function buildApp(
       ...(input.runtimeActorId ? { actorId: input.runtimeActorId } : {}),
       scopeLabel: input.scopeLabel,
       sessionId: input.session.id,
+      threadRef: input.session.threadRef,
       ...(input.runId ? { runId: input.runId } : {}),
       ...(input.cancel ? { cancel: input.cancel } : {}),
     });
@@ -2250,6 +2243,7 @@ export function buildApp(
           modelId,
           systemPrompt,
           signal,
+          requestContext: { actorId },
           recordModelCall: (rec) => {
             modelGateway.recordCall({ at: Date.now(), scopeLabel, ...rec });
             void budget?.record(actorId, estimateCostUsd(rec.inputTokens));
