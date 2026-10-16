@@ -1,5 +1,5 @@
 import type { Destination, Webhook } from "../types.ts";
-import { webhookThreadRef, type WebhookStore } from "./webhook-store.ts";
+import { parseWebhookThreadRef, webhookThreadRef, type WebhookStore } from "./webhook-store.ts";
 import { getVerifier, type VerifierInput } from "./verifiers.ts";
 import { runTrigger, type TriggerDeps } from "../triggers/run-trigger.ts";
 import { buildWebhookWakeEnvelope, capForEscaping } from "../core/wake-envelope.ts";
@@ -13,6 +13,7 @@ export type DeliverResult =
 
 export interface WebhookReceiver {
   deliver(id: string, req: { headers: VerifierInput["headers"]; rawBody: string }): Promise<DeliverResult>;
+  delivery(sessionRef: string): Promise<{ failed: boolean } | null>;
 }
 
 export interface WebhookReceiverDeps extends TriggerDeps {
@@ -129,6 +130,8 @@ export function createWebhookReceiver(deps: WebhookReceiverDeps): WebhookReceive
         errorNotice: (s) => `⚠️ Webhook did not complete: ${s}`,
       })
         .then(async (outcome) => {
+          if (outcome.authzFailed || (outcome.ran && outcome.status !== "ok" && outcome.status !== "silent"))
+            await deps.webhooks.markDeliveryFailed(wh.id, deliveryId);
           if (outcome.authzFailed) {
             await deps.webhooks.setEnabled(wh.id, false);
             await deps.webhooks.recordFire(wh.id, { at: Date.now(), error: outcome.note ?? "fail-closed" });
@@ -142,13 +145,20 @@ export function createWebhookReceiver(deps: WebhookReceiverDeps): WebhookReceive
         })
         .catch((e: unknown) => {
           const msg = errMessage(e);
-          void deps.webhooks
-            .recordFire(wh.id, { at: Date.now(), error: msg })
-            .catch(reportFailureAs("webhook: persist fire failure", undefined, `webhook=${wh.id}`));
+          void Promise.all([
+            deps.webhooks.markDeliveryFailed(wh.id, deliveryId),
+            deps.webhooks.recordFire(wh.id, { at: Date.now(), error: msg }),
+          ]).catch(reportFailureAs("webhook: persist fire failure", undefined, `webhook=${wh.id}`));
           reportFailure("webhook: fire", e, `webhook=${wh.id}`);
         });
 
       return { status: 202, deliveryId, sessionRef: fireKey };
+    },
+    async delivery(sessionRef) {
+      const ref = parseWebhookThreadRef(sessionRef);
+      if (!ref) return null;
+      const event = (await deps.webhooks.listEvents(ref.webhookId)).find((e) => e.deliveryId === ref.deliveryId);
+      return event ? { failed: event.failed === true } : null;
     },
   };
 }
