@@ -24,7 +24,7 @@ All running apps can be observed and controlled, subject to macOS permissions.
 ## Platform considerations
 
 - **Events posted to a background app.** `CGEventPostToPid` clicks and keys might be ignored, or land in the wrong window, when the app isn't frontmost. If nothing happens, add `{"type":"raise"}` first; that does take focus.
-- **Screenshots.** They use `CGWindowListCreateImage`, deprecated in macOS 14 in favour of ScreenCaptureKit. On macOS 15+ it may return nothing or prompt monthly. `pixels_per_point` also needs checking on a Retina screen.
+- **Screenshots.** On macOS 14+ they use ScreenCaptureKit's `SCScreenshotManager`. The app's own menus, popovers and other windows in front of the target window are composited in; any part outside the window's frame is cropped. macOS 12.3–13 falls back to `CGWindowListCreateImage`. desk links ScreenCaptureKit, so it needs macOS 12.3 or later. `pixels_per_point` still needs checking on a Retina screen.
 - **`_AXUIElementGetWindow`** (private, widely used) maps the AX window to a window id for capture and event targeting.
 - **Clipboard.** `paste` replaces the general pasteboard for the moment it takes the app to read it, then restores the previous contents. It waits for the read by running the run loop on desk's main thread, where the pasteboard calls its data provider; this has not yet been exercised on a Mac.
 - **Keyboard layout.** `type_text` reads the current layout with `TISCopyCurrentKeyboardLayoutInputSource` and `UCKeyTranslate` on desk's main thread (TIS calls are main-thread only on recent macOS).

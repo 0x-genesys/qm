@@ -2,7 +2,6 @@ use crate::cancellation;
 use crate::protocol::*;
 use crate::text::{self, Key as TextKey, Stroke};
 use crate::tree::{self, Key, ROOT};
-use base64::Engine;
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
@@ -12,10 +11,7 @@ use core_foundation::number::CFNumber;
 use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, CGMouseButton, EventField, ScrollEventUnit};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-use core_graphics::geometry::{CGPoint, CGRect, CGSize};
-use core_graphics::window::{
-    create_image, kCGWindowImageBoundsIgnoreFraming, kCGWindowImageNominalResolution, kCGWindowListOptionIncludingWindow,
-};
+use core_graphics::geometry::{CGPoint, CGSize};
 use foreign_types::ForeignType;
 use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
 use std::collections::{HashMap, HashSet};
@@ -641,30 +637,6 @@ fn settle(w: &El, since: Instant) {
     }
 }
 
-fn png(img: &core_graphics::image::CGImage) -> Option<(String, u32, u32)> {
-    let (w, h, row) = (img.width(), img.height(), img.bytes_per_row());
-    if img.bits_per_pixel() != 32 {
-        return None;
-    }
-    let data = img.data();
-    let bytes = data.bytes();
-    let mut rgba = Vec::with_capacity(w * h * 4);
-    for y in 0..h {
-        for x in 0..w {
-            let i = y * row + x * 4;
-            rgba.extend_from_slice(&[bytes[i + 2], bytes[i + 1], bytes[i], bytes[i + 3]]);
-        }
-    }
-    let mut buf = Vec::new();
-    {
-        let mut enc = png::Encoder::new(&mut buf, w as u32, h as u32);
-        enc.set_color(png::ColorType::Rgba);
-        enc.set_depth(png::BitDepth::Eight);
-        enc.write_header().ok()?.write_image_data(&rgba).ok()?;
-    }
-    Some((base64::engine::general_purpose::STANDARD.encode(buf), w as u32, h as u32))
-}
-
 fn permissions(prompt: bool) -> Reply {
     let accessibility = if prompt {
         let d = CFDictionary::from_CFType_pairs(&[(cfs("AXTrustedCheckOptionPrompt").as_CFType(), CFBoolean::true_value().as_CFType())]);
@@ -1049,14 +1021,5 @@ fn capture(w: &El, f: Rect) -> Result<Screenshot, Failure> {
     if !unsafe { CGPreflightScreenCaptureAccess() } {
         return Err(fail(ErrorCode::PermissionMissing, "Screen Recording not granted; run `desk permissions --prompt`"));
     }
-    let rect = CGRect::new(&pt(f.x, f.y), &CGSize::new(f.w, f.h));
-    let img = create_image(
-        rect,
-        kCGWindowListOptionIncludingWindow,
-        window_id(w),
-        kCGWindowImageBoundsIgnoreFraming | kCGWindowImageNominalResolution,
-    )
-    .ok_or_else(|| fail(ErrorCode::ActionFailed, "window capture returned nothing"))?;
-    let (png_base64, width, height) = png(&img).ok_or_else(|| fail(ErrorCode::ActionFailed, "unexpected pixel format"))?;
-    Ok(Screenshot { png_base64, width, height, pixels_per_point: if f.w > 0.0 { width as f64 / f.w } else { 1.0 } })
+    crate::capture::window(window_id(w), f).map_err(|m| fail(ErrorCode::ActionFailed, m))
 }
