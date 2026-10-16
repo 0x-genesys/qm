@@ -99,6 +99,7 @@ export interface SpawnMeta {
 }
 
 export interface Session {
+  clientTools?: ClientToolDeclaration[];
   id: string;
   type: SessionType;
   scopeId: ScopeId;
@@ -647,12 +648,14 @@ export interface ClientToolDeclaration {
 }
 
 export interface ClientToolResult {
+  images?: Array<{ data: string; mimeType: "image/png" | "image/jpeg" }>;
   content: string;
   structured?: unknown;
   isError?: boolean;
 }
 
 export interface TurnRequest {
+  desktopClientId?: string;
   slackSource?: { accountId: string; teamId: string; userId: string; externalPolicyNamespace?: string };
   externalSlack?: {
     accountId: string;
@@ -663,6 +666,7 @@ export interface TurnRequest {
     serviceCredentials: string[];
   };
   sessionSenderId?: string;
+  delegatingRunId?: string;
   privateSessionMessage?: true;
   sessionMessageDepth?: number;
   surface: string;
@@ -779,6 +783,13 @@ export interface CommandApprovalGrant {
   approvalKey?: string;
 }
 
+export interface TurnRuntime {
+  harnessId: string;
+  modelId: string;
+  label?: string;
+  change?: { rule: string } | { agent: "task" | "scope" };
+}
+
 export interface TurnResult {
   status: "ok" | "refused" | "failed" | "pending_approval" | "queued" | "silent" | "react";
   sessionId?: string;
@@ -794,4 +805,5 @@ export interface TurnResult {
   attachments?: OutgoingAttachment[];
   sourceUserSeq?: number;
   sourceAssistantEntrySeq?: number;
+  runtime?: TurnRuntime;
 }

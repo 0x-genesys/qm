@@ -1,6 +1,7 @@
 import type { AuditLog } from "../audit/audit-log.ts";
-import { runHook, type DecisionBackend, type DecisionHook } from "./decisions.ts";
+import { runHook, type DecisionBackend, type DecisionHook, type DecisionResult } from "./decisions.ts";
 import type { DecisionStore } from "./store.ts";
+import { swallowAs } from "../util/errors.ts";
 
 const HOOK_TIMEOUT_MS = 5_000;
 
@@ -23,7 +24,7 @@ export function turnStartState(turn: {
     `- scope: ${turn.scopeLabel.split(":")[0]}`,
     `- requested runtime: ${requested}`,
     `- model account: ${turn.runtimePinned ? "the user's own provider account, which serves only the requested runtime" : "company"}`,
-    `- continued turn: ${turn.continueTurn ? "yes, resuming after a recorded tool result" : "no"}`,
+    `- continued turn: ${turn.continueTurn ? "yes, resuming an interrupted turn" : "no"}`,
     "",
     "Latest message:",
     turn.input,
@@ -61,4 +62,18 @@ export function createDecisionHooks(store: DecisionStore | undefined, backend: D
       });
     return decisive;
   };
+}
+
+export async function routeTurnRuntime<C extends { harnessId: string; modelId: string }>(
+  decision: DecisionResult | undefined,
+  route: (runtime: NonNullable<DecisionResult["runtime"]>) => Promise<C>,
+  requested: () => Promise<C>,
+): Promise<{ choice: C; routedBy?: string }> {
+  if (!decision?.runtime) return { choice: await requested() };
+  const [choice, otherwise] = await Promise.all([
+    route(decision.runtime),
+    requested().catch(swallowAs("decisions: requested runtime", undefined)),
+  ]);
+  const changed = !!otherwise && (otherwise.harnessId !== choice.harnessId || otherwise.modelId !== choice.modelId);
+  return changed ? { choice, routedBy: decision.ruleId } : { choice };
 }

@@ -4006,7 +4006,7 @@ test("subagents and sessions are separate tools with one noun each", async () =>
   const subagents = tools.find((tool) => tool.name === "subagents")!;
   const sessions = tools.find((tool) => tool.name === "sessions")!;
   assert.match(subagents.description, /does not get its own sidebar entry/);
-  assert.match(subagents.description, /does not inherit this conversation/);
+  assert.match(subagents.description, /or see this conversation/);
   assert.match(sessions.description, /web sidebar/);
   for (const action of ["open", "followup_task", "wait"])
     assert.ok(!Check(sessions.parameters, { action }), `sessions has no ${action}`);
@@ -4044,7 +4044,7 @@ test("background process guidance reflects the configured sandbox token lifetime
   assert.doesNotMatch(unlimited, /turn tokens expire \d+ hours/);
 });
 
-test("every tool schema carries the optional retrySafe flag, which is stripped before the tool runs and recorded on the call", async () => {
+test("core tools carry retrySafe while client tools cannot advertise automatic replay", async () => {
   const emitted: Emitted[] = [];
   const ref: ToolContextRef = {
     current: fakeToolContext(),
@@ -4061,7 +4061,11 @@ test("every tool schema carries the optional retrySafe flag, which is stripped b
   });
   for (const tool of tools) {
     const schema = tool.parameters as { properties?: Record<string, { type?: string }>; required?: string[] };
-    assert.equal(schema.properties?.retrySafe?.type, "boolean", `${tool.name} exposes retrySafe`);
+    assert.equal(
+      schema.properties?.retrySafe?.type,
+      tool.name === "page_state" ? undefined : "boolean",
+      `${tool.name} retry policy`,
+    );
     assert.ok(!schema.required?.includes("retrySafe"), `${tool.name} keeps retrySafe optional`);
   }
   const history = tools.find((t) => t.name === "history")!;
@@ -4094,7 +4098,7 @@ test("every tool schema carries the optional retrySafe flag, which is stripped b
   );
 });
 
-test("a tool result produced after shutdown fires leaves its call open; user Stop and plain completion record it", async () => {
+test("a tool result produced after shutdown is marked interrupted; user Stop and plain completion record it", async () => {
   const record = async (abort: "shutdown" | "stop" | "none", retrySafe = true) => {
     const emitted: Emitted[] = [];
     const shutdown = new AbortController();
@@ -4120,25 +4124,23 @@ test("a tool result produced after shutdown fires leaves its call open; user Sto
   };
 
   const interrupted = await record("shutdown");
-  assert.equal(
-    interrupted.find((e) => e.type === "tool_result"),
-    undefined,
-    "the resumed turn records the call's only result",
-  );
+  assert.equal(interrupted.find((e) => e.type === "tool_result")?.payload.interrupted, true);
+  assert.deepEqual(interrupted.find((e) => e.type === "tool_result")?.payload.stop, { kind: "shutdown" });
   assert.deepEqual(strategy(interrupted), {
     kind: "retry",
     call: { callId: "call-shutdown", tool: "history", input: { query: "budget" } },
   });
   assert.deepEqual(
     strategy(await record("shutdown", false)),
-    { kind: "note" },
-    "a killed call the model marked unsafe gets the unknown-outcome note, never a continue",
+    { kind: "continue" },
+    "a killed call the model marked unsafe is not re-run; its replayed result says what happened",
   );
 
   for (const abort of ["stop", "none"] as const) {
     const emitted = await record(abort);
     const payload = emitted.find((e) => e.type === "tool_result")!.payload;
     assert.ok(!("interrupted" in payload), `${abort}: an ordinary result stays a real answer`);
+    assert.equal(payload.stopped === true, abort === "stop", `${abort}: only a Stop marks the result as cut off`);
     assert.deepEqual(strategy(emitted), { kind: "continue" });
   }
 });
@@ -4375,4 +4377,22 @@ test("native skills discovery exposes list and search with validated pagination"
   for (const input of [{ action: "search" }, { action: "list", limit: 101 }, { action: "list", offset: -1 }]) {
     assert.match(textOut(await call(tool, input)), /Invalid arguments/);
   }
+});
+
+test("client screenshots reach the model as images and remain subject to output screening", async () => {
+  const { store, ref } = clientToolRef();
+  const image = { data: "aGVsbG8=", mimeType: "image/png" as const };
+  let unscreenable = false;
+  ref.screenToolResult = async (input) => {
+    unscreenable = input.unscreenable;
+    return { outcome: "allow" };
+  };
+  const tool = createAgentTools(ref, { clientTools: [clientTool("desktop")] }).at(-1)!;
+  const pending = call(tool, { note: "screen" }) as Promise<{ content: unknown[] }>;
+  await store.send("run-1", { kind: "client_result", callId: "t", result: { content: "Calculator", images: [image] } });
+  assert.deepEqual((await pending).content, [
+    { type: "text", text: "Calculator" },
+    { type: "image", ...image },
+  ]);
+  assert.equal(unscreenable, true);
 });

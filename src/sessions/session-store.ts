@@ -559,6 +559,7 @@ export interface SessionStore {
     scopeId: ScopeId,
     channelName?: string,
     surface?: string,
+    clientTools?: Session["clientTools"],
   ): Promise<Session>;
   getByThread(threadRef: string): Promise<Session | null>;
   get(sessionId: string): Promise<Session | null>;
@@ -611,6 +612,9 @@ export interface SessionStore {
   visibleEntries(sessionId: string, principalId: string, opts?: GetEntriesOptions): Promise<SessionEntry[]>;
 
   searchEntries(principalId: string, query: string, limit?: number): Promise<EntrySearchHit[]>;
+
+  /** Sessions whose (participant or session) title contains the query — newest activity first. */
+  searchSessionTitles(principalId: string, query: string, limit?: number): Promise<Session[]>;
 
   appendSearchEntries(lease: Lease, rows: readonly NewSearchEntry[]): Promise<void>;
   searchIndexCoverage(sessionId: string): Promise<number>;

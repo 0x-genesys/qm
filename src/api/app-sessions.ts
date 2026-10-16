@@ -212,6 +212,33 @@ export function createSessionMethods(
     });
   };
 
+  /** Sessions whose title matches the query — the entry index only covers message text. */
+  const titleSearchHits = async (principalId: string, query: string, capped: number): Promise<SessionSearchHit[]> => {
+    const matches = await deps.sessions.searchSessionTitles(principalId, query, capped);
+    if (!matches.length) return [];
+    const allowed = new Map(
+      await Promise.all(
+        [...new Set(matches.map((s) => s.scopeId))].map(
+          async (scope) => [scope, (await managedProjectMembership(scope, principalId)) !== false] as const,
+        ),
+      ),
+    );
+    return matches
+      .filter((s) => allowed.get(s.scopeId))
+      .map((s) => ({
+        sessionId: s.id,
+        title: s.title ?? null,
+        scopeId: s.scopeId,
+        ...(s.channelName ? { channelName: s.channelName } : {}),
+        ...(s.surface ? { surface: s.surface } : {}),
+        seq: 0,
+        entryType: "title",
+        snippet: s.title ?? s.id,
+        createdAt: s.lastActivityAt ?? s.createdAt,
+        ...(s.archived ? { archived: true } : {}),
+      }));
+  };
+
   return {
     async getSession(sessionId, window) {
       const session = await deps.sessions.get(sessionId);
@@ -263,7 +290,7 @@ export function createSessionMethods(
       if (!found) return null;
       const session = { ...found, canContinue: await canContinueOnWeb(principalId, found) };
       let limit = tailWindowLimit(window);
-      const [initialRead, pinRecords, goals] = await Promise.all([
+      const [initialRead, pinRecords, goals, latestRuns] = await Promise.all([
         transcripts.forViewer(sessionId, principalId, {
           limit,
           beforeSeq: window?.beforeSeq,
@@ -271,8 +298,10 @@ export function createSessionMethods(
         }),
         deps.sessions.listPins(sessionId),
         deps.sessions.goals([sessionId]),
+        window?.beforeSeq === undefined ? deps.runs.latestForThreads([found.threadRef]) : undefined,
       ]);
       const goal = openGoal(goals.get(sessionId));
+      const runtime = latestRuns?.get(found.threadRef)?.result?.runtime;
       let read = initialRead;
       let visible = read.entries;
       while (limit !== undefined && read.earlier > 0 && !coversTailWindow(visible, window!.tailTurns!)) {
@@ -289,6 +318,7 @@ export function createSessionMethods(
         ...(earlier > 0 ? { earlierEntries: earlier } : {}),
         ...(pins.length ? { pins } : {}),
         ...(goal ? { goal: goalView(goal) } : {}),
+        ...(runtime ? { runtime } : {}),
       };
     },
 
@@ -504,7 +534,8 @@ export function createSessionMethods(
     async searchSessions(principalId, query, limit = SEARCH_HIT_LIMIT): Promise<SessionSearchHit[]> {
       const capped = Math.max(1, Math.min(Math.floor(limit), 100));
       const hits = await deps.sessions.searchEntries(principalId, query, capped);
-      if (!hits.length) return [];
+      const titleHits = await titleSearchHits(principalId, query, capped);
+      if (!hits.length) return titleHits;
       const allowed = new Map(
         await Promise.all(
           [...new Set(hits.map((hit) => hit.scopeId))].map(
@@ -513,7 +544,7 @@ export function createSessionMethods(
         ),
       );
       const terms = searchTerms(query);
-      return hits.flatMap((hit) => {
+      const entryHits: SessionSearchHit[] = hits.flatMap((hit) => {
         if (!allowed.get(hit.scopeId)) return [];
         const session = hit;
         return [
@@ -532,6 +563,8 @@ export function createSessionMethods(
           },
         ];
       });
+      const entryHitSessions = new Set(entryHits.map((hit) => hit.sessionId));
+      return [...titleHits.filter((hit) => !entryHitSessions.has(hit.sessionId)), ...entryHits].slice(0, capped);
     },
 
     async sessionBackground(sessionId, viewer) {
@@ -870,7 +903,8 @@ export function createSessionMethods(
       if (!lease) {
         if (before.status === "active")
           for (const run of await deps.runs.inFlightForThread(session.threadRef))
-            if (run.status === "running") await deps.signals?.send(run.id, { kind: "abort" });
+            if (run.status === "running")
+              await deps.signals?.send(run.id, { kind: "abort", reason: "because its goal was cancelled" });
         ({ lease } = await acquireLeaseWithin(deps.sessions, session.id, "backfill", GOAL_CANCEL_LEASE_WAIT_MS));
       }
       if (!lease) return { cancelled: false as const, reason: "busy" as const };

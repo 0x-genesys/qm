@@ -44,6 +44,7 @@ test(
         ["system", { kind: "wake", cause: "cron", text: "cron fired" }],
         ["soul" as EntryType, { text: "you are" }],
         ["text_start" as EntryType, { phase: "final_answer" }],
+        ["system", { kind: "goal_cancelled", objective: "Example goal", cancelledBy: "alice" }],
       ];
       await raw.query(
         "INSERT INTO sessions(id, type, scope_id, thread_ref, created_at, messages) VALUES ($1, 'dm', $2, 'web:cutover', 1, $3)",
@@ -95,6 +96,12 @@ test(
 
       const store = createPostgresSessionStore(URL!);
       const copied = await store.getEntries(sessionId);
+      assert.deepEqual(copied.at(-1)?.payload, {
+        kind: "goal_cancelled",
+        cause: "system",
+        objective: "Example goal",
+        cancelledBy: "alice",
+      });
       assert.equal((copied[0]!.payload as { text: string }).text, "hello");
       assert.equal((copied.find((entry) => entry.seq === 5)!.payload as { text: string }).text, "updated final answer");
       assert.equal((copied.find((entry) => entry.seq === 4)!.payload as { result: string }).result, "out\n");

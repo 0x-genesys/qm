@@ -151,7 +151,7 @@ export function itemFromEntry(type: EntryType, payload: unknown, context: ItemCo
     if (typeof body.ts === "string") row.externalId = str(take("ts"));
   }
   if (type === "user") take("steered");
-  if (type === "system") take("kind");
+  if (type === "system" && raw.kind !== "goal_cancelled") take("kind");
   if (kind === "Wake") {
     const cause = take("cause") ?? "system";
     row.wakeCause = WAKE_CAUSES.find((v) => v === cause) ?? null;
@@ -220,7 +220,7 @@ export function entryFromItem(
       Error: "turn_failure",
       Stop: "turn_stopped",
     };
-    payload.kind = systemKinds[row.kind] ?? "wake";
+    payload.kind = systemKinds[row.kind] ?? (payload.kind === "goal_cancelled" ? "goal_cancelled" : "wake");
   }
   put("cause", row.wakeCause);
   if (row.step != null || (isObj(payload.wire) && isObj(payload.wire.message))) {

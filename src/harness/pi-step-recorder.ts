@@ -99,7 +99,6 @@ export function createStepRecorder(turn: Pick<HarnessTurnInput, "emit" | "scopeL
     called.delete(callId);
     const logged = executing.get(callId);
     executing.delete(callId);
-    if (turn.shutdown?.aborted) return;
     const payload = (logged?.payload as Record<string, unknown> | undefined) ?? {
       tool: call.block.name,
       callId,

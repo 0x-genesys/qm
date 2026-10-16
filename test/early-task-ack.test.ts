@@ -75,7 +75,7 @@ for (const scenario of [
   });
 }
 
-for (const action of ["read", "react", "post"] as const) {
+for (const action of ["read", "react", "post", "delegated-read"] as const) {
   test(`surface ${action} defers early acknowledgement until the parsed action`, async () => {
     const built = buildApp(testConfig({ workers: 1 }));
     let release!: () => void;
@@ -93,7 +93,7 @@ for (const action of ["read", "react", "post"] as const) {
       assert.equal((await built.deliveries.pending("slack")).length, 0);
       await turn.emit({
         type: "tool_call",
-        payload: { tool: "slack", callId: `slack-${action}`, action },
+        payload: { tool: "slack", callId: `slack-${action}`, action: action === "delegated-read" ? "read" : action },
         scopeLabel: turn.scopeLabel,
       });
       started();
@@ -107,6 +107,7 @@ for (const action of ["read", "react", "post"] as const) {
         actor: { externalId: "U1" },
         conversation: { kind: "dm", threadRef: `surface-${action}` },
         text: "Build a website",
+        ...(action === "delegated-read" ? { spawned: true, sessionSenderId: "child", delegatingRunId: "parent" } : {}),
         surfaceTools: true,
         addressed: true,
         deliveryTarget: "D1",
@@ -116,7 +117,7 @@ for (const action of ["read", "react", "post"] as const) {
       const deliveries = await built.deliveries.pending("slack");
       assert.deepEqual(
         deliveries.map((delivery) => delivery.text),
-        action === "post" ? [] : ["Building the website now."],
+        action === "post" || action === "delegated-read" ? [] : ["Building the website now."],
       );
       release();
       await built.runs.waitFor(queued.runId!, 5000);

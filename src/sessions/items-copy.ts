@@ -135,7 +135,7 @@ const HOIST = `  LEFT JOIN legacy_tape_steps l ON l.session_id = e.session_id AN
              CASE WHEN e.type = 'user' THEN 'steered' END,
              CASE WHEN k.kind = 'ContextCompaction' AND ${isType("throughSeq", "number")} THEN 'throughSeq' END,
              CASE WHEN k.kind = 'ElicitationResponse' AND ${isType("approved", "boolean")} THEN 'approved' END,
-             CASE WHEN e.type = 'system' THEN 'kind' END,
+             CASE WHEN e.type = 'system' AND n.body ->> 'kind' <> 'goal_cancelled' THEN 'kind' END,
              CASE WHEN k.kind = 'Wake' THEN 'cause' END,
              CASE WHEN t.run_is_uuid THEN 'runId' END,
              CASE WHEN t.step_obj IS NOT NULL THEN 'step' END,
