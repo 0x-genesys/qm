@@ -30,6 +30,7 @@ import {
   credentialInjectionError,
   isValidCredentialSlug,
   isValidServiceCredentialEnvKey,
+  meaningfulInjection,
   serviceCredentialRebinds,
   type CredentialInjection,
   type DecryptedServiceCredential,
@@ -1166,11 +1167,7 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
         ...(delivery === "env" ? { envKey } : {}),
         host: delivery === "env" ? "" : host,
         ...(typeof b.secret === "string" && b.secret ? { secret: b.secret } : {}),
-        ...(delivery === "broker" &&
-        effectiveInjection &&
-        (effectiveInjection.header || effectiveInjection.scheme || effectiveInjection.actor !== undefined)
-          ? { injection: effectiveInjection }
-          : {}),
+        ...(delivery === "broker" && meaningfulInjection(effectiveInjection) ? { injection: effectiveInjection } : {}),
         ...(delivery === "broker" ? brokerMethods : {}),
         ...(delivery === "broker" ? brokerPaths : {}),
         deployments: typeof b.deployments === "boolean" ? b.deployments : (existing?.deployments ?? true),

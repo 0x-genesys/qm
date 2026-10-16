@@ -2,7 +2,12 @@ import { orgId as configOrgId } from "../config.ts";
 import { Readable } from "node:stream";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import { scopeId as makeScopeId } from "../types.ts";
-import { type DecryptedServiceCredential, isValidCredentialSlug, isComposioHost } from "../credentials/keychain.ts";
+import {
+  type DecryptedServiceCredential,
+  isValidCredentialSlug,
+  isComposioHost,
+  effectiveAllowedMethods,
+} from "../credentials/keychain.ts";
 import { brokerCredentialAuthHeader, brokerPathAllowed, grantedCredential } from "./credential-broker.ts";
 import { pipeToResponse, sendJson } from "./http.ts";
 import type { BaseCtx } from "./routes/route.ts";
@@ -125,9 +130,7 @@ export async function brokerGitHttp(ctx: BaseCtx): Promise<void> {
   const grant = await grantedCredential(claims, slug, ctx.deps.serviceCreds, makeScopeId("org", configOrgId()));
   if (!grant.rec) return sendDenied(ctx, claims, grant.status, grant.code, grant.message, slug, grant.host);
   const { rec } = grant;
-  const methods = (rec.allowedMethods && rec.allowedMethods.length ? rec.allowedMethods : ["GET"]).map((m) =>
-    m.toUpperCase(),
-  );
+  const methods = effectiveAllowedMethods(rec.allowedMethods);
   if (!methods.includes(method)) {
     return sendDenied(
       ctx,

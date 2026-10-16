@@ -1,4 +1,4 @@
-import { isComposioHost } from "../credentials/keychain.ts";
+import { effectiveAllowedMethods, isComposioHost } from "../credentials/keychain.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { ScopeId } from "../types.ts";
 import type { CredentialUsageSink } from "../admin/credential-usage-sink.ts";
@@ -189,9 +189,7 @@ export async function brokerCredentialCall(opts: {
   if (rec.injection?.actor && parsed.port) {
     return deny(403, "port_not_allowed", "actor-attested credentials require standard HTTPS", rec.host);
   }
-  const methods = (rec.allowedMethods && rec.allowedMethods.length ? rec.allowedMethods : ["GET"]).map((m) =>
-    m.toUpperCase(),
-  );
+  const methods = effectiveAllowedMethods(rec.allowedMethods);
   if (!methods.includes(method))
     return deny(403, "method_not_allowed", `method ${method} is not allowed for this credential`, rec.host);
   if (!brokerPathAllowed(parsed.pathname, rec.allowedPathPrefixes)) {

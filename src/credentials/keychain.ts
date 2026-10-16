@@ -216,7 +216,7 @@ export function isValidServiceCredentialEnvKey(envKey: string): boolean {
   return /^[A-Z][A-Z0-9_]*$/.test(envKey) && !envKey.startsWith("AGENT_");
 }
 
-const meaningfulInjection = (injection?: CredentialInjection): CredentialInjection | undefined =>
+export const meaningfulInjection = (injection?: CredentialInjection): CredentialInjection | undefined =>
   injection && (injection.header || injection.scheme || injection.actor !== undefined) ? injection : undefined;
 
 function injectionsDiffer(a: CredentialInjection | undefined, b: CredentialInjection | undefined): boolean {
@@ -227,31 +227,26 @@ function injectionsDiffer(a: CredentialInjection | undefined, b: CredentialInjec
   return left.header !== right.header || left.scheme !== right.scheme || left.actor !== right.actor;
 }
 
+export function effectiveAllowedMethods(methods: readonly string[] | undefined): string[] {
+  const list = (methods ?? []).map((method) => method.toUpperCase()).filter(Boolean);
+  return list.length ? list : ["GET"];
+}
+
 function allowedMethodsBroaden(prior: readonly string[] | undefined, next: readonly string[] | undefined): boolean {
-  const effective = (methods: readonly string[] | undefined) => {
-    const list = (methods ?? []).map((method) => method.toUpperCase()).filter(Boolean);
-    return list.length ? list : ["GET"];
-  };
-  const before = new Set(effective(prior));
-  return effective(next).some((method) => !before.has(method));
+  const before = new Set(effectiveAllowedMethods(prior));
+  return effectiveAllowedMethods(next).some((method) => !before.has(method));
 }
 
 function allowedPathPrefixesBroaden(
   prior: readonly string[] | undefined,
   next: readonly string[] | undefined,
 ): boolean {
-  if (!prior?.length) return false; // unrestricted before: any replacement narrows
-  if (!next?.length) return true; // restricted before, unrestricted after
+  if (!prior?.length) return false;
+  if (!next?.length) return true;
   const before = new Set(prior);
   return next.some((prefix) => !before.has(prefix));
 }
 
-/**
- * Fields an update changes that redirect or unwrap the stored secret: where the secret is
- * sent (host, delivery, envKey, injection) or how widely the broker may stamp it
- * (broadening allowedMethods/allowedPathPrefixes). Narrowing those lists, and editing
- * name/enabled/deployments/grantees, rebinds nothing.
- */
 export function serviceCredentialRebinds(prior: PublicServiceCredential, input: ServiceCredentialInput): string[] {
   const rebinds: string[] = [];
   const delivery = input.delivery ?? "broker";
