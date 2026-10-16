@@ -87,6 +87,7 @@ pub struct Props {
     pub selected: bool,
     pub settable: bool,
     pub actions: Vec<String>,
+    pub list_item: bool,
 }
 
 pub fn clip(s: &str, n: usize) -> String {
@@ -125,7 +126,11 @@ impl Props {
     }
 
     pub fn folds_text(&self) -> bool {
-        FOLDS.contains(&self.role.as_str()) && self.title.is_none() && self.label.is_none()
+        (self.list_item || FOLDS.contains(&self.role.as_str())) && self.title.is_none() && self.label.is_none()
+    }
+
+    pub fn content_list(&self) -> bool {
+        self.role == "AXList" && self.subrole.as_deref() == Some("AXContentList")
     }
 
     pub fn plain_text(&self) -> bool {
@@ -142,7 +147,8 @@ impl Props {
         let value = self.value.as_deref().filter(|v| Some(*v) != name && toggle.is_none() && self.heading_level().is_none());
         let description = self.description.as_deref().filter(|d| Some(*d) != name);
         let placeholder = self.placeholder.as_deref().filter(|_| value.is_none());
-        let keep = name.is_some()
+        let keep = self.list_item
+            || name.is_some()
             || description.is_some()
             || value.is_some()
             || placeholder.is_some()
@@ -154,14 +160,17 @@ impl Props {
             || self.settable
             || !self.actions.is_empty();
         let level = self.heading_level().filter(|_| name.is_some());
-        let mut s = match level {
-            Some(l) => format!("{} {}", "#".repeat(l), clip(name.unwrap_or_default(), MAX_TEXT)),
-            None => short(&self.role).to_string(),
+        let bullet = self.list_item && self.role == "AXGroup";
+        let markdown = level.is_some() || bullet;
+        let mut s = match (level, bullet) {
+            (Some(l), _) => format!("{} {}", "#".repeat(l), clip(name.unwrap_or_default(), MAX_TEXT)),
+            (None, true) => name.map_or("-".to_string(), |n| format!("- {}", clip(n, MAX_TEXT))),
+            _ => short(&self.role).to_string(),
         };
-        if let Some(sub) = self.subrole.as_deref().filter(|s| !QUIET_SUBROLES.contains(s) && level.is_none()) {
+        if let Some(sub) = self.subrole.as_deref().filter(|s| !QUIET_SUBROLES.contains(s) && !markdown) {
             s += &format!(":{}", short(sub));
         }
-        if let Some(n) = name.filter(|_| level.is_none()) {
+        if let Some(n) = name.filter(|_| !markdown) {
             s += &format!(" \"{}\"", clip(n, 80));
         }
         if let Some(d) = description {
@@ -239,7 +248,7 @@ impl Item {
 }
 
 const MAX_INDENT: usize = 50;
-const CUT_NOTE: usize = 64;
+const CUT_NOTE: usize = 80;
 
 fn indent(depth: usize) -> String {
     "  ".repeat(depth.min(MAX_INDENT))
@@ -629,6 +638,30 @@ mod tests {
     }
 
     #[test]
+    fn stays_within_budget_on_wide_deep_trees() {
+        let tree: Vec<Item> = (0..300)
+            .map(|i| {
+                let leaves: Vec<Item> = (0..20)
+                    .map(|j| {
+                        let mut deep: Vec<Item> =
+                            (0..20).map(|k| item(100_000 + i * 400 + j * 20 + k, &"z".repeat(30 + k as usize), vec![])).collect();
+                        deep.push(Item::leaf(Key::Note(10_000 + i * 20 + j, 0), "… 12345 more offscreen; scroll to reveal".into()));
+                        Item { key: Key::Element(10_000 + i * 20 + j), text: "Row".into(), kids: deep }
+                    })
+                    .collect();
+                Item { key: Key::Element(i), text: format!("Section {i}"), kids: leaves }
+            })
+            .collect();
+        for budget in [300, 2_000, 20_000, 60_000] {
+            let (out, cut) = layout(&tree, budget);
+            let total: usize = out.iter().map(|(_, l)| l.len() + 1).sum();
+            assert!(cut);
+            assert!(total <= budget, "budget {budget}: {total}");
+            assert!(out.iter().any(|(k, _)| matches!(k, Key::Note(_, u32::MAX))));
+        }
+    }
+
+    #[test]
     fn keeps_a_prefix_when_even_single_lines_do_not_fit() {
         let tree: Vec<Item> = (0..50).map(|i| item(i, &"y".repeat(40), vec![])).collect();
         let (out, cut) = layout(&tree, 500);
@@ -651,6 +684,23 @@ mod tests {
         bare.value = Some("2".into());
         assert!(bare.folds_text());
         assert_eq!(bare.describe(), ("Heading".into(), false), "no text: folded away");
+    }
+
+    #[test]
+    fn writes_web_list_items_as_bullets() {
+        let mut list = props("AXList");
+        list.subrole = Some("AXContentList".into());
+        assert!(list.content_list());
+        let mut item = props("AXGroup");
+        item.list_item = true;
+        assert!(item.folds_text());
+        assert_eq!(item.describe(), ("-".into(), true), "item with structured children");
+        item.title = Some("Milk".into());
+        assert_eq!(item.describe().0, "- Milk");
+        let mut link = props("AXLink");
+        link.list_item = true;
+        link.title = Some("Docs".into());
+        assert_eq!(link.describe().0, "Link \"Docs\"", "non-group items keep their role");
     }
 
     fn props(role: &str) -> Props {
