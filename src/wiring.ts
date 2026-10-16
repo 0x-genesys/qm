@@ -1,5 +1,5 @@
 import type { MemoryEmbedder } from "./model/embeddings.ts";
-import { withDeploymentCredentials } from "./credentials/deployment-credentials.ts";
+import { nonDeploymentCredential, withDeploymentCredentials } from "./credentials/deployment-credentials.ts";
 import { resolveEmbeddingModel } from "./model/pi-models.ts";
 import { createPostgresTeamStore, type TeamStore } from "./teams/teams.ts";
 import { brokerCredentialAuthHeader } from "./api/credential-broker.ts";
@@ -1519,11 +1519,9 @@ export function buildApp(
           : {}),
         credential: async (slug) => {
           const rec = keychain
-            ? await serviceCreds.getServiceCredentialSecret(scopeId("org", config.orgId), slug)
+            ? nonDeploymentCredential(await serviceCreds.getServiceCredentialSecret(scopeId("org", config.orgId), slug))
             : null;
-          return rec && rec.source !== "deployment"
-            ? { host: rec.host, enabled: rec.enabled, header: brokerCredentialAuthHeader(rec) }
-            : null;
+          return rec ? { host: rec.host, enabled: rec.enabled, header: brokerCredentialAuthHeader(rec) } : null;
         },
       }),
     auditLog,
@@ -2168,8 +2166,10 @@ export function buildApp(
             resolvePackAuth(
               {
                 serviceCredential: async (slug) => {
-                  const record = await serviceCreds.getServiceCredentialSecret(scopeId("org", config.orgId), slug);
-                  return record && record.delivery !== "env" && record.source !== "deployment" ? record : undefined;
+                  const record = nonDeploymentCredential(
+                    await serviceCreds.getServiceCredentialSecret(scopeId("org", config.orgId), slug),
+                  );
+                  return record && record.delivery !== "env" ? record : undefined;
                 },
                 connectorToken: async (host, principalId) =>
                   (await keychain.connectorAccessToken(host, principalId)) ?? undefined,

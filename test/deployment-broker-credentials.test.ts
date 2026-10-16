@@ -16,6 +16,7 @@ import { decisionsResource } from "../src/api/routes/decisions-resource.ts";
 import type { ApiCtx } from "../src/api/routes/route.ts";
 import {
   deploymentBrokerCredentialsFromEnv,
+  nonDeploymentCredential,
   withDeploymentCredentials,
   type DeploymentBrokerCredential,
 } from "../src/credentials/deployment-credentials.ts";
@@ -149,6 +150,8 @@ test("deployment credentials win lookups in their org and reserve their slugs ag
   assert.equal((await store.getServiceCredentialSecret(ORG, "search"))?.secret, KEY);
   assert.equal((await store.getServiceCredentialSecret(ORG, "search"))?.source, "deployment");
   assert.equal((await store.getServiceCredentialSecret(ORG, "stored"))?.source, undefined);
+  assert.equal(nonDeploymentCredential(await store.getServiceCredentialSecret(ORG, "search")), null);
+  assert.equal(nonDeploymentCredential(await store.getServiceCredentialSecret(ORG, "stored"))?.secret, "db-secret");
   assert.equal((await store.getServiceCredentialSecret(ORG, "stored"))?.secret, "db-secret");
   assert.equal((await store.getServiceCredentialSecret("org:other", "search"))?.secret, "db-secret");
   assert.equal((await store.listServiceCredentials("org:other")).length, 2);

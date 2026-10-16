@@ -37,6 +37,7 @@ can see them in Settings but can't edit, delete or replace them.
 | `allowedPathPrefixes` | no       | Allowed path prefixes. Defaults to any path.                                                                                     |
 | `maxRequestsPerDay`   | no       | Cap on calls let through per UTC day, shared by every core process. Calls over the cap get `429 daily_cap_reached`.              |
 
+Never put a secret in `BROKER_CREDENTIALS` itself; a JSON syntax error can quote part of the value.
 Unknown fields, a missing secret, a duplicate slug or any invalid value stop the core at startup with an
 error naming the entry. Errors never include secret values.
 
