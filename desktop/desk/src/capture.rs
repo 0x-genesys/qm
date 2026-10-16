@@ -254,9 +254,10 @@ fn associated(target: Rect, candidates: &[(u32, Rect, bool)]) -> (Vec<u32>, Rect
     let mut area = target;
     let mut shown = vec![target];
     loop {
-        let next = candidates
-            .iter()
-            .find(|(id, r, forced)| !ids.contains(id) && (*forced || shown.iter().any(|s| intersection(*s, *r).is_some())));
+        let next = candidates.iter().find(|(id, r, forced)| {
+            !ids.contains(id)
+                && (*forced || shown.iter().any(|s| intersection(*s, *r).is_some()) || shown.iter().skip(1).any(|s| touching(*s, *r)))
+        });
         match next {
             Some((id, r, _)) => {
                 ids.push(*id);
@@ -266,6 +267,12 @@ fn associated(target: Rect, candidates: &[(u32, Rect, bool)]) -> (Vec<u32>, Rect
             None => return (ids, area),
         }
     }
+}
+
+fn touching(a: Rect, b: Rect) -> bool {
+    let w = (a.x + a.w).min(b.x + b.w) - a.x.max(b.x);
+    let h = (a.y + a.h).min(b.y + b.h) - a.y.max(b.y);
+    (w > 0.0 && h >= -1.0) || (h > 0.0 && w >= -1.0)
 }
 
 fn intersection(a: Rect, b: Rect) -> Option<Rect> {
@@ -312,7 +319,8 @@ mod tests {
         let menu = (1, r(450.0, 150.0, 200.0, 300.0), false);
         let submenu = (2, r(650.0, 200.0, 200.0, 100.0), false);
         let elsewhere = (3, r(1000.0, 0.0, 100.0, 100.0), false);
-        let (ids, area) = associated(window, &[submenu, elsewhere, menu]);
+        let menu_bar_icon = (4, r(200.0, 80.0, 20.0, 20.0), false);
+        let (ids, area) = associated(window, &[submenu, elsewhere, menu, menu_bar_icon]);
         assert_eq!(ids, vec![1, 2]);
         assert_eq!(tuple(area), (100.0, 100.0, 750.0, 350.0));
     }
