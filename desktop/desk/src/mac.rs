@@ -62,7 +62,6 @@ extern "C" {
     fn TISGetInputSourceProperty(source: CFTypeRef, key: CFStringRef) -> CFTypeRef;
     static kTISPropertyUnicodeKeyLayoutData: CFStringRef;
     fn LMGetKbdType() -> u8;
-    #[allow(clippy::too_many_arguments)]
     fn UCKeyTranslate(
         layout: *const u8,
         code: u16,
@@ -814,6 +813,14 @@ fn extras(ax: &El, main: &El) -> Vec<El> {
     out
 }
 
+#[derive(Clone, Copy)]
+struct WalkAt {
+    depth: usize,
+    anchor: u32,
+    clip: Rect,
+    at: Locator,
+}
+
 struct Walk {
     ids: tree::Ids<El>,
     elements: Vec<(u32, El)>,
@@ -843,7 +850,7 @@ impl Walk {
     }
 
     fn fold(&mut self, n: &mut Node) {
-        if !n.props.folds_text() || n.children.is_empty() || n.children.len() > 20 {
+        if !n.props.folds_text() || n.children.is_empty() || n.children.len() > 20 || self.visited + n.children.len() > MAX_VISITS {
             return;
         }
         self.visited += n.children.len();
@@ -855,8 +862,8 @@ impl Walk {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn visit(&mut self, e: &El, mut n: Node, depth: usize, anchor: u32, clip: Rect, at: Locator, force: bool, out: &mut Vec<Item>) {
+    fn visit(&mut self, e: &El, mut n: Node, context: WalkAt, force: bool, out: &mut Vec<Item>) {
+        let WalkAt { depth, anchor, clip, at } = context;
         if depth > MAX_DEPTH {
             self.truncated = true;
             return;
@@ -872,7 +879,7 @@ impl Walk {
         let clip = narrow(clip, &n.props.role, n.frame);
         let drawn = n.props.role == "AXWebArea" || n.children.is_empty();
         let (anchor, mut kids) = if keep { (self.id(e, locator), vec![]) } else { (anchor, vec![]) };
-        self.children(&n.children, depth + 1, anchor, clip, locator, n.props.content_list(), &mut kids);
+        self.children(&n.children, WalkAt { depth: depth + 1, anchor, clip, at: locator }, n.props.content_list(), &mut kids);
         if kids.is_empty()
             && drawn
             && !self.truncated
@@ -890,31 +897,31 @@ impl Walk {
         }
     }
 
-    fn text_run(&mut self, run: &mut Vec<(El, Node)>, depth: usize, anchor: u32, clip: Rect, at: Locator, out: &mut Vec<Item>) {
+    fn text_run(&mut self, run: &mut Vec<(El, Node)>, context: WalkAt, out: &mut Vec<Item>) {
         match run.len() {
             0 => {}
             1 => {
                 let (e, n) = run.pop().unwrap();
-                self.visit(&e, n, depth, anchor, clip, at, false, out);
+                self.visit(&e, n, context, false, out);
             }
             _ => {
                 let texts: Vec<(String, Option<Rect>)> = run.iter().filter_map(|(_, n)| Some((n.raw.clone()?, n.frame))).collect();
                 let (first, n) = &run[0];
-                let id = self.id(first, at.child(&n.props));
+                let id = self.id(first, context.at.child(&n.props));
                 out.push(Item::leaf(Key::Element(id), tree::merged_text(&texts)));
             }
         }
         run.clear();
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn children(&mut self, kids: &[El], depth: usize, anchor: u32, clip: Rect, at: Locator, list: bool, out: &mut Vec<Item>) {
+    fn children(&mut self, kids: &[El], context: WalkAt, list: bool, out: &mut Vec<Item>) {
+        let WalkAt { anchor, clip, .. } = context;
         let mut hidden = 0;
         let mut run: Vec<(El, Node)> = vec![];
         for (i, c) in kids.iter().enumerate() {
             if self.full() {
                 self.truncated = true;
-                self.text_run(&mut run, depth, anchor, clip, at, out);
+                self.text_run(&mut run, context, out);
                 let note = format!("… {} more not shown; the observation size limit was reached", kids.len() - i);
                 out.push(self.note(anchor, note));
                 break;
@@ -931,10 +938,10 @@ impl Walk {
                 run.push((c.clone(), n));
                 continue;
             }
-            self.text_run(&mut run, depth, anchor, clip, at, out);
-            self.visit(c, n, depth, anchor, clip, at, false, out);
+            self.text_run(&mut run, context, out);
+            self.visit(c, n, context, false, out);
         }
-        self.text_run(&mut run, depth, anchor, clip, at, out);
+        self.text_run(&mut run, context, out);
         if hidden > 0 {
             out.push(self.note(anchor, format!("… {hidden} more offscreen; scroll to reveal")));
         }
@@ -1173,13 +1180,18 @@ impl Desk {
             items.push(Item::leaf(Key::Section(0), "Open menus and other windows of this app:".into()));
             for o in &others {
                 let n = complete(o, fetch(o), walk.cache.as_mut());
-                walk.visit(o, n, 0, ROOT, everywhere, Locator::ROOT, true, &mut items);
+                walk.visit(o, n, WalkAt { depth: 0, anchor: ROOT, clip: everywhere, at: Locator::ROOT }, true, &mut items);
             }
             let title = str_attr(&w, "AXTitle").unwrap_or_default();
             items.push(Item::leaf(Key::Section(1), format!("Window \"{}\":", tree::clip(&title, 80))));
         }
         let kids = attr(&w, "AXChildren").map(list).unwrap_or_default();
-        walk.children(&kids, 0, ROOT, if f.w > 0.0 && f.h > 0.0 { f } else { everywhere }, Locator::ROOT, false, &mut items);
+        walk.children(
+            &kids,
+            WalkAt { depth: 0, anchor: ROOT, clip: if f.w > 0.0 && f.h > 0.0 { f } else { everywhere }, at: Locator::ROOT },
+            false,
+            &mut items,
+        );
         if let (Some(o), Some(c)) = (self.observers.get_mut(&app.pid), walk.cache.take()) {
             o.cache = c;
         }

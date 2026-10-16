@@ -7,7 +7,7 @@ mod intervention;
 mod keys;
 mod protocol;
 mod text;
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[cfg(any(target_os = "macos", test))]
 mod tree;
 
 #[cfg(target_os = "macos")]
