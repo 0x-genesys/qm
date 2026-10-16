@@ -221,6 +221,46 @@ test("gateway provider sends the native typesafe body to the model gateway", asy
   });
 });
 
+test("decision hooks tell the model gateway whose turn they classify, and a direct provider nothing", async () => {
+  const { createDecisionHooks } = await import("../src/decisions/hooks.ts");
+  const probabilities = { type: "choice", probabilities: { keep: 0.2, deep: 0.8 } };
+  const { calls, fetchImpl } = capture({
+    choices: [{ message: { content: JSON.stringify({ answers: { router: probabilities, direct: probabilities } }) } }],
+  });
+  const backend = createDecisionBackend({
+    providers: () => [
+      ...PROVIDERS,
+      { id: "oa", protocol: "chat-completions", baseUrl: "https://dec.example/v1", credential: "dec" },
+    ],
+    gateway: { url: "http://gateway:8080/", apiKey: "gk", apiKeyHeader: "api-key" },
+    credential: async () => ({ host: "dec.example", enabled: true, headers: { Authorization: "Bearer dec-key" } }),
+    fetch: fetchImpl,
+  });
+  const store = {
+    rules: async () => [route(), { ...route(), id: "direct", mode: "observe", model: { provider: "oa", model: "m" } }],
+  } as never;
+  const decide = createDecisionHooks(store, backend, { record: () => {} } as never);
+  const verdict = await decide("turn_start", "refactor the scheduler", {
+    actorId: "owner@example.com",
+    scopeLabel: "channel:C123",
+    sessionId: "session-cron",
+    threadRef: "agent:main:cron:nightly",
+  });
+  assert.deepEqual(verdict?.runtime, { modelId: "m-deep" });
+  assert.deepEqual(Object.fromEntries(calls.map((call) => [call.url, call.headers])), {
+    "http://gateway:8080/chat/completions": {
+      "content-type": "application/json",
+      "api-key": "gk",
+      "x-qm-session-id": "session-cron",
+      "x-qm-actor": "owner@example.com",
+      "x-qm-scope": "channel:C123",
+      "x-qm-purpose": "decision",
+      "x-qm-origin": "cron",
+    },
+    "https://dec.example/v1/chat/completions": { "content-type": "application/json", Authorization: "Bearer dec-key" },
+  });
+});
+
 test("decisions protocol calls the Decisions API and reads its probability array", async () => {
   const { calls, fetchImpl } = capture({
     answers: [

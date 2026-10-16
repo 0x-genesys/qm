@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { EntryType, ScopeId, Session, SessionEntry, SessionType, SpawnMeta } from "../types.ts";
 import { sleep } from "../util/async.ts";
 import type { GoalRecord } from "../harness/goal.ts";
+import type { ModelRequestContext } from "../model/provider-endpoints.ts";
 
 export function promptEnvelopeBody(envelope: unknown): { hash: string; body: string } | null {
   if (envelope == null) return null;
@@ -339,6 +340,18 @@ export function sessionOrigin(threadRef: string | null | undefined): SessionOrig
   const legacy = LEGACY_ORIGIN_RE.exec(threadRef ?? "");
   if (legacy) return legacy[1] as SessionOrigin;
   return "conversation";
+}
+
+export function sessionRequestContext(
+  session: Partial<Pick<Session, "id" | "scopeId" | "threadRef">>,
+  actorId?: string,
+): ModelRequestContext {
+  return {
+    sessionId: session.id,
+    actorId,
+    scopeId: session.scopeId,
+    origin: session.threadRef ? sessionOrigin(session.threadRef) : undefined,
+  };
 }
 
 export function sessionCategory(origin: SessionOrigin): SessionCategory {

@@ -29,7 +29,9 @@ export function createMemoryEmbedder(
   gateway?: ModelGatewayTransportConfig,
   fetchImpl: typeof fetch = fetch,
 ): MemoryEmbedder {
-  const routed = modelGatewayRequest(model.provider === "qm:gateway" ? gateway : undefined, model);
+  const routed = modelGatewayRequest(model.provider === "qm:gateway" ? gateway : undefined, model, {
+    purpose: "embedding",
+  });
   const key = routed?.apiKey ?? apiKey;
   if (!key) throw new Error("Configure an organization credential for the embedding model");
   const url = `${(routed?.model ?? model).baseUrl}/embeddings`;
