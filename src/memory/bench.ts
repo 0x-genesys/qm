@@ -49,7 +49,7 @@ export async function replayConversation(
   conversation: BenchConversation,
 ): Promise<void> {
   for (const turn of conversation.turns) {
-    await strategy.onTurnEnd?.({ scopeId, input: turn.input, reply: turn.reply, requestContext: {} });
+    await strategy.onTurnEnd?.({ scopeId, input: turn.input, reply: turn.reply });
   }
 }
 

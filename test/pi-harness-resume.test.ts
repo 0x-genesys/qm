@@ -87,7 +87,6 @@ test("the pi harness re-runs a retry-safe interrupted call before the model sees
     } as unknown as ToolContext,
     scopeLabel: scope,
     orgScopeId: "org:test" as ScopeId,
-    requestContext: {},
     resumeToolCall: { callId: "c-budget", tool: "history", input: { query: "budget" } },
     emit: async (entry: NewEntry) => {
       const appended = { ...entry, sessionId: "s1", parentSeq: null, seq: seq++, createdAt: Date.now() };

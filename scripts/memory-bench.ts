@@ -63,7 +63,7 @@ for (const kind of kinds) {
     }
     await replayConversation(strategy, scopeId, conversation);
     const notebook = await memory.read(scopeId);
-    const judgeOut = await oneShot(JUDGE_PROMPT, renderJudgeInput(conversation, notebook), {});
+    const judgeOut = await oneShot(JUDGE_PROMPT, renderJudgeInput(conversation, notebook));
     const verdict = parseJudgeVerdict(judgeOut ?? "");
     results.push({ kind, conversationId: conversation.id, notebook, verdict });
     console.log(

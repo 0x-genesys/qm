@@ -331,7 +331,7 @@ test("a configured company subscription without a keychain cannot fall back to t
   });
   const harness = piHarness.createPiHarness({ ...piOptions, captureRequests: false });
   try {
-    assert.equal(await harness.models.oneShot?.("system", "hello", {}), undefined);
+    assert.equal(await harness.models.oneShot?.("system", "hello"), undefined);
     assert.deepEqual(urls, []);
   } finally {
     await harness.turns.close?.();

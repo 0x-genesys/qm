@@ -1,6 +1,6 @@
 import { isComposioHost } from "../credentials/keychain.ts";
-import { attestable } from "../model/provider-endpoints.ts";
 import { errMessage } from "../util/errors.ts";
+import { attestable } from "../util/text.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { ScopeId } from "../types.ts";
 import type { CredentialUsageSink } from "../admin/credential-usage-sink.ts";

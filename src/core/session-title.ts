@@ -1,6 +1,5 @@
 import type { ErrorLog } from "../admin/error-log.ts";
 import type { Harness } from "../harness/harness.ts";
-import type { ModelRequestContext } from "../model/provider-endpoints.ts";
 import type { SessionStateBus } from "../runs/session-state-bus.ts";
 import type { SessionStore } from "../sessions/session-store.ts";
 import type { ScopeId } from "../types.ts";
@@ -15,8 +14,6 @@ function fallbackSessionTitle(text: string): string | undefined {
   return clean.length > 60 ? `${headSlice(clean, 59).trimEnd()}…` : clean;
 }
 
-type SessionTitleContext = ModelRequestContext & { sessionId: string; scopeId: ScopeId };
-
 export function createSessionTitles(deps: {
   sessions: SessionStore;
   harness: Harness;
@@ -24,16 +21,16 @@ export function createSessionTitles(deps: {
   errors?: ErrorLog;
 }) {
   async function generateAndStore(
-    requestContext: SessionTitleContext,
+    sessionId: string,
+    scopeId: ScopeId,
     transcript: string,
     principalId?: string,
     fallbackText?: string,
   ): Promise<string | undefined> {
     if (!transcript.trim()) return undefined;
-    const { sessionId, scopeId } = requestContext;
     let title: string | undefined;
     try {
-      title = await deps.harness.models.generateTitle?.(transcript, requestContext);
+      title = await deps.harness.models.generateTitle?.(transcript);
     } catch (e) {
       deps.errors?.record(
         {
@@ -65,8 +62,8 @@ export function createSessionTitles(deps: {
 
   function titleFromFirstMessage(
     session: { id: string; threadRef: string },
+    scopeId: ScopeId,
     text: string,
-    requestContext: SessionTitleContext,
   ): Promise<void> | undefined {
     const fallback = fallbackSessionTitle(text);
     if (!fallback) return undefined;
@@ -75,7 +72,8 @@ export function createSessionTitles(deps: {
       .then(() => announce(session).catch(swallowAs("session title: sidebar refresh", undefined)))
       .then(async () => {
         if (!deps.harness.models.generateTitle) return;
-        if (await generateAndStore(requestContext, `User:\n${stripTurnBoilerplate(text)}`)) await announce(session);
+        if (await generateAndStore(session.id, scopeId, `User:\n${stripTurnBoilerplate(text)}`))
+          await announce(session);
       })
       .finally(() => deps.errors?.flush())
       .catch(swallowAs("session title", undefined));

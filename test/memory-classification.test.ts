@@ -20,29 +20,22 @@ const restricted: MemoryProvenance[] = [
 ];
 
 const scope = "personal:alice";
-const turn = {
-  scopeId: scope,
-  actorId: "alice",
-  input: "I prefer short replies",
-  reply: "Noted",
-  sessionId: "s1",
-  requestContext: { sessionId: "s1", actorId: "alice", scopeId: scope },
-};
+const turn = { scopeId: scope, actorId: "alice", input: "I prefer short replies", reply: "Noted", sessionId: "s1" };
 
 test("production strategy classifies automatic capture in the existing extraction call", async () => {
   const { memory, facts } = await fixture();
-  const requestContexts: unknown[] = [];
+  let calls = 0;
   const { strategy } = createMemoryStrategy("per-turn", {
     memory,
     harness: {
-      oneShot: async (_systemPrompt, _prompt, requestContext) => {
-        requestContexts.push(requestContext);
+      oneShot: async () => {
+        calls++;
         return "SENSITIVITY: ordinary\n- Prefers short replies";
       },
     },
   });
   await strategy.onTurnEnd!({ ...turn, inheritedFacts: [] });
-  assert.deepEqual(requestContexts, [{ ...turn.requestContext, purpose: "memory_capture" }]);
+  assert.equal(calls, 1);
   assert.ok((await facts(scope)).every((fact) => fact.sensitivity === "ordinary" && !fact.sourceUnknown));
   assert.deepEqual((await facts(scope))[0]!.sources, [scope]);
 });
@@ -160,18 +153,12 @@ test("an edit is classified and folds the turn's exposure into the fact", async 
     inheritedFacts: [],
   });
   const [fact] = await facts(scope);
-  let requestContext: unknown;
-  await classifiedMemory(memory, {
-    oneShot: async (_systemPrompt, _prompt, context) => {
-      requestContext = context;
-      return "sensitive";
-    },
-  }).edit!(scope, [{ id: fact!.id, text: "Plain fact, now with a salary" }], "alice", {
-    conversationScopeId: "group:private",
-    requestContext: turn.requestContext,
-    inheritedFacts: restricted,
-  });
-  assert.deepEqual(requestContext, { ...turn.requestContext, purpose: "memory_classification" });
+  await classifiedMemory(memory, { oneShot: async () => "sensitive" }).edit!(
+    scope,
+    [{ id: fact!.id, text: "Plain fact, now with a salary" }],
+    "alice",
+    { conversationScopeId: "group:private", inheritedFacts: restricted },
+  );
   const [edited] = await facts(scope);
   assert.equal(edited!.sensitivity, "restricted");
   assert.deepEqual(edited!.sources.toSorted(), ["group:private", scope].toSorted());

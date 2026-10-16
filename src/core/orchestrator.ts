@@ -52,8 +52,13 @@ import { resolveEnvironmentId } from "../environments/environment-store.ts";
 import type { GapPhase, Lease, LeaseAttempt } from "../sessions/session-store.ts";
 import { SESSION_BUSY_FIRE_TEXT, SESSION_BUSY_USER_TEXT } from "./failure-copy.ts";
 import { CONFIG_DEFAULTS } from "../config.ts";
-import { acquireLeaseWithin, isOverheardEntry, originThroughParents } from "../sessions/session-store.ts";
-import type { ModelRequestContext } from "../model/provider-endpoints.ts";
+import {
+  acquireLeaseWithin,
+  isOverheardEntry,
+  originThroughParents,
+  sessionOrigin,
+} from "../sessions/session-store.ts";
+import { currentModelRequestContext, withModelRequestContext } from "../model/request-context.ts";
 import { supportsProcessSessions, supportsScopeProfile } from "../sandbox/sandbox.ts";
 import { createBackgroundBroker } from "../connectors/background-exec-broker.ts";
 import { createMonitorBroker, readBackgroundOutputTail } from "../monitors/monitor-broker.ts";
@@ -295,7 +300,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
   const { compactContextIfNeeded, compactRecent, scheduleBackgroundCompaction } = createCompaction(deps);
 
   async function approvalSummary(
-    requestContext: ModelRequestContext & { scopeId: ScopeId },
+    scopeId: ScopeId,
     command: string,
     reason: string,
     purpose?: string,
@@ -303,7 +308,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     if (!deps.harness.models.summarizeApproval) return undefined;
     try {
       const summary = await Promise.race([
-        deps.harness.models.summarizeApproval(command, reason, requestContext, purpose),
+        deps.harness.models.summarizeApproval(command, reason, purpose),
         sleep(deps.approvalSummaryTimeoutMs ?? DEFAULT_APPROVAL_SUMMARY_TIMEOUT_MS).then(() => undefined),
       ]);
       return summary?.trim() || undefined;
@@ -313,7 +318,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           category: "command_policy",
           code: "summary_failed",
           message: errMessage(e),
-          scopeLabel: requestContext.scopeId,
+          scopeLabel: scopeId,
         },
         e,
       );
@@ -410,12 +415,18 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     };
   }
 
-  return {
+  const orchestrator: Orchestrator = {
     async screenSecuritySteer({ payload, actor, conversation, sessionId }) {
       const resolution = await deps.resolution.resolve(conversation, actor);
       const { screening } = resolution.securityPolicy;
       if (screening === "off") return "allow";
       const scopeLabel = deps.resolution.scopeFor(conversation, actor);
+      Object.assign(currentModelRequestContext(), {
+        sessionId,
+        actorId: actor.id,
+        scopeId: scopeLabel,
+        origin: sessionOrigin(conversation.threadRef),
+      });
       const bounded = securityScreenPayload({
         surface: "external",
         text: "",
@@ -427,7 +438,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         surface: "steer",
         origin: "ambient",
         thread: conversation.threadRef,
-        requestContext: { sessionId, actorId: actor.id, scopeId: scopeLabel },
+        ...(sessionId ? { sessionId } : {}),
       } as const;
       if (screening === "observe") {
         if (bounded && !bounded.truncated)
@@ -485,6 +496,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     async regenerateTitle(sessionId, principalId, participantIds) {
       const session = await deps.sessions.get(sessionId);
       if (!session) return null;
+      Object.assign(currentModelRequestContext(), {
+        sessionId,
+        actorId: principalId,
+        scopeId: session.scopeId,
+        origin: await originThroughParents(session, (id) => deps.sessions.get(id)),
+      });
       let entries = (await transcripts.forViewer(sessionId, principalId)).entries;
       if (participantIds?.length) {
         const views = await Promise.all(
@@ -501,12 +518,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       const transcript = renderTitleTranscript(entries);
       const fallbackEntry = entries.find((entry) => entry.type === "user" && !isOverheardEntry(entry));
       const title = await titles.generateAndStore(
-        {
-          sessionId: session.id,
-          actorId: principalId,
-          scopeId: session.scopeId,
-          origin: await originThroughParents(session, (id) => deps.sessions.get(id)),
-        },
+        session.id,
+        session.scopeId,
         transcript,
         participantIds?.length ? principalId : undefined,
         fallbackEntry ? visibleTitleEntryText(fallbackEntry) : undefined,
@@ -694,6 +707,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
 
       const resolution = await deps.resolution.resolve(conversation, actor, external);
       const scopeId = deps.resolution.scopeFor(conversation, actor);
+      Object.assign(currentModelRequestContext(), { actorId: actor.id, scopeId });
       const isCurrentSharedScopeMember = withLiveTurnMembership(deps.isCurrentSharedScopeMember, {
         actorId: actor.id,
         scopeId,
@@ -738,7 +752,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       const screenTrace = {
         mode: enforceScreen ? "enforce" : "observe",
         thread: conversation.threadRef,
-        requestContext: { actorId: actor.id, scopeId },
         ...(input.runId ? { runId: input.runId } : {}),
       } as const;
       const approvalSession = input.approval ? await deps.sessions.getByThread(conversation.threadRef) : null;
@@ -1273,11 +1286,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         desktopClientForTurn(input) ? [desktopComputerTool] : undefined,
       );
       screenSession.id = session.id;
-      const requestContext = {
-        ...screenTrace.requestContext,
-        sessionId: session.id,
-        origin: await originThroughParents(session, (id) => deps.sessions.get(id)),
-      };
+      const origin = await originThroughParents(session, (id) => deps.sessions.get(id));
+      Object.assign(currentModelRequestContext(), { sessionId: session.id, origin });
       leaseMs += Date.now() - sessionStart;
       if (!input.sessionParticipantIds?.length && !automatedTurn)
         await deps.sessions.addParticipant(session.id, actor.id);
@@ -1290,7 +1300,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       let fallbackTitleWrite: Promise<void> | undefined;
       const assignSessionTitle = () => {
         if (!session.title && !syntheticInput && !input.approval)
-          fallbackTitleWrite = titles.titleFromFirstMessage(session, titleText, requestContext);
+          fallbackTitleWrite = titles.titleFromFirstMessage(session, scopeId, titleText);
       };
 
       const isRetry = (input.attempt ?? 1) > 1;
@@ -1687,7 +1697,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           ...(!liveTurn && input.unattendedGrants ? { grants: input.unattendedGrants } : {}),
           ...(input.runId ? { runId: input.runId } : {}),
           sessionId: session.id,
-          origin: requestContext.origin,
+          origin,
           runAttempt: input.attempt,
           runLeaseToken: input.runLeaseToken,
           threadRef: conversation.threadRef,
@@ -1707,7 +1717,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               browserModel: browserSelection.model ?? "unavailable",
               browserAccount: browserSelection.account,
               sessionId: session.id,
-              origin: requestContext.origin,
+              origin,
               exp: Date.now() + CAPABILITY_TTL_MS,
             },
             deps.capabilitySecret ?? deps.signingSecret,
@@ -2392,7 +2402,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               ? { reactionGuidance: input.gatewayContext.reactionGuidance }
               : {}),
             history: detectHistory,
-            requestContext,
             recordModelCall: (rec) => {
               deps.modelGateway.recordCall({ at: Date.now(), scopeLabel: scopeId, ...rec });
               void deps.budget?.record(actor.id, estimateCostUsd(rec.inputTokens));
@@ -2747,11 +2756,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             : {}),
           ...(strictReadOnly ? {} : { attach: attachStaging.attach }),
           memory: context.memory,
-          memoryCaptureMetadata: () => ({
-            sessionId: session.id,
-            requestContext,
-            inheritedFacts: captureDependencies(),
-          }),
+          memoryCaptureMetadata: () => ({ sessionId: session.id, inheritedFacts: captureDependencies() }),
           memoryScopeId,
           ...(memoryAccess ? { memoryAccess } : {}),
           ...(!external && deps.mcp ? { mcp: deps.mcp } : {}),
@@ -2813,7 +2818,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                   ? ({ content }) =>
                       classifySecurityData(content, actor.id, scopeId, undefined, {
                         ...screenTrace,
-                        requestContext,
+                        sessionId: session.id,
                         hook: "tool_response",
                         request: input.text,
                         surface: "inbound_file",
@@ -2889,7 +2894,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           compactContextIfNeeded({
             cancel: turnAbort.signal,
             session,
-            requestContext,
             lease,
             visibleHistory,
             scopeId,
@@ -2936,7 +2940,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 turnAbort.signal.throwIfAborted();
                 const verdict = await classifySecurityData(chunk, actor.id, scopeId, undefined, {
                   ...screenTrace,
-                  requestContext,
+                  sessionId: session.id,
                   hook: "tool_response",
                   request: requestText,
                   surface: "inbound_file",
@@ -3341,7 +3345,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                   for (const chunk of securityScreenChunks("conversation-header", refreshedInbox)) {
                     const verdict = await classifySecurityData(chunk, actor.id, scopeId, recordScreenRequest, {
                       ...screenTrace,
-                      requestContext,
+                      sessionId: session.id,
                       hook: "user_input",
                       request: text,
                       surface: "steer",
@@ -3376,7 +3380,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                             undefined,
                             {
                               ...screenTrace,
-                              requestContext,
+                              sessionId: session.id,
                               hook: "tool_response",
                               surface: "inbound_file",
                               origin: input.origin.kind,
@@ -3504,7 +3508,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                     const screenChunk = (chunk: string) =>
                       classifySecurityData(chunk, actor.id, scopeId, recordScreenRequest, {
                         ...screenTrace,
-                        requestContext,
+                        sessionId: session.id,
                         hook: "tool_response",
                         request: input.text,
                         surface: toolLabel,
@@ -3636,7 +3640,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             },
             scopeLabel: scopeId,
             orgScopeId: resolution.orgScopeId,
-            requestContext,
             onDelta: (chunk: string) => {
               const now = Date.now();
               if (firstChunkAt === undefined) firstChunkAt = now;
@@ -3709,7 +3712,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               resumedHistory = await withManagedRosterVersion(() =>
                 compactRecent({
                   session,
-                  requestContext,
                   lease,
                   visibleHistory: resumedHistory,
                   scopeId,
@@ -3912,7 +3914,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 actorId: actor.id,
                 ...(automatedTurn ? { autonomous: true } : {}),
                 sessionId: session.id,
-                requestContext,
                 idempotencyKey: input.runId ?? `${session.id}:${spine.turnUserEntrySeq ?? "turn"}`,
               });
             } catch (e) {
@@ -3944,7 +3945,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const tail = async (): Promise<void> => {
           try {
             if (!pausing && turnCompleted && !session.title && !fallbackTitleWrite) {
-              await titles.generateAndStore(requestContext, `User:\n${titleText}\n\nAssistant:\n${result.reply}`);
+              await titles.generateAndStore(session.id, scopeId, `User:\n${titleText}\n\nAssistant:\n${result.reply}`);
             }
           } finally {
             await reclaimBox();
@@ -3991,7 +3992,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 ? `${command}:${hashId([pa.screenedOutput.tool, pa.screenedOutput.text, pa.screenedOutput.sourceScopeId ?? scopeId], 64)}`
                 : command,
             );
-            const summary = pa.summary ?? (await approvalSummary(requestContext, command, pa.reason, pa.purpose));
+            const summary = pa.summary ?? (await approvalSummary(scopeId, command, pa.reason, pa.purpose));
             prepared.push({
               requestId,
               record: {
@@ -4090,7 +4091,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               always: resolution.approvalGrantModes.always && (err.grantModes?.always ?? true),
             },
           };
-          const summary = await approvalSummary(requestContext, err.command, err.approvalReason);
+          const summary = await approvalSummary(scopeId, err.command, err.approvalReason);
           try {
             await withManagedRosterVersion(async () => {
               await pending.put(requestId, {
@@ -4186,7 +4187,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         if (!contextRecovered && !turnAbort.signal.aborted)
           scheduleBackgroundCompaction({
             sessionId: session.id,
-            requestContext,
             scopeId,
             orgScopeId: resolution.orgScopeId,
             actorId: actor.id,
@@ -4194,5 +4194,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           });
       }
     },
+  };
+  return {
+    screenSecuritySteer: (input) => withModelRequestContext({}, () => orchestrator.screenSecuritySteer(input)),
+    regenerateTitle: (...args) => withModelRequestContext({}, () => orchestrator.regenerateTitle(...args)),
+    handleTurn: (input) => withModelRequestContext({}, () => orchestrator.handleTurn(input)),
   };
 }

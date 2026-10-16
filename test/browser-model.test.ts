@@ -19,22 +19,14 @@ const model = "claude-opus-5";
 const key = "company-gateway-secret";
 
 test("browser inference uses the company gateway with scoped model authorization", async (t) => {
-  const calls: Array<{
-    url: string;
-    auth: string | undefined;
-    context: Record<string, unknown>;
-    body: Record<string, unknown>;
-  }> = [];
+  const calls: Array<{ url: string; auth: string | undefined; body: Record<string, unknown> }> = [];
+  const contexts: Array<Record<string, unknown>> = [];
   let status = 200;
   const upstream = httpServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
-    calls.push({
-      url: req.url!,
-      auth: req.headers.authorization,
-      context: Object.fromEntries(Object.entries(req.headers).filter(([name]) => name.startsWith("x-qm-"))),
-      body: JSON.parse(raw),
-    });
+    calls.push({ url: req.url!, auth: req.headers.authorization, body: JSON.parse(raw) });
+    contexts.push(Object.fromEntries(Object.entries(req.headers).filter(([name]) => name.startsWith("x-qm-"))));
     res.writeHead(status, { "content-type": "application/json" });
     res.end(
       JSON.stringify(
@@ -83,14 +75,14 @@ test("browser inference uses the company gateway with scoped model authorization
   assert.deepEqual(calls[0], {
     url: "/v1/chat/completions",
     auth: `Bearer ${key}`,
-    context: {
-      "x-qm-session-id": "session-browser",
-      "x-qm-actor": "U1",
-      "x-qm-scope": "personal:U1",
-      "x-qm-purpose": "browser",
-      "x-qm-origin": "conversation",
-    },
     body: { ...body, model: "anthropic/claude-opus-5", stream: false },
+  });
+  assert.deepEqual(contexts[0], {
+    "x-qm-session-id": "session-browser",
+    "x-qm-actor": "U1",
+    "x-qm-scope": "personal:U1",
+    "x-qm-purpose": "browser",
+    "x-qm-origin": "conversation",
   });
   for (const invalid of [
     { ...body, model: "other" },
@@ -180,8 +172,9 @@ test("gateway deployment provisions a browser token without exposing the company
   assert.equal(claims?.aud, BROWSER_MODEL_AUD);
   assert.equal(claims?.browserModel, model);
   assert.equal(claims?.scopeId, "personal:U1");
-  assert.equal(claims?.origin, "conversation");
   assert.equal(claims?.sessionId, result.sessionId);
+  assert.equal(claims?.origin, "conversation");
+  assert.equal((await verifyCapabilityToken(env!.AGENT_API_TOKEN!, TEST_CAPABILITY_SECRET))?.origin, "conversation");
 });
 
 test("gateway browsing never selects a direct provider when callback signing or URL is missing", async () => {

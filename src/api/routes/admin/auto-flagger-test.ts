@@ -6,6 +6,7 @@ import { defaultAutoFlaggerConfig, parseAutoFlaggerDraft, type AutoFlaggerDraft 
 import { isHarnessId } from "../../../model/pi-models.ts";
 import type { ScreenSample } from "../../../sessions/session-store.ts";
 import type { SecurityScreenProbe } from "../../../security/security-screener.ts";
+import { withModelRequestContext } from "../../../model/request-context.ts";
 
 const DEFAULT_WINDOW = 100;
 const MAX_WINDOW = 500;
@@ -74,7 +75,9 @@ async function replay(
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, samples.length) }, worker));
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, samples.length) }, () => withModelRequestContext({ actorId }, worker)),
+  );
   return { totals, verdicts, complete };
 }
 

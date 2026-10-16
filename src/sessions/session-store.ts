@@ -2,6 +2,7 @@ import { memoryContextPayload } from "../memory/context-boundary.ts";
 import { createHash } from "node:crypto";
 import type { EntryType, ScopeId, Session, SessionEntry, SessionType, SpawnMeta } from "../types.ts";
 import { sleep } from "../util/async.ts";
+import { swallow } from "../util/errors.ts";
 import type { GoalRecord } from "../harness/goal.ts";
 
 export function promptEnvelopeBody(envelope: unknown): { hash: string; body: string } | null {
@@ -368,12 +369,16 @@ export async function originThroughParents(
   let origin = sessionOrigin(session.threadRef);
   let ancestor = session;
   const visited = new Set([session.id]);
-  while (origin === "conversation" && ancestor.parentSessionId && visited.size < 64) {
-    const parent = await get(ancestor.parentSessionId);
-    if (!parent || visited.has(parent.id)) break;
-    visited.add(parent.id);
-    ancestor = parent;
-    origin = sessionOrigin(parent.threadRef);
+  try {
+    while (origin === "conversation" && ancestor.parentSessionId && visited.size < 64) {
+      const parent = await get(ancestor.parentSessionId);
+      if (!parent || visited.has(parent.id)) break;
+      visited.add(parent.id);
+      ancestor = parent;
+      origin = sessionOrigin(parent.threadRef);
+    }
+  } catch (e) {
+    swallow("session origin", e);
   }
   return origin;
 }

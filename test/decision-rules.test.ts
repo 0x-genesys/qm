@@ -11,6 +11,7 @@ import {
   type DecisionProvider,
 } from "../src/decisions/decisions.ts";
 import { createDecisionBackend } from "../src/decisions/providers.ts";
+import { withModelRequestContext } from "../src/model/request-context.ts";
 import { turnStartState } from "../src/decisions/hooks.ts";
 
 const PROVIDERS: DecisionProvider[] = [{ id: "gw", protocol: "chat-completions" }];
@@ -211,58 +212,25 @@ test("gateway provider sends the native typesafe body to the model gateway", asy
     credential: async () => null,
     fetch: fetchImpl,
   });
-  assert.deepEqual(await ask(backend, { provider: "gw", model: "example/decision-model" }), { yes: 0.8, no: 0.2 });
+  const context = { sessionId: "session-1", actorId: "U1", scopeId: "channel:C1", origin: "cron" as const };
+  assert.deepEqual(
+    await withModelRequestContext(context, () => ask(backend, { provider: "gw", model: "example/decision-model" })),
+    { yes: 0.8, no: 0.2 },
+  );
   assert.equal(calls[0]!.url, "http://gateway:8080/chat/completions");
-  assert.equal(calls[0]!.headers["api-key"], "gk");
+  assert.deepEqual(calls[0]!.headers, {
+    "content-type": "application/json",
+    "api-key": "gk",
+    "x-qm-session-id": "session-1",
+    "x-qm-actor": "U1",
+    "x-qm-scope": "channel:C1",
+    "x-qm-purpose": "decision",
+    "x-qm-origin": "cron",
+  });
   assert.equal(calls[0]!.body.model, "example/decision-model");
   assert.deepEqual(calls[0]!.body.typesafe, {
     questions: { decision: { type: "choice", instructions: "q?", criteria: { yes: "a", no: "b" } } },
     state: "s",
-  });
-});
-
-test("decision hooks tell the model gateway whose turn they classify, and a direct provider nothing", async () => {
-  const { createDecisionHooks } = await import("../src/decisions/hooks.ts");
-  const probabilities = { type: "choice", probabilities: { keep: 0.2, deep: 0.8 } };
-  const { calls, fetchImpl } = capture({
-    choices: [{ message: { content: JSON.stringify({ answers: { router: probabilities, direct: probabilities } }) } }],
-  });
-  const backend = createDecisionBackend({
-    providers: () => [
-      ...PROVIDERS,
-      { id: "oa", protocol: "chat-completions", baseUrl: "https://dec.example/v1", credential: "dec" },
-    ],
-    gateway: { url: "http://gateway:8080/", apiKey: "gk", apiKeyHeader: "api-key" },
-    credential: async () => ({ host: "dec.example", enabled: true, header: ["Authorization", "Bearer dec-key"] }),
-    fetch: fetchImpl,
-  });
-  const store = {
-    rules: async () => [route(), { ...route(), id: "direct", mode: "observe", model: { provider: "oa", model: "m" } }],
-  } as never;
-  const decide = createDecisionHooks(store, backend, { record: () => {} } as never);
-  const verdict = await decide("turn_start", "refactor the scheduler", {
-    actorId: "owner@example.com",
-    scopeLabel: "channel:C123",
-    sessionId: "session-cron",
-    requestContext: {
-      sessionId: "session-cron",
-      actorId: "owner@example.com",
-      scopeId: "channel:C123",
-      origin: "cron",
-    },
-  });
-  assert.deepEqual(verdict?.runtime, { modelId: "m-deep" });
-  assert.deepEqual(Object.fromEntries(calls.map((call) => [call.url, call.headers])), {
-    "http://gateway:8080/chat/completions": {
-      "content-type": "application/json",
-      "api-key": "gk",
-      "x-qm-session-id": "session-cron",
-      "x-qm-actor": "owner@example.com",
-      "x-qm-scope": "channel:C123",
-      "x-qm-purpose": "decision",
-      "x-qm-origin": "cron",
-    },
-    "https://dec.example/v1/chat/completions": { "content-type": "application/json", Authorization: "Bearer dec-key" },
   });
 });
 
@@ -436,11 +404,7 @@ test("decision hooks load active rules for the hook, decide, and audit every ver
     ),
   } as never;
   const decide = createDecisionHooks(store, fixed({ keep: 0.2, deep: 0.8 }), audit);
-  const verdict = await decide("turn_start", "refactor the scheduler", {
-    scopeLabel: "personal:a",
-    sessionId: "s1",
-    requestContext: {},
-  });
+  const verdict = await decide("turn_start", "refactor the scheduler", { scopeLabel: "personal:a", sessionId: "s1" });
   assert.deepEqual(asked, ["turn_start"]);
   assert.deepEqual(verdict?.runtime, { modelId: "m-deep" });
   assert.deepEqual(
@@ -454,7 +418,6 @@ test("decision hooks load active rules for the hook, decide, and audit every ver
     await createDecisionHooks(undefined, fixed({}), audit)("turn_start", "x", {
       scopeLabel: "s",
       sessionId: "s",
-      requestContext: {},
     }),
     undefined,
   );

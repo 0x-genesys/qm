@@ -51,7 +51,7 @@ const TURN_EFFORT_LEVELS = new Set<string>([
   "default",
   "adaptive",
 ]);
-import type { ScopeId } from "../types.ts";
+import type { ConversationTurn, ScopeId, SessionEntry } from "../types.ts";
 import type { GapPhase, GapPhases, LlmCallUsage, LlmTransportMeta } from "../sessions/session-store.ts";
 import { NonRetryableTurnError, ProviderTurnError, TitleRejected } from "../core/turn-error.ts";
 import { providerTurnError } from "./provider-error.ts";
@@ -79,7 +79,7 @@ import {
   GatewayModelUnavailableError,
   modelGatewayRequest,
   type ModelGatewayTransportConfig,
-  type ModelRequestContext,
+  type ModelRequestPurpose,
 } from "../model/provider-endpoints.ts";
 import {
   defineHarness,
@@ -109,7 +109,7 @@ import {
 } from "./replay.ts";
 import { estimateHistoryTokens } from "./context-compaction.ts";
 import { createStepRecorder, recordingTools, type StepRecorder } from "./pi-step-recorder.ts";
-import { ELIDED_IMAGE_TEXT, restoreReplayImages } from "./replay-images.ts";
+import { ELIDED_IMAGE_TEXT, restoreReplayImages, type ReplayImageLoader } from "./replay-images.ts";
 import { summarizeHistory } from "./history-summary.ts";
 import { countTokens } from "../util/tokens.ts";
 import {
@@ -373,7 +373,7 @@ async function directAnthropicJson(
   systemPrompt: string,
   userPrompt: string,
   modelGateway?: ModelGatewayTransportConfig,
-  requestContext?: ModelRequestContext,
+  purpose?: ModelRequestPurpose,
 ): Promise<string | undefined> {
   if (
     !String(model.provider ?? "")
@@ -382,7 +382,7 @@ async function directAnthropicJson(
   )
     return undefined;
   await modelGateway?.refresh?.();
-  const gateway = modelGatewayRequest(modelGateway, model, requestContext);
+  const gateway = modelGatewayRequest(modelGateway, model, purpose);
   const requestModel = gateway?.model ?? model;
   const requestKey = gateway?.apiKey ?? apiKey;
   const res = await fetch(`${requestModel.baseUrl}/v1/messages`, {
@@ -1138,7 +1138,7 @@ function customModelsPath(): string | null {
 export async function buildModelRuntime(
   keys: ProviderKeys | string,
   modelGateway?: ModelGatewayTransportConfig,
-  requestContext?: ModelRequestContext,
+  purpose?: ModelRequestPurpose,
   cacheRetention?: "long",
 ): Promise<ModelRuntime> {
   await modelGateway?.refresh?.();
@@ -1169,7 +1169,7 @@ export async function buildModelRuntime(
     const getAuth = runtime.getAuth.bind(runtime);
     runtime.getAuth = (async (model, overrides) => {
       if (typeof model === "string") return getAuth(model, overrides);
-      const request = modelGatewayRequest(modelGateway, model, requestContext);
+      const request = modelGatewayRequest(modelGateway, model, purpose);
       if (request)
         return {
           auth: { apiKey: request.apiKey, headers: { ...model.headers, ...request.headers } },
@@ -1200,7 +1200,7 @@ export async function buildModelRuntime(
     model: Model<Api>,
     options: T,
   ): { model: Model<Api>; options: T } => {
-    const request = modelGatewayRequest(modelGateway, model, requestContext);
+    const request = modelGatewayRequest(modelGateway, model, purpose);
     if (!request) {
       const providerModelId =
         model.provider === CODEX_SUBSCRIPTION_PROVIDER
@@ -1264,11 +1264,11 @@ export async function oneShot(
   opts?: {
     signal?: AbortSignal;
     modelGateway?: ModelGatewayTransportConfig;
-    requestContext?: ModelRequestContext;
+    purpose?: ModelRequestPurpose;
     thinkingLevel?: LegacyThinkingLevel;
   },
 ): Promise<string | undefined> {
-  const modelRuntime = await buildModelRuntime(keys, opts?.modelGateway, opts?.requestContext);
+  const modelRuntime = await buildModelRuntime(keys, opts?.modelGateway, opts?.purpose);
   const { resourceLoader, settingsManager, cwd, agentDir, ephemeralCwd } = await createIsolatedResources(
     prefix,
     systemPrompt,
@@ -1316,7 +1316,7 @@ export async function probeModel(
   fastMode = false,
   modelGateway?: ModelGatewayTransportConfig,
 ): Promise<void> {
-  const runtime = await buildModelRuntime(keys, modelGateway, { purpose: "probe" });
+  const runtime = await buildModelRuntime(keys, modelGateway, "probe");
   signal.throwIfAborted();
   const candidate = withRequestHeaders(model, !modelGateway?.models[model.id], fastMode);
   const response = await runtime
@@ -1582,18 +1582,15 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
   }
   async function createTurnSession(
     model: Model<Api>,
-    turn: HarnessTurnInput,
+    sessionId: string,
+    systemPrompt: string,
+    history: SessionEntry[],
+    priorTurns: ConversationTurn[] | undefined,
+    turnProviderKeys: ProviderKeys | undefined,
     ref: TurnSession["ref"],
     tools: ToolDefinition[],
+    loadImage: ReplayImageLoader | undefined,
   ): Promise<{ entry: TurnSession; compileMs: number }> {
-    const {
-      session: { id: sessionId },
-      systemPrompt,
-      history,
-      priorTurns,
-      providerKeys: turnProviderKeys,
-      loadImage,
-    } = turn;
     const compileStart = Date.now();
     let reconstructed: PiReplayMessage[] | null;
     try {
@@ -1609,7 +1606,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
     const modelRuntime = await buildModelRuntime(
       turnProviderKeys ?? (await resolveProviderKeys()),
       turnProviderKeys ? undefined : modelGateway,
-      { ...turn.requestContext, purpose: "turn" },
+      "turn",
       systemCacheSplit ? "long" : undefined,
     );
     const { resourceLoader, settingsManager, cwd, agentDir, ephemeralCwd } = await createIsolatedResources(
@@ -1787,9 +1784,14 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         const turn = resumed ? { ...dispatched, history: resumed.history } : dispatched;
         const { entry, compileMs } = await createTurnSession(
           withRequestHeaders(baseModel, !turnModelGateway?.models[desiredModelId], wantFast),
-          turn,
+          turn.session.id,
+          turn.systemPrompt,
+          turn.history,
+          turn.priorTurns,
+          turn.providerKeys,
           ref,
           tools,
+          turn.loadImage,
         );
         try {
           const turnWallClockMs = turn.turnWallClockMs ?? defaultTurnWallClockMs;
@@ -2411,7 +2413,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           const out = (
             (await oneShot("pi-detect", model, providerKeys, detectSystemPrompt, prompt, {
               modelGateway,
-              requestContext: { ...detect.requestContext, purpose: "detect" },
+              purpose: "detect",
             })) ?? ""
           ).trim();
           return parseDetectVerdict(out, Boolean(detect.reactionGuidance?.trim()));
@@ -2423,10 +2425,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       async compactHistory(input: HarnessCompactInput): Promise<string> {
         const primaryId = resolveModelId();
         const providerKeys = await resolveProviderKeys();
-        const runtime = await buildModelRuntime(providerKeys, modelGateway, {
-          ...input.requestContext,
-          purpose: "compaction",
-        });
+        const runtime = await buildModelRuntime(providerKeys, modelGateway, "compaction");
         const summarize = (compactModelId: string) =>
           summarizeHistory(input.history, requiredModel(compactModelId), (summaryModel, context, options) => {
             input.recordModelCall({
@@ -2464,29 +2463,25 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         return contextTokenBudgetForModel(id);
       },
 
-      async oneShot(
-        systemPrompt: string,
-        prompt: string,
-        requestContext: ModelRequestContext,
-      ): Promise<string | undefined> {
+      async oneShot(systemPrompt: string, prompt: string, purpose?: ModelRequestPurpose): Promise<string | undefined> {
         const model = requiredModel(resolveModelId());
         const providerKeys = await resolveProviderKeys();
         if (!keyForModel(providerKeys, model)) return undefined;
-        return oneShot("pi-oneshot", model, providerKeys, systemPrompt, prompt, { modelGateway, requestContext });
+        return oneShot("pi-oneshot", model, providerKeys, systemPrompt, prompt, { modelGateway, purpose });
       },
 
       async judge(
         systemPrompt: string,
         prompt: string,
-        requestContext: ModelRequestContext,
         signal?: AbortSignal,
+        purpose: ModelRequestPurpose = "judge",
       ): Promise<string | undefined> {
         const model = requiredModel(judgeModelId());
         const providerKeys = await resolveProviderKeys();
         if (!keyForModel(providerKeys, model)) return undefined;
         return oneShot("pi-judge", model, providerKeys, systemPrompt, prompt, {
           modelGateway,
-          requestContext,
+          purpose,
           signal,
           thinkingLevel: "low",
         });
@@ -2497,7 +2492,6 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         modelId: configuredScreenModel,
         systemPrompt = SECURITY_SCREEN_SYSTEM_PROMPT,
         signal,
-        requestContext,
         recordModelCall,
         recordLlmRequest,
       }) {
@@ -2522,7 +2516,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             await oneShot("pi-security-screen", model, providerKeys, systemPrompt, payload, {
               signal,
               modelGateway,
-              requestContext: { ...requestContext, purpose: "security_screen" },
+              purpose: "security_screen",
             }),
           );
         } catch (e) {
@@ -2541,9 +2535,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           const apiKey = keyForModel(providerKeys, model);
           if (!apiKey) return undefined;
           const prompt = `Candidates: ${candidates.join(", ")}\n\nMessage: ${text.slice(0, 2000)}`;
-          const raw = await directAnthropicJson(model, apiKey, ACK_EMOJI_PROMPT, prompt, modelGateway, {
-            purpose: "ack_emoji",
-          });
+          const raw = await directAnthropicJson(model, apiKey, ACK_EMOJI_PROMPT, prompt, modelGateway, "ack_emoji");
           if (!raw) return undefined;
           const emoji = (JSON.parse(raw.replace(/```json|```/g, "").trim()) as { emoji?: unknown }).emoji;
           return typeof emoji === "string" && candidates.includes(emoji) ? emoji : undefined;
@@ -2552,7 +2544,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         }
       },
 
-      async generateTitle(transcript: string, requestContext: ModelRequestContext): Promise<string | undefined> {
+      async generateTitle(transcript: string): Promise<string | undefined> {
         if (!transcript.trim()) return undefined;
         const model = requiredModel(titleModelId());
         const providerKeys = await resolveProviderKeys();
@@ -2563,17 +2555,12 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           providerKeys,
           TITLE_GENERATION_PROMPT,
           titleUserPrompt(transcript),
-          { modelGateway, requestContext: { ...requestContext, purpose: "title" } },
+          { modelGateway, purpose: "title" },
         );
         return sanitizeTitle(out);
       },
 
-      async summarizeApproval(
-        command: string,
-        reason: string,
-        requestContext: ModelRequestContext,
-        purpose?: string,
-      ): Promise<string | undefined> {
+      async summarizeApproval(command: string, reason: string, purpose?: string): Promise<string | undefined> {
         if (!command.trim()) return undefined;
         const model = requiredModel(titleModelId());
         const providerKeys = await resolveProviderKeys();
@@ -2590,7 +2577,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         const out = (
           await oneShot("pi-approval-summary", model, providerKeys, APPROVAL_SUMMARY_PROMPT, prompt, {
             modelGateway,
-            requestContext: { ...requestContext, purpose: "approval_summary" },
+            purpose: "approval_summary",
           })
         )?.trim();
         if (!out || out === "NONE") return undefined;

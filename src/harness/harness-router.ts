@@ -317,13 +317,7 @@ export function createHarnessRouter(
             : input.tools,
           ...(judge
             ? {
-                governGoal: (goalInput: GoalGovernorInput) =>
-                  governGoal(
-                    (system, prompt, signal) =>
-                      judge(system, prompt, { ...input.requestContext, purpose: "judge" }, signal),
-                    goalInput,
-                    input.cancel,
-                  ),
+                governGoal: (goalInput: GoalGovernorInput) => governGoal(judge, goalInput, input.cancel),
               }
             : {}),
         };

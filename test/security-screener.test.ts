@@ -352,7 +352,7 @@ test("observed screening returns immediately and audits each verdict once it set
     Array.from({ length: 20 }, (_, i) =>
       classify(JSON.stringify([{ source: "webhook", content: `hostile ${i}` }]), "U1", "personal:U1", undefined, {
         mode: "observe",
-        requestContext: { sessionId: "s1" },
+        sessionId: "s1",
         runId: "r1",
       }),
     ),

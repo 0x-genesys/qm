@@ -18,7 +18,6 @@ import { createModelGateway } from "../src/model/model-gateway.ts";
 import { createAuditLog } from "../src/audit/audit-log.ts";
 import { createRateLimiter } from "../src/ratelimit/rate-limiter.ts";
 import { createMockHarness } from "../src/harness/mock-harness.ts";
-import type { ModelRequestContext } from "../src/model/provider-endpoints.ts";
 import { createDeployStore } from "../src/deploy/deploy-store.ts";
 import { createDockerDeployProvider } from "../src/deploy/docker-deploy-provider.ts";
 import { createDeployService } from "../src/deploy/deploy-service.ts";
@@ -69,10 +68,10 @@ function gatedHarness() {
     ...base,
     models: {
       ...base.models,
-      async oneShot(system: string, prompt: string, requestContext: ModelRequestContext): Promise<string | undefined> {
+      async oneShot(system: string, prompt: string): Promise<string | undefined> {
         started++;
         await new Promise<void>((res) => gates.push(res));
-        const output = await base.models.oneShot!(system, prompt, requestContext);
+        const output = await base.models.oneShot!(system, prompt);
         finished++;
         return output;
       },
