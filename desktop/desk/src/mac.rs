@@ -490,7 +490,7 @@ fn paste(pid: i32, ax: &El, s: &str, format: PasteFormat) -> Result<(), Failure>
         }
     };
     let cmd_v = || key(pid, v, CGEventFlags::CGEventFlagCommand, Some("v"), 0);
-    crate::pasteboard::paste(s, format, cmd_v, &mut check, &cancellation::cancelled)
+    crate::pasteboard::paste(s, format, cmd_v, &mut check, &active)
 }
 
 fn active() -> Result<(), Failure> {
