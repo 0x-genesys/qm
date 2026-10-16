@@ -17,6 +17,7 @@ use foreign_types::ForeignType;
 use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 type El = CFType;
@@ -29,6 +30,7 @@ extern "C" {
     fn AXUIElementIsAttributeSettable(e: CFTypeRef, a: CFStringRef, v: *mut bool) -> i32;
     fn AXUIElementCopyActionNames(e: CFTypeRef, v: *mut CFTypeRef) -> i32;
     fn AXUIElementPerformAction(e: CFTypeRef, a: CFStringRef) -> i32;
+    fn AXUIElementCopyElementAtPosition(app: CFTypeRef, x: f32, y: f32, e: *mut CFTypeRef) -> i32;
     fn AXUIElementSetMessagingTimeout(e: CFTypeRef, t: f32) -> i32;
     fn AXValueGetValue(v: CFTypeRef, kind: u32, out: *mut c_void) -> bool;
     fn AXValueCreate(kind: u32, value: *const c_void) -> CFTypeRef;
@@ -53,6 +55,9 @@ const MAX_NODES: usize = 800;
 const MAX_DEPTH: usize = 60;
 const BORING: &[&str] = &["AXShowMenu", "AXScrollToVisible", "AXShowDefaultUI", "AXShowAlternateUI"];
 const BUSY: &[&str] = &["AXBusyIndicator", "AXProgressIndicator"];
+const PRESS_MS: u64 = 50;
+const HOVER_MS: u64 = 30;
+static EVENT_NUMBER: AtomicI64 = AtomicI64::new(1);
 
 struct App {
     name: String,
@@ -181,17 +186,78 @@ fn post(e: CGEvent, pid: i32) {
     std::thread::sleep(Duration::from_millis(8));
 }
 
-fn mouse(pid: i32, win: u32, ty: CGEventType, p: CGPoint, b: CGMouseButton, clicks: i64, flags: CGEventFlags) -> Result<(), Failure> {
+fn in_window(e: &CGEvent, win: u32) {
+    e.set_integer_value_field(EventField::MOUSE_EVENT_WINDOW_UNDER_MOUSE_POINTER, win as i64);
+    e.set_integer_value_field(EventField::MOUSE_EVENT_WINDOW_UNDER_MOUSE_POINTER_THAT_CAN_HANDLE_THIS_EVENT, win as i64);
+}
+
+struct Press {
+    win: u32,
+    number: i64,
+}
+
+fn mouse(pid: i32, at: &Press, ty: CGEventType, p: CGPoint, b: CGMouseButton, clicks: i64, flags: CGEventFlags) -> Result<(), Failure> {
     let e = CGEvent::new_mouse_event(source()?, ty, p, b).map_err(|_| fail(ErrorCode::ActionFailed, "mouse event"))?;
     e.set_flags(flags);
     e.set_integer_value_field(EventField::MOUSE_EVENT_CLICK_STATE, clicks);
-    e.set_integer_value_field(91, win as i64);
-    e.set_integer_value_field(92, win as i64);
+    e.set_integer_value_field(EventField::MOUSE_EVENT_NUMBER, at.number);
+    in_window(&e, at.win);
+    // Chrome 157+ accepts a posted first click into an inactive window when this names another process.
+    e.set_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID, std::process::id() as i64);
     post(e, pid);
     Ok(())
 }
 
-fn click_at(pid: i32, win: u32, p: CGPoint, button: Button, count: u8, mods: &[Modifier], hold: u32) -> Result<(), Failure> {
+/// Finds the target app's window under `p` (a popup, sheet or second window has its own number)
+/// and whether `p` is inside web content.
+fn hit(ax: &El, p: CGPoint) -> Option<(El, bool)> {
+    let mut v: CFTypeRef = std::ptr::null();
+    if unsafe { AXUIElementCopyElementAtPosition(ax.as_CFTypeRef(), p.x as f32, p.y as f32, &mut v) } != 0 || v.is_null() {
+        return None;
+    }
+    let mut e = unsafe { CFType::wrap_under_create_rule(v) };
+    let mut web = false;
+    for _ in 0..MAX_DEPTH {
+        match str_attr(&e, "AXRole").as_deref() {
+            Some("AXWebArea") => web = true,
+            Some("AXWindow") => return Some((e, web)),
+            _ => {}
+        }
+        e = attr(&e, "AXParent")?;
+    }
+    None
+}
+
+/// Readies a pointer sequence at `p`: picks the window number for the events, brings the app
+/// forward when a click lands in web content of an inactive app, and moves the pointer there
+/// first so hover state is set. Chromium before 157 treats a posted mouse-down in an inactive
+/// app as the click that activates the window and drops it; making the app frontmost through
+/// accessibility, as `raise` does, avoids that at the cost of taking focus.
+fn prepare(pid: i32, ax: &El, win: u32, p: CGPoint, activate: bool) -> Result<Press, Failure> {
+    active()?;
+    let (win, web) = match hit(ax, p) {
+        Some((w, web)) if window_id(&w) != 0 => (window_id(&w), web),
+        _ => (win, false),
+    };
+    if activate && web && bool_attr(ax, "AXFrontmost") == Some(false) {
+        let status = set_attr(ax, "AXFrontmost", &CFBoolean::true_value().as_CFType());
+        if status != 0 {
+            return Err(fail(ErrorCode::ActionFailed, format!("bringing the app forward for a web click failed (AXError {status})")));
+        }
+        for _ in 0..20 {
+            if bool_attr(ax, "AXFrontmost") == Some(true) {
+                break;
+            }
+            cancellation::wait(Duration::from_millis(25));
+        }
+    }
+    mouse(pid, &Press { win, number: 0 }, CGEventType::MouseMoved, p, CGMouseButton::Left, 0, CGEventFlags::empty())?;
+    cancellation::wait(Duration::from_millis(HOVER_MS));
+    Ok(Press { win, number: EVENT_NUMBER.fetch_add(1, Ordering::Relaxed) })
+}
+
+fn click_at(pid: i32, mut press: Press, p: CGPoint, button: Button, count: u8, mods: &[Modifier], hold: u32) -> Result<(), Failure> {
+    let hold = if hold == 0 { PRESS_MS } else { hold.min(10_000) as u64 };
     let (down, up, b) = match button {
         Button::Left => (CGEventType::LeftMouseDown, CGEventType::LeftMouseUp, CGMouseButton::Left),
         Button::Right => (CGEventType::RightMouseDown, CGEventType::RightMouseUp, CGMouseButton::Right),
@@ -199,9 +265,12 @@ fn click_at(pid: i32, win: u32, p: CGPoint, button: Button, count: u8, mods: &[M
     };
     for n in 1..=count.max(1) as i64 {
         active()?;
-        mouse(pid, win, down, p, b, n, flags(mods))?;
-        cancellation::wait(Duration::from_millis(hold.min(10_000) as u64));
-        mouse(pid, win, up, p, b, n, flags(mods))?;
+        if n > 1 {
+            press.number = EVENT_NUMBER.fetch_add(1, Ordering::Relaxed);
+        }
+        mouse(pid, &press, down, p, b, n, flags(mods))?;
+        cancellation::wait(Duration::from_millis(hold));
+        mouse(pid, &press, up, p, b, n, flags(mods))?;
     }
     Ok(())
 }
@@ -715,11 +784,13 @@ impl Desk {
                 if actions(&e).iter().any(|a| a == "AXPress") {
                     perform(&e, "AXPress")
                 } else {
-                    click_at(pid, win, self.point(pid, Target::Index(*i))?, Button::Left, 1, &[], 0)
+                    let p = self.point(pid, Target::Index(*i))?;
+                    click_at(pid, prepare(pid, ax, win, p, true)?, p, Button::Left, 1, &[], 0)
                 }
             }
             Action::Click { target, button, count, modifiers, hold_ms } => {
-                click_at(pid, win, self.point(pid, *target)?, *button, *count, modifiers, *hold_ms)
+                let p = self.point(pid, *target)?;
+                click_at(pid, prepare(pid, ax, win, p, true)?, p, *button, *count, modifiers, *hold_ms)
             }
             Action::TypeText { text } => {
                 for c in text.chars() {
@@ -744,6 +815,7 @@ impl Desk {
                     _ => frame(w),
                 }
                 .unwrap_or(Rect { x: 0.0, y: 0.0, w: 600.0, h: 600.0 });
+                let scroll_win = prepare(pid, ax, win, p, false)?.win;
                 let vertical = matches!(direction, Direction::Up | Direction::Down);
                 let mut left = match amount {
                     Amount::Pixels(n) => *n as i32,
@@ -762,6 +834,7 @@ impl Desk {
                     let e = CGEvent::new_scroll_event(source()?, ScrollEventUnit::PIXEL, 2, dy, dx, 0)
                         .map_err(|_| fail(ErrorCode::ActionFailed, "scroll event"))?;
                     unsafe { CGEventSetLocation(e.as_ptr() as *mut c_void, p) };
+                    in_window(&e, scroll_win);
                     post(e, pid);
                 }
                 Ok(())
@@ -769,20 +842,22 @@ impl Desk {
             Action::Drag { from, to } => {
                 let (a, b) = (self.point(pid, Target::Point(*from))?, self.point(pid, Target::Point(*to))?);
                 let none = CGEventFlags::empty();
-                mouse(pid, win, CGEventType::LeftMouseDown, a, CGMouseButton::Left, 1, none)?;
+                let press = prepare(pid, ax, win, a, true)?;
+                mouse(pid, &press, CGEventType::LeftMouseDown, a, CGMouseButton::Left, 1, none)?;
                 let mut last = a;
                 let dragged = (|| {
+                    cancellation::wait(Duration::from_millis(PRESS_MS));
                     for s in 1..=12 {
                         active()?;
                         let t = s as f64 / 12.0;
                         let point = pt(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
-                        mouse(pid, win, CGEventType::LeftMouseDragged, point, CGMouseButton::Left, 1, none)?;
+                        mouse(pid, &press, CGEventType::LeftMouseDragged, point, CGMouseButton::Left, 1, none)?;
                         last = point;
                         cancellation::wait(Duration::from_millis(12));
                     }
                     Ok(())
                 })();
-                let released = mouse(pid, win, CGEventType::LeftMouseUp, last, CGMouseButton::Left, 1, none);
+                let released = mouse(pid, &press, CGEventType::LeftMouseUp, last, CGMouseButton::Left, 1, none);
                 dragged.and(released)
             }
             Action::SetValue { index, value } => match set_attr(&self.element(pid, *index)?, "AXValue", &cfs(value).as_CFType()) {
