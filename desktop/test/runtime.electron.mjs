@@ -22,7 +22,7 @@ import { appendFileSync } from 'node:fs';
 createInterface({input: process.stdin}).on('line', line => {
  const {id,cmd} = JSON.parse(line);
  if (cmd.type === 'act') appendFileSync(${JSON.stringify(acts)}, JSON.stringify(cmd.actions)+'\\n');
- const observation = {app:'Fixture',window:'Fixture window',frame:{w:100,h:100},elements:1,tree:'[1] Button',diffed:false,removed:[],...(cmd.diff ? {tree:'~ [1] Button',diffed:true,removed:[3,4,5,9]} : {}),...(cmd.screenshot ? {screenshot:{png_base64:${JSON.stringify(screenshot)}}}: {})};
+ const observation = {app:'Fixture',window:'Fixture window',frame:{x:10,y:20,w:100,h:100},elements:1,tree:'[1] Button',diffed:false,removed:[],...(cmd.diff ? {tree:'~ [1] Button',diffed:true,removed:[3,4,5,9]} : {}),...(cmd.screenshot ? {screenshot:{png_base64:${JSON.stringify(screenshot)},frame:{x:0,y:20,w:200,h:100}}}: {})};
  const reply = cmd.type === 'apps' ? {type:'apps',apps:[{name:'Fixture',bundle_id:'test.fixture',pid:1,active:true}]} : cmd.type === 'observe' ? {type:'observation',...observation} : {type:'acted',completed:1, failure:null};
  process.stdout.write(JSON.stringify({id,reply})+'\\n');
 });
@@ -69,6 +69,13 @@ createInterface({input: process.stdin}).on('line', line => {
     result = await call("await fixture.getAXStateAndScreenshot({disableDiffing:true}); void 0");
     assert.match(result.content, /Fixture window/);
     assert.equal(result.images.length, 1);
+    await call("await fixture.click([1, 0])");
+    const clicked = (await readFile(acts, "utf8"))
+      .trim()
+      .split("\n")
+      .map((l) => JSON.parse(l))
+      .at(-1)[0].target.point;
+    assert.deepEqual([Math.round(clicked.x), Math.round(clicked.y)], [190, 0]);
     result = await call("for (let i=0;i<5;i++) await fixture.getScreenshot()");
     assert.equal(result.images.length, 4);
     assert.match(result.content, /screenshot dropped/);
