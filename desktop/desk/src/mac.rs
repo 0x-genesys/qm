@@ -1,7 +1,6 @@
 use crate::cancellation;
 
 mod input;
-mod quiet;
 use crate::protocol::*;
 use crate::text::{self, Key as TextKey, Stroke};
 use crate::tree::{self, Item, Key, Locator, Props, ROOT};
@@ -1036,16 +1035,16 @@ fn select(e: &El, text: &str, prefix: &str, suffix: &str, selection: Selection) 
     }
 }
 
-fn quiet(since: Instant, notices: &Notices) {
+fn quiet(since: Instant, notices: &Notices, minimum: Duration, silence: Duration, maximum: Duration) {
     let start = now_ms() - since.elapsed().as_millis() as i64;
     loop {
         CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, Duration::from_millis(50), false);
         let elapsed = since.elapsed();
         let last = notices.last.load(Ordering::Relaxed).max(start);
-        if cancellation::cancelled() || elapsed >= SETTLE_MAX {
+        if active().is_err() || elapsed >= maximum {
             return;
         }
-        if elapsed >= SETTLE_MIN && now_ms() - last >= SETTLE_QUIET.as_millis() as i64 {
+        if elapsed >= minimum && now_ms() - last >= silence.as_millis() as i64 {
             return;
         }
     }
@@ -1053,7 +1052,7 @@ fn quiet(since: Instant, notices: &Notices) {
 
 fn settle(w: &El, since: Instant, notices: Option<&Notices>) {
     if let Some(n) = notices {
-        quiet(since, n);
+        quiet(since, n, SETTLE_MIN, SETTLE_QUIET, SETTLE_MAX);
     } else {
         cancellation::wait(SETTLE.saturating_sub(since.elapsed()));
     }
@@ -1248,16 +1247,14 @@ impl Desk {
         };
         let mut completed = 0;
         let mut failure = None;
-        let quiet =
-            (actions.iter().filter(|a| !matches!(a, Action::Wait { .. })).count() > 1).then(|| quiet::Quiet::new(app.pid, &ax)).flatten();
+        let mut previous = Instant::now();
         for (i, a) in actions.iter().enumerate() {
             if i > 0 && !matches!(a, Action::Wait { .. }) && !matches!(actions[i - 1], Action::Wait { .. }) {
-                if let Some(q) = &quiet {
-                    q.wait();
+                if let Some(o) = self.observers.get(&app.pid) {
+                    quiet(previous, &o.notices, Duration::from_millis(60), Duration::from_millis(120), Duration::from_millis(800));
+                } else {
+                    cancellation::wait(Duration::from_millis(120).saturating_sub(previous.elapsed()));
                 }
-            }
-            if let Some(q) = &quiet {
-                q.reset();
             }
             if matches!(a, Action::Raise) {
                 drop(focus.take());
@@ -1281,6 +1278,7 @@ impl Desk {
                 break;
             }
             completed += 1;
+            previous = Instant::now();
         }
         drop(focus.take());
         let attempted = (completed as usize + 1).min(actions.len());
@@ -1374,8 +1372,11 @@ impl Desk {
 
     fn pressed(&self, pid: i32, ax: &El, index: u32) -> Result<Option<El>, Failure> {
         let e = self.element(pid, index)?;
+        if input::menu_open(ax) && !input::is_menu_item(&e) {
+            return Err(fail(ErrorCode::ActionFailed, input::MENU_OPEN));
+        }
         let can_press = actions(&e).iter().any(|a| a == "AXPress");
-        Ok((can_press && (input::is_menu_item(&e) || !input::simulate(&e) || input::menu_open(ax))).then_some(e))
+        Ok((can_press && (input::is_menu_item(&e) || !input::simulate(&e) || frame(&e).is_none())).then_some(e))
     }
 
     fn aim(&self, pid: i32, w: &El, a: &Action) -> Result<Option<CGPoint>, Failure> {
@@ -1399,14 +1400,11 @@ impl Desk {
                 if let Some(e) = self.pressed(pid, ax, *i)? {
                     return perform(&e, "AXPress");
                 }
-                let e = self.element(pid, *i)?;
-                let can_press = actions(&e).iter().any(|a| a == "AXPress");
                 match self.point(pid, Target::Index(*i)) {
                     Ok(p) => {
                         let (to, press) = self.pointer(pid, ax, win, p)?;
                         click_at(to, press, p, Button::Left, 1, &[], 0)
                     }
-                    Err(_) if can_press => perform(&e, "AXPress"),
                     Err(e) => Err(e),
                 }
             }
@@ -1450,8 +1448,10 @@ impl Desk {
                         Some(t) => input::area_at(ax, self.point(pid, *t)?),
                         None => input::area_at(ax, center(w)),
                     };
-                    if area.is_some_and(|a| input::scroll_pages(&a, *direction, *n)) {
-                        return Ok(());
+                    if let Some(area) = area {
+                        if input::scroll_pages(&area, *direction, *n)? {
+                            return Ok(());
+                        }
                     }
                 }
                 let p = match target {

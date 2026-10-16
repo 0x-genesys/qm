@@ -168,7 +168,7 @@ pub(super) fn simulate(e: &El) -> bool {
     if !actions(e).iter().any(|a| a == "AXPress") {
         return true;
     }
-    std::env::var("DESK_ALWAYS_SIMULATE_CLICK").is_ok_and(|v| v == "1") || has_role(e, SELECTS) || in_web(e)
+    has_role(e, SELECTS) || in_web(e)
 }
 
 pub(super) fn scroll_area(e: &El) -> Option<El> {
@@ -194,9 +194,9 @@ fn number(e: &El, name: &str) -> Option<f64> {
     attr(e, name)?.downcast::<CFNumber>()?.to_f64()
 }
 
-pub(super) fn scroll_pages(area: &El, direction: Direction, pages: f64) -> bool {
+pub(super) fn scroll_pages(area: &El, direction: Direction, pages: f64) -> Result<bool, Failure> {
     if pages.is_nan() || pages <= 0.0 {
-        return false;
+        return Ok(false);
     }
     let (action, bar, sign) = match direction {
         Direction::Up => ("AXScrollUpByPage", "AXVerticalScrollBar", -1.0),
@@ -206,22 +206,32 @@ pub(super) fn scroll_pages(area: &El, direction: Direction, pages: f64) -> bool 
     };
     let whole = pages.fract() == 0.0 && pages <= 20.0;
     if whole && actions(area).iter().any(|a| a == action) {
-        return (0..pages as u32).all(|_| active().is_ok() && perform(area, action).is_ok());
+        for _ in 0..pages as u32 {
+            active()?;
+            perform(area, action)?;
+        }
+        return Ok(true);
     }
-    let Some(bar) = attr(area, bar).filter(|b| settable(b, "AXValue")) else { return false };
-    let (Some(value), Some(track)) = (number(&bar, "AXValue"), frame(&bar)) else { return false };
+    let Some(bar) = attr(area, bar).filter(|b| settable(b, "AXValue")) else { return Ok(false) };
+    let (Some(value), Some(track)) = (number(&bar, "AXValue"), frame(&bar)) else { return Ok(false) };
     let knob = attr(&bar, "AXChildren").map(list).unwrap_or_default().into_iter().find(|c| has_role(c, &["AXValueIndicator"]));
-    let Some(knob) = knob.and_then(|k| frame(&k)) else { return false };
+    let Some(knob) = knob.and_then(|k| frame(&k)) else { return Ok(false) };
     let vertical = matches!(direction, Direction::Up | Direction::Down);
     let shown = if vertical { knob.h / track.h } else { knob.w / track.w };
     if !(shown > 0.0 && shown < 1.0) {
-        return false;
+        return Ok(false);
     }
     let target = (value + sign * pages.min(20.0) * 0.85 * shown / (1.0 - shown)).clamp(0.0, 1.0);
     if (target - value).abs() < 1e-6 {
-        return true;
+        return Ok(true);
     }
-    set_attr(&bar, "AXValue", &CFNumber::from(target).as_CFType()) == 0 && number(&bar, "AXValue").is_some_and(|v| (v - value).abs() > 1e-6)
+    active()?;
+    let status = set_attr(&bar, "AXValue", &CFNumber::from(target).as_CFType());
+    if status == 0 {
+        Ok(true)
+    } else {
+        Err(fail(ErrorCode::ActionFailed, format!("setting the scroll position failed (AXError {status})")))
+    }
 }
 
 pub(super) fn set_value(pid: i32, e: &El, index: u32, value: &str, submit: Option<bool>) -> Result<(), Failure> {
