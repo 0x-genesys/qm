@@ -2,26 +2,30 @@ use crate::protocol::{ErrorCode, Failure};
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
 use core_graphics::event::{CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType, EventField};
 use std::sync::atomic::{AtomicBool, Ordering};
+
+static TARGET_INTERVENED: AtomicBool = AtomicBool::new(false);
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+fn is_target_intervention(source: i64, destination: i64, own: i64, target: i32) -> bool {
+    source != own && destination == i64::from(target)
+}
+
 pub struct Intervention {
-    detected: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl Intervention {
     pub fn begin(target: i32) -> Result<Self, Failure> {
-        let detected = Arc::new(AtomicBool::new(false));
+        TARGET_INTERVENED.store(false, Ordering::Release);
         let stop = Arc::new(AtomicBool::new(false));
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
-        let seen = Arc::clone(&detected);
         let quit = Arc::clone(&stop);
         let thread = thread::spawn(move || {
             let tap = CGEventTap::new(
-                CGEventTapLocation::Session,
+                CGEventTapLocation::AnnotatedSession,
                 CGEventTapPlacement::HeadInsertEventTap,
                 CGEventTapOptions::ListenOnly,
                 vec![
@@ -33,13 +37,13 @@ impl Intervention {
                 ],
                 move |_, kind, event| {
                     if matches!(kind, CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput) {
-                        seen.store(true, Ordering::Release);
+                        TARGET_INTERVENED.store(true, Ordering::Release);
                         return None;
                     }
                     let source = event.get_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID);
                     let destination = event.get_integer_value_field(EventField::EVENT_TARGET_UNIX_PROCESS_ID);
-                    if source != i64::from(std::process::id()) && destination == i64::from(target) {
-                        seen.store(true, Ordering::Release);
+                    if is_target_intervention(source, destination, i64::from(std::process::id()), target) {
+                        TARGET_INTERVENED.store(true, Ordering::Release);
                     }
                     None
                 },
@@ -63,7 +67,7 @@ impl Intervention {
             runloop.remove_source(&source, unsafe { kCFRunLoopDefaultMode });
         });
         match ready_rx.recv_timeout(Duration::from_millis(350)) {
-            Ok(true) => Ok(Self { detected, stop, thread: Some(thread) }),
+            Ok(true) => Ok(Self { stop, thread: Some(thread) }),
             _ => {
                 stop.store(true, Ordering::Release);
                 Err(Failure::new(ErrorCode::ActionFailed, "Cannot monitor input to target app"))
@@ -72,11 +76,15 @@ impl Intervention {
     }
 
     pub fn check(&self) -> Result<(), Failure> {
-        if self.detected.load(Ordering::Acquire) {
-            Err(Failure::new(ErrorCode::ActionFailed, "User interacted with target app; stopped"))
-        } else {
-            Ok(())
-        }
+        check_current()
+    }
+}
+
+pub fn check_current() -> Result<(), Failure> {
+    if TARGET_INTERVENED.load(Ordering::Acquire) {
+        Err(Failure::new(ErrorCode::ActionFailed, "User interacted with target app; stopped"))
+    } else {
+        Ok(())
     }
 }
 
@@ -86,5 +94,18 @@ impl Drop for Intervention {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_target_intervention;
+
+    #[test]
+    fn ignores_agent_and_other_app_input() {
+        assert!(!is_target_intervention(23, 42, 23, 42));
+        assert!(!is_target_intervention(17, 99, 23, 42));
+        assert!(is_target_intervention(0, 42, 23, 42));
+        assert!(is_target_intervention(17, 42, 23, 42));
     }
 }
