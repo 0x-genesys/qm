@@ -39,7 +39,7 @@ pub fn place(frame: Option<Rect>, clip: Rect) -> Place {
     let visible = if f.w > 0.0 && f.h > 0.0 {
         intersect(f, clip).is_some()
     } else {
-        f.x > clip.x + EDGE && f.x < right - EDGE && f.y > clip.y + EDGE && f.y < bottom - EDGE
+        f.x >= clip.x && f.x <= right && f.y > clip.y + EDGE && f.y < bottom - EDGE
     };
     if visible {
         Place::Visible
@@ -111,6 +111,7 @@ mod tests {
         assert_eq!(place(Some(r(10.0, 600.0, 120.0, 0.0)), VIEW), Place::Hidden { below: true }, "Chromium below the fold");
         assert_eq!(place(Some(r(10.0, 100.0, 120.0, 0.0)), VIEW), Place::Hidden { below: false }, "Chromium above the fold");
         assert_eq!(place(Some(r(10.0, 300.0, 0.0, 0.0)), VIEW), Place::Visible, "layout wrapper inside the view");
+        assert_eq!(place(Some(r(0.0, 300.0, 800.0, 0.0)), VIEW), Place::Visible, "zero-height wrapper at left edge");
     }
 
     #[test]

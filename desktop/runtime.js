@@ -230,7 +230,7 @@ Actions return as soon as the input is sent. The next observation first waits fo
 (until about a second after the last action, longer while a progress indicator shows); observe to see the result.
 app.click(target, {mouseButton: left|right|middle, clickCount, key: "cmd+shift", durationMs})
   target is an element id from the tree or [x, y] in pixels of the latest screenshot.
-  An offscreen element is scrolled into view first; if that fails, the click fails.
+  For simulated clicks, an offscreen element is scrolled into view first; if that fails, the click fails.
   Clicking or dragging in web content may bring the app to the front.
 app.drag([x, y], [x, y]) screenshot pixels.
 app.scroll(target | null, up|down|left|right, pages = 1 | {pixels})

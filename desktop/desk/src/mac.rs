@@ -763,6 +763,10 @@ fn permissions(prompt: bool) -> Reply {
 
 impl Desk {
     pub fn handle(&mut self, cmd: Command, pace: &mut dyn FnMut(u32, Point) -> Result<(), Failure>) -> Reply {
+        objc2::rc::autoreleasepool(|_| self.handle_inner(cmd, pace))
+    }
+
+    fn handle_inner(&mut self, cmd: Command, pace: &mut dyn FnMut(u32, Point) -> Result<(), Failure>) -> Reply {
         let r = match cmd {
             Command::Permissions { prompt } => Ok(permissions(prompt)),
             Command::Apps => apps(),
@@ -848,11 +852,14 @@ impl Desk {
         let mut completed = 0;
         let mut failure = None;
         for (i, a) in actions.iter().enumerate() {
-            let paced = match (pace.as_mut(), self.aim(app.pid, &w, a)) {
-                (Some(p), Ok(Some(at))) => p(i as u32, Point { x: at.x, y: at.y }),
-                (Some(_), Err(e)) => Err(e),
-                _ => Ok(()),
-            };
+            let paced = self.validate_window(&app).and_then(|_| match pace.as_mut() {
+                Some(p) => match self.aim(app.pid, &w, a) {
+                    Ok(Some(at)) => p(i as u32, Point { x: at.x, y: at.y }),
+                    Ok(None) => Ok(()),
+                    Err(e) => Err(e),
+                },
+                None => Ok(()),
+            });
             if let Err(mut e) = paced.and_then(|_| self.validate_window(&app)).and_then(|_| self.step(&app, &ax, &w, win, a)) {
                 e.action = Some(i as u32);
                 failure = Some(e);
@@ -927,6 +934,11 @@ impl Desk {
 
     fn aim(&self, pid: i32, w: &El, a: &Action) -> Result<Option<CGPoint>, Failure> {
         match a {
+            Action::Click { target: Target::Index(i), button: Button::Left, count: 1, modifiers, hold_ms: 0 }
+                if modifiers.is_empty() && actions(&self.element(pid, *i)?).iter().any(|a| a == "AXPress") =>
+            {
+                Ok(None)
+            }
             Action::Click { target, .. } | Action::Scroll { target: Some(target), .. } => self.point(pid, *target).map(Some),
             Action::Scroll { target: None, .. } => Ok(Some(center(w))),
             Action::Drag { from, .. } => self.point(pid, Target::Point(*from)).map(Some),
@@ -940,9 +952,8 @@ impl Desk {
             Action::Click { target: Target::Index(i), button: Button::Left, count: 1, modifiers, hold_ms: 0 } if modifiers.is_empty() => {
                 let e = self.element(pid, *i)?;
                 if actions(&e).iter().any(|a| a == "AXPress") {
-                    if frame(&e).is_some() {
-                        self.point(pid, Target::Index(*i))?;
-                    }
+                    // AXPress is semantic and does not need a nonzero on-screen frame.
+                    // In particular, inline web links and native menu items may not have one.
                     perform(&e, "AXPress")
                 } else {
                     let p = self.point(pid, Target::Index(*i))?;
