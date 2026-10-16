@@ -51,14 +51,8 @@ const TURN_EFFORT_LEVELS = new Set<string>([
   "default",
   "adaptive",
 ]);
-import type { ConversationTurn, ScopeId, SessionEntry } from "../types.ts";
-import {
-  sessionRequestContext,
-  type GapPhase,
-  type GapPhases,
-  type LlmCallUsage,
-  type LlmTransportMeta,
-} from "../sessions/session-store.ts";
+import type { ScopeId } from "../types.ts";
+import type { GapPhase, GapPhases, LlmCallUsage, LlmTransportMeta } from "../sessions/session-store.ts";
 import { NonRetryableTurnError, ProviderTurnError, TitleRejected } from "../core/turn-error.ts";
 import { providerTurnError } from "./provider-error.ts";
 import { MAX_LLM_REQUEST_BYTES } from "../core/attachments.ts";
@@ -117,7 +111,7 @@ import {
 } from "./replay.ts";
 import { estimateHistoryTokens } from "./context-compaction.ts";
 import { createStepRecorder, recordingTools, type StepRecorder } from "./pi-step-recorder.ts";
-import { ELIDED_IMAGE_TEXT, restoreReplayImages, type ReplayImageLoader } from "./replay-images.ts";
+import { ELIDED_IMAGE_TEXT, restoreReplayImages } from "./replay-images.ts";
 import { summarizeHistory } from "./history-summary.ts";
 import { countTokens } from "../util/tokens.ts";
 import {
@@ -1590,16 +1584,18 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
   }
   async function createTurnSession(
     model: Model<Api>,
-    sessionId: string,
-    systemPrompt: string,
-    history: SessionEntry[],
-    priorTurns: ConversationTurn[] | undefined,
-    turnProviderKeys: ProviderKeys | undefined,
-    requestContext: ModelRequestContext,
+    turn: HarnessTurnInput,
     ref: TurnSession["ref"],
     tools: ToolDefinition[],
-    loadImage: ReplayImageLoader | undefined,
   ): Promise<{ entry: TurnSession }> {
+    const {
+      session: { id: sessionId },
+      systemPrompt,
+      history,
+      priorTurns,
+      providerKeys: turnProviderKeys,
+      loadImage,
+    } = turn;
     let reconstructed: PiReplayMessage[] | null;
     try {
       reconstructed = await restoreReplayImages(reconstructMessagesFromHistory(history), loadImage);
@@ -1614,7 +1610,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
     const modelRuntime = await buildModelRuntime(
       turnProviderKeys ?? (await resolveProviderKeys()),
       turnProviderKeys ? undefined : modelGateway,
-      requestContext,
+      { ...turn.requestContext, purpose: "turn" },
       systemCacheSplit ? "long" : undefined,
     );
     const { resourceLoader, settingsManager, cwd, agentDir, ephemeralCwd } = await createIsolatedResources(
@@ -1791,15 +1787,9 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         const turn = resumed ? { ...dispatched, history: resumed.history } : dispatched;
         const { entry } = await createTurnSession(
           withRequestHeaders(baseModel, !turnModelGateway?.models[desiredModelId], wantFast),
-          turn.session.id,
-          turn.systemPrompt,
-          turn.history,
-          turn.priorTurns,
-          turn.providerKeys,
-          { ...sessionRequestContext(turn.session, turn.runtimeActorId), purpose: "turn" },
+          turn,
           ref,
           tools,
-          turn.loadImage,
         );
         try {
           const turnWallClockMs = turn.turnWallClockMs ?? defaultTurnWallClockMs;
@@ -2432,7 +2422,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         const out = (
           (await oneShot("pi-detect", model, providerKeys, detectSystemPrompt, prompt, {
             modelGateway,
-            requestContext: { ...sessionRequestContext(detect.session, detect.actorId), purpose: "detect" },
+            requestContext: { ...detect.requestContext, purpose: "detect" },
           })) ?? ""
         ).trim();
         return parseDetectVerdict(out, Boolean(detect.reactionGuidance?.trim()));
@@ -2442,7 +2432,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         const primaryId = resolveModelId();
         const providerKeys = await resolveProviderKeys();
         const runtime = await buildModelRuntime(providerKeys, modelGateway, {
-          ...sessionRequestContext(input.session, input.actorId),
+          ...input.requestContext,
           purpose: "compaction",
         });
         const summarize = (compactModelId: string) =>
@@ -2485,7 +2475,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       async oneShot(
         systemPrompt: string,
         prompt: string,
-        requestContext?: ModelRequestContext,
+        requestContext: ModelRequestContext,
       ): Promise<string | undefined> {
         const model = requiredModel(resolveModelId());
         const providerKeys = await resolveProviderKeys();
@@ -2496,15 +2486,15 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       async judge(
         systemPrompt: string,
         prompt: string,
+        requestContext: ModelRequestContext,
         signal?: AbortSignal,
-        requestContext?: ModelRequestContext,
       ): Promise<string | undefined> {
         const model = requiredModel(judgeModelId());
         const providerKeys = await resolveProviderKeys();
         if (!keyForModel(providerKeys, model)) return undefined;
         return oneShot("pi-judge", model, providerKeys, systemPrompt, prompt, {
           modelGateway,
-          requestContext: { ...requestContext, purpose: "judge" },
+          requestContext,
           signal,
           thinkingLevel: "low",
         });
@@ -2570,7 +2560,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         }
       },
 
-      async generateTitle(transcript: string, requestContext?: ModelRequestContext): Promise<string | undefined> {
+      async generateTitle(transcript: string, requestContext: ModelRequestContext): Promise<string | undefined> {
         if (!transcript.trim()) return undefined;
         const model = requiredModel(titleModelId());
         const providerKeys = await resolveProviderKeys();
@@ -2589,8 +2579,8 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       async summarizeApproval(
         command: string,
         reason: string,
+        requestContext: ModelRequestContext,
         purpose?: string,
-        requestContext?: ModelRequestContext,
       ): Promise<string | undefined> {
         if (!command.trim()) return undefined;
         const model = requiredModel(titleModelId());

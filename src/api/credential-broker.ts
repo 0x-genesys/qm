@@ -1,4 +1,5 @@
 import { isComposioHost } from "../credentials/keychain.ts";
+import { attestable } from "../model/provider-endpoints.ts";
 import { errMessage } from "../util/errors.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { ScopeId } from "../types.ts";
@@ -173,7 +174,7 @@ export async function brokerCredentialCall(opts: {
   ) {
     return deny(400, "reserved_header", "x-qm-actor is set only by the broker", rec.host);
   }
-  if (rec.injection?.actor && (typeof claims.actorId !== "string" || !/^[\x21-\x7e]{1,256}$/.test(claims.actorId))) {
+  if (rec.injection?.actor && !attestable(claims.actorId)) {
     return deny(403, "invalid_actor", "actor identity cannot be attested", rec.host);
   }
   let parsed: URL;

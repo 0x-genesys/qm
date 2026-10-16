@@ -195,7 +195,7 @@ test("Pi title generation returns no title without an auxiliary-model credential
     defaultModelId: "gpt-5.6-sol",
     resolveProviderKeys: async () => ({}),
   });
-  assert.equal(await harness.models.generateTitle!("User:\nPrioritize the public qm issues"), undefined);
+  assert.equal(await harness.models.generateTitle!("User:\nPrioritize the public qm issues", {}), undefined);
 });
 
 test("Pi title generation surfaces provider failures to its caller", async (t) => {
@@ -226,7 +226,7 @@ test("Pi title generation surfaces provider failures to its caller", async (t) =
     },
   });
 
-  await assert.rejects(harness.models.generateTitle!("User:\nInvestigate the deploy"));
+  await assert.rejects(harness.models.generateTitle!("User:\nInvestigate the deploy", {}));
 });
 
 test("Pi title generation rejects a reply-shaped answer with the rule that fired and the rejected text", async (t) => {
@@ -286,7 +286,7 @@ test("Pi title generation rejects a reply-shaped answer with the rule that fired
     },
   });
 
-  await assert.rejects(harness.models.generateTitle!("User:\nInvestigate the deploy"), {
+  await assert.rejects(harness.models.generateTitle!("User:\nInvestigate the deploy", {}), {
     name: "TitleRejected",
     rule: "reply_opener",
     message: 'reply_opener: "Sorry, I can\'t summarize that"',
@@ -350,7 +350,7 @@ test("Pi title generation accepts the prompted NONE sentinel without reporting a
     },
   });
 
-  assert.equal(await harness.models.generateTitle!("User:\nHello"), undefined);
+  assert.equal(await harness.models.generateTitle!("User:\nHello", {}), undefined);
 });
 
 test("piHarnessConfigOptions omits the optional fields when the config leaves them unset", () => {
@@ -529,6 +529,7 @@ test("oneShot routes configured models through the model gateway without mutatin
   const compact = harness.models.compactHistory!;
   const input: Parameters<typeof compact>[0] = {
     session: { id: "summary-session" } as Parameters<typeof compact>[0]["session"],
+    requestContext: {},
     history: [
       {
         sessionId: "summary-session",
@@ -840,6 +841,7 @@ test("sanitizeLlmPayload redacts image bytes that appear outside the message arr
 test("renderDetectPrompt uses prior assistant replies, not assembled prior user prompts", () => {
   const prompt = renderDetectPrompt({
     session: {} as any,
+    requestContext: {},
     message: "yes, send it",
     recentContext: "carol: Can you send the chart?",
     systemPrompt: "You are Agent Prod.",
@@ -977,7 +979,7 @@ test("Pi judge uses supported reasoning effort when configured with Astra", asyn
     judgeModelId: "gpt-6-astra",
     resolveProviderKeys: async () => ({ openai: "sk-offline-test-key" }),
   });
-  await assert.rejects(harness.models.judge!("Judge the answer.", "answer"), /offline judge test/);
+  await assert.rejects(harness.models.judge!("Judge the answer.", "answer", {}), /offline judge test/);
   assert.ok(request);
   assert.equal(request.model, "gpt-6-astra");
   assert.equal(request.reasoning?.effort, "low");

@@ -147,6 +147,7 @@ test("real Pi AgentSession and Anthropic serializer send Auto without a fixed ef
             tools: { attach: async () => ({ ok: true, files: [], staged: 0 }) } as unknown as HarnessTurnInput["tools"],
             scopeLabel: "personal:test",
             orgScopeId: "org:test",
+            requestContext: {},
             runtime: { effortLevel },
             ...(route === "personal-key" || route === "oauth"
               ? { providerKeys: { anthropic: route === "oauth" ? "sk-ant-oat-offline-test" : "sk-personal-test" } }

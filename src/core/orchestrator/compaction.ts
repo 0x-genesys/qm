@@ -22,6 +22,7 @@ import { estimateCostUsd } from "../../ratelimit/budget.ts";
 import { errMessage } from "../../util/errors.ts";
 import { createKeyedQueue } from "../../util/async.ts";
 import type { OrchestratorDeps } from "./types.ts";
+import type { ModelRequestContext } from "../../model/provider-endpoints.ts";
 
 const MAX_CONTEXT_TOKENS = 120_000;
 const KEEP_RECENT_TOKEN_FRACTION = 0.6;
@@ -36,6 +37,7 @@ interface Summarized {
 export interface CompactionContext {
   compactContextIfNeeded(input: {
     session: Session;
+    requestContext: ModelRequestContext;
     lease: Lease;
     visibleHistory: SessionEntry[];
     scopeId: string;
@@ -46,6 +48,7 @@ export interface CompactionContext {
   }): Promise<SessionEntry[]>;
   compactRecent(input: {
     session: Session;
+    requestContext: ModelRequestContext;
     lease: Lease;
     visibleHistory: SessionEntry[];
     scopeId: string;
@@ -56,6 +59,7 @@ export interface CompactionContext {
   }): Promise<SessionEntry[]>;
   scheduleBackgroundCompaction(input: {
     sessionId: string;
+    requestContext: ModelRequestContext;
     scopeId: string;
     orgScopeId: string;
     actorId: string;
@@ -85,6 +89,7 @@ export function createCompaction(deps: OrchestratorDeps): CompactionContext {
   async function summarizeForCompaction(
     input: {
       session: Session;
+      requestContext: ModelRequestContext;
       visibleHistory: SessionEntry[];
       scopeId: string;
       orgScopeId: string;
@@ -109,7 +114,7 @@ export function createCompaction(deps: OrchestratorDeps): CompactionContext {
       const raw = await deps.harness.models.compactHistory({
         session: input.session,
         history: plan.toSummarize,
-        actorId: input.actorId,
+        requestContext: input.requestContext,
         recordModelCall: (rec) => {
           deps.modelGateway.recordCall({ at: Date.now(), scopeLabel: summaryLabel, ...rec });
           void deps.budget?.record(input.actorId, estimateCostUsd(rec.inputTokens));
@@ -159,6 +164,7 @@ export function createCompaction(deps: OrchestratorDeps): CompactionContext {
 
   async function applyCompaction(input: {
     session: Session;
+    requestContext: ModelRequestContext;
     lease: Lease;
     visibleHistory: SessionEntry[];
     scopeId: string;
@@ -178,6 +184,7 @@ export function createCompaction(deps: OrchestratorDeps): CompactionContext {
 
   async function compactContextIfNeeded(input: {
     session: Session;
+    requestContext: ModelRequestContext;
     lease: Lease;
     visibleHistory: SessionEntry[];
     scopeId: string;
@@ -266,6 +273,7 @@ export function createCompaction(deps: OrchestratorDeps): CompactionContext {
 
   function scheduleBackgroundCompaction(input: {
     sessionId: string;
+    requestContext: ModelRequestContext;
     scopeId: string;
     orgScopeId: string;
     actorId: string;
@@ -286,6 +294,7 @@ export function createCompaction(deps: OrchestratorDeps): CompactionContext {
         const snapshotSeq = entries.at(-1)?.seq ?? -1;
         const summarized = await summarizeForCompaction({
           session,
+          requestContext: input.requestContext,
           visibleHistory: history,
           scopeId: input.scopeId,
           orgScopeId: input.orgScopeId,

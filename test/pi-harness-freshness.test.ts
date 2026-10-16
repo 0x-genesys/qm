@@ -24,6 +24,7 @@ function recordingTurn(
     tools: {} as HarnessTurnInput["tools"],
     scopeLabel: "scope" as HarnessTurnInput["scopeLabel"],
     orgScopeId: "org:test" as HarnessTurnInput["orgScopeId"],
+    requestContext: {},
     emit: async (entry) => ({ ...entry, seq: 1, createdAt: 0 }) as Awaited<ReturnType<HarnessTurnInput["emit"]>>,
     recordModelCall: (rec) => recorded.push(rec),
   };
@@ -150,8 +151,8 @@ test("model utilities resolve provider credentials for every call", async () => 
     },
   });
 
-  assert.equal(await harness.models.oneShot?.("system", "first"), undefined);
-  assert.equal(await harness.models.oneShot?.("system", "second"), undefined);
+  assert.equal(await harness.models.oneShot?.("system", "first", {}), undefined);
+  assert.equal(await harness.models.oneShot?.("system", "second", {}), undefined);
   assert.equal(resolutions, 2);
 });
 

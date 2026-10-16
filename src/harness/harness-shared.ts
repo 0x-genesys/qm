@@ -283,6 +283,7 @@ export function oneShotRunner(runPrompt: (turn: HarnessTurnInput) => Promise<Har
       tools: {} as HarnessTurnInput["tools"],
       scopeLabel: scope,
       orgScopeId: scope,
+      requestContext: {},
       ...(signal ? { cancel: signal } : {}),
       ...(modelOverride ? { runtime: { modelId: modelOverride } } : {}),
       readOnly: true,
@@ -314,7 +315,7 @@ export function oneShotModelUtilities(
 ): Pick<HarnessModelUtilities, "oneShot" | "judge" | "screenSecurity" | "generateTitle" | "summarizeApproval"> {
   return {
     oneShot: (system, prompt) => single(system, prompt),
-    judge: (system, prompt, signal) => single(system, prompt, signal, undefined, judgeModelId),
+    judge: (system, prompt, _requestContext, signal) => single(system, prompt, signal, undefined, judgeModelId),
     screenSecurity: async ({ payload, signal, recordModelCall, recordLlmRequest }) =>
       parseSecurityScreenVerdict(
         await single(SECURITY_SCREEN_SYSTEM_PROMPT, payload, signal, {
@@ -329,7 +330,7 @@ export function oneShotModelUtilities(
       ),
     generateTitle: async (transcript) =>
       sanitizeTitle(await single(TITLE_GENERATION_PROMPT, titleUserPrompt(transcript))),
-    summarizeApproval: (command, reason, purpose) =>
+    summarizeApproval: (command, reason, _requestContext, purpose) =>
       single(
         "Explain this command in one plain-English sentence for an approver.",
         [command, reason, purpose].filter(Boolean).join("\n"),

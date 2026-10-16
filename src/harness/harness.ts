@@ -80,7 +80,7 @@ export interface HarnessSecurityScreenInput {
   modelId?: string;
   systemPrompt?: string;
   signal: AbortSignal;
-  requestContext?: ModelRequestContext;
+  requestContext: ModelRequestContext;
   recordModelCall(rec: { model: string; inputTokens: number; entryCount: number }): void;
   recordLlmRequest?(rec: HarnessLlmRequestRecord, signal?: AbortSignal): void | Promise<void>;
 }
@@ -137,6 +137,7 @@ export interface HarnessTurnInput {
   resumeToolCall?: ResumableToolCall;
   scopeLabel: ScopeId;
   orgScopeId: ScopeId;
+  requestContext: ModelRequestContext;
   providerKeys?: ProviderKeys;
   runtimePinned?: boolean;
   onRuntime?(runtime: TurnRuntime): void;
@@ -181,7 +182,7 @@ export interface HarnessDetectInput {
   systemPrompt: string;
   reactionGuidance?: string;
   history: SessionEntry[];
-  actorId?: string;
+  requestContext: ModelRequestContext;
   recordModelCall(rec: { model: string; inputTokens: number; entryCount: number }): void;
 }
 
@@ -194,7 +195,7 @@ export interface HarnessDetectResult {
 export interface HarnessCompactInput {
   session: Session;
   history: SessionEntry[];
-  actorId?: string;
+  requestContext: ModelRequestContext;
   recordModelCall(rec: { model: string; inputTokens: number; entryCount: number }): void;
 }
 
@@ -208,21 +209,21 @@ export interface HarnessModelUtilities {
   shouldRespond?(input: HarnessDetectInput): Promise<HarnessDetectResult>;
   compactHistory?(input: HarnessCompactInput): Promise<string>;
   contextTokenBudget?(scopeLabel?: string, model?: string): number | undefined;
-  oneShot?(systemPrompt: string, prompt: string, requestContext?: ModelRequestContext): Promise<string | undefined>;
+  oneShot?(systemPrompt: string, prompt: string, requestContext: ModelRequestContext): Promise<string | undefined>;
   judge?(
     systemPrompt: string,
     prompt: string,
+    requestContext: ModelRequestContext,
     signal?: AbortSignal,
-    requestContext?: ModelRequestContext,
   ): Promise<string | undefined>;
   screenSecurity?(input: HarnessSecurityScreenInput): Promise<SecurityScreenVerdict | undefined>;
   pickAckEmoji?(text: string, candidates: readonly string[]): Promise<string | undefined>;
-  generateTitle?(transcript: string, requestContext?: ModelRequestContext): Promise<string | undefined>;
+  generateTitle?(transcript: string, requestContext: ModelRequestContext): Promise<string | undefined>;
   summarizeApproval?(
     command: string,
     reason: string,
+    requestContext: ModelRequestContext,
     purpose?: string,
-    requestContext?: ModelRequestContext,
   ): Promise<string | undefined>;
 }
 

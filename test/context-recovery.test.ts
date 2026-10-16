@@ -41,6 +41,7 @@ async function fixture() {
   } as unknown as OrchestratorDeps);
   const input = {
     session,
+    requestContext: {},
     lease,
     visibleHistory: forModelContext((await sessions.getContextWindow(session.id)).entries),
     scopeId: "personal:test",

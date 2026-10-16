@@ -150,6 +150,7 @@ for (const [modelId, upper, allowed, off, minimal] of [
           tools: { attach: async () => ({ ok: true, files: [], staged: 0 }) } as unknown as HarnessTurnInput["tools"],
           scopeLabel: "personal:test",
           orgScopeId: "org:test",
+          requestContext: {},
           runtime: { effortLevel },
           emit: async (entry) => ({ ...entry, seq: seq++, createdAt: Date.now() }) as never,
           recordModelCall: () => {},

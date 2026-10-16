@@ -30,6 +30,7 @@ function goalTurn(
     tools: {} as HarnessTurnInput["tools"],
     scopeLabel: "personal:tester" as HarnessTurnInput["scopeLabel"],
     orgScopeId: "org:test" as HarnessTurnInput["orgScopeId"],
+    requestContext: {},
     emit: async (entry: NewEntry) => {
       entries.push({ type: entry.type, payload: entry.payload });
       return { ...entry, seq: ++seq, createdAt: Date.now() } as unknown as SessionEntry;

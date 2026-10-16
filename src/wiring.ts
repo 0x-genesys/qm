@@ -1554,7 +1554,7 @@ export function buildApp(
       ...(input.runtimeActorId ? { actorId: input.runtimeActorId } : {}),
       scopeLabel: input.scopeLabel,
       sessionId: input.session.id,
-      threadRef: input.session.threadRef,
+      requestContext: input.requestContext,
       ...(input.runId ? { runId: input.runId } : {}),
       ...(input.cancel ? { cancel: input.cancel } : {}),
     });
@@ -2343,7 +2343,10 @@ export function buildApp(
     surfaceCache,
     channelPolicy,
     ...(harness.models.judge
-      ? { ambientJudge: (s: string, pr: string, signal?: AbortSignal) => harness.models.judge!(s, pr, signal) }
+      ? {
+          ambientJudge: (s: string, pr: string, signal?: AbortSignal) =>
+            harness.models.judge!(s, pr, { purpose: "ambient_judge" }, signal),
+        }
       : {}),
     ...(screenSecurity ? { screenSecurity } : {}),
     ambientCursors: artifactMap<{ lastJudgedTs: string; lastJudgedAt?: number }>("ambient_cursors"),

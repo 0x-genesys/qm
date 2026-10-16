@@ -1,4 +1,5 @@
 import { isGatewayModelId } from "./gateway-models.ts";
+import type { SessionOrigin } from "../sessions/session-store.ts";
 /**
  * Provider endpoint overrides.
  *
@@ -86,13 +87,33 @@ export class GatewayModelUnavailableError extends Error {
   }
 }
 
+export type ModelRequestPurpose =
+  | "turn"
+  | "detect"
+  | "compaction"
+  | "title"
+  | "judge"
+  | "ambient_judge"
+  | "approval_summary"
+  | "security_screen"
+  | "ack_emoji"
+  | "memory_capture"
+  | "memory_classification"
+  | "embedding"
+  | "decision"
+  | "browser"
+  | "probe";
+
 export interface ModelRequestContext {
   sessionId?: string;
   actorId?: string;
   scopeId?: string;
-  purpose?: string;
-  origin?: string;
+  origin?: SessionOrigin;
+  purpose?: ModelRequestPurpose;
 }
+
+export const attestable = (value: unknown): value is string =>
+  typeof value === "string" && /^[\x21-\x7e]{1,256}$/.test(value);
 
 export function modelGatewayHeaders(
   config: Pick<ModelGatewayTransportConfig, "apiKey" | "apiKeyHeader">,
@@ -106,7 +127,7 @@ export function modelGatewayHeaders(
     "x-qm-purpose": context.purpose,
     "x-qm-origin": context.origin,
   }))
-    if (value && [...value].every((char) => char >= " " && char <= "~")) headers[name] = value;
+    if (attestable(value)) headers[name] = value;
   return headers;
 }
 

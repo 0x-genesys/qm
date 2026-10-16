@@ -23,6 +23,7 @@ function cancelTurn(
     tools: {} as HarnessTurnInput["tools"],
     scopeLabel: "personal:tester" as HarnessTurnInput["scopeLabel"],
     orgScopeId: "org:test" as HarnessTurnInput["orgScopeId"],
+    requestContext: {},
     emit: async (entry: NewEntry) => {
       const appended = { ...entry, seq: seq++, createdAt: Date.now() };
       sink.entries.push({ seq: appended.seq, type: entry.type, payload: entry.payload });
