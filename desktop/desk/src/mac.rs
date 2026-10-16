@@ -1,7 +1,7 @@
 use crate::cancellation;
 use crate::protocol::*;
 use crate::text::{self, Key as TextKey, Stroke};
-use crate::tree::{self, Key, ROOT};
+use crate::tree::{self, Key, Locator, Props, ROOT};
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFType, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
@@ -25,6 +25,9 @@ type El = CFType;
 extern "C" {
     fn AXUIElementCreateApplication(pid: i32) -> CFTypeRef;
     fn AXUIElementCopyAttributeValue(e: CFTypeRef, a: CFStringRef, v: *mut CFTypeRef) -> i32;
+    fn AXUIElementCopyMultipleAttributeValues(e: CFTypeRef, names: CFTypeRef, options: u32, v: *mut CFTypeRef) -> i32;
+    fn AXValueGetTypeID() -> usize;
+    fn AXValueGetType(v: CFTypeRef) -> u32;
     fn AXUIElementSetAttributeValue(e: CFTypeRef, a: CFStringRef, v: CFTypeRef) -> i32;
     fn AXUIElementIsAttributeSettable(e: CFTypeRef, a: CFStringRef, v: *mut bool) -> i32;
     fn AXUIElementCopyActionNames(e: CFTypeRef, v: *mut CFTypeRef) -> i32;
@@ -70,6 +73,9 @@ extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
     fn CFHash(cf: CFTypeRef) -> usize;
+    fn CFGetTypeID(cf: CFTypeRef) -> usize;
+    fn CFURLGetTypeID() -> usize;
+    fn CFURLGetString(url: CFTypeRef) -> CFStringRef;
 }
 
 const MAX_TREE_CHARS: usize = 60_000;
@@ -79,6 +85,29 @@ const MAX_DEPTH: usize = 200;
 const MAX_INDENT: usize = 50;
 const CLIPS: &[&str] = &["AXScrollArea", "AXWebArea"];
 const BORING: &[&str] = &["AXShowMenu", "AXScrollToVisible", "AXShowDefaultUI", "AXShowAlternateUI"];
+const SPARSE: &[&str] = &["AXWebArea", "AXGroup", "AXScrollArea", "AXLayoutArea", "AXUnknown"];
+const TRANSIENT: &[&str] = &["AXDialog", "AXSystemDialog", "AXFloatingWindow", "AXSystemFloatingWindow"];
+const POPUPS: &[&str] = &["AXSheet", "AXPopover", "AXDrawer", "AXMenu"];
+const INVALID_ELEMENT: i32 = -25202;
+const FETCH: &[&str] = &[
+    "AXRole",
+    "AXSubrole",
+    "AXTitle",
+    "AXDescription",
+    "AXHelp",
+    "AXValue",
+    "AXPlaceholderValue",
+    "AXURL",
+    "AXIdentifier",
+    "AXExpanded",
+    "AXFocused",
+    "AXEnabled",
+    "AXSelected",
+    "AXTitleUIElement",
+    "AXPosition",
+    "AXSize",
+    "AXChildren",
+];
 const BUSY: &[&str] = &["AXBusyIndicator", "AXProgressIndicator"];
 const PRESS_MS: u64 = 50;
 const HOVER_MS: u64 = 30;
@@ -98,13 +127,23 @@ struct Snapshot {
     origin: (f64, f64),
     elements: Vec<(u32, El)>,
     lines: HashMap<Key, String>,
-    next: u32,
+    ids: tree::Ids<El>,
 }
 
 #[derive(Default)]
 pub struct Desk {
     cache: HashMap<i32, Snapshot>,
     touched: HashMap<i32, Instant>,
+    enabled: HashSet<i32>,
+    enhanced: HashSet<i32>,
+}
+
+impl Drop for Desk {
+    fn drop(&mut self) {
+        for pid in &self.enhanced {
+            set_attr(&app_element(*pid), "AXEnhancedUserInterface", &CFBoolean::false_value().as_CFType());
+        }
+    }
 }
 
 fn fail(code: ErrorCode, m: impl Into<String>) -> Failure {
@@ -121,9 +160,26 @@ fn attr(e: &El, name: &str) -> Option<CFType> {
     (err == 0 && !v.is_null()).then(|| unsafe { CFType::wrap_under_create_rule(v) })
 }
 
+fn dead(e: &El) -> bool {
+    let mut v: CFTypeRef = std::ptr::null();
+    let err = unsafe { AXUIElementCopyAttributeValue(e.as_CFTypeRef(), cfs("AXRole").as_concrete_TypeRef(), &mut v) };
+    if !v.is_null() {
+        drop(unsafe { CFType::wrap_under_create_rule(v) });
+    }
+    err == INVALID_ELEMENT
+}
+
+fn app_element(pid: i32) -> El {
+    unsafe { CFType::wrap_under_create_rule(AXUIElementCreateApplication(pid)) }
+}
+
 fn text_of(v: &CFType) -> Option<String> {
     if let Some(s) = v.downcast::<CFString>() {
         return Some(s.to_string());
+    }
+    if unsafe { CFGetTypeID(v.as_CFTypeRef()) == CFURLGetTypeID() } {
+        let s = unsafe { CFURLGetString(v.as_CFTypeRef()) };
+        return (!s.is_null()).then(|| unsafe { CFString::wrap_under_get_rule(s) }.to_string());
     }
     let n = v.downcast::<CFNumber>()?;
     n.to_i64().map(|i| i.to_string()).or_else(|| n.to_f64().map(|f| f.to_string()))
@@ -174,15 +230,6 @@ fn perform(e: &El, action: &str) -> Result<(), Failure> {
     match unsafe { AXUIElementPerformAction(e.as_CFTypeRef(), cfs(action).as_concrete_TypeRef()) } {
         0 => Ok(()),
         n => Err(fail(ErrorCode::ActionFailed, format!("{action} failed (AXError {n})"))),
-    }
-}
-
-fn clip(s: &str, n: usize) -> String {
-    let s = s.replace('\n', "⏎");
-    if s.chars().count() > n {
-        format!("{}…", s.chars().take(n).collect::<String>())
-    } else {
-        s
     }
 }
 
@@ -478,67 +525,125 @@ fn window_id(w: &El) -> u32 {
     id
 }
 
-fn line(e: &El) -> (String, bool, String) {
-    let role = str_attr(e, "AXRole").unwrap_or_else(|| "AXUnknown".into());
-    let title = str_attr(e, "AXTitle");
-    let desc = str_attr(e, "AXDescription").or_else(|| str_attr(e, "AXHelp"));
-    let value = str_attr(e, "AXValue");
-    let can_set = settable(e, "AXValue");
-    let acts: Vec<String> = actions(e).into_iter().filter(|a| !BORING.contains(&a.as_str())).collect();
-    let keep = title.is_some() || desc.is_some() || value.is_some() || can_set || !acts.is_empty();
-    let mut s = role.trim_start_matches("AX").to_string();
-    if let Some(t) = &title {
-        s += &format!(" \"{}\"", clip(t, 80));
+struct Node {
+    props: Props,
+    raw: Option<String>,
+    frame: Option<Rect>,
+    children: Vec<El>,
+}
+
+thread_local! {
+    static FETCH_NAMES: CFArray<CFString> = CFArray::from_CFTypes(&FETCH.iter().map(|n| cfs(n)).collect::<Vec<_>>());
+}
+
+fn fetch_all(e: &El) -> Vec<Option<CFType>> {
+    let mut v: CFTypeRef = std::ptr::null();
+    let err =
+        FETCH_NAMES.with(|names| unsafe { AXUIElementCopyMultipleAttributeValues(e.as_CFTypeRef(), names.as_CFTypeRef(), 0, &mut v) });
+    if err != 0 || v.is_null() {
+        if !v.is_null() {
+            drop(unsafe { CFType::wrap_under_create_rule(v) });
+        }
+        return FETCH.iter().map(|n| attr(e, n)).collect();
     }
-    if let Some(d) = desc.filter(|d| Some(d) != title.as_ref()) {
-        s += &format!(" ({})", clip(&d, 80));
+    let values = list(unsafe { CFType::wrap_under_create_rule(v) });
+    let error = |x: &CFType| unsafe { CFGetTypeID(x.as_CFTypeRef()) == AXValueGetTypeID() && AXValueGetType(x.as_CFTypeRef()) == 5 };
+    let mut out: Vec<Option<CFType>> = values.into_iter().map(|x| (!error(&x)).then_some(x)).collect();
+    out.resize(FETCH.len(), None);
+    out
+}
+
+fn point_of<T: Default>(v: &CFType, kind: u32) -> Option<T> {
+    let mut out = T::default();
+    unsafe { AXValueGetValue(v.as_CFTypeRef(), kind, &mut out as *mut T as *mut c_void) }.then_some(out)
+}
+
+fn fetch(e: &El) -> Node {
+    let v = fetch_all(e);
+    let get = |name: &str| v[FETCH.iter().position(|n| *n == name).unwrap()].as_ref();
+    let s = |name: &str| get(name).and_then(text_of).map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let b = |name: &str| get(name).and_then(|v| v.downcast::<CFBoolean>()).map(bool::from);
+    let title = s("AXTitle");
+    let label = if title.is_none() {
+        get("AXTitleUIElement").and_then(|l| str_attr(l, "AXValue").or_else(|| str_attr(l, "AXTitle")))
+    } else {
+        None
+    };
+    let has_value = get("AXValue").is_some();
+    let props = Props {
+        role: s("AXRole").unwrap_or_else(|| "AXUnknown".into()),
+        subrole: s("AXSubrole"),
+        title,
+        description: s("AXDescription").or_else(|| s("AXHelp")),
+        label,
+        value: s("AXValue"),
+        placeholder: s("AXPlaceholderValue"),
+        url: s("AXURL"),
+        identifier: s("AXIdentifier"),
+        expanded: b("AXExpanded"),
+        focused: b("AXFocused") == Some(true),
+        disabled: b("AXEnabled") == Some(false),
+        selected: b("AXSelected") == Some(true),
+        settable: has_value,
+        actions: vec![],
+    };
+    let frame = match (get("AXPosition").and_then(|p| point_of::<CGPoint>(p, 1)), get("AXSize").and_then(|p| point_of::<CGSize>(p, 2))) {
+        (Some(p), Some(z)) => Some(Rect { x: p.x, y: p.y, w: z.width, h: z.height }),
+        _ => None,
+    };
+    let children = get("AXChildren").cloned().map(list).unwrap_or_default();
+    let raw = get("AXValue").or(get("AXTitle")).and_then(text_of);
+    Node { props, raw, frame, children }
+}
+
+fn complete(e: &El, mut n: Node) -> Node {
+    n.props.settable = n.props.settable && settable(e, "AXValue");
+    n.props.actions = actions(e).into_iter().filter(|a| !BORING.contains(&a.as_str())).collect();
+    n
+}
+
+fn extras(ax: &El, main: &El) -> Vec<El> {
+    let mut out: Vec<El> = attr(ax, "AXChildren")
+        .map(list)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| str_attr(c, "AXRole").as_deref() == Some("AXMenu"))
+        .collect();
+    let bar = attr(ax, "AXMenuBar").map(|b| attr(&b, "AXChildren").map(list).unwrap_or_default()).unwrap_or_default();
+    for item in bar.iter().filter(|i| bool_attr(i, "AXSelected") == Some(true)) {
+        out.extend(
+            attr(item, "AXChildren")
+                .map(list)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|c| str_attr(c, "AXRole").as_deref() == Some("AXMenu")),
+        );
     }
-    if let Some(v) = value.filter(|v| Some(v) != title.as_ref()) {
-        s += &format!(" = \"{}\"", clip(&v, 120));
-    }
-    let mut tags = vec![];
-    for (attr_name, want, tag) in [("AXFocused", true, "focused"), ("AXEnabled", false, "disabled"), ("AXSelected", true, "selected")] {
-        if bool_attr(e, attr_name) == Some(want) {
-            tags.push(tag);
+    for w in attr(ax, "AXWindows").map(list).unwrap_or_default() {
+        let role = str_attr(&w, "AXRole").unwrap_or_default();
+        let sub = str_attr(&w, "AXSubrole").unwrap_or_default();
+        if &w != main && (POPUPS.contains(&role.as_str()) || TRANSIENT.contains(&sub.as_str())) && !out.contains(&w) {
+            out.push(w);
         }
     }
-    if can_set {
-        tags.push("settable");
-    }
-    if !tags.is_empty() {
-        s += &format!(" [{}]", tags.join(" "));
-    }
-    if !acts.is_empty() {
-        let a: Vec<&str> = acts.iter().map(|a| a.trim_start_matches("AX")).collect();
-        s += &format!(" <{}>", a.join(","));
-    }
-    (s, keep, role)
+    out
 }
 
 struct Walk {
-    known: HashMap<usize, Vec<(u32, El)>>,
-    taken: HashSet<u32>,
-    next: u32,
+    ids: tree::Ids<El>,
     elements: Vec<(u32, El)>,
     lines: Vec<(Key, String)>,
     notes: HashMap<u32, u32>,
     chars: usize,
     truncated: bool,
     visited: usize,
+    window: Rect,
 }
 
 impl Walk {
-    fn id(&mut self, e: &El) -> u32 {
-        let found = self
-            .known
-            .get(&unsafe { CFHash(e.as_CFTypeRef()) })
-            .and_then(|c| c.iter().find(|(id, k)| !self.taken.contains(id) && k == e))
-            .map(|(id, _)| *id);
-        let id = found.unwrap_or_else(|| {
-            self.next += 1;
-            self.next - 1
-        });
-        self.taken.insert(id);
+    fn id(&mut self, e: &El, locator: Locator) -> u32 {
+        let id = self.ids.assign(e, unsafe { CFHash(e.as_CFTypeRef()) }, locator, dead);
+        self.elements.push((id, e.clone()));
         id
     }
 
@@ -552,47 +657,131 @@ impl Walk {
         self.lines.push((key, line));
     }
 
-    fn visit(&mut self, e: &El, f: Option<Rect>, depth: usize, indent: usize, anchor: u32, clip: Rect) {
+    fn note(&mut self, anchor: u32, indent: usize, s: String) {
+        let seq = self.notes.entry(anchor).or_default();
+        let key = Key::Note(anchor, *seq);
+        *seq += 1;
+        self.push(key, indent, s);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn visit(&mut self, e: &El, n: Node, depth: usize, indent: usize, anchor: u32, clip: Rect, at: Locator, force: bool) {
         if depth > MAX_DEPTH || indent > MAX_INDENT {
             self.truncated = true;
             return;
         }
-        let (s, keep, role) = line(e);
-        let clip = narrow(clip, &role, f);
+        let hash = unsafe { CFHash(e.as_CFTypeRef()) };
+        if self.ids.seen(e, hash) {
+            return;
+        }
+        let (s, keep) = n.props.describe();
+        let keep = keep || force;
+        let clip = narrow(clip, &n.props.role, n.frame);
+        let locator = at.child(&n.props);
+        let drawn = n.props.role == "AXWebArea" || n.children.is_empty();
+        let before = self.lines.len();
         let (indent, anchor) = if keep {
-            let id = self.id(e);
+            let id = self.id(e, locator);
             self.push(Key::Element(id), indent, format!("[{id}] {s}"));
-            self.elements.push((id, e.clone()));
             (indent + 1, id)
         } else {
             (indent, anchor)
         };
-        self.children(e, depth + 1, indent, anchor, clip);
+        self.children(&n.children, depth + 1, indent, anchor, clip, locator);
+        let inside = self.lines.len() - before - keep as usize;
+        if drawn
+            && !self.truncated
+            && SPARSE.contains(&n.props.role.as_str())
+            && n.frame.is_some_and(|f| tree::sparse(f, self.window, inside))
+        {
+            self.note(
+                anchor,
+                indent,
+                "… nothing readable inside; the app may draw this area itself (for example a canvas). Use the screenshot and point targets"
+                    .into(),
+            );
+        }
     }
 
-    fn children(&mut self, parent: &El, depth: usize, indent: usize, anchor: u32, clip: Rect) {
-        let kids = attr(parent, "AXChildren").map(list).unwrap_or_default();
+    fn text_run(&mut self, run: &mut Vec<(El, Node)>, depth: usize, indent: usize, anchor: u32, clip: Rect, at: Locator) {
+        match run.len() {
+            0 => {}
+            1 => {
+                let (e, n) = run.pop().unwrap();
+                self.visit(&e, n, depth, indent, anchor, clip, at, false);
+            }
+            _ => {
+                let texts: Vec<(String, Option<Rect>)> = run.iter().filter_map(|(_, n)| Some((n.raw.clone()?, n.frame))).collect();
+                let (first, n) = &run[0];
+                let id = self.id(first, at.child(&n.props));
+                self.push(Key::Element(id), indent, format!("[{id}] {}", tree::merged_text(&texts)));
+            }
+        }
+        run.clear();
+    }
+
+    fn children(&mut self, kids: &[El], depth: usize, indent: usize, anchor: u32, clip: Rect, at: Locator) {
         let mut hidden = 0;
-        for c in &kids {
+        let mut run: Vec<(El, Node)> = vec![];
+        for (i, c) in kids.iter().enumerate() {
             if self.full() {
                 self.truncated = true;
+                self.text_run(&mut run, depth, indent, anchor, clip, at);
+                self.note(anchor, indent, format!("… {} more not shown; the observation size limit was reached", kids.len() - i));
                 break;
             }
             self.visited += 1;
-            let f = frame(c);
-            if f.is_none_or(|f| tree::visible(f, clip).is_some()) {
-                self.visit(c, f, depth, indent, anchor, clip);
-            } else {
+            let n = fetch(c);
+            if n.frame.is_some_and(|f| tree::visible(f, clip).is_none()) {
                 hidden += 1;
+                continue;
             }
+            let n = complete(c, n);
+            if n.props.plain_text() && n.children.is_empty() {
+                run.push((c.clone(), n));
+                continue;
+            }
+            self.text_run(&mut run, depth, indent, anchor, clip, at);
+            self.visit(c, n, depth, indent, anchor, clip, at, false);
         }
+        self.text_run(&mut run, depth, indent, anchor, clip, at);
         if hidden > 0 {
-            let seq = self.notes.entry(anchor).or_default();
-            let key = Key::Note(anchor, *seq);
-            *seq += 1;
-            self.push(key, indent, format!("… {hidden} more offscreen; scroll to reveal"));
+            self.note(anchor, indent, format!("… {hidden} more offscreen; scroll to reveal"));
         }
     }
+}
+
+fn relocate(roots: &[(El, Locator)], target: Locator) -> Option<El> {
+    let mut queue: std::collections::VecDeque<(El, Locator)> = roots.iter().cloned().collect();
+    let (mut found, mut seen) = (None, 0);
+    while let Some((e, at)) = queue.pop_front() {
+        seen += 1;
+        if seen > MAX_VISITS || cancellation::cancelled() {
+            return None;
+        }
+        let n = fetch(&e);
+        let here = at.child(&n.props);
+        if here == target {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(e);
+        }
+        queue.extend(n.children.into_iter().map(|c| (c, here)));
+    }
+    found
+}
+
+fn empty_web(e: &El, depth: usize, seen: &mut usize) -> bool {
+    *seen += 1;
+    if *seen > MAX_BUSY_VISITS || depth > MAX_DEPTH {
+        return false;
+    }
+    let kids = attr(e, "AXChildren").map(list).unwrap_or_default();
+    if str_attr(e, "AXRole").as_deref() == Some("AXWebArea") {
+        return kids.is_empty();
+    }
+    kids.iter().any(|c| empty_web(c, depth + 1, seen))
 }
 
 fn narrow(clip: Rect, role: &str, f: Option<Rect>) -> Rect {
@@ -705,31 +894,65 @@ impl Desk {
         r.unwrap_or_else(Reply::Error)
     }
 
+    fn enable(&mut self, pid: i32, ax: &El, w: &El) {
+        if !self.enabled.insert(pid) {
+            return;
+        }
+        let yes = CFBoolean::true_value().as_CFType();
+        if set_attr(ax, "AXManualAccessibility", &yes) != 0 && set_attr(ax, "AXEnhancedUserInterface", &yes) == 0 {
+            self.enhanced.insert(pid);
+        }
+        for _ in 0..10 {
+            if cancellation::cancelled() || !empty_web(w, 0, &mut 0) {
+                return;
+            }
+            cancellation::wait(Duration::from_millis(100));
+        }
+    }
+
     fn observe(&mut self, app: &App, shot: bool, diff: bool) -> Result<Observation, Failure> {
         if let Some(at) = self.touched.remove(&app.pid) {
             let (_, w) = window(app)?;
             settle(&w, at);
         }
-        let (_, w) = window(app)?;
+        let (ax, w) = window(app)?;
+        self.enable(app.pid, &ax, &w);
         let win = window_id(&w);
         let f = frame(&w).unwrap_or(Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
-        let prev = self.cache.remove(&app.pid).filter(|s| s.window == win);
+        let mut prev = self.cache.remove(&app.pid).filter(|s| s.window == win);
         let mut walk = Walk {
-            known: HashMap::new(),
-            taken: HashSet::new(),
-            next: prev.as_ref().map_or(0, |p| p.next),
+            ids: prev.as_mut().map(|p| std::mem::take(&mut p.ids)).unwrap_or_default(),
             elements: vec![],
             lines: vec![],
             notes: HashMap::new(),
             chars: 0,
             truncated: false,
             visited: 0,
+            window: f,
         };
-        for (id, e) in prev.iter().flat_map(|p| p.elements.iter()) {
-            walk.known.entry(unsafe { CFHash(e.as_CFTypeRef()) }).or_default().push((*id, e.clone()));
-        }
         let everywhere = Rect { x: -1e9, y: -1e9, w: 2e9, h: 2e9 };
-        walk.children(&w, 0, 0, ROOT, if f.w > 0.0 && f.h > 0.0 { f } else { everywhere });
+        let others = extras(&ax, &w);
+        if !others.is_empty() {
+            walk.push(Key::Section(0), 0, "Open menus and other windows of this app:".into());
+            for o in &others {
+                let n = complete(o, fetch(o));
+                walk.visit(o, n, 0, 0, ROOT, everywhere, Locator::ROOT, true);
+            }
+            let title = str_attr(&w, "AXTitle").unwrap_or_default();
+            walk.push(Key::Section(1), 0, format!("Window \"{}\":", tree::clip(&title, 80)));
+        }
+        let kids = attr(&w, "AXChildren").map(list).unwrap_or_default();
+        walk.children(&kids, 0, 0, ROOT, if f.w > 0.0 && f.h > 0.0 { f } else { everywhere }, Locator::ROOT);
+        if let Some(focus) = attr(&ax, "AXFocusedUIElement") {
+            let what = match walk.elements.iter().find(|(_, e)| *e == focus) {
+                Some((id, _)) => format!("[{id}]"),
+                None => format!("{} (not in the tree above)", complete(&focus, fetch(&focus)).props.describe().0),
+            };
+            walk.push(Key::Info(0), 0, format!("Focus: {what}"));
+            if let Some(sel) = str_attr(&focus, "AXSelectedText") {
+                walk.push(Key::Info(1), 0, format!("Selected text: \"{}\"", tree::clip(&sel, tree::MAX_TEXT)));
+            }
+        }
         let screenshot = if shot { Some(capture(&w, f)?) } else { None };
         let rendered = tree::render(&walk.lines, prev.as_ref().filter(|_| diff).map(|p| &p.lines));
         let obs = Observation {
@@ -753,7 +976,7 @@ impl Desk {
                 origin: (f.x, f.y),
                 elements: walk.elements,
                 lines: walk.lines.into_iter().collect(),
-                next: walk.next,
+                ids: walk.ids.carry(),
             },
         );
         Ok(obs)
@@ -831,11 +1054,21 @@ impl Desk {
 
     fn element(&self, pid: i32, index: u32) -> Result<El, Failure> {
         let s = self.cache.get(&pid).ok_or_else(|| fail(ErrorCode::BadIndex, "observe first"))?;
-        s.elements
+        let e = s
+            .elements
             .iter()
             .find(|(id, _)| *id == index)
             .map(|(_, e)| e.clone())
-            .ok_or_else(|| fail(ErrorCode::BadIndex, format!("no element {index}; observe again")))
+            .ok_or_else(|| fail(ErrorCode::BadIndex, format!("no element {index}; observe again")))?;
+        if !dead(&e) {
+            return Ok(e);
+        }
+        let gone = || fail(ErrorCode::BadIndex, format!("element {index} is gone and no single replacement was found; observe again"));
+        let target = s.ids.locator(index).ok_or_else(gone)?;
+        let mut roots: Vec<(El, Locator)> =
+            attr(&s.window_element, "AXChildren").map(list).unwrap_or_default().into_iter().map(|c| (c, Locator::ROOT)).collect();
+        roots.extend(extras(&app_element(pid), &s.window_element).into_iter().map(|o| (o, Locator::ROOT)));
+        relocate(&roots, target).ok_or_else(gone)
     }
 
     fn point(&self, pid: i32, t: Target) -> Result<CGPoint, Failure> {
