@@ -82,3 +82,38 @@ for (const mode of ["retry", "handoff"] as const) {
     }
   });
 }
+
+for (const prior of ["empty", "hidden"] as const) {
+  test(`a turn's retraction boundary is the raw journal tail with ${prior} prior history`, async () => {
+    const built = buildApp(testConfig());
+    const request = (text: string): TurnRequest => ({
+      surface: "test",
+      actor: { externalId: "U1" },
+      conversation: { kind: "dm", threadRef: `turn-start-boundary-${prior}` },
+      text,
+      idempotencyKey: `turn-start-boundary-${prior}-${text}`,
+    });
+    let hiddenSeq = -1;
+    let seen: { turnStartSeq?: number; historyTail?: number; firstSeq: number } | undefined;
+    try {
+      if (prior === "hidden") {
+        exercise = async (turn) => {
+          await turn.emit({ type: "user", payload: { text: turn.input }, scopeLabel: turn.scopeLabel });
+          hiddenSeq = (await turn.emit({ type: "text", payload: { text: "unstepped" }, scopeLabel: turn.scopeLabel }))
+            .seq;
+        };
+        await built.app.turn(request("earlier"));
+      }
+      exercise = async (turn) => {
+        const first = await turn.emit({ type: "user", payload: { text: turn.input }, scopeLabel: turn.scopeLabel });
+        seen = { turnStartSeq: turn.turnStartSeq, historyTail: turn.history.at(-1)?.seq, firstSeq: first.seq };
+      };
+      await built.app.turn(request("refused"));
+    } finally {
+      exercise = undefined;
+    }
+    assert.equal(seen!.turnStartSeq, seen!.firstSeq - 1);
+    assert.ok(seen!.turnStartSeq! >= hiddenSeq);
+    if (prior === "hidden") assert.ok((seen!.historyTail ?? -1) < hiddenSeq);
+  });
+}

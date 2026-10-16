@@ -485,6 +485,20 @@ test("a turn_start rule only counts as routing the turn when it changes the runt
     mode: "enforce" as const,
   };
   const route = async (runtime: { modelId?: string }) => (runtime.modelId === haiku.modelId ? haiku : opus);
+  assert.deepEqual(
+    await routeTurnRuntime(
+      verdict,
+      async (runtime) => {
+        assert.equal(runtime.harnessId, "pi");
+        return { harnessId: runtime.harnessId, modelId: runtime.modelId };
+      },
+      async () => ({ harnessId: "claude", modelId: opus.modelId }),
+    ),
+    {
+      choice: haiku,
+      routedBy: "hard-task",
+    },
+  );
 
   assert.deepEqual(await routeTurnRuntime(verdict, route, async () => opus), { choice: haiku, routedBy: "hard-task" });
   assert.deepEqual(await routeTurnRuntime(verdict, route, async () => haiku), { choice: haiku });

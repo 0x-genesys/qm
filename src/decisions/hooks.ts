@@ -68,12 +68,12 @@ export function createDecisionHooks(store: DecisionStore | undefined, backend: D
 
 export async function routeTurnRuntime<C extends { harnessId: string; modelId: string }>(
   decision: DecisionResult | undefined,
-  route: (runtime: NonNullable<DecisionResult["runtime"]>) => Promise<C>,
+  route: (runtime: NonNullable<DecisionResult["runtime"]> & { harnessId: "pi" }) => Promise<C>,
   requested: () => Promise<C>,
 ): Promise<{ choice: C; routedBy?: string }> {
   if (!decision?.runtime) return { choice: await requested() };
   const [choice, otherwise] = await Promise.all([
-    route(decision.runtime),
+    route({ ...decision.runtime, harnessId: "pi" }),
     requested().catch(swallowAs("decisions: requested runtime", undefined)),
   ]);
   const changed = !!otherwise && (otherwise.harnessId !== choice.harnessId || otherwise.modelId !== choice.modelId);
