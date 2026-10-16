@@ -1,4 +1,7 @@
 use crate::cancellation;
+
+mod input;
+mod quiet;
 use crate::protocol::*;
 use crate::text::{self, Key as TextKey, Stroke};
 use crate::tree::{self, Key, Locator, Props, ROOT};
@@ -982,7 +985,7 @@ impl Desk {
                 walk.push(Key::Info(1), 0, format!("Selected text: \"{}\"", tree::clip(&sel, tree::MAX_TEXT)));
             }
         }
-        let screenshot = if shot { Some(capture(&w, f)?) } else { None };
+        let screenshot = if shot { Some(capture(&w, f, &input::service_panels(app.pid, &w, f))?) } else { None };
         let rendered = tree::render(&walk.lines, prev.as_ref().filter(|_| diff).map(|p| &p.lines));
         let obs = Observation {
             app: app.name.clone(),
@@ -1031,7 +1034,17 @@ impl Desk {
         };
         let mut completed = 0;
         let mut failure = None;
+        let quiet =
+            (actions.iter().filter(|a| !matches!(a, Action::Wait { .. })).count() > 1).then(|| quiet::Quiet::new(app.pid, &ax)).flatten();
         for (i, a) in actions.iter().enumerate() {
+            if i > 0 && !matches!(a, Action::Wait { .. }) && !matches!(actions[i - 1], Action::Wait { .. }) {
+                if let Some(q) = &quiet {
+                    q.wait();
+                }
+            }
+            if let Some(q) = &quiet {
+                q.reset();
+            }
             if matches!(a, Action::Raise) {
                 drop(focus.take());
             }
@@ -1129,15 +1142,32 @@ impl Desk {
                         })?
                     }
                 };
-                Ok(pt(r.x + r.w / 2.0, r.y + r.h / 2.0))
+                input::clickable(&input::app_element(pid), &e, i, r)
             }
         }
+    }
+
+    fn pointer(&self, pid: i32, ax: &El, win: u32, p: CGPoint) -> Result<(i32, Press), Failure> {
+        if input::menu_open(ax) {
+            return Err(fail(ErrorCode::ActionFailed, input::MENU_OPEN));
+        }
+        let window = self.cache.get(&pid).and_then(|s| frame(&s.window_element));
+        match input::service_at(pid, ax, window, p) {
+            Some((service, service_ax, service_win)) => Ok((service, prepare(service, &service_ax, service_win, p)?)),
+            None => Ok((pid, prepare(pid, ax, win, p)?)),
+        }
+    }
+
+    fn pressed(&self, pid: i32, ax: &El, index: u32) -> Result<Option<El>, Failure> {
+        let e = self.element(pid, index)?;
+        let can_press = actions(&e).iter().any(|a| a == "AXPress");
+        Ok((can_press && (input::is_menu_item(&e) || !input::simulate(&e) || input::menu_open(ax))).then_some(e))
     }
 
     fn aim(&self, pid: i32, w: &El, a: &Action) -> Result<Option<CGPoint>, Failure> {
         match a {
             Action::Click { target: Target::Index(i), button: Button::Left, count: 1, modifiers, hold_ms: 0 }
-                if modifiers.is_empty() && actions(&self.element(pid, *i)?).iter().any(|a| a == "AXPress") =>
+                if modifiers.is_empty() && self.pressed(pid, &input::app_element(pid), *i)?.is_some() =>
             {
                 Ok(None)
             }
@@ -1152,20 +1182,30 @@ impl Desk {
         let pid = app.pid;
         match a {
             Action::Click { target: Target::Index(i), button: Button::Left, count: 1, modifiers, hold_ms: 0 } if modifiers.is_empty() => {
+                if let Some(e) = self.pressed(pid, ax, *i)? {
+                    return perform(&e, "AXPress");
+                }
                 let e = self.element(pid, *i)?;
-                if actions(&e).iter().any(|a| a == "AXPress") {
-                    perform(&e, "AXPress")
-                } else {
-                    let p = self.point(pid, Target::Index(*i))?;
-                    click_at(pid, prepare(pid, ax, win, p)?, p, Button::Left, 1, &[], 0)
+                let can_press = actions(&e).iter().any(|a| a == "AXPress");
+                match self.point(pid, Target::Index(*i)) {
+                    Ok(p) => {
+                        let (to, press) = self.pointer(pid, ax, win, p)?;
+                        click_at(to, press, p, Button::Left, 1, &[], 0)
+                    }
+                    Err(_) if can_press => perform(&e, "AXPress"),
+                    Err(e) => Err(e),
                 }
             }
             Action::Click { target, button, count, modifiers, hold_ms } => {
                 let p = self.point(pid, *target)?;
-                click_at(pid, prepare(pid, ax, win, p)?, p, *button, *count, modifiers, *hold_ms)
+                let (to, press) = self.pointer(pid, ax, win, p)?;
+                click_at(to, press, p, *button, *count, modifiers, *hold_ms)
             }
-            Action::TypeText { text } => type_text(pid, text),
-            Action::Paste { text, format } => paste(pid, ax, text, *format),
+            Action::TypeText { text } => type_text(input::keyboard_target(pid, ax).0, text),
+            Action::Paste { text, format } => {
+                let (to, target) = input::keyboard_target(pid, ax);
+                paste(to, &target, text, *format)
+            }
             Action::SelectText { index, text, prefix, suffix, selection } => {
                 select(&self.element(pid, *index)?, text, prefix, suffix, *selection)
             }
@@ -1182,9 +1222,24 @@ impl Desk {
                         }
                     }
                 }
-                send_key_events(pid, crate::keys::events_with_modifiers(chord.code, chord.flags, &chord.modifiers), None, *hold_ms)
+                send_key_events(
+                    input::keyboard_target(pid, ax).0,
+                    crate::keys::events_with_modifiers(chord.code, chord.flags, &chord.modifiers),
+                    None,
+                    *hold_ms,
+                )
             }
             Action::Scroll { target, direction, amount } => {
+                if let Amount::Pages(n) = amount {
+                    let area = match target {
+                        Some(Target::Index(i)) => input::scroll_area(&self.element(pid, *i)?),
+                        Some(t) => input::area_at(ax, self.point(pid, *t)?),
+                        None => input::area_at(ax, center(w)),
+                    };
+                    if area.is_some_and(|a| input::scroll_pages(&a, *direction, *n)) {
+                        return Ok(());
+                    }
+                }
                 let p = match target {
                     Some(t) => self.point(pid, *t)?,
                     None => center(w),
@@ -1194,7 +1249,8 @@ impl Desk {
                     _ => frame(w),
                 }
                 .unwrap_or(Rect { x: 0.0, y: 0.0, w: 600.0, h: 600.0 });
-                let scroll_win = prepare(pid, ax, win, p)?.win;
+                let (to, press) = self.pointer(pid, ax, win, p)?;
+                let scroll_win = press.win;
                 let vertical = matches!(direction, Direction::Up | Direction::Down);
                 let mut left = match amount {
                     Amount::Pixels(n) => *n as i32,
@@ -1214,14 +1270,14 @@ impl Desk {
                         .map_err(|_| fail(ErrorCode::ActionFailed, "scroll event"))?;
                     unsafe { CGEventSetLocation(e.as_ptr() as *mut c_void, p) };
                     in_window(&e, scroll_win);
-                    post(e, pid);
+                    post(e, to);
                 }
                 Ok(())
             }
             Action::Drag { from, to } => {
                 let (a, b) = (self.point(pid, Target::Point(*from))?, self.point(pid, Target::Point(*to))?);
                 let none = CGEventFlags::empty();
-                let press = prepare(pid, ax, win, a)?;
+                let (pid, press) = self.pointer(pid, ax, win, a)?;
                 mouse(pid, &press, CGEventType::LeftMouseDown, a, CGMouseButton::Left, 1, none)?;
                 let mut last = a;
                 let dragged = (|| {
@@ -1239,10 +1295,9 @@ impl Desk {
                 let released = mouse(pid, &press, CGEventType::LeftMouseUp, last, CGMouseButton::Left, 1, none);
                 dragged.and(released)
             }
-            Action::SetValue { index, value } => match set_attr(&self.element(pid, *index)?, "AXValue", &cfs(value).as_CFType()) {
-                0 => Ok(()),
-                n => Err(fail(ErrorCode::ActionFailed, format!("setting AXValue failed (AXError {n})"))),
-            },
+            Action::SetValue { index, value, submit } => {
+                input::set_value(input::keyboard_target(pid, ax).0, &self.element(pid, *index)?, *index, value, *submit)
+            }
             Action::Perform { index, action } => {
                 let name = if action.starts_with("AX") { action.clone() } else { format!("AX{action}") };
                 perform(&self.element(pid, *index)?, &name)
@@ -1304,9 +1359,9 @@ fn window(app: &App) -> Result<(El, El), Failure> {
     Ok((ax, w))
 }
 
-fn capture(w: &El, f: Rect) -> Result<Screenshot, Failure> {
+fn capture(w: &El, f: Rect, panels: &[u32]) -> Result<Screenshot, Failure> {
     if !unsafe { CGPreflightScreenCaptureAccess() } {
         return Err(fail(ErrorCode::PermissionMissing, "Screen Recording not granted; run `desk permissions --prompt`"));
     }
-    crate::capture::window(window_id(w), &[], f).map_err(|m| fail(ErrorCode::ActionFailed, m))
+    crate::capture::window(window_id(w), panels, f).map_err(|m| fail(ErrorCode::ActionFailed, m))
 }
