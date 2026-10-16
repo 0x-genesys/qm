@@ -231,13 +231,14 @@ Actions return as soon as the input is sent. The next observation first waits fo
 app.click(target, {mouseButton: left|right|middle, clickCount, key: "cmd+shift", durationMs})
   target is an element id from the tree or [x, y] in pixels of the latest screenshot.
   An offscreen element is scrolled into view first; if that fails, the click fails.
+  Clicking or dragging in web content may bring the app to the front.
 app.drag([x, y], [x, y]) screenshot pixels.
 app.scroll(target | null, up|down|left|right, pages = 1 | {pixels})
 app.selectText(id, text, {prefix, suffix, selectionType: text|cursor_before|cursor_after}) prefix/suffix pick among repeats.
 app.setValue(id, value) writes the element's value directly.
 app.performSecondaryAction(id, action) runs an action the element lists, e.g. "ShowMenu", "Increment".
 app.pressKey("cmd+shift+t", {durationMs}) key names: letters, digits, punctuation, return, tab, space, delete, escape, arrows, home, end, pageup, pagedown, f1-f12.
-app.typeText(text) types with the keyboard. "\n" presses Return and "\t" presses Tab, so they can submit
+app.typeText(text) types with the keyboard. "\\n" presses Return and "\\t" presses Tab, so they can submit
   a form or send a chat message; use paste for multi-line text.
 app.paste(text, {format: text|markdown|html}) pastes through the clipboard, then restores the user's clipboard.
   Prefer it for long, multi-line or formatted text. Needs a focused text field.

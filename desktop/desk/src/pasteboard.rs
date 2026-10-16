@@ -70,9 +70,23 @@ fn fail(code: ErrorCode, m: &str) -> Failure {
     Failure::new(code, m)
 }
 
-fn snapshot(board: &NSPasteboard) -> Saved {
-    let Some(items) = board.pasteboardItems() else { return vec![] };
-    items.iter().map(|item| item.types().iter().filter_map(|t| item.dataForType(&t).map(|d| (t, d))).collect()).collect()
+fn snapshot(board: &NSPasteboard) -> Result<Saved, Failure> {
+    let before = board.changeCount();
+    let mut saved = vec![];
+    for item in board.pasteboardItems().iter().flat_map(|items| items.iter()) {
+        let mut types = vec![];
+        for t in item.types() {
+            let d = item
+                .dataForType(&t)
+                .ok_or_else(|| fail(ErrorCode::ActionFailed, "Could not preserve the current clipboard; paste was not attempted."))?;
+            types.push((t, d));
+        }
+        saved.push(types);
+    }
+    if board.changeCount() != before {
+        return Err(fail(ErrorCode::PasteConflict, "The clipboard changed while being saved; paste was not attempted."));
+    }
+    Ok(saved)
 }
 
 fn write(board: &NSPasteboard, items: Vec<Retained<NSPasteboardItem>>) -> bool {
@@ -112,7 +126,7 @@ fn wait_for_read(provider: &Provider, cancelled: &dyn Fn() -> bool) -> Result<()
             None if start.elapsed() >= READ_TIMEOUT => {
                 return Err(fail(
                     ErrorCode::ActionFailed,
-                    "The app did not read the clipboard after Cmd+V, so nothing was pasted. Make sure a text field is focused, then try again or use typeText.",
+                    "No clipboard read was observed after Cmd+V. Check the target field before retrying; paste completion is unconfirmed.",
                 ))
             }
             _ => {}
@@ -143,7 +157,7 @@ pub fn paste(
     }
 
     let board = NSPasteboard::generalPasteboard();
-    let saved = snapshot(&board);
+    let saved = snapshot(&board)?;
     if !write(&board, vec![item]) {
         restore(&board, &saved);
         return Err(fail(ErrorCode::ActionFailed, "Could not put the text on the clipboard."));
@@ -160,8 +174,10 @@ The app may have pasted that instead of your text. Observe the app and check wha
         ));
     }
     if !restore(&board, &saved) {
-        return result
-            .and(Err(fail(ErrorCode::ActionFailed, "The text was pasted, but the user's previous clipboard could not be restored.")));
+        return result.and(Err(fail(
+            ErrorCode::ActionFailed,
+            "The previous clipboard could not be restored. Check the target field and clipboard before continuing.",
+        )));
     }
     result
 }

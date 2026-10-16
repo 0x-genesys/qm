@@ -1,7 +1,7 @@
 use crate::cancellation;
 use crate::protocol::*;
-use crate::tree::{self, Key, Place, ROOT};
 use crate::text::{self, Key as TextKey, Stroke};
+use crate::tree::{self, Key, Place, ROOT};
 use base64::Engine;
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFType, CFTypeRef, TCFType};
@@ -84,8 +84,6 @@ const MAX_VISITS: usize = 6_000;
 const MAX_DEPTH: usize = 200;
 /// Nesting of rendered lines.
 const MAX_INDENT: usize = 50;
-/// A container with more children than this stops reading them at the first one below the visible area.
-const LONG_LIST: usize = 100;
 /// Roles whose frame bounds what their descendants can show.
 const CLIPS: &[&str] = &["AXScrollArea", "AXWebArea"];
 const BORING: &[&str] = &["AXShowMenu", "AXScrollToVisible", "AXShowDefaultUI", "AXShowAlternateUI"];
@@ -595,7 +593,7 @@ impl Walk {
     }
 
     fn full(&self) -> bool {
-        self.chars >= MAX_TREE_CHARS || self.visited >= MAX_VISITS
+        self.chars >= MAX_TREE_CHARS || self.visited >= MAX_VISITS || cancellation::cancelled()
     }
 
     fn push(&mut self, key: Key, indent: usize, s: String) {
@@ -609,7 +607,6 @@ impl Walk {
             self.truncated = true;
             return;
         }
-        self.visited += 1;
         let (s, keep, role) = line(e);
         let clip = match f {
             Some(f) if CLIPS.contains(&role.as_str()) => tree::intersect(f, clip).unwrap_or(clip),
@@ -629,25 +626,19 @@ impl Walk {
     /// Walks the children inside `clip` and sums up the rest in one note, so offscreen content costs a line, not the budget.
     fn children(&mut self, parent: &El, depth: usize, indent: usize, anchor: u32, clip: Rect) {
         let kids = attr(parent, "AXChildren").map(list).unwrap_or_default();
-        let (mut hidden, mut shown) = (0, false);
-        for (n, c) in kids.iter().enumerate() {
+        let mut hidden = 0;
+        for c in &kids {
             if self.full() {
                 self.truncated = true;
                 break;
             }
+            self.visited += 1;
             let f = frame(c);
             match tree::place(f, clip) {
                 Place::Visible => {
-                    shown = true;
                     self.visit(c, f, depth, indent, anchor, clip);
                 }
-                Place::Hidden { below } => {
-                    hidden += 1;
-                    if below && shown && kids.len() > LONG_LIST {
-                        hidden += kids.len() - n - 1;
-                        break;
-                    }
-                }
+                Place::Hidden { .. } => hidden += 1,
             }
         }
         if hidden > 0 {

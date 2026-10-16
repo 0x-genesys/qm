@@ -70,8 +70,7 @@ ErrorCode   = bad_request | unsupported_platform | permission_missing | app_not_
   Unlabelled containers are folded away; indentation shows nesting.
 - Children outside the window, or outside an enclosing `AXScrollArea` or `AXWebArea`, are not walked. Each container
   that had some gets one note line, `… N more offscreen; scroll to reveal`. Zero-size frames count as offscreen unless
-  strictly inside the visible area (Chromium pins scrolled-out elements to the viewport edge with zero height). In a
-  container of more than 100 children, reading stops at the first child below the visible area.
+  strictly inside the visible area (Chromium pins scrolled-out elements to the viewport edge with zero height).
 - The tree is capped at about 60,000 characters of lines and 6,000 AX elements read (`truncated: true`).
 - `point` targets are **window-relative points** (origin = window top-left).
   The screenshot is captured at nominal resolution, so one PNG pixel is about one point; `pixels_per_point` says what it really was.
@@ -91,7 +90,7 @@ With `pace: true`, before each `click`, `scroll` and `drag`, desk writes `pointe
 - An index target that is offscreen (outside the window or an enclosing scroll or web area) is first sent `AXScrollToVisible`; if it is still offscreen 250 ms later, the action fails with `action_failed`.
 - Other clicks, `drag`, `scroll`, `type_text`, `press_key`, and the Cmd+V of `paste`: CGEvents posted to the app's pid (`CGEventPostToPid`). The real pointer does not move. For a click in web content, desk brings an inactive app forward first; other background actions may be ignored.
 - `type_text` sends each character with the key code and Shift/Option flags that type it on the user's current keyboard layout, plus the character itself. `\n`, `\r\n` and `\r` press Return and `\t` presses Tab. Characters the layout cannot type (emoji, other scripts, dead-key accents) are sent as text on key code 0.
-- `paste` puts the text on the general pasteboard (plain text, plus HTML for `markdown` and `html`; markdown is converted to HTML), presses Cmd+V and, once the app has read it, restores the previous clipboard. The data is promised lazily so desk knows when the app reads it, and it is marked `org.nspasteboard.TransientType` so clipboard managers skip it. If the app does not read it within 3 s the action fails with `action_failed` (nothing was pasted). If the clipboard changes for another reason meanwhile, desk keeps that new content and fails with `paste_conflict`, because the app may have pasted it instead.
+- `paste` puts the text on the general pasteboard (plain text, plus HTML for `markdown` and `html`; markdown is converted to HTML), presses Cmd+V and, once the app has read it, restores the previous clipboard. The data is promised lazily so desk knows when the app reads it, and it is marked `org.nspasteboard.TransientType` so clipboard managers skip it. If the app does not read it within 3 s the action fails with `action_failed` (paste completion is unconfirmed). If the clipboard changes for another reason meanwhile, desk keeps that new content and fails with `paste_conflict`, because the app may have pasted it instead.
 - `click` holds `modifiers` and keeps the button down for `hold_ms`. `press_key` holds the key for `hold_ms`.
 - `scroll` sends pixel wheel events in 120 px steps; a page is 85% of the target element's height (or width), else the window's.
 - `select_text` finds `text` in the element's `AXValue` (the occurrence preceded by `prefix` and followed by `suffix`), focuses the element and sets `AXSelectedTextRange` to the text or a caret before or after it.
