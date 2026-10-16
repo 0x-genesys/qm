@@ -1,5 +1,7 @@
 mod cancellation;
 mod protocol;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod tree;
 
 #[cfg(target_os = "macos")]
 mod mac;

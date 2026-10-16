@@ -1,5 +1,6 @@
 use crate::cancellation;
 use crate::protocol::*;
+use crate::tree::{self, Key, Place, ROOT};
 use base64::Engine;
 use core_foundation::array::CFArray;
 use core_foundation::base::{CFType, CFTypeRef, TCFType};
@@ -51,8 +52,18 @@ extern "C" {
     fn CFHash(cf: CFTypeRef) -> usize;
 }
 
-const MAX_NODES: usize = 800;
-const MAX_DEPTH: usize = 60;
+/// Characters of tree lines per observation, about 15k tokens.
+const MAX_TREE_CHARS: usize = 60_000;
+/// AX elements read per observation, kept or folded, to bound the time an observation takes.
+const MAX_VISITS: usize = 6_000;
+/// Nesting of AX elements, folded wrappers included; guards the recursion.
+const MAX_DEPTH: usize = 200;
+/// Nesting of rendered lines.
+const MAX_INDENT: usize = 50;
+/// A container with more children than this stops reading them at the first one below the visible area.
+const LONG_LIST: usize = 100;
+/// Roles whose frame bounds what their descendants can show.
+const CLIPS: &[&str] = &["AXScrollArea", "AXWebArea"];
 const BORING: &[&str] = &["AXShowMenu", "AXScrollToVisible", "AXShowDefaultUI", "AXShowAlternateUI"];
 const BUSY: &[&str] = &["AXBusyIndicator", "AXProgressIndicator"];
 const PRESS_MS: u64 = 50;
@@ -71,7 +82,7 @@ struct Snapshot {
     window_element: El,
     origin: (f64, f64),
     elements: Vec<(u32, El)>,
-    lines: HashMap<u32, String>,
+    lines: HashMap<Key, String>,
     next: u32,
 }
 
@@ -430,7 +441,7 @@ fn window_id(w: &El) -> u32 {
     id
 }
 
-fn line(e: &El, origin: (f64, f64)) -> (String, bool) {
+fn line(e: &El) -> (String, bool, String) {
     let role = str_attr(e, "AXRole").unwrap_or_else(|| "AXUnknown".into());
     let title = str_attr(e, "AXTitle");
     let desc = str_attr(e, "AXDescription").or_else(|| str_attr(e, "AXHelp"));
@@ -464,19 +475,17 @@ fn line(e: &El, origin: (f64, f64)) -> (String, bool) {
         let a: Vec<&str> = acts.iter().map(|a| a.trim_start_matches("AX")).collect();
         s += &format!(" <{}>", a.join(","));
     }
-    if let Some(f) = frame(e) {
-        s += &format!(" @{:.0},{:.0} {:.0}x{:.0}", f.x - origin.0, f.y - origin.1, f.w, f.h);
-    }
-    (s, keep)
+    (s, keep, role)
 }
 
 struct Walk {
-    origin: (f64, f64),
     known: HashMap<usize, Vec<(u32, El)>>,
     taken: HashSet<u32>,
     next: u32,
     elements: Vec<(u32, El)>,
-    lines: Vec<(u32, String)>,
+    lines: Vec<(Key, String)>,
+    notes: HashMap<u32, u32>,
+    chars: usize,
     truncated: bool,
     visited: usize,
 }
@@ -496,34 +505,94 @@ impl Walk {
         id
     }
 
-    fn visit(&mut self, e: &El, depth: usize, indent: usize) {
-        if self.visited >= MAX_NODES || depth > MAX_DEPTH {
+    fn full(&self) -> bool {
+        self.chars >= MAX_TREE_CHARS || self.visited >= MAX_VISITS
+    }
+
+    fn push(&mut self, key: Key, indent: usize, s: String) {
+        let line = format!("{}{s}", "  ".repeat(indent));
+        self.chars += line.len() + 1;
+        self.lines.push((key, line));
+    }
+
+    fn visit(&mut self, e: &El, f: Option<Rect>, depth: usize, indent: usize, anchor: u32, clip: Rect) {
+        if depth > MAX_DEPTH || indent > MAX_INDENT {
             self.truncated = true;
             return;
         }
         self.visited += 1;
-        let (s, keep) = line(e, self.origin);
-        let next = if keep {
-            let id = self.id(e);
-            self.lines.push((id, format!("{}[{}] {}", "  ".repeat(indent), id, s)));
-            self.elements.push((id, e.clone()));
-            indent + 1
-        } else {
-            indent
+        let (s, keep, role) = line(e);
+        let clip = match f {
+            Some(f) if CLIPS.contains(&role.as_str()) => tree::intersect(f, clip).unwrap_or(clip),
+            _ => clip,
         };
-        for c in attr(e, "AXChildren").map(list).unwrap_or_default() {
-            if self.visited >= MAX_NODES {
+        let (indent, anchor) = if keep {
+            let id = self.id(e);
+            self.push(Key::Element(id), indent, format!("[{id}] {s}"));
+            self.elements.push((id, e.clone()));
+            (indent + 1, id)
+        } else {
+            (indent, anchor)
+        };
+        self.children(e, depth + 1, indent, anchor, clip);
+    }
+
+    /// Walks the children inside `clip` and sums up the rest in one note, so offscreen content costs a line, not the budget.
+    fn children(&mut self, parent: &El, depth: usize, indent: usize, anchor: u32, clip: Rect) {
+        let kids = attr(parent, "AXChildren").map(list).unwrap_or_default();
+        let (mut hidden, mut shown) = (0, false);
+        for (n, c) in kids.iter().enumerate() {
+            if self.full() {
                 self.truncated = true;
                 break;
             }
-            self.visit(&c, depth + 1, next);
+            let f = frame(c);
+            match tree::place(f, clip) {
+                Place::Visible => {
+                    shown = true;
+                    self.visit(c, f, depth, indent, anchor, clip);
+                }
+                Place::Hidden { below } => {
+                    hidden += 1;
+                    if below && shown && kids.len() > LONG_LIST {
+                        hidden += kids.len() - n - 1;
+                        break;
+                    }
+                }
+            }
+        }
+        if hidden > 0 {
+            let seq = self.notes.entry(anchor).or_default();
+            let key = Key::Note(anchor, *seq);
+            *seq += 1;
+            self.push(key, indent, format!("… {hidden} more offscreen; scroll to reveal"));
         }
     }
 }
 
+/// The part of `e` (frame `f`) not clipped by the window or an enclosing scroll or web area.
+fn visible_rect(e: &El, f: Rect, window: Rect) -> Option<Rect> {
+    let mut r = tree::intersect(f, window)?;
+    let mut parent = attr(e, "AXParent");
+    for _ in 0..MAX_DEPTH {
+        let Some(p) = parent else { break };
+        let role = str_attr(&p, "AXRole").unwrap_or_default();
+        if role == "AXWindow" {
+            break;
+        }
+        if CLIPS.contains(&role.as_str()) {
+            if let Some(pf) = frame(&p) {
+                r = tree::intersect(r, pf)?;
+            }
+        }
+        parent = attr(&p, "AXParent");
+    }
+    Some(r)
+}
+
 fn busy(e: &El, depth: usize, seen: &mut usize) -> bool {
     *seen += 1;
-    if *seen > MAX_NODES || depth > MAX_DEPTH {
+    if *seen > MAX_VISITS || depth > MAX_DEPTH {
         return false;
     }
     if str_attr(e, "AXRole").is_some_and(|r| BUSY.contains(&r.as_str())) {
@@ -623,41 +692,23 @@ impl Desk {
         let f = frame(&w).unwrap_or(Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 });
         let prev = self.cache.remove(&app.pid).filter(|s| s.window == win);
         let mut walk = Walk {
-            origin: (f.x, f.y),
             known: HashMap::new(),
             taken: HashSet::new(),
             next: prev.as_ref().map_or(0, |p| p.next),
             elements: vec![],
             lines: vec![],
+            notes: HashMap::new(),
+            chars: 0,
             truncated: false,
             visited: 0,
         };
         for (id, e) in prev.iter().flat_map(|p| p.elements.iter()) {
             walk.known.entry(unsafe { CFHash(e.as_CFTypeRef()) }).or_default().push((*id, e.clone()));
         }
-        for c in attr(&w, "AXChildren").map(list).unwrap_or_default() {
-            if walk.visited >= MAX_NODES {
-                walk.truncated = true;
-                break;
-            }
-            walk.visit(&c, 0, 0);
-        }
+        let everywhere = Rect { x: -1e9, y: -1e9, w: 2e9, h: 2e9 };
+        walk.children(&w, 0, 0, ROOT, if f.w > 0.0 && f.h > 0.0 { f } else { everywhere });
         let screenshot = if shot { Some(capture(&w, f)?) } else { None };
-        let base = prev.filter(|_| diff);
-        let tree: String = walk
-            .lines
-            .iter()
-            .filter(|(id, l)| base.as_ref().is_none_or(|b| b.lines.get(id) != Some(l)))
-            .map(|(_, l)| format!("{l}\n"))
-            .collect();
-        let removed = base
-            .as_ref()
-            .map(|b| {
-                let mut gone: Vec<u32> = b.lines.keys().filter(|id| !walk.taken.contains(id)).copied().collect();
-                gone.sort_unstable();
-                gone
-            })
-            .unwrap_or_default();
+        let rendered = tree::render(&walk.lines, prev.as_ref().filter(|_| diff).map(|p| &p.lines));
         let obs = Observation {
             app: app.name.clone(),
             bundle_id: app.bundle.clone(),
@@ -666,9 +717,9 @@ impl Desk {
             frame: f,
             elements: walk.elements.len() as u32,
             truncated: walk.truncated,
-            diffed: base.is_some(),
-            tree,
-            removed,
+            diffed: rendered.diffed,
+            tree: rendered.tree,
+            removed: rendered.removed,
             screenshot,
         };
         self.cache.insert(
@@ -676,7 +727,7 @@ impl Desk {
             Snapshot {
                 window: win,
                 window_element: w.clone(),
-                origin: walk.origin,
+                origin: (f.x, f.y),
                 elements: walk.elements,
                 lines: walk.lines.into_iter().collect(),
                 next: walk.next,
@@ -761,8 +812,26 @@ impl Desk {
                 Ok(pt(o.0 + p.x, o.1 + p.y))
             }
             Target::Index(i) => {
-                let f = frame(&self.element(pid, i)?).ok_or_else(|| fail(ErrorCode::BadIndex, format!("element {i} has no frame")))?;
-                Ok(pt(f.x + f.w / 2.0, f.y + f.h / 2.0))
+                let e = self.element(pid, i)?;
+                let window = self.cache.get(&pid).and_then(|s| frame(&s.window_element));
+                let visible = || {
+                    let f = frame(&e).ok_or_else(|| fail(ErrorCode::BadIndex, format!("element {i} has no frame")))?;
+                    Ok::<_, Failure>(window.map_or(Some(f), |w| visible_rect(&e, f, w)))
+                };
+                let r = match visible()? {
+                    Some(r) => r,
+                    None => {
+                        let _ = perform(&e, "AXScrollToVisible");
+                        cancellation::wait(Duration::from_millis(250));
+                        visible()?.ok_or_else(|| {
+                            fail(
+                                ErrorCode::ActionFailed,
+                                format!("element {i} is offscreen and could not be scrolled into view; scroll toward it and observe again"),
+                            )
+                        })?
+                    }
+                };
+                Ok(pt(r.x + r.w / 2.0, r.y + r.h / 2.0))
             }
         }
     }
@@ -782,6 +851,9 @@ impl Desk {
             Action::Click { target: Target::Index(i), button: Button::Left, count: 1, modifiers, hold_ms: 0 } if modifiers.is_empty() => {
                 let e = self.element(pid, *i)?;
                 if actions(&e).iter().any(|a| a == "AXPress") {
+                    if frame(&e).is_some() {
+                        self.point(pid, Target::Index(*i))?;
+                    }
                     perform(&e, "AXPress")
                 } else {
                     let p = self.point(pid, Target::Index(*i))?;
