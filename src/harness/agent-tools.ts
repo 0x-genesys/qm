@@ -1,4 +1,5 @@
 import { adminOperations } from "../tools/admin.ts";
+import { handbackStop } from "../runs/run-store.ts";
 import { MAX_OUTBOUND_FILES, type OutboundFile } from "../core/attachments.ts";
 import { MaskedExecutionError } from "../security/secret-masking.ts";
 import type { DocumentInput } from "../core/document-inputs.ts";
@@ -388,7 +389,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       sourceScopeId,
     });
     if (type === "tool_result" && isObj(payload)) {
-      if (ref.shutdown?.aborted) payload = { ...payload, interrupted: true, stop: { kind: "shutdown" } };
+      if (ref.shutdown?.aborted) payload = { ...payload, interrupted: true, stop: handbackStop(ref.shutdown) };
       else if (ref.abortSignal?.aborted) payload = { ...payload, stopped: true };
     }
     await ref.emit({ type, payload, scopeLabel });
