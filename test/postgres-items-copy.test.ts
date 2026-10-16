@@ -477,3 +477,17 @@ test("payload parsing keeps ordinary JSON fast-path and Unicode repair semantics
       await assert.rejects(raw.query("SELECT items_copy_payload($1::text)", [input]), /invalid input syntax/);
   });
 });
+
+test("items copy preserves stopped-turn records", { skip }, async () => {
+  await withSchema(async (raw) => {
+    const runId = "11111111-1111-4111-8111-111111111111";
+    await seed(raw, "stopped", [["system", { kind: "turn_stopped", runId, reason: "user", text: "Stopped" }]]);
+    await raw.query("INSERT INTO participants(session_id, principal_id, valid_from) VALUES ('stopped', 'u:ann', 0)");
+    await raw.query(itemsCopySql());
+    const [row] = await items(raw, "stopped");
+    assert.equal(row.kind, "Stop");
+    assert.equal(row.turn_id, runId);
+    assert.equal(row.author, "u:ann");
+    assert.deepEqual(row.body, { reason: "user", text: "Stopped" });
+  });
+});

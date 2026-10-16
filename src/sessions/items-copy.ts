@@ -29,7 +29,7 @@ const bucketPredicate = (col: string, bucket: { index: number; count: number }):
 };
 
 const TENANT = `(SELECT id FROM qm_tenant)`;
-const AUTHOR_KINDS_SQL = `('UserMessage', 'SteeringMessage', 'ElicitationResponse')`;
+const AUTHOR_KINDS_SQL = `('UserMessage', 'SteeringMessage', 'ElicitationResponse', 'Stop')`;
 
 const str = (key: string): string =>
   `CASE WHEN jsonb_typeof(n.body -> '${key}') = 'string' THEN n.body ->> '${key}' END`;
@@ -63,6 +63,7 @@ const KIND = `  CROSS JOIN LATERAL (
                 CASE n.body ->> 'kind'
                   WHEN 'context_summary' THEN 'ContextCompaction'
                   WHEN 'turn_failure' THEN 'Error'
+                  WHEN 'turn_stopped' THEN 'Stop'
                   WHEN 'wake' THEN 'Wake'
                   WHEN 'message_revision' THEN 'Retraction'
                   WHEN 'goal' THEN NULL
