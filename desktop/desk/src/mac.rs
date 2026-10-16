@@ -14,7 +14,8 @@ use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, CGMouseButton, Ev
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_graphics::window::{
-    create_image, kCGWindowImageBoundsIgnoreFraming, kCGWindowImageNominalResolution, kCGWindowListOptionIncludingWindow,
+    copy_window_info, create_image, kCGWindowImageBoundsIgnoreFraming, kCGWindowImageNominalResolution, kCGWindowListOptionIncludingWindow,
+    kCGWindowListOptionOnScreenOnly, kCGWindowNumber,
 };
 use foreign_types::ForeignType;
 use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
@@ -74,6 +75,7 @@ extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
     fn CFHash(cf: CFTypeRef) -> usize;
+    fn CFDictionaryGetValue(dict: CFTypeRef, key: CFTypeRef) -> CFTypeRef;
 }
 
 const MAX_TREE_CHARS: usize = 60_000;
@@ -515,6 +517,24 @@ fn window_id(w: &El) -> u32 {
     id
 }
 
+fn on_current_space(win: u32) -> bool {
+    let Some(windows) = copy_window_info(kCGWindowListOptionOnScreenOnly, 0) else {
+        return false;
+    };
+    windows.iter().any(|item| {
+        let item = unsafe { CFType::wrap_under_get_rule(*item as CFTypeRef) };
+        let Some(info) = item.downcast::<CFDictionary>() else {
+            return false;
+        };
+        let id = unsafe { CFDictionaryGetValue(info.as_CFTypeRef(), kCGWindowNumber as CFTypeRef) };
+        if id.is_null() {
+            return false;
+        }
+        let number = unsafe { CFType::wrap_under_get_rule(id) };
+        number.downcast::<CFNumber>().and_then(|n| n.to_i64()) == Some(i64::from(win))
+    })
+}
+
 fn line(e: &El) -> (String, bool, String) {
     let role = str_attr(e, "AXRole").unwrap_or_else(|| "AXUnknown".into());
     let title = str_attr(e, "AXTitle");
@@ -833,6 +853,9 @@ impl Desk {
         }
         let (ax, w) = window(&app)?;
         let win = window_id(&w);
+        if !on_current_space(win) {
+            return Err(fail(ErrorCode::NoWindow, "Window is not visible on the current Space; switch Spaces and observe again"));
+        }
         let mut focus = if actions.iter().any(|a| !matches!(a, Action::Wait { .. } | Action::Raise)) {
             Some(crate::focus::Focus::begin(app.pid, win)?)
         } else {
@@ -884,7 +907,7 @@ impl Desk {
         let (_, current) = window(app)?;
         let snapshot = self.cache.get(&app.pid).ok_or_else(|| fail(ErrorCode::BadIndex, "Observe before acting"))?;
         let origin = frame(&current).map(|f| (f.x, f.y));
-        if current != snapshot.window_element || origin != Some(snapshot.origin) {
+        if current != snapshot.window_element || origin != Some(snapshot.origin) || !on_current_space(window_id(&current)) {
             return Err(fail(ErrorCode::BadIndex, "The window changed or moved; observe again before acting"));
         }
         Ok(())

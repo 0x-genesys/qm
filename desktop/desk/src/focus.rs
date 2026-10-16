@@ -1,9 +1,9 @@
 use crate::protocol::{ErrorCode, Failure};
 use core_foundation::base::{CFTypeRef, TCFType};
-use core_foundation::string::CFString;
+use core_foundation::string::{CFString, CFStringRef};
 use objc2::msg_send;
 use objc2::rc::autoreleasepool;
-use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSWorkspace};
+use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
 use objc2_foundation::NSPoint;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -22,6 +22,9 @@ extern "C" {
     fn CFBooleanGetTypeID() -> usize;
     fn CFGetTypeID(value: CFTypeRef) -> usize;
     fn CGSessionCopyCurrentDictionary() -> CFTypeRef;
+    fn AXUIElementCreateSystemWide() -> CFTypeRef;
+    fn AXUIElementCopyAttributeValue(element: CFTypeRef, attribute: CFStringRef, value: *mut CFTypeRef) -> i32;
+    fn AXUIElementGetPid(element: CFTypeRef, pid: *mut i32) -> i32;
 }
 
 fn screen_available() -> bool {
@@ -68,7 +71,21 @@ fn synthetic_focus(pid: i32, window: u32, subtype: i16) -> Result<(), Failure> {
 }
 
 fn frontmost() -> Option<i32> {
-    NSWorkspace::sharedWorkspace().frontmostApplication().map(|app| app.processIdentifier())
+    let system = unsafe { AXUIElementCreateSystemWide() };
+    if system.is_null() {
+        return None;
+    }
+    let key = CFString::new("AXFocusedApplication");
+    let mut app: CFTypeRef = std::ptr::null();
+    let status = unsafe { AXUIElementCopyAttributeValue(system, key.as_concrete_TypeRef(), &mut app) };
+    unsafe { core_foundation::base::CFRelease(system) };
+    if status != 0 || app.is_null() {
+        return None;
+    }
+    let mut pid = 0;
+    let status = unsafe { AXUIElementGetPid(app, &mut pid) };
+    unsafe { core_foundation::base::CFRelease(app) };
+    (status == 0 && pid > 0).then_some(pid)
 }
 
 pub struct Focus {
