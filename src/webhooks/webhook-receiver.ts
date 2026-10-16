@@ -130,8 +130,10 @@ export function createWebhookReceiver(deps: WebhookReceiverDeps): WebhookReceive
         errorNotice: (s) => `⚠️ Webhook did not complete: ${s}`,
       })
         .then(async (outcome) => {
-          if (outcome.authzFailed || (outcome.ran && outcome.status !== "ok" && outcome.status !== "silent"))
-            await deps.webhooks.markDeliveryFailed(wh.id, deliveryId);
+          if (outcome.authzFailed || (outcome.ran && !outcome.sessionId))
+            void deps.webhooks
+              .markDeliveryFailed(wh.id, deliveryId)
+              .catch(reportFailureAs("webhook: persist delivery failure", undefined, `webhook=${wh.id}`));
           if (outcome.authzFailed) {
             await deps.webhooks.setEnabled(wh.id, false);
             await deps.webhooks.recordFire(wh.id, { at: Date.now(), error: outcome.note ?? "fail-closed" });
@@ -145,10 +147,12 @@ export function createWebhookReceiver(deps: WebhookReceiverDeps): WebhookReceive
         })
         .catch((e: unknown) => {
           const msg = errMessage(e);
-          void Promise.all([
-            deps.webhooks.markDeliveryFailed(wh.id, deliveryId),
-            deps.webhooks.recordFire(wh.id, { at: Date.now(), error: msg }),
-          ]).catch(reportFailureAs("webhook: persist fire failure", undefined, `webhook=${wh.id}`));
+          void deps.webhooks
+            .markDeliveryFailed(wh.id, deliveryId)
+            .catch(reportFailureAs("webhook: persist delivery failure", undefined, `webhook=${wh.id}`));
+          void deps.webhooks
+            .recordFire(wh.id, { at: Date.now(), error: msg })
+            .catch(reportFailureAs("webhook: persist fire failure", undefined, `webhook=${wh.id}`));
           reportFailure("webhook: fire", e, `webhook=${wh.id}`);
         });
 

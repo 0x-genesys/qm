@@ -1,4 +1,4 @@
-import type { Run } from "../../runs/run-store.ts";
+import { runFailed, type Run } from "../../runs/run-store.ts";
 import { sessionTreeWorking } from "../../sessions/session-syscalls.ts";
 import { bearerMatches, sendJson } from "../http.ts";
 import type { BaseCtx, Route } from "./route.ts";
@@ -9,7 +9,7 @@ const MAX_KEY_LENGTH = 512;
 
 function settledState(run: Run | null, deliveryFailed: boolean): SessionState {
   if (!run) return deliveryFailed ? "failed" : "accepted";
-  return run.status === "failed" || run.result?.status === "failed" ? "failed" : "idle";
+  return runFailed(run) ? "failed" : "idle";
 }
 
 async function sessionStatus(ctx: BaseCtx): Promise<void> {

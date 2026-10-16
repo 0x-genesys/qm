@@ -222,6 +222,7 @@ test("session status: a webhook delivery's sessionRef tracks its session through
     assert.equal(session?.surface, "webhook");
     assert.equal(body.sessionId, session.id);
     assert.equal(typeof body.runId, "string");
+    assert.deepEqual(await built.webhookReceiver.delivery(receipt.sessionRef), { failed: false });
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }

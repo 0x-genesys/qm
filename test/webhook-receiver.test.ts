@@ -417,7 +417,7 @@ test("an edited task applies to the next delivery at the same URL and secret", a
 
 test("a delivery's record reports whether its fire failed, and unknown refs are not deliveries", async () => {
   for (const [runResult, failed] of [
-    [{ status: "ok", reply: "done" }, false],
+    [{ status: "ok", reply: "done", sessionId: "s1" }, false],
     [{ status: "refused", reason: "not a member" }, true],
   ] as const) {
     const { webhooks, receiver } = harness(runResult);
