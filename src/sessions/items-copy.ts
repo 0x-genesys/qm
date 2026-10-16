@@ -65,6 +65,7 @@ const KIND = `  CROSS JOIN LATERAL (
                   WHEN 'turn_failure' THEN 'Error'
                   WHEN 'turn_stopped' THEN 'Stop'
                   WHEN 'wake' THEN 'Wake'
+                  WHEN 'goal_cancelled' THEN 'Wake'
                   WHEN 'message_revision' THEN 'Retraction'
                   WHEN 'goal' THEN NULL
                   WHEN 'memory_context' THEN NULL

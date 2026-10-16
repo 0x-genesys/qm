@@ -489,3 +489,22 @@ test("items copy preserves stopped-turn records", { skip }, async () => {
     assert.deepEqual(row.body, { reason: "user", text: "Stopped" });
   });
 });
+
+test("items copy maps goal cancellation notices to system wakes", { skip }, async () => {
+  await withSchema(async (raw) => {
+    const body = { objective: "A sample goal", cancelledBy: "u:ann" };
+    await seed(raw, "cancelled-goal", [["system", { kind: "goal_cancelled", ...body }]]);
+    await raw.query(itemsCopySql());
+    const [row] = await items(raw, "cancelled-goal");
+    assert.equal(row.kind, "Wake");
+    assert.equal(row.wake_cause, "system");
+    assert.equal(row.author, null);
+    assert.deepEqual(row.body, body);
+    await raw.query("CREATE TEMP TABLE items_copy_batch(session_id text,seq int,PRIMARY KEY(session_id,seq))");
+    await raw.query("INSERT INTO items_copy_batch VALUES ('cancelled-goal', 0)");
+    const selected = (await raw.query(itemsSelectedRowsSql())).rows[0];
+    assert.equal(selected.kind, "Wake");
+    assert.equal(selected.wake_cause, "system");
+    assert.deepEqual(selected.body, body);
+  });
+});
