@@ -157,7 +157,8 @@ const SELECT = `SELECT ${TENANT}, e.session_id, e.seq,
        CASE WHEN t.run_is_uuid THEN (n.body ->> 'runId')::uuid END,
        k.kind,
        a.author,
-       CASE WHEN k.kind IN ('ToolCall', 'ToolResult') THEN NULLIF(${str("callId")}, '') END,
+       CASE WHEN k.kind IN ('ToolCall', 'ToolResult') AND octet_length(${str("callId")}) <= 1024
+            THEN NULLIF(${str("callId")}, '') END,
        CASE WHEN k.kind IN ('Elicitation', 'ElicitationResponse') THEN
          COALESCE(NULLIF(${str("requestId")}, ''), 'missing-elicit:' || e.seq) END,
        CASE WHEN k.kind = 'Wake' THEN
