@@ -472,7 +472,7 @@ fn field(ax: &El) -> Option<Field> {
 }
 
 fn paste(pid: i32, ax: &El, s: &str, format: PasteFormat) -> Result<(), Failure> {
-    let v = match keyboard().get(&'v') {
+    let v = match keyboard_for_flags(CGEventFlags::CGEventFlagCommand).get(&'v') {
         Some(k) => k.code,
         None => chord("v")?.0,
     };
@@ -481,9 +481,7 @@ fn paste(pid: i32, ax: &El, s: &str, format: PasteFormat) -> Result<(), Failure>
     let mut check = || {
         use crate::pasteboard::Check;
         match (&before, field(ax)) {
-            (Some(b), Some(now)) if now.element == b.element && text::inserted(&b.value, b.selection, &now.value, &pasted) => {
-                Check::Landed
-            }
+            (Some(b), Some(now)) if now.element == b.element && text::inserted(&b.value, b.selection, &now.value, &pasted) => Check::Landed,
             (Some(_), Some(_)) => Check::NotYet,
             _ => Check::Unreadable,
         }
