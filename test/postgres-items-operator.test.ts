@@ -156,8 +156,29 @@ test(
       await client.query("ALTER TABLE session_entries ENABLE TRIGGER items_copy_capture");
       await resumed.verify();
       await assert.rejects(resumed.finish(true), /build the items indexes/);
-      await resumed.indexes();
-      await resumed.indexes();
+      await assert.rejects(
+        client.query("CREATE UNIQUE INDEX CONCURRENTLY items_one_call_per_kind ON items(tenant_id)"),
+        /could not create unique index/,
+      );
+      await writer.query("SELECT pg_advisory_lock(hashtext('qm:schema-migrations'))");
+      try {
+        await resumed.indexes();
+        await resumed.indexes();
+      } finally {
+        await writer.query("SELECT pg_advisory_unlock(hashtext('qm:schema-migrations'))");
+      }
+      assert.match(
+        (await client.query("SELECT pg_get_indexdef('items_one_call_per_kind'::regclass) AS def")).rows[0].def,
+        /call_id\) WHERE \(call_id IS NOT NULL\)/,
+      );
+      assert.equal(
+        (
+          await client.query(
+            "SELECT count(*)::int AS n FROM pg_index WHERE indrelid='items'::regclass AND NOT indisvalid",
+          )
+        ).rows[0].n,
+        0,
+      );
       await resumed.finish(true);
       assert.equal((await resumed.status()).phase, "ready");
       assert.equal(
