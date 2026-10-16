@@ -1,3 +1,4 @@
+import { isSessionTurn, sessionTurnOrigin } from "../core/turn-origin.ts";
 import { memoryContextPayload, type MemoryContextSnapshot } from "../memory/context-boundary.ts";
 import { TURN_STOPPED_KIND } from "../harness/replay.ts";
 import { principalDestination } from "../reach/reach.ts";
@@ -47,7 +48,7 @@ export async function delegatedAuthorizationOrigin(
   let current = request;
   for (let depth = 0; depth < 32; depth++) {
     if (
-      current.origin.kind !== "automation" ||
+      current.origin.kind === "automation" ||
       current.readOnly ||
       current.privateSessionMessage ||
       current.swarm ||
@@ -66,11 +67,15 @@ export async function delegatedAuthorizationOrigin(
       child.parentSessionId === sender.id &&
       source.sessionId === sender.threadRef;
     const continued =
-      requiresDelegation(current, true) &&
       isSubagentThreadRef(sender.threadRef) &&
       sender.parentSessionId === child.id &&
       source.sessionId === child.threadRef;
-    if (!delegated && !continued) return;
+    const started =
+      current.surface === "web" &&
+      !child.parentSessionId &&
+      !isSubagentThreadRef(child.threadRef) &&
+      source.sessionId === sender.threadRef;
+    if (!delegated && !continued && !started) return;
     const parent = source.request;
     const audience = new Set([parent.actor.id, ...parent.conversation.audience.map((person) => person.id)]);
     if (
@@ -91,6 +96,7 @@ export async function delegatedAuthorizationOrigin(
         (!!parent.conversation.publishMembers?.length &&
           parent.conversation.publishMembers.every((person) => person.type === "internal")));
     if (
+      !isSessionTurn(parent) &&
       internal &&
       (parent.origin.kind === "human" ||
         (parent.origin.kind === "ambient" && parent.origin.live === true && parent.conversation.kind !== "dm"))
@@ -255,7 +261,15 @@ export interface SessionSyscallDeps {
     list(actorId: string): Promise<Session[]>;
     start(
       actorId: string,
-      input: { scopeId: ScopeId; forkOf?: string; text?: string; title?: string },
+      input: {
+        scopeId: ScopeId;
+        forkOf?: string;
+        text?: string;
+        title?: string;
+        origin?: OrchestratorInput["origin"];
+        sessionSenderId?: string;
+        delegatingRunId?: string;
+      },
     ): Promise<{ session: Session; refused?: string } | { error: string }>;
   };
 }
@@ -350,14 +364,7 @@ function childRunRequest(child: Session, meta: SpawnMeta, text: string, displayT
     ...(meta.deliveryCandidates ? { deliveryCandidates: meta.deliveryCandidates } : {}),
     actor: meta.actor,
     conversation: { ...meta.conversation, threadRef: child.threadRef },
-    origin: {
-      kind: "automation",
-      ...(meta.origin?.kind === "automation" && meta.origin.destination
-        ? { destination: meta.origin.destination }
-        : {}),
-      ...(meta.origin?.kind === "automation" && meta.origin.useOwnerKeychain ? { useOwnerKeychain: true } : {}),
-      screenData: text,
-    },
+    origin: sessionTurnOrigin(meta.origin, text),
     ...(meta.unattendedGrants ? { unattendedGrants: [...meta.unattendedGrants] } : {}),
     text,
     displayText,
@@ -582,7 +589,7 @@ export function createSessionSyscalls(deps: SessionSyscallDeps): SessionSyscalls
           throw new Error("the sender no longer has access to this session");
         const request: OrchestratorInput = {
           ...binding.request,
-          origin: binding.request.origin?.kind === "automation" ? binding.request.origin : { kind: "automation" },
+          origin: binding.request.origin ?? { kind: "automation" },
           text: "",
         };
         return deps.prepareRequest ? deps.prepareRequest(request) : request;
@@ -691,15 +698,7 @@ export function createSessionSyscalls(deps: SessionSyscallDeps): SessionSyscalls
               );
               const title = existing ? visibleTitle(existing) : input.name?.trim() || autoTitle(task);
               const meta: SpawnMeta = {
-                ...(caller.origin.kind === "automation"
-                  ? {
-                      origin: {
-                        kind: "automation" as const,
-                        ...(caller.origin.useOwnerKeychain ? { useOwnerKeychain: true } : {}),
-                        ...(caller.origin.destination ? { destination: caller.origin.destination } : {}),
-                      },
-                    }
-                  : {}),
+                origin: caller.origin,
                 ...(binding.request.surfaceTools ? { surfaceTools: true } : {}),
                 ...(binding.request.deliveryCandidates
                   ? { deliveryCandidates: binding.request.deliveryCandidates }
@@ -868,10 +867,7 @@ export function createSessionSyscalls(deps: SessionSyscallDeps): SessionSyscalls
                   return { ok: true, sessionId: target.id, title, delivered: "queued_turn" };
                 }
               }
-              request.origin = {
-                ...(request.origin.kind === "automation" ? request.origin : { kind: "automation" as const }),
-                screenData: stamped,
-              };
+              request.origin = sessionTurnOrigin(request.origin, stamped);
               request.sessionSenderId = binding.session.id;
               request.delegatingRunId = binding.request.runId;
               if (
@@ -1038,6 +1034,9 @@ export function createSessionSyscalls(deps: SessionSyscallDeps): SessionSyscalls
           const out = await conversations
             .start(binding.request.actor.id, {
               scopeId: binding.scopeId,
+              origin: binding.request.origin,
+              sessionSenderId: binding.session.id,
+              ...(binding.request.runId ? { delegatingRunId: binding.request.runId } : {}),
               ...(input.fork ? { forkOf: binding.session.id } : {}),
               ...(text ? { text } : {}),
               ...(input.title?.trim() ? { title: input.title.trim() } : {}),
@@ -1144,10 +1143,7 @@ export async function deliverSubagentMail(deps: SubagentMailDeps, run: Run): Pro
         : {}),
       threadRef: parent.threadRef,
     },
-    origin: {
-      ...(meta.origin?.kind === "automation" ? meta.origin : { kind: "automation" as const }),
-      screenData: text,
-    },
+    origin: sessionTurnOrigin(meta.origin, text),
     text,
     displayText: `[subagent ${title}: ${kind.replace("_", " ")}]`,
     envelopeWrapped: true,
@@ -1246,7 +1242,7 @@ export async function deliverSubagentMail(deps: SubagentMailDeps, run: Run): Pro
         ...prepared,
         ...(surfaceTools ? { surfaceTools } : {}),
         ...(originalParent && initiatingRun ? { delegatingRunId: initiatingRun.id } : {}),
-        origin: { ...prepared.origin, kind: "automation", screenData: wake },
+        origin: sessionTurnOrigin(prepared.origin, wake),
         text: wake,
         displayText: "Delegated task completed",
       },
