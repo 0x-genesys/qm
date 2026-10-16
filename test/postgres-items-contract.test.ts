@@ -74,6 +74,18 @@ test("pg items keep turn, author and time in typed columns", { skip }, async () 
       },
     );
     await store.append(lease, { type: "system", payload: { kind: "turn_failure", message: "x" }, scopeLabel: scope });
+    const stopped = await store.append(turn, {
+      type: "system",
+      payload: { kind: "turn_stopped", reason: "user", text: "Stopped" },
+      scopeLabel: scope,
+      author: "alice",
+    });
+    assert.deepEqual((await store.getEntry(session.id, stopped.seq))?.payload, {
+      kind: "turn_stopped",
+      reason: "user",
+      text: "Stopped",
+      runId,
+    });
     await assert.rejects(
       store.append(lease, { type: "system", payload: { kind: "goal", goal: {} }, scopeLabel: scope }),
       /goal/,
@@ -95,6 +107,7 @@ test("pg items keep turn, author and time in typed columns", { skip }, async () 
         [2, "AgentMessage", runId, null, null],
         [3, "ToolCall", null, null, null],
         [4, "Error", null, null, "turn_failure"],
+        [5, "Stop", runId, "alice", null],
       ],
     );
     assert.equal(Number(rows[0].ms), user.createdAt);

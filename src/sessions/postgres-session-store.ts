@@ -291,9 +291,6 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
   const hasOrigin = (alias: string, origin: SessionOrigin): string => `${originExpr(alias)} = '${origin}'`;
   const originFilterClause = (alias: string, origin: SessionOriginFilter): string =>
     origin === "other_background" ? `${originExpr(alias)} NOT IN ('conversation', 'cron')` : hasOrigin(alias, origin);
-  const previewExpr = (col: string): string =>
-    `CASE WHEN jsonb_typeof(${col} -> 'text') = 'string' THEN ${col} ->> 'text' END`;
-
   const spendSql = `WITH RECURSIVE ancestry AS (
            SELECT s.id AS session_id, s.parent_session_id, ${originExpr("s")} AS origin, ARRAY[s.id] AS path
              FROM sessions s

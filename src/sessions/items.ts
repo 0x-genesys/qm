@@ -92,21 +92,14 @@ const SYSTEM_KINDS: Record<string, ItemKind> = {
 };
 
 export function itemFromEntry(type: EntryType, payload: unknown, context: ItemContext = {}): ItemRow {
-  const raw =
-    isObj(payload) && !Array.isArray(payload)
-      ? payload
-      : typeof payload === "string"
-        ? { text: payload }
-        : payload == null
-          ? {}
-          : { value: payload };
+  let raw: Record<string, unknown> = {};
+  if (isObj(payload) && !Array.isArray(payload)) raw = payload;
+  else if (typeof payload === "string") raw = { text: payload };
+  else if (payload != null) raw = { value: payload };
   const body = { ...raw };
-  const kind =
-    type === "system"
-      ? SYSTEM_KINDS[String(raw.kind)]
-      : type === "user" && raw.steered === true
-        ? "SteeringMessage"
-        : TYPES[type];
+  let kind = TYPES[type];
+  if (type === "system") kind = SYSTEM_KINDS[String(raw.kind)];
+  else if (type === "user" && raw.steered === true) kind = "SteeringMessage";
   if (!kind) throw new Error(`items: entry type ${type}/${String(raw.kind)} is not stored`);
   const turnId = context.turnId ?? str(raw.runId);
   const row: ItemRow = {
@@ -120,7 +113,7 @@ export function itemFromEntry(type: EntryType, payload: unknown, context: ItemCo
     text: null,
     tool: null,
     step: null,
-    variant: type === "text" ? "narration" : type === "delivery" ? "files_delivered" : null,
+    variant: ({ text: "narration", delivery: "files_delivered" } as Partial<Record<EntryType, string>>)[type] ?? null,
     isError: null,
     hidden: null,
     externalId: null,
@@ -204,8 +197,10 @@ export function entryFromItem(
     if (value != null) payload[key] = value;
   };
   let type = ENTRY_TYPES[row.kind] ?? "system";
-  if (row.kind === "AgentMessage")
-    type = row.variant === "narration" ? "text" : row.variant === "files_delivered" ? "delivery" : "assistant";
+  if (row.kind === "AgentMessage") {
+    if (row.variant === "narration") type = "text";
+    else if (row.variant === "files_delivered") type = "delivery";
+  }
   const textKey = TEXT_KEYS[row.kind];
   if (textKey && (row.text !== null || !(textKey in payload))) put(textKey, row.text ?? "");
   put("runId", row.turnId);
@@ -218,17 +213,15 @@ export function entryFromItem(
   put("throughSeq", row.throughSeq);
   put("approved", row.approved);
   if (row.kind === "SteeringMessage") payload.steered = true;
-  if (type === "system")
-    payload.kind =
-      row.kind === "ContextCompaction"
-        ? "context_summary"
-        : row.kind === "Retraction"
-          ? "message_revision"
-          : row.kind === "Error"
-            ? "turn_failure"
-            : row.kind === "Stop"
-              ? "turn_stopped"
-              : "wake";
+  if (type === "system") {
+    const systemKinds: Partial<Record<ItemKind, string>> = {
+      ContextCompaction: "context_summary",
+      Retraction: "message_revision",
+      Error: "turn_failure",
+      Stop: "turn_stopped",
+    };
+    payload.kind = systemKinds[row.kind] ?? "wake";
+  }
   put("cause", row.wakeCause);
   if (row.step != null || (isObj(payload.wire) && isObj(payload.wire.message))) {
     payload.step = {

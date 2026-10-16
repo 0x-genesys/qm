@@ -408,7 +408,6 @@ test("a recovered reply the turn never recorded is written into the transcript a
   const drained = await deliveries.pending("web");
   assert.equal(drained.length, 1);
   const entries = await sessions.getEntries(session.id);
-  const key = drained[0]!.idempotencyKey;
   assert.equal(entries.length, 1);
   assert.equal(entries[0]!.type, "assistant");
   assert.equal((entries[0]!.payload as { text: string }).text, "recovered reply");
