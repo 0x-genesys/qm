@@ -71,9 +71,8 @@ fn insertion(before: &[char], pasted: &[char], after: &[char]) -> bool {
         return false;
     }
     let common = before.iter().zip(after).take_while(|(x, y)| x == y).count();
-    (common.saturating_sub(pasted.len())..=common).any(|i| {
-        after[..i] == before[..i] && after[i..i + pasted.len()] == *pasted && after[i + pasted.len()..] == before[i..]
-    })
+    (common.saturating_sub(pasted.len())..=common)
+        .any(|i| after[..i] == before[..i] && after[i..i + pasted.len()] == *pasted && after[i + pasted.len()..] == before[i..])
 }
 
 /// Whether `after` is exactly `before` with `pasted` inserted at the selection (UTF-16
