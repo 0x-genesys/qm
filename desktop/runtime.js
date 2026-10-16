@@ -264,7 +264,7 @@ app.scroll(target | null, up|down|left|right, pages = 1 | {pixels})
 app.selectText(id, text, {prefix, suffix, selectionType: text|cursor_before|cursor_after}) prefix/suffix pick among repeats.
 app.setValue(id, value) writes the element's value directly.
 app.performSecondaryAction(id, action) runs an action the element lists, e.g. "ShowMenu", "Increment".
-app.pressKey("cmd+shift+t", {durationMs}) key names: letters, digits, punctuation, return, tab, space, delete, escape, arrows, home, end, pageup, pagedown, f1-f12.
+app.pressKey("cmd+shift+t", {durationMs}) key names: letters, digits, punctuation, return, tab, space, delete, escape, arrows, home, end, pageup, pagedown, f1-f20, KP_Enter/KP_0/KP_Add and other keypad names. Modifier names support left/right forms such as Control_R.
 app.typeText(text) types with the keyboard. "\\n" presses Return and "\\t" presses Tab, so they can submit
   a form or send a chat message; use paste for multi-line text.
 app.paste(text, {format: text|markdown|html}) pastes through the clipboard, then restores the user's clipboard.
