@@ -128,19 +128,22 @@ test("pg items reject a second call with the same call id, leaving the log untou
     const session = await store.getOrCreateByThread("web:calls", "dm", scope);
     const { lease } = await store.acquireLease(session.id);
     assert.ok(lease);
+    const callId = Array.from({ length: 512 }, () => randomUUID()).join("");
     const call = {
       type: "tool_call" as const,
-      payload: { tool: "deliver", callId: "cron:1", text: "hi" },
+      payload: { tool: "deliver", callId, text: "hi" },
       scopeLabel: scope,
     };
     const result = {
       type: "tool_result" as const,
-      payload: { tool: "deliver", callId: "cron:1", result: "delivered" },
+      payload: { tool: "deliver", callId, result: "delivered" },
       scopeLabel: scope,
     };
     await store.appendMany(lease, [call, result]);
     await assert.rejects(store.appendMany(lease, [call, result]), DuplicateCallError);
-    assert.equal((await store.getEntries(session.id)).length, 2);
+    const entries = await store.getEntries(session.id);
+    assert.equal(entries.length, 2);
+    assert.equal((entries[0]!.payload as { callId: string }).callId, callId);
     const next = await store.append(lease, { type: "assistant", payload: { text: "after" }, scopeLabel: scope });
     assert.equal(next.seq, 2);
     await store.releaseLease(lease);
