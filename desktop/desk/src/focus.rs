@@ -1,0 +1,132 @@
+use crate::protocol::{ErrorCode, Failure};
+use core_foundation::base::{CFTypeRef, TCFType};
+use core_foundation::string::CFString;
+use objc2::msg_send;
+use objc2::rc::autoreleasepool;
+use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSWorkspace};
+use objc2_foundation::NSPoint;
+use std::ffi::c_void;
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::time::{Duration, Instant};
+
+static EXPECTED_FOREGROUND: AtomicI32 = AtomicI32::new(0);
+
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGEventPostToPid(pid: i32, event: *mut c_void);
+}
+#[link(name = "CoreFoundation", kind = "framework")]
+extern "C" {
+    fn CFDictionaryGetValue(dict: CFTypeRef, key: CFTypeRef) -> CFTypeRef;
+    fn CFBooleanGetValue(value: CFTypeRef) -> bool;
+    fn CFBooleanGetTypeID() -> usize;
+    fn CFGetTypeID(value: CFTypeRef) -> usize;
+    fn CGSessionCopyCurrentDictionary() -> CFTypeRef;
+}
+
+fn screen_available() -> bool {
+    let session = unsafe { CGSessionCopyCurrentDictionary() };
+    if session.is_null() {
+        return false;
+    }
+    let field = |name: &str| {
+        let key = CFString::new(name);
+        let v = unsafe { CFDictionaryGetValue(session, key.as_CFTypeRef()) };
+        if v.is_null() || unsafe { CFGetTypeID(v) } != unsafe { CFBooleanGetTypeID() } {
+            None
+        } else {
+            Some(unsafe { CFBooleanGetValue(v) })
+        }
+    };
+    let available = field("CGSSessionScreenIsLocked") != Some(true) && field("kCGSSessionOnConsoleKey") == Some(true);
+    unsafe { core_foundation::base::CFRelease(session) };
+    available
+}
+
+fn synthetic_focus(pid: i32, window: u32, subtype: i16) -> Result<(), Failure> {
+    autoreleasepool(|_| {
+        let event = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+            NSEventType::AppKitDefined,
+            NSPoint::new(0.0, 0.0),
+            NSEventModifierFlags(if window == 0 { 0 } else { 0xc0000 }),
+            0.0,
+            window as isize,
+            None,
+            subtype,
+            0,
+            0,
+        )
+        .ok_or_else(|| Failure::new(ErrorCode::ActionFailed, "Cannot create background focus event"))?;
+        let cg: *mut c_void = unsafe { msg_send![&*event, CGEvent] };
+        if cg.is_null() {
+            return Err(Failure::new(ErrorCode::ActionFailed, "Cannot convert background focus event"));
+        }
+        unsafe { CGEventPostToPid(pid, cg) };
+        Ok::<(), Failure>(())
+    })?;
+    Ok(())
+}
+
+fn frontmost() -> Option<i32> {
+    NSWorkspace::sharedWorkspace().frontmostApplication().map(|app| app.processIdentifier())
+}
+
+pub struct Focus {
+    target: i32,
+    activated: bool,
+}
+
+impl Focus {
+    pub fn begin(target: i32, window: u32) -> Result<Self, Failure> {
+        if !screen_available() {
+            return Err(Failure::new(ErrorCode::ActionFailed, "Screen is locked or console session unavailable"));
+        }
+        let original = frontmost().ok_or_else(|| Failure::new(ErrorCode::ActionFailed, "Cannot identify the foreground app"))?;
+        if original == target {
+            EXPECTED_FOREGROUND.store(original, Ordering::Release);
+            return Ok(Self { target, activated: false });
+        }
+        if window == 0 {
+            return Err(Failure::new(ErrorCode::ActionFailed, "Background window has no ID; observe again"));
+        }
+        synthetic_focus(target, window, 1)?;
+        let guard = Self { target, activated: true };
+        EXPECTED_FOREGROUND.store(original, Ordering::Release);
+        guard.check()?;
+        Ok(guard)
+    }
+
+    pub fn check(&self) -> Result<(), Failure> {
+        check_current()?;
+        Ok(())
+    }
+}
+
+pub fn check_current() -> Result<(), Failure> {
+    let expected = EXPECTED_FOREGROUND.load(Ordering::Acquire);
+    if expected == 0 {
+        return Ok(());
+    }
+    if !screen_available() {
+        return Err(Failure::new(ErrorCode::ActionFailed, "Screen is locked or console session unavailable"));
+    }
+    if frontmost() != Some(expected) {
+        return Err(Failure::new(ErrorCode::ActionFailed, "Foreground app changed during background input; stopped"));
+    }
+    Ok(())
+}
+
+impl Drop for Focus {
+    fn drop(&mut self) {
+        EXPECTED_FOREGROUND.store(0, Ordering::Release);
+        if self.activated {
+            let until = Instant::now() + Duration::from_millis(80);
+            while Instant::now() < until && !crate::cancellation::cancelled() {
+                std::thread::sleep(Duration::from_millis(8));
+            }
+            if frontmost() != Some(self.target) {
+                let _ = synthetic_focus(self.target, 0, 2);
+            }
+        }
+    }
+}

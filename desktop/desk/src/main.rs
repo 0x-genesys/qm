@@ -1,4 +1,6 @@
 mod cancellation;
+#[cfg(target_os = "macos")]
+mod focus;
 mod protocol;
 mod text;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
