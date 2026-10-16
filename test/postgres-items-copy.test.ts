@@ -513,23 +513,32 @@ test("items copy maps goal cancellation notices to system wakes", { skip }, asyn
   });
 });
 
-test("long call identifiers remain intact and unique within their item kind", { skip }, async () => {
+test("oversized legacy call identifiers become NULL without dropping history", { skip }, async () => {
   await withSchema(async (raw) => {
-    const callId = Array.from({ length: 512 }, () => randomUUID()).join("");
+    const callId = "x".repeat(1025);
+    const boundary = "x".repeat(1024);
     await seed(raw, "long-calls", [
-      ["tool_call", { tool: "execute", callId }],
-      ["tool_result", { tool: "execute", callId, result: "done" }],
-      ["tool_call", { tool: "execute", callId: `${callId}x` }],
+      ["tool_call", { tool: "execute", callId, command: "echo preserved" }],
+      ["tool_result", { tool: "execute", callId, result: "preserved output" }],
+      ["tool_call", { tool: "execute", callId: boundary }],
+      ["tool_result", { tool: "execute", callId: boundary, result: "boundary output" }],
+      ["tool_call", { tool: "execute", callId: "é".repeat(513) }],
     ]);
     await raw.query(itemsCopySql());
+    const rows = await items(raw, "long-calls");
     assert.deepEqual(
-      (await items(raw, "long-calls")).map((row) => row.call_id),
-      [callId, callId, `${callId}x`],
+      rows.map((row) => row.call_id),
+      [null, null, boundary, boundary, null],
     );
-    await assert.rejects(
-      raw.query(`INSERT INTO items(tenant_id,session_id,seq,kind,call_id,body,created_at)
-      SELECT tenant_id,session_id,99,kind,call_id,body,created_at FROM items WHERE session_id='long-calls' AND seq=0`),
-      /items_one_call_per_kind/,
+    assert.equal(rows[0]!.body.command, "echo preserved");
+    assert.equal(rows[1]!.text, "preserved output");
+    assert.equal(rows[3]!.text, "boundary output");
+    await raw.query("CREATE TEMP TABLE items_copy_batch(session_id text,seq int,PRIMARY KEY(session_id,seq))");
+    await raw.query("INSERT INTO items_copy_batch SELECT session_id,seq FROM session_entries");
+    const selected = (await raw.query(itemsSelectedRowsSql())).rows;
+    assert.deepEqual(
+      selected.map((row) => row.call_id),
+      [null, null, boundary, boundary, null],
     );
   });
 });

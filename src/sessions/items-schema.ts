@@ -44,7 +44,6 @@ const hoistedChecks = HOISTED_COLUMN_KINDS.map(
 ).join(",\n     ");
 
 export const ITEMS_TABLES_SQL: readonly string[] = [
-  `CREATE EXTENSION IF NOT EXISTS pgcrypto`,
   `CREATE TABLE IF NOT EXISTS qm_tenant(id UUID PRIMARY KEY)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS qm_tenant_singleton ON qm_tenant((true))`,
   `INSERT INTO qm_tenant(id) SELECT gen_random_uuid() WHERE NOT EXISTS (SELECT 1 FROM qm_tenant)`,
@@ -115,7 +114,7 @@ export const ITEM_INDEXES: readonly ItemIndex[] = [
   {
     name: "items_one_call_per_kind",
     unique: true,
-    on: `items(tenant_id, session_id, kind, digest(call_id, 'sha256')) WHERE call_id IS NOT NULL`,
+    on: `items(tenant_id, session_id, kind, call_id) WHERE call_id IS NOT NULL`,
   },
   { name: "items_by_turn", on: `items(tenant_id, turn_id, seq) WHERE turn_id IS NOT NULL` },
   { name: "items_by_elicit", on: `items(tenant_id, session_id, elicit_id) WHERE elicit_id IS NOT NULL` },
