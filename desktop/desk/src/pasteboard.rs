@@ -18,7 +18,6 @@ use objc2_app_kit::{
     NSPasteboardWriting,
 };
 use objc2_foundation::{NSArray, NSData, NSString};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -30,7 +29,6 @@ const MORE_READS: Duration = Duration::from_millis(250);
 
 pub struct Payload {
     data: Vec<(String, Vec<u8>)>,
-    read: AtomicBool,
     last: Mutex<Option<Instant>>,
 }
 
@@ -49,7 +47,6 @@ define_class!(
             let name = kind.to_string();
             if let Some((_, bytes)) = self.ivars().data.iter().find(|(t, _)| *t == name) {
                 item.setData_forType(&NSData::with_bytes(bytes), kind);
-                self.ivars().read.store(true, Ordering::SeqCst);
                 *self.ivars().last.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
             }
         }
@@ -58,7 +55,7 @@ define_class!(
 
 impl Provider {
     fn new(data: Vec<(String, Vec<u8>)>) -> Retained<Self> {
-        let this = Self::alloc().set_ivars(Payload { data, read: AtomicBool::new(false), last: Mutex::new(None) });
+        let this = Self::alloc().set_ivars(Payload { data, last: Mutex::new(None) });
         unsafe { msg_send![super(this), init] }
     }
 
@@ -153,17 +150,13 @@ pub fn paste(
     }
     let ours = board.changeCount();
     let result = keystroke().and_then(|_| wait_for_read(&provider, cancelled));
-    let read = provider.ivars().read.load(Ordering::SeqCst);
 
     if board.changeCount() != ours {
         // Someone copied while we held the clipboard: keep their content and say so.
-        let pasted = if read { "Your text may have been pasted, but " } else { "" };
         return Err(fail(
             ErrorCode::PasteConflict,
-            &format!(
-                "{pasted}the clipboard changed during the paste, probably because the user copied something. \
-The app may have pasted that instead of your text. Observe the app and check what was pasted before continuing."
-            ),
+            "The clipboard changed during the paste, probably because the user copied something. \
+The app may have pasted that instead of your text. Observe the app and check what was pasted before continuing.",
         ));
     }
     if !restore(&board, &saved) {
