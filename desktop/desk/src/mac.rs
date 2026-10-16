@@ -383,6 +383,7 @@ fn source() -> Result<CGEventSource, Failure> {
 }
 
 fn post(e: CGEvent, pid: i32) {
+    crate::intervention::include_target(pid);
     e.set_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID, std::process::id() as i64);
     e.post_to_pid(pid);
     std::thread::sleep(Duration::from_millis(8));

@@ -1,15 +1,24 @@
 use crate::protocol::{ErrorCode, Failure};
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
 use core_graphics::event::{CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType, EventField};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 static TARGET_INTERVENED: AtomicBool = AtomicBool::new(false);
+static ROOT_TARGET: AtomicI32 = AtomicI32::new(0);
+static DELEGATED_TARGET: AtomicI32 = AtomicI32::new(0);
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-fn is_target_intervention(source: i64, destination: i64, own: i64, target: i32) -> bool {
-    source != own && destination == i64::from(target)
+fn is_target_intervention(source: i64, destination: i64, own: i64, target: i32, delegated: i32) -> bool {
+    source != own && (destination == i64::from(target) || (delegated != 0 && destination == i64::from(delegated)))
+}
+
+pub fn include_target(pid: i32) {
+    let root = ROOT_TARGET.load(Ordering::Acquire);
+    if root != 0 && pid != root {
+        DELEGATED_TARGET.store(pid, Ordering::Release);
+    }
 }
 
 pub struct Intervention {
@@ -20,6 +29,8 @@ pub struct Intervention {
 impl Intervention {
     pub fn begin(target: i32) -> Result<Self, Failure> {
         TARGET_INTERVENED.store(false, Ordering::Release);
+        ROOT_TARGET.store(target, Ordering::Release);
+        DELEGATED_TARGET.store(0, Ordering::Release);
         let stop = Arc::new(AtomicBool::new(false));
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let quit = Arc::clone(&stop);
@@ -42,7 +53,13 @@ impl Intervention {
                     }
                     let source = event.get_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID);
                     let destination = event.get_integer_value_field(EventField::EVENT_TARGET_UNIX_PROCESS_ID);
-                    if is_target_intervention(source, destination, i64::from(std::process::id()), target) {
+                    if is_target_intervention(
+                        source,
+                        destination,
+                        i64::from(std::process::id()),
+                        target,
+                        DELEGATED_TARGET.load(Ordering::Acquire),
+                    ) {
                         TARGET_INTERVENED.store(true, Ordering::Release);
                     }
                     None
@@ -94,6 +111,8 @@ impl Drop for Intervention {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
+        ROOT_TARGET.store(0, Ordering::Release);
+        DELEGATED_TARGET.store(0, Ordering::Release);
     }
 }
 
@@ -103,9 +122,12 @@ mod tests {
 
     #[test]
     fn ignores_agent_and_other_app_input() {
-        assert!(!is_target_intervention(23, 42, 23, 42));
-        assert!(!is_target_intervention(17, 99, 23, 42));
-        assert!(is_target_intervention(0, 42, 23, 42));
-        assert!(is_target_intervention(17, 42, 23, 42));
+        assert!(is_target_intervention(99, 42, 10, 20, 42));
+        assert!(!is_target_intervention(10, 42, 10, 20, 42));
+        assert!(!is_target_intervention(99, 0, 10, 20, 0));
+        assert!(!is_target_intervention(23, 42, 23, 42, 0));
+        assert!(!is_target_intervention(17, 99, 23, 42, 0));
+        assert!(is_target_intervention(0, 42, 23, 42, 0));
+        assert!(is_target_intervention(17, 42, 23, 42, 0));
     }
 }
