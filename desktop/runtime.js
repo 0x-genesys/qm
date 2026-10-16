@@ -200,8 +200,8 @@
       return this.#act({ type: "select_text", index, text, prefix, suffix, selection: selectionType });
     }
 
-    setValue(index, value) {
-      return this.#act({ type: "set_value", index, value: String(value) });
+    setValue(index, value, { submit } = {}) {
+      return this.#act({ type: "set_value", index, value: String(value), ...(submit === undefined ? {} : { submit }) });
     }
 
     performSecondaryAction(index, action) {
@@ -263,13 +263,17 @@ Actions return as soon as the input is sent. The next observation first waits fo
 (until about a second after the last action, longer while a progress indicator shows); observe to see the result.
 app.click(target, {mouseButton: left|right|middle, clickCount, key: "cmd+shift", durationMs})
   target is an element id from the tree or [x, y] in pixels of the latest screenshot.
-  For simulated clicks, an offscreen element is scrolled into view first; if that fails, the click fails.
+  Ids in web content, rows and cells get a real click; other ids use the accessibility press action.
+  A real click on an id scrolls it into view first and fails if it stays offscreen or something covers it.
+  While a menu is open, click its items by id or press Escape; other pointer actions fail.
   Input uses app-local activation rather than automatically bringing the app to the front.
   If the foreground app changes or you interact with the target app, the action stops.
 app.drag([x, y], [x, y]) screenshot pixels.
 app.scroll(target | null, up|down|left|right, pages = 1 | {pixels})
 app.selectText(id, text, {prefix, suffix, selectionType: text|cursor_before|cursor_after}) prefix/suffix pick among repeats.
-app.setValue(id, value) writes the element's value directly.
+app.setValue(id, value, {submit}) writes the element's value directly, as a number or true/false when the element holds one.
+  It fails if the element is not settable or a text field keeps its old value. submit (default: search fields only) then
+  confirms the field or presses Return.
 app.performSecondaryAction(id, action) runs an action the element lists, e.g. "ShowMenu", "Increment".
 app.pressKey("cmd+shift+t", {durationMs}) key names: letters, digits, punctuation, return, tab, space, delete, escape, arrows, home, end, pageup, pagedown, f1-f20, KP_Enter/KP_0/KP_Add and other keypad names. Modifier names support left/right forms such as Control_R.
 app.typeText(text) types with the keyboard. "\\n" presses Return and "\\t" presses Tab, so they can submit
