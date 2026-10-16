@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createTurnEndHook } from "../src/decisions/hooks.ts";
+import { forModelContext } from "../src/harness/context-compaction.ts";
+import type { SessionEntry } from "../src/types.ts";
 import { createHarnessRouter } from "../src/harness/harness-router.ts";
 import { createMockHarness } from "../src/harness/mock-harness.ts";
 import { ProviderTurnError } from "../src/core/turn-error.ts";
@@ -17,6 +19,18 @@ const decision: DecisionResult = {
   probabilities: { refused: 1 },
   runtime: fallback,
 };
+
+function entry(seq: number, type: SessionEntry["type"], payload: unknown): SessionEntry {
+  return {
+    sessionId: "s",
+    seq,
+    parentSeq: seq - 1,
+    type,
+    payload,
+    scopeLabel: "personal:alice",
+    createdAt: seq,
+  };
+}
 
 function turn(extra: Partial<HarnessTurnInput> = {}): HarnessTurnInput {
   return {
@@ -44,6 +58,7 @@ test("post-response decisions use the runtime service and journal a recoverable 
   });
   const result = await hook(
     turn({
+      history: [entry(7, "user", { text: "Please do the task" })],
       runtimeControl: async (_active, request) => {
         requests.push(request);
         return { ok: true, handoff: { choice: fallback, lifetime: "task" } };
@@ -59,7 +74,72 @@ test("post-response decisions use the runtime service and journal a recoverable 
   assert.deepEqual(result.runtimeHandoff, { choice: fallback, lifetime: "task" });
   assert.equal((classified as { response: string }).response, "I cannot help with that request.");
   assert.equal((requests[0] as { lifetime: string }).lifetime, "task");
+  assert.equal(entries.length, 3);
+  const marker = entries[0] as { type: string; payload: { kind?: string; fromSeq?: number; cause?: string } };
+  assert.equal(marker.type, "system");
+  assert.equal(marker.payload.kind, "retraction");
+  assert.equal(marker.payload.fromSeq, 7);
+  assert.equal(marker.payload.cause, "refusal_reply");
+});
+
+test("a structured refusal retraction records the provider cause", async () => {
+  const entries: unknown[] = [];
+  const hook = createTurnEndHook(async () => decision);
+  await hook(
+    turn({
+      history: [entry(4, "user", { text: "Please do the task" })],
+      runtimeControl: async () => ({ ok: true, handoff: { choice: fallback, lifetime: "task" } }),
+      emit: async (entry_) => {
+        entries.push(entry_);
+        return entry_ as never;
+      },
+    }),
+    { reply: "" },
+    new ProviderTurnError("Provider rejected request", { code: "refusal", raw: "", retryable: false }),
+  );
+  const marker = entries[0] as { payload: { kind?: string; fromSeq?: number; cause?: string } };
+  assert.equal(marker.payload.kind, "retraction");
+  assert.equal(marker.payload.fromSeq, 4);
+  assert.equal(marker.payload.cause, "provider_refusal");
+});
+
+test("no history means no retraction marker", async () => {
+  const entries: unknown[] = [];
+  const hook = createTurnEndHook(async () => decision);
+  await hook(
+    turn({
+      runtimeControl: async () => ({ ok: true, handoff: { choice: fallback, lifetime: "task" } }),
+      emit: async (entry_) => {
+        entries.push(entry_);
+        return entry_ as never;
+      },
+    }),
+    { reply: "I cannot help with that request." },
+  );
   assert.equal(entries.length, 2);
+});
+
+test("retraction drops the refused turn's run output from model context", () => {
+  const step = { id: "step", api: "anthropic", provider: "anthropic", model: "m", stopReason: "stop" };
+  const entries = [
+    entry(1, "user", { text: "Please do the task" }),
+    entry(2, "text", { text: "I cannot help with that.", step: { ...step, index: 0 } }),
+    entry(3, "tool_call", { tool: "execute", callId: "c1", step: { ...step, index: 1 } }),
+    entry(4, "tool_result", { tool: "execute", callId: "c1", isError: false, result: "ok" }),
+    entry(5, "user", { text: "Steering note from another actor mid-turn" }),
+    entry(6, "system", { kind: "retraction", fromSeq: 1, cause: "refusal_reply", decisionRule: "refusal" }),
+    entry(7, "tool_result", { tool: "runtime", action: "set", ok: true }),
+    entry(8, "system", { text: "A refusal triggered a switch." }),
+  ];
+  assert.deepEqual(
+    forModelContext(entries).map((e) => [e.seq, e.type]),
+    [
+      [1, "user"],
+      [5, "user"],
+      [7, "tool_result"],
+      [8, "system"],
+    ],
+  );
 });
 
 test("keep decisions, same runtime, and denied account switches preserve the result", async () => {
