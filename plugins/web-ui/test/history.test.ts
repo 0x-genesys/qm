@@ -492,24 +492,16 @@ test("a hidden proactive-opener user entry never renders, but its assistant gree
   assert.equal((msgs[0] as { role?: string }).role, "assistant");
 });
 
-test("a delivery (cron reply written into the thread) renders as an assistant reply", () => {
-  const callId = "delivery:agent:main:cron:c1:100";
+test("a delivered cron reply renders as an assistant reply", () => {
   const entries: SessionEntry[] = [
     { type: "user", payload: { text: "remind me later" }, createdAt: 100 },
     { type: "assistant", payload: { text: "will do" }, createdAt: 110 },
     {
-      type: "tool_call",
-      payload: {
-        tool: "deliver",
-        callId,
-        text: "Reminder: standup in 10 minutes",
-        deliveryKey: "agent:main:cron:c1:100",
-        via: "cron",
-      },
+      type: "assistant",
+      payload: { text: "Reminder: standup in 10 minutes", via: "cron" },
       createdAt: 200,
       seq: 2,
     },
-    { type: "tool_result", payload: { tool: "deliver", callId, result: "delivered" }, createdAt: 200, seq: 3 },
   ];
   const msgs = entriesToMessages(entries, MODEL);
   assert.equal(msgs.length, 3, "user + reply + delivered reminder");
@@ -519,19 +511,15 @@ test("a delivery (cron reply written into the thread) renders as an assistant re
   assert.equal(delivered.work, undefined, "a delivery is a reply, not tool activity");
 });
 
-test("a migrated delivery with files and no recorded result renders its reply and file chips", () => {
+test("a migrated reply and delivered-file entry render text and file chips", () => {
   const entries: SessionEntry[] = [
     { type: "user", payload: { text: "make gifs" }, createdAt: 100 },
+    { type: "assistant", payload: { text: "rsi.gif" }, createdAt: 120, seq: 1 },
     {
-      type: "tool_call",
-      payload: {
-        tool: "deliver",
-        callId: "legacy-delivery:1",
-        text: "rsi.gif",
-        files: [{ name: "rsi.gif", mimetype: "image/gif", sizeBytes: 42, artifactId: "art-1" }],
-      },
+      type: "delivery",
+      payload: { files: [{ name: "rsi.gif", mimetype: "image/gif", sizeBytes: 42, artifactId: "art-1" }] },
       createdAt: 121,
-      seq: 1,
+      seq: 2,
     },
   ];
   const msgs = entriesToMessages(entries, MODEL);

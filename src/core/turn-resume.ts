@@ -154,7 +154,13 @@ export function unrecordedResultEntries(
 ): NewEntry[] {
   return strategy.calls.map((call) => ({
     type: "tool_result",
-    payload: { tool: call.tool, callId: call.callId, isError: true, result: unrecordedToolResult(stop) },
+    payload: {
+      tool: call.tool,
+      callId: call.callId,
+      interrupted: true,
+      isError: true,
+      result: unrecordedToolResult(stop),
+    },
     scopeLabel,
   }));
 }
