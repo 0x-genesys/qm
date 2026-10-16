@@ -201,6 +201,7 @@
     }
 
     setValue(index, value, { submit } = {}) {
+      if (submit !== undefined && typeof submit !== "boolean") throw new TypeError("setValue submit must be true or false");
       return this.#act({ type: "set_value", index, value: String(value), ...(submit === undefined ? {} : { submit }) });
     }
 
@@ -264,7 +265,7 @@ app.click(target, {mouseButton: left|right|middle, clickCount, key: "cmd+shift",
   target is an element id from the tree or [x, y] in pixels of the latest screenshot.
   Ids in web content, rows and cells get a real click; other ids use the accessibility press action.
   A real click on an id scrolls it into view first and fails if it stays offscreen or something covers it.
-  While a menu is open, click its items by id or press Escape; other pointer actions fail.
+  While a menu is open, click its items by id or press Escape; other clicks and pointer actions fail.
   Input uses app-local activation rather than automatically bringing the app to the front.
   If the foreground app changes or you interact with the target app, the action stops.
 app.drag([x, y], [x, y]) screenshot pixels.
