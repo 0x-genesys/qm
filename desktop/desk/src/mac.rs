@@ -8,7 +8,7 @@ use core_foundation::boolean::CFBoolean;
 use core_foundation::data::CFData;
 use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
-use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop, CFRunLoopSource};
+use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop, CFRunLoopRunResult, CFRunLoopSource};
 use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, CGMouseButton, EventField, ScrollEventUnit};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
@@ -18,7 +18,7 @@ use foreign_types::ForeignType;
 use objc2_app_kit::{NSApplicationActivationPolicy, NSWorkspace};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 type El = CFType;
@@ -135,20 +135,53 @@ const NOTICES: &[&str] = &[
     "AXWindowCreated",
     "AXLoadComplete",
 ];
-static NOTICED: AtomicI64 = AtomicI64::new(0);
 static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 
 fn now_ms() -> i64 {
     EPOCH.get_or_init(Instant::now).elapsed().as_millis() as i64
 }
 
-extern "C" fn noticed(_: CFTypeRef, _: CFTypeRef, _: CFStringRef, _: *mut c_void) {
-    NOTICED.store(now_ms(), Ordering::Relaxed);
+#[derive(Default)]
+struct Notices {
+    last: AtomicI64,
+    generation: AtomicU64,
+}
+
+extern "C" fn noticed(_: CFTypeRef, _: CFTypeRef, _: CFStringRef, refcon: *mut c_void) {
+    let n = unsafe { &*(refcon as *const Notices) };
+    n.last.store(now_ms(), Ordering::Relaxed);
+    n.generation.fetch_add(1, Ordering::Relaxed);
+}
+
+#[derive(Default)]
+struct Cache {
+    generation: u64,
+    entries: usize,
+    map: HashMap<usize, Vec<(El, Vec<String>, bool)>>,
+}
+
+const MAX_CACHED: usize = 20_000;
+
+impl Cache {
+    fn get(&self, e: &El, hash: usize) -> Option<(Vec<String>, bool)> {
+        self.map.get(&hash)?.iter().find(|(k, _, _)| k == e).map(|(_, a, s)| (a.clone(), *s))
+    }
+
+    fn put(&mut self, e: &El, hash: usize, actions: &[String], settable: bool) {
+        if self.entries >= MAX_CACHED {
+            self.map.clear();
+            self.entries = 0;
+        }
+        self.entries += 1;
+        self.map.entry(hash).or_default().push((e.clone(), actions.to_vec(), settable));
+    }
 }
 
 struct Observer {
     _observer: CFType,
     source: CFRunLoopSource,
+    notices: Box<Notices>,
+    cache: Cache,
 }
 
 impl Observer {
@@ -158,16 +191,38 @@ impl Observer {
             return None;
         }
         let observer = unsafe { CFType::wrap_under_create_rule(o) };
+        let notices = Box::<Notices>::default();
+        let refcon = &*notices as *const Notices as *mut c_void;
         let added = NOTICES
             .iter()
-            .filter(|n| unsafe { AXObserverAddNotification(o, ax.as_CFTypeRef(), cfs(n).as_concrete_TypeRef(), std::ptr::null_mut()) } == 0)
+            .filter(|n| unsafe { AXObserverAddNotification(o, ax.as_CFTypeRef(), cfs(n).as_concrete_TypeRef(), refcon) } == 0)
             .count();
         if added == 0 {
             return None;
         }
         let source = unsafe { CFRunLoopSource::wrap_under_get_rule(AXObserverGetRunLoopSource(o)) };
         CFRunLoop::get_current().add_source(&source, unsafe { kCFRunLoopDefaultMode });
-        Some(Observer { _observer: observer, source })
+        Some(Observer { _observer: observer, source, notices, cache: Cache::default() })
+    }
+
+    fn drain() {
+        for _ in 0..1000 {
+            if !matches!(CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, Duration::ZERO, true), CFRunLoopRunResult::HandledSource)
+            {
+                return;
+            }
+        }
+    }
+
+    fn take_cache(&mut self) -> Cache {
+        Self::drain();
+        let generation = self.notices.generation.load(Ordering::Relaxed);
+        let cache = std::mem::take(&mut self.cache);
+        if cache.generation == generation {
+            cache
+        } else {
+            Cache { generation, ..Cache::default() }
+        }
     }
 }
 
@@ -699,6 +754,7 @@ fn fetch(e: &El) -> Node {
         selected: b("AXSelected") == Some(true),
         settable: has_value,
         actions: vec![],
+        list_item: false,
     };
     let frame = match (get("AXPosition").and_then(|p| point_of::<CGPoint>(p, 1)), get("AXSize").and_then(|p| point_of::<CGSize>(p, 2))) {
         (Some(p), Some(z)) => Some(Rect { x: p.x, y: p.y, w: z.width, h: z.height }),
@@ -709,9 +765,18 @@ fn fetch(e: &El) -> Node {
     Node { props, raw, frame, children }
 }
 
-fn complete(e: &El, mut n: Node) -> Node {
+fn complete(e: &El, mut n: Node, cache: Option<&mut Cache>) -> Node {
+    let hash = unsafe { CFHash(e.as_CFTypeRef()) };
+    if let Some((acts, can_set)) = cache.as_ref().and_then(|c| c.get(e, hash)) {
+        n.props.actions = acts;
+        n.props.settable = can_set;
+        return n;
+    }
     n.props.settable = n.props.settable && settable(e, "AXValue");
     n.props.actions = actions(e).into_iter().filter(|a| !BORING.contains(&a.as_str())).collect();
+    if let Some(c) = cache {
+        c.put(e, hash, &n.props.actions, n.props.settable);
+    }
     n
 }
 
@@ -749,6 +814,7 @@ struct Walk {
     truncated: bool,
     visited: usize,
     window: Rect,
+    cache: Option<Cache>,
 }
 
 impl Walk {
@@ -774,7 +840,7 @@ impl Walk {
             return;
         }
         self.visited += n.children.len();
-        let kids: Vec<Node> = n.children.iter().map(|c| complete(c, fetch(c))).collect();
+        let kids: Vec<Node> = n.children.iter().map(|c| complete(c, fetch(c), self.cache.as_mut())).collect();
         if kids.iter().all(|k| k.props.plain_text() && k.children.is_empty()) {
             let parts: Vec<(String, Option<Rect>)> = kids.iter().filter_map(|k| Some((k.raw.clone()?, k.frame))).collect();
             n.props.title = Some(tree::joined_text(&parts)).filter(|t| !t.is_empty());
@@ -799,7 +865,7 @@ impl Walk {
         let clip = narrow(clip, &n.props.role, n.frame);
         let drawn = n.props.role == "AXWebArea" || n.children.is_empty();
         let (anchor, mut kids) = if keep { (self.id(e, locator), vec![]) } else { (anchor, vec![]) };
-        self.children(&n.children, depth + 1, anchor, clip, locator, &mut kids);
+        self.children(&n.children, depth + 1, anchor, clip, locator, n.props.content_list(), &mut kids);
         if kids.is_empty()
             && drawn
             && !self.truncated
@@ -834,7 +900,8 @@ impl Walk {
         run.clear();
     }
 
-    fn children(&mut self, kids: &[El], depth: usize, anchor: u32, clip: Rect, at: Locator, out: &mut Vec<Item>) {
+    #[allow(clippy::too_many_arguments)]
+    fn children(&mut self, kids: &[El], depth: usize, anchor: u32, clip: Rect, at: Locator, list: bool, out: &mut Vec<Item>) {
         let mut hidden = 0;
         let mut run: Vec<(El, Node)> = vec![];
         for (i, c) in kids.iter().enumerate() {
@@ -851,7 +918,8 @@ impl Walk {
                 hidden += 1;
                 continue;
             }
-            let n = complete(c, n);
+            let mut n = complete(c, n, self.cache.as_mut());
+            n.props.list_item = list;
             if n.props.plain_text() && n.children.is_empty() {
                 run.push((c.clone(), n));
                 continue;
@@ -965,12 +1033,12 @@ fn select(e: &El, text: &str, prefix: &str, suffix: &str, selection: Selection) 
     }
 }
 
-fn quiet(since: Instant) {
+fn quiet(since: Instant, notices: &Notices) {
     let start = now_ms() - since.elapsed().as_millis() as i64;
     loop {
         CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, Duration::from_millis(50), false);
         let elapsed = since.elapsed();
-        let last = NOTICED.load(Ordering::Relaxed).max(start);
+        let last = notices.last.load(Ordering::Relaxed).max(start);
         if cancellation::cancelled() || elapsed >= SETTLE_MAX {
             return;
         }
@@ -980,9 +1048,9 @@ fn quiet(since: Instant) {
     }
 }
 
-fn settle(w: &El, since: Instant, observed: bool) {
-    if observed {
-        quiet(since);
+fn settle(w: &El, since: Instant, notices: Option<&Notices>) {
+    if let Some(n) = notices {
+        quiet(since, n);
     } else {
         cancellation::wait(SETTLE.saturating_sub(since.elapsed()));
     }
@@ -1070,7 +1138,7 @@ impl Desk {
     fn observe(&mut self, app: &App, shot: bool, diff: bool) -> Result<Observation, Failure> {
         if let Some(at) = self.touched.remove(&app.pid) {
             let (_, w) = window(app)?;
-            settle(&w, at, self.observers.contains_key(&app.pid));
+            settle(&w, at, self.observers.get(&app.pid).map(|o| &*o.notices));
         }
         let (ax, w) = window(app)?;
         self.enable(app.pid, &ax, &w);
@@ -1089,6 +1157,7 @@ impl Desk {
             truncated: false,
             visited: 0,
             window: f,
+            cache: self.observers.get_mut(&app.pid).map(Observer::take_cache),
         };
         let mut items = vec![];
         let everywhere = Rect { x: -1e9, y: -1e9, w: 2e9, h: 2e9 };
@@ -1096,14 +1165,17 @@ impl Desk {
         if !others.is_empty() {
             items.push(Item::leaf(Key::Section(0), "Open menus and other windows of this app:".into()));
             for o in &others {
-                let n = complete(o, fetch(o));
+                let n = complete(o, fetch(o), walk.cache.as_mut());
                 walk.visit(o, n, 0, ROOT, everywhere, Locator::ROOT, true, &mut items);
             }
             let title = str_attr(&w, "AXTitle").unwrap_or_default();
             items.push(Item::leaf(Key::Section(1), format!("Window \"{}\":", tree::clip(&title, 80))));
         }
         let kids = attr(&w, "AXChildren").map(list).unwrap_or_default();
-        walk.children(&kids, 0, ROOT, if f.w > 0.0 && f.h > 0.0 { f } else { everywhere }, Locator::ROOT, &mut items);
+        walk.children(&kids, 0, ROOT, if f.w > 0.0 && f.h > 0.0 { f } else { everywhere }, Locator::ROOT, false, &mut items);
+        if let (Some(o), Some(c)) = (self.observers.get_mut(&app.pid), walk.cache.take()) {
+            o.cache = c;
+        }
         let moved = walk.ids.rebind(dead);
         items.iter_mut().for_each(|i| i.renumber(&moved));
         for (id, _) in walk.elements.iter_mut() {
@@ -1113,7 +1185,7 @@ impl Desk {
         if let Some(focus) = attr(&ax, "AXFocusedUIElement") {
             let what = match walk.elements.iter().find(|(_, e)| *e == focus) {
                 Some((id, _)) if lines.iter().any(|(k, _)| *k == Key::Element(*id)) => format!("[{id}]"),
-                _ => format!("{} (not in the tree above)", complete(&focus, fetch(&focus)).props.describe().0),
+                _ => format!("{} (not in the tree above)", complete(&focus, fetch(&focus), None).props.describe().0),
             };
             lines.push((Key::Info(0), format!("Focus: {what}")));
             if let Some(sel) = str_attr(&focus, "AXSelectedText") {
