@@ -1,4 +1,3 @@
-import { memoryContextPayload } from "../memory/context-boundary.ts";
 import { createHash } from "node:crypto";
 import type { EntryType, ScopeId, Session, SessionEntry, SessionType, SpawnMeta } from "../types.ts";
 import { sleep } from "../util/async.ts";
@@ -50,12 +49,8 @@ export function contextWindowFromEntries(entries: SessionEntry[]): ContextWindow
   let latest: ContextSummaryPayload | null = null;
   for (const entry of entries) latest = contextSummaryPayload(entry) ?? latest;
   const throughSeq = latest?.throughSeq;
-  const memoryContext = entries.findLast((entry) => memoryContextPayload(entry));
   return {
-    entries:
-      throughSeq === undefined
-        ? [...entries]
-        : entries.filter((entry) => entry.seq > throughSeq || entry === memoryContext),
+    entries: throughSeq === undefined ? [...entries] : entries.filter((entry) => entry.seq > throughSeq),
     totalEntries: entries.length,
   };
 }
@@ -148,6 +143,7 @@ export interface SessionPin extends NewSessionPin {
 export const isWebThread = (threadRef: string): boolean => threadRef.startsWith("web:");
 
 export interface GetEntriesOptions {
+  turnId?: string;
   sinceSeq?: number;
   beforeSeq?: number;
   limit?: number;

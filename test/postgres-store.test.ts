@@ -1,5 +1,4 @@
 import { forModelContext } from "../src/harness/context-compaction.ts";
-import { memoryContextPayload, nextMemoryContext } from "../src/memory/context-boundary.ts";
 import "./run-availability.ts";
 import { test, before } from "node:test";
 import { randomUUID } from "node:crypto";
@@ -1362,8 +1361,8 @@ test(
         [1, {}],
       ] as const) {
         await raw.query(
-          "INSERT INTO items(tenant_id, session_id, seq, kind, body, created_at) VALUES (qm_tenant_id(),$1,$2,'UserMessage',$3,to_timestamp(0.001))",
-          [junk.id, seq, body],
+          "INSERT INTO items(tenant_id, session_id, seq, kind, text, body, created_at) VALUES (qm_tenant_id(),$1,$2,'UserMessage',$3,'{}',to_timestamp(0.001))",
+          [junk.id, seq, "text" in body ? body.text : null],
         );
       }
       await raw.query(
@@ -3190,59 +3189,6 @@ test("pg unstarted withdrawal preserves claimed and released turns atomically", 
     assert.equal(await store.runs.get(fresh.id), null);
   } finally {
     await store.close();
-  }
-});
-
-test("pg context window preserves user memory checkpoints through compaction and restart", { skip }, async () => {
-  const store = createPostgresSessionStore(URL!);
-  const session = await store.getOrCreateByThread(`memory-checkpoint-${randomUUID()}`, "dm", "personal:alice");
-  const { lease } = await store.acquireLease(session.id, "turn");
-  assert.ok(lease);
-  const append = (type: "user" | "assistant" | "system", payload: unknown) =>
-    store.append(lease, { type, scopeLabel: "personal:alice", payload });
-  try {
-    await append("user", { text: "EXPIRED_USER" });
-    await append("assistant", { text: "EXPIRED_ASSISTANT" });
-    await append("system", { kind: "context_summary", throughSeq: 1, text: "EXPIRED_SUMMARY" });
-    const checkpoint = nextMemoryContext(await store.getEntries(session.id), { audience: "a" }, 2);
-    const checkpointEntry = await append("user", { text: "CURRENT_USER", memoryContext: checkpoint });
-    const reply = await append("assistant", { text: "CURRENT_REPLY" });
-    const summary = await append("system", { kind: "context_summary", throughSeq: reply.seq, text: "CURRENT_SUMMARY" });
-    const restarted = createPostgresSessionStore(URL!);
-    const window = await restarted.getContextWindow(session.id);
-    assert.equal(window.totalEntries, 6);
-    assert.deepEqual(
-      window.entries.map((entry) => entry.seq),
-      [checkpointEntry.seq, summary.seq],
-    );
-    assert.deepEqual(memoryContextPayload(window.entries[0]!), checkpoint);
-    assert.deepEqual(
-      forModelContext(window.entries).map((entry) => entry.seq),
-      [summary.seq],
-    );
-    assert.doesNotMatch(JSON.stringify(forModelContext(window.entries)), /EXPIRED_|CURRENT_USER|CURRENT_REPLY/);
-    const reset = nextMemoryContext(window.entries, { audience: "b" }, summary.seq);
-    assert.equal(reset.throughSeq, summary.seq);
-    const newUser = await append("user", { text: "AFTER_RESET", memoryContext: reset });
-    const resetWindow = await restarted.getContextWindow(session.id);
-    assert.deepEqual(
-      forModelContext(resetWindow.entries).map((entry) => entry.seq),
-      [newUser.seq],
-    );
-    assert.doesNotMatch(JSON.stringify(forModelContext(resetWindow.entries)), /CURRENT_SUMMARY|EXPIRED_/);
-    const newSummary = await append("system", {
-      kind: "context_summary",
-      throughSeq: newUser.seq,
-      text: "AFTER_RESET_SUMMARY",
-    });
-    const finalWindow = await createPostgresSessionStore(URL!).getContextWindow(session.id);
-    assert.deepEqual(memoryContextPayload(finalWindow.entries[0]!), reset);
-    assert.deepEqual(
-      forModelContext(finalWindow.entries).map((entry) => entry.seq),
-      [newSummary.seq],
-    );
-  } finally {
-    await store.releaseLease(lease);
   }
 });
 

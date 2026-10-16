@@ -3551,9 +3551,15 @@ test("accepted approval decisions are durably recorded in the conversation", asy
       (entry) => entry.type === "approval_resolved",
     );
     assert.equal(decisions.length, 1);
-    assert.deepEqual(decisions[0]!.payload, { requestId, command, approved, ...(approved ? { scope: "once" } : {}) });
     const replay = (await runs.list()).find((run) => run.request.approval?.requestId === requestId);
     assert.ok(replay);
+    assert.deepEqual(decisions[0]!.payload, {
+      requestId,
+      command,
+      approved,
+      runId: replay.id,
+      ...(approved ? { scope: "once" } : {}),
+    });
     const live = await app.getRun(replay.id);
     const liveDecisions = live?.activity?.filter((entry) => entry.type === "approval_resolved");
     assert.equal(liveDecisions?.length, 1);

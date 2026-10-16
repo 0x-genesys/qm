@@ -6,7 +6,7 @@ import { createMemoryRunStore } from "../src/runs/memory-run-store.ts";
 import { withWebTranscriptDeliveries } from "../src/delivery/web-transcript-delivery.ts";
 import { wireRunResultDeliveries } from "../src/delivery/run-result-delivery.ts";
 import { createTranscriptSource } from "../src/sessions/transcript-source.ts";
-import { AGENT_OPENED_TEXT, reconstructMessagesFromHistory } from "../src/harness/replay.ts";
+import { reconstructMessagesFromHistory } from "../src/harness/replay.ts";
 import { sleep } from "../src/util/async.ts";
 import type { DeliveryStore } from "../src/delivery/delivery-store.ts";
 import type { SessionStore } from "../src/sessions/session-store.ts";
@@ -62,32 +62,23 @@ test("enqueue stays a plain insert; the drain writes the text durably before the
   assert.equal(drained.length, 1, "the delivery is visible once its text is durable");
 
   const entries = await sessions.getEntries(session.id);
-  const callId = "agent:main:cron:c1:100";
   assert.deepEqual(
     entries.map((e) => [e.type, e.payload]),
     [
       [
-        "tool_call",
+        "assistant",
         {
-          tool: "deliver",
-          callId,
           text: "Reminder: standup in 10 minutes",
           via: "cron",
+          runId: drained[0]!.id,
         },
       ],
-      ["tool_result", { tool: "deliver", callId, result: "delivered" }],
     ],
   );
-
-  const [opening, call, result] = reconstructMessagesFromHistory(entries);
-  assert.deepEqual(opening!.content, [{ type: "text", text: AGENT_OPENED_TEXT }]);
-  assert.equal(call!.role, "assistant");
-  const block = call!.content[0] as { type: string; name?: string; arguments?: { text?: string; via?: string } };
-  assert.equal(block.type, "toolCall");
-  assert.equal(block.name, "deliver");
-  assert.equal(block.arguments?.text, "Reminder: standup in 10 minutes");
-  assert.equal(block.arguments?.via, "cron");
-  assert.equal(result!.role, "toolResult");
+  const messages = reconstructMessagesFromHistory(entries);
+  assert.equal(messages.at(-1)!.role, "assistant");
+  assert.match(JSON.stringify(messages), /Reminder: standup in 10 minutes/);
+  assert.doesNotMatch(JSON.stringify(messages), /toolCall|toolResult/);
 });
 
 test("the recorded entry renders through the transcript source", async () => {
@@ -104,11 +95,8 @@ test("the recorded entry renders through the transcript source", async () => {
 
   const projected = (await createTranscriptSource(sessions).forRender(session.id)).entries;
   assert.deepEqual(
-    projected.map((e) => [e.type, (e.payload as { tool?: string }).tool]),
-    [
-      ["tool_call", "deliver"],
-      ["tool_result", "deliver"],
-    ],
+    projected.map((e) => e.type),
+    ["assistant"],
   );
   assert.equal((projected[0]!.payload as { text?: string }).text, "cron reply body");
 });
@@ -128,7 +116,7 @@ test("repeated drains and a restarted decorator never duplicate the transcript e
   const restarted = withWebTranscriptDeliveries(inner, sessions);
   await restarted.pending("web");
 
-  assert.equal((await sessions.getEntries(session.id)).length, 2, "one delivery across drains and restarts");
+  assert.equal((await sessions.getEntries(session.id)).length, 1, "one delivery across drains and restarts");
 });
 
 test("a failed transcript write converges on retry: one entry", async () => {
@@ -158,7 +146,7 @@ test("a failed transcript write converges on retry: one entry", async () => {
   const drained = await deliveries.pending("web");
   assert.equal(drained.length, 1, "the retry dedupes on the entry and delivers");
 
-  assert.equal((await sessions.getEntries(session.id)).length, 2);
+  assert.equal((await sessions.getEntries(session.id)).length, 1);
 });
 
 test("a busy session lease holds the delivery back, unacked, until the write lands", async () => {
@@ -178,7 +166,7 @@ test("a busy session lease holds the delivery back, unacked, until the write lan
   await sessions.releaseLease(lease!);
   const drained = await deliveries.pending("web");
   assert.equal(drained.length, 1);
-  assert.equal((await sessions.getEntries(session.id)).length, 2);
+  assert.equal((await sessions.getEntries(session.id)).length, 1);
 });
 
 test("a lease wedged past the giveup window degrades to a loud nudge-only delivery", async () => {
@@ -421,13 +409,9 @@ test("a recovered reply the turn never recorded is written into the transcript a
   assert.equal(drained.length, 1);
   const entries = await sessions.getEntries(session.id);
   const key = drained[0]!.idempotencyKey;
-  assert.deepEqual(
-    entries.map((e) => [e.type, e.payload]),
-    [
-      ["tool_call", { tool: "deliver", callId: key, text: "recovered reply" }],
-      ["tool_result", { tool: "deliver", callId: key, result: "delivered" }],
-    ],
-  );
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]!.type, "assistant");
+  assert.equal((entries[0]!.payload as { text: string }).text, "recovered reply");
   const model = JSON.stringify(reconstructMessagesFromHistory(entries));
   assert.match(model, /recovered reply/);
   assert.doesNotMatch(model, /"via"/, "the turn's own reply carries no delivery badge");

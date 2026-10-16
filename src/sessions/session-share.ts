@@ -1,4 +1,3 @@
-import { isDeliveryEntry } from "./items.ts";
 import type { SessionEntry } from "../types.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 
@@ -62,8 +61,6 @@ export function sharedMessages(
       if (payload.hidden || payload.overheard) continue;
       const text = typeof payload.display === "string" && payload.display.trim() ? payload.display : payload.text;
       emit("user", typeof text === "string" ? text : "", attachmentIds(payload.attachments));
-    } else if (isDeliveryEntry(entry)) {
-      emit("assistant", typeof payload.text === "string" ? payload.text : "", attachmentIds(payload.files));
     } else if (entry.type === "tool_call" && payload.action === "post") {
       if (typeof payload.callId === "string")
         posts.set(payload.callId, typeof payload.text === "string" ? payload.text : "");

@@ -1,3 +1,4 @@
+import { DIRECTORY_MIGRATIONS } from "../directory/postgres-directory-store.ts";
 import { randomUUID } from "node:crypto";
 import { jsonbStringify } from "../persistence/durable-map.ts";
 import {
@@ -41,7 +42,7 @@ import type {
   StoreOptions,
 } from "./session-store.ts";
 import { tsPrefixQuery } from "./entry-search.ts";
-import { ITEMS_TABLES_SQL } from "./items-schema.ts";
+import { itemsMigration } from "./items-schema.ts";
 import {
   DROP_SESSION_TAPE_SQL,
   LEGACY_TAPE_STEPS_SIZE_GUARD_SQL,
@@ -61,8 +62,16 @@ import {
   isOverheardEntry,
   DuplicateCallError,
 } from "./session-store.ts";
-import { entryFromItem, itemFromEntry, msOf, AGENT_REPLY_ITEM, SEARCHABLE_ITEM, USER_KINDS } from "./items.ts";
-import type { ItemKind } from "./items-schema.ts";
+import {
+  entryFromItem,
+  itemFromEntry,
+  ITEM_COLUMNS,
+  type ItemRow,
+  msOf,
+  AGENT_REPLY_ITEM,
+  SEARCHABLE_ITEM,
+  USER_KINDS,
+} from "./items.ts";
 import { ITEMS_CUTOVER_SQL } from "./items-cutover.ts";
 import { SECURITY_SCREEN_STEP, screenPayloadFromEnvelope } from "../security/security-posture.ts";
 
@@ -175,14 +184,18 @@ function rowToEntry(r: Record<string, unknown>): SessionEntry {
   return entryFromItem({
     sessionId: r.session_id as string,
     seq: Number(r.seq),
-    kind: r.kind as ItemKind,
-    body: (r.body as Record<string, unknown> | null) ?? {},
+    ...(Object.fromEntries(
+      ITEM_COLUMNS.map(([, key, type]) => [
+        key,
+        type === "bigint" && r[key] != null ? Number(r[key]) : (r[key] ?? null),
+      ]),
+    ) as unknown as ItemRow),
     scopeLabel: r.scope_label as ScopeId,
     createdAt: Number(r.created_at),
   });
 }
 
-const ITEM_FIELDS = `i.session_id, i.seq, i.kind, i.body, ts.scope_id AS scope_label, ${msOf("i.created_at")} AS created_at`;
+const ITEM_FIELDS = `i.session_id, i.seq, ${ITEM_COLUMNS.map(([column, key]) => `${column === "blob_sha" ? "encode(i.blob_sha, 'hex')" : `i.${column}`} AS "${key}"`).join(",")}, ts.scope_id AS scope_label, ${msOf("i.created_at")} AS created_at`;
 const ITEM_FROM = "items i JOIN sessions ts ON ts.id = i.session_id";
 const TENANT = "qm_tenant_id()";
 const tsOf = (ms: string): string => `to_timestamp((${ms})::double precision / 1000)`;
@@ -334,6 +347,7 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
   const { pool, q } = createPgPool(
     connectionString,
     [
+      ...DIRECTORY_MIGRATIONS,
       {
         id: "sessions/store/0001",
         expectedChecksum: "cf56c9f6488806677a229698193ef6dd7cb74300c343bdb1930c17702c5ccf2f",
@@ -865,12 +879,9 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
            )`,
         ],
       },
+      itemsMigration,
       {
-        id: "sessions/store/0034-items-tables",
-        statements: ITEMS_TABLES_SQL,
-      },
-      {
-        id: "sessions/store/0035-items-cutover",
+        id: "sessions/store/0036-items-cutover",
         statements: ITEMS_CUTOVER_SQL,
       },
     ],
@@ -944,37 +955,30 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
         scopeLabel: entry.scopeLabel as ScopeId,
       };
     });
+    for (const item of items) {
+      if (item.kind !== "Retraction" || typeof item.body.ts !== "string") continue;
+      const inBatch = items.findLast(
+        (other) => other.seq < item.seq && other.kind === "UserMessage" && other.externalId === item.body.ts,
+      );
+      const {
+        rows: [prior],
+      } = await client.query(
+        `SELECT max(seq) AS seq FROM items WHERE tenant_id=${TENANT} AND session_id=$1 AND external_id=$2 AND seq<$3`,
+        [sessionId, item.body.ts, item.seq],
+      );
+      item.targetSeq = inBatch?.seq ?? (prior.seq == null ? null : Number(prior.seq));
+    }
     const full = items.map((item) => entryFromItem({ sessionId, createdAt, ...item }));
     const userTurns = full.filter((entry) => entry.type === "user" && !isOverheardEntry(entry));
     const firstUser = userTurns[0];
     const lastUser = userTurns[userTurns.length - 1];
     await client
       .query(
-        `INSERT INTO items(tenant_id, session_id, seq, turn_id, kind, author, call_id, elicit_id, wake_cause,
-                         error_code, body, created_at)
-       SELECT ${TENANT}, $1, i.seq, i.turn_id::uuid, i.kind::item_kind, i.author, i.call_id, i.elicit_id,
-              i.wake_cause::wake_cause, i.error_code, i.body, ${tsOf("$3::bigint")}
-       FROM jsonb_to_recordset($2::jsonb) AS i(
-         seq bigint, turn_id text, kind text, author text, call_id text, elicit_id text, wake_cause text,
-         error_code text, body jsonb)
+        `INSERT INTO items(tenant_id, session_id, seq, ${ITEM_COLUMNS.map(([column]) => column).join(",")}, created_at)
+       SELECT ${TENANT}, $1, i.seq, ${ITEM_COLUMNS.map(([column, key]) => (column === "blob_sha" ? `decode(i."${key}", 'hex')` : `i."${key}"`)).join(",")}, ${tsOf("$3::bigint")}
+       FROM jsonb_to_recordset($2::jsonb) AS i(seq bigint, ${ITEM_COLUMNS.map(([, key, type]) => `"${key}" ${type}`).join(",")})
        ORDER BY i.seq`,
-        [
-          sessionId,
-          jsonbStringify(
-            items.map((item) => ({
-              seq: item.seq,
-              turn_id: item.turnId,
-              kind: item.kind,
-              author: item.author,
-              call_id: item.callId,
-              elicit_id: item.elicitId,
-              wake_cause: item.wakeCause,
-              error_code: item.errorCode,
-              body: item.body,
-            })),
-          ),
-          createdAt,
-        ],
+        [sessionId, jsonbStringify(items), createdAt],
       )
       .catch((err: unknown) => {
         const e = err as { code?: unknown; constraint?: unknown };
@@ -1024,9 +1028,9 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
     if (!missing.length) return out;
     const derived = await q(
       `SELECT s.id, s.first_user_preview, s.last_user_preview,
-              (SELECT fe.body FROM items fe
+              (SELECT jsonb_build_object('text',fe.text) FROM items fe
                 WHERE fe.tenant_id = ${TENANT} AND fe.session_id = s.id AND ${userTurn("fe")} ORDER BY fe.seq ASC LIMIT 1) AS first_user,
-              (SELECT le.body FROM items le
+              (SELECT jsonb_build_object('text',le.text) FROM items le
                 WHERE le.tenant_id = ${TENANT} AND le.session_id = s.id AND ${userTurn("le")} ORDER BY le.seq DESC LIMIT 1) AS last_user
          FROM sessions s WHERE s.id = ANY($1)`,
       [missing],
@@ -1269,6 +1273,10 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
         params.push(opts.beforeSeq);
         sql += ` AND i.seq < $${params.length}`;
       }
+      if (opts?.turnId !== undefined) {
+        params.push(opts.turnId);
+        sql += ` AND i.turn_id = $${params.length}::uuid`;
+      }
       sql += " ORDER BY i.seq DESC";
       if (opts?.limit !== undefined) {
         params.push(opts.limit);
@@ -1278,40 +1286,23 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
     },
 
     async getContextWindow(sessionId) {
-      const [meta, summary, memoryContext] = await Promise.all([
+      const [meta, summary] = await Promise.all([
         q(`SELECT count(*)::int AS total FROM items i WHERE i.tenant_id = ${TENANT} AND i.session_id = $1`, [
           sessionId,
         ]),
         q(
-          `SELECT (body ->> 'throughSeq')::int AS through
-             FROM items
+          `SELECT through_seq AS through FROM items
             WHERE tenant_id = ${TENANT} AND session_id = $1 AND kind = 'ContextCompaction'
-              AND jsonb_typeof(body -> 'throughSeq') = 'number'
-              AND jsonb_typeof(body -> 'text') = 'string'
-            ORDER BY seq DESC LIMIT 1`,
-          [sessionId],
-        ),
-        q(
-          `SELECT ${ITEM_FIELDS} FROM ${ITEM_FROM}
-            WHERE i.tenant_id = ${TENANT} AND i.session_id = $1
-              AND i.kind = 'UserMessage' AND i.body -> 'memoryContext' ->> 'kind' = 'memory_context'
-            ORDER BY i.seq DESC LIMIT 1`,
+              AND through_seq IS NOT NULL AND text IS NOT NULL ORDER BY seq DESC LIMIT 1`,
           [sessionId],
         ),
       ]);
-      const through = summary[0]?.through;
-      const sinceSeq = typeof through === "number" ? through + 1 : 0;
+      const sinceSeq = summary[0]?.through == null ? 0 : Number(summary[0].through) + 1;
       const rows = await q(
         `SELECT ${ITEM_FIELDS} FROM ${ITEM_FROM} WHERE i.tenant_id = ${TENANT} AND i.session_id = $1 AND i.seq >= $2 ORDER BY i.seq`,
         [sessionId, sinceSeq],
       );
-      return {
-        entries: [
-          ...(memoryContext[0] && Number(memoryContext[0].seq) < sinceSeq ? [rowToEntry(memoryContext[0])] : []),
-          ...rows.map(rowToEntry),
-        ],
-        totalEntries: Number(meta[0]?.total ?? 0),
-      };
+      return { entries: rows.map(rowToEntry), totalEntries: Number(meta[0]?.total ?? 0) };
     },
 
     async getEntry(sessionId, seq): Promise<SessionEntry | undefined> {
@@ -1677,7 +1668,7 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
     async missingSearchEntries(sessionId): Promise<number> {
       const rows = await q(
         `WITH missing AS MATERIALIZED (
-           SELECT e.body ->> 'text' AS text FROM items e
+           SELECT e.text AS text FROM items e
             WHERE e.tenant_id = ${TENANT} AND e.session_id = $1 AND ${SEARCHABLE_ITEM("e")}
               AND NOT EXISTS (SELECT 1 FROM session_entry_search s WHERE s.session_id = e.session_id AND s.seq = e.seq)
          )
@@ -1691,7 +1682,7 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
       const rows = await q(
         `SELECT COALESCE(MAX(i.seq), -1) AS n FROM items i
           WHERE i.tenant_id = ${TENANT} AND i.session_id = $1 AND ${SEARCHABLE_ITEM("i")}
-            AND btrim(i.body ->> 'text') <> ''`,
+            AND btrim(i.text) <> ''`,
         [sessionId],
       );
       return Number(rows[0]?.n ?? -1);
@@ -1787,7 +1778,7 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
       const out = new Map<string, string>();
       if (sessionIds.length === 0) return out;
       const rows = await q(
-        `SELECT DISTINCT ON (le.session_id) le.session_id, ${previewExpr("le.body")} AS last_user
+        `SELECT DISTINCT ON (le.session_id) le.session_id, left(le.text, ${LAST_PREVIEW_LEN}) AS last_user
            FROM items le
           WHERE le.tenant_id = ${TENANT} AND le.session_id = ANY($1) AND ${userTurn("le")}
           ORDER BY le.session_id, le.seq DESC`,

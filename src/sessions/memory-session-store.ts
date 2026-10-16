@@ -44,7 +44,7 @@ import {
   userMessagePreview,
   isWebThread,
 } from "./session-store.ts";
-import { entryFromItem, isDeliveryCall, itemFromEntry } from "./items.ts";
+import { entryFromItem, itemFromEntry } from "./items.ts";
 import { SECURITY_SCREEN_STEP, screenPayloadFromEnvelope } from "../security/security-posture.ts";
 
 function toParticipantWindow(
@@ -109,7 +109,7 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
     const log = all.filter((e) => e.type === "user");
     const lastActivityAt = log.length ? Math.max(s.createdAt, ...log.map((e) => e.createdAt)) : s.createdAt;
     const visible = view ? all.some((e) => entryWithinTenure(e, view)) : false;
-    const replies = all.filter((e) => e.type === "assistant" || e.type === "text" || isDeliveryCall(e));
+    const replies = all.filter((e) => e.type === "assistant" || e.type === "text");
     const lastReply = replies.length ? Math.max(...replies.map((e) => e.createdAt)) : null;
     const unread = lastReply !== null && lastReply > (view?.readAt ?? 0) && isWebThread(s.threadRef);
     return {
@@ -268,7 +268,9 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
       if (!log) throw new Error(`unknown session: ${lease.sessionId}`);
       const copied = structuredClone(batch);
       const scopeLabel = sessions.get(lease.sessionId)?.scopeId ?? (copied[0]?.scopeLabel as ScopeId);
-      const items = copied.map((entry) => itemFromEntry(entry.type, entry.payload));
+      const items = copied.map((entry) =>
+        itemFromEntry(entry.type, entry.payload, { turnId: lease.turnId, author: entry.author }),
+      );
       const calls = new Set(
         log.flatMap((e) => {
           const id = (e.payload as { callId?: unknown } | null)?.callId;
@@ -288,8 +290,7 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
         const full = entryFromItem({
           sessionId: lease.sessionId,
           seq,
-          kind: item.kind,
-          body: item.body,
+          ...item,
           scopeLabel,
           createdAt: now(),
         });
@@ -313,7 +314,9 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
     },
 
     async getEntries(sessionId, opts?: GetEntriesOptions) {
-      const log = entries.get(sessionId) ?? [];
+      const log = (entries.get(sessionId) ?? []).filter(
+        (e) => opts?.turnId === undefined || (e.payload as { runId?: string } | null)?.runId === opts.turnId,
+      );
       const since = opts?.sinceSeq ?? 0;
       const filtered = log.filter((e) => e.seq >= since && (opts?.beforeSeq === undefined || e.seq < opts.beforeSeq));
       return opts?.limit !== undefined ? filtered.slice(-opts.limit) : filtered;

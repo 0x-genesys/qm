@@ -1,12 +1,10 @@
 import type { EntryType, SessionEntry } from "../types.ts";
 import type { NewSearchEntry } from "./session-store.ts";
-import { isDeliveryCall } from "./items.ts";
 
 export const SEARCH_HIT_LIMIT = 40;
 const SEARCHABLE_ENTRY_TYPES: ReadonlySet<EntryType> = new Set<EntryType>(["user", "assistant", "text"]);
 
 export function searchEntryType(entry: Pick<SessionEntry, "type" | "payload">): EntryType | null {
-  if (isDeliveryCall(entry)) return "assistant";
   return SEARCHABLE_ENTRY_TYPES.has(entry.type) ? entry.type : null;
 }
 const MAX_TERMS = 8;

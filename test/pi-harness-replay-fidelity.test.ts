@@ -10,7 +10,7 @@ import { createMemoryRunSignalStore, type RunSignalStore } from "../src/runs/run
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
 import { createMemoryFileArtifactStore } from "../src/files/file-artifact-store.ts";
 import { artifactImageLoader } from "../src/harness/replay-images.ts";
-import { createMemoryToolOutputStore } from "../src/sessions/tool-output.ts";
+import { createPostgresToolOutputStore, type ToolOutputStore } from "../src/sessions/tool-output.ts";
 
 type Body = { messages?: unknown[]; input?: unknown[] };
 type Reply = Array<Record<string, unknown>>;
@@ -477,7 +477,11 @@ test("a replayed image is read from the file store once, not on every turn", asy
 const PG_URL = process.env.DATABASE_URL;
 
 async function withPgSession(
-  fn: (ctx: { emit: HarnessTurnInput["emit"]; history: () => Promise<SessionEntry[]> }) => Promise<void>,
+  fn: (ctx: {
+    emit: HarnessTurnInput["emit"];
+    history: () => Promise<SessionEntry[]>;
+    toolOutput: ToolOutputStore;
+  }) => Promise<void>,
 ): Promise<void> {
   const { randomUUID } = await import("node:crypto");
   const { createPostgresSessionStore } = await import("../src/sessions/postgres-session-store.ts");
@@ -488,6 +492,7 @@ async function withPgSession(
   const url = new globalThis.URL(PG_URL!);
   url.searchParams.set("options", `-c search_path=${schema}`);
   const store = createPostgresSessionStore(url.toString());
+  const raw = new pg.Pool({ connectionString: url.toString() });
   try {
     const session = await store.getOrCreateByThread(
       "web:replay",
@@ -496,12 +501,18 @@ async function withPgSession(
     );
     const { lease } = await store.acquireLease(session.id);
     assert.ok(lease);
+    await raw.query("INSERT INTO qm_settings(key,value) VALUES('tool_result_inline_tokens','256')");
     await fn({
+      toolOutput: createPostgresToolOutputStore({
+        pool: { q: async (sql, params) => (await raw.query(sql, params)).rows },
+        bytesFor: () => createMemoryDurableByteStore(),
+      }),
       emit: (entry) => store.append({ ...lease, turnId: "run-pg" }, entry),
       history: async () => forModelContext(await store.getEntries(session.id)),
     });
     await store.releaseLease(lease);
   } finally {
+    await raw.end();
     await admin.query(`DROP SCHEMA ${schema} CASCADE`);
     await admin.end();
   }
@@ -518,7 +529,7 @@ test(
   "after a round trip through Postgres items, the next anthropic request replays a cut result and a delivery byte-for-byte",
   { skip: PG_URL ? false : "set DATABASE_URL" },
   async () => {
-    await withPgSession(async ({ emit, history }) => {
+    await withPgSession(async ({ emit, history, toolOutput }) => {
       const step1: Reply = [
         { type: "thinking", thinking: "I should search history.", signature: "sig-one" },
         { type: "text", text: "Checking." },
@@ -534,7 +545,7 @@ test(
         { type: "thinking", thinking: "Found it.", signature: "sig-two" },
         { type: "text", text: "Done." },
       ];
-      const tools = { ...pgTools, toolOutput: createMemoryToolOutputStore({ inlineTokens: 256 }) } as ToolContext;
+      const tools = { ...pgTools, toolOutput } as ToolContext;
       const first = await runTurn(
         "where is the budget doc?",
         [],
@@ -542,13 +553,7 @@ test(
         { emit, tools },
       );
       const scopeLabel = "personal:tester" as SessionEntry["scopeLabel"];
-      const callId = "agent:main:cron:c1:100";
-      await emit({
-        type: "tool_call",
-        payload: { tool: "deliver", callId, text: "Daily digest", via: "cron" },
-        scopeLabel,
-      });
-      await emit({ type: "tool_result", payload: { tool: "deliver", callId, result: "delivered" }, scopeLabel });
+      await emit({ type: "assistant", payload: { text: "Daily digest", via: "cron" }, scopeLabel });
       const second = await runTurn(
         "and Q3?",
         await history(),
@@ -560,7 +565,6 @@ test(
       assert.ok(!JSON.stringify(before).includes(bigResult.trim()));
       assert.match(JSON.stringify(before), /tool-output\/toolu_1/);
       assert.equal(JSON.stringify(after.slice(0, before.length)), JSON.stringify(before));
-      const wireId = "agent_main_cron_c1_100";
       assert.deepEqual(after.slice(before.length), [
         {
           role: "assistant",
@@ -569,14 +573,7 @@ test(
             { type: "text", text: "Done." },
           ],
         },
-        {
-          role: "assistant",
-          content: [{ type: "tool_use", id: wireId, name: "deliver", input: { text: "Daily digest", via: "cron" } }],
-        },
-        {
-          role: "user",
-          content: [{ type: "tool_result", tool_use_id: wireId, content: "delivered", is_error: false }],
-        },
+        { role: "assistant", content: [{ type: "text", text: "Daily digest" }] },
         { role: "user", content: [{ type: "text", text: "and Q3?" }] },
       ]);
     });

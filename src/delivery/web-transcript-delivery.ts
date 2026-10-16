@@ -1,7 +1,6 @@
 import type { Delivery, ScopeId, SessionEntry } from "../types.ts";
 import type { DeliveryStore } from "./delivery-store.ts";
-import { DuplicateCallError, type SessionStore } from "../sessions/session-store.ts";
-import { DELIVER_TOOL } from "../sessions/items-schema.ts";
+import { type SessionStore } from "../sessions/session-store.ts";
 import { reportFailure, swallow } from "../util/errors.ts";
 
 const DEDUPE_SCAN_LIMIT = 200;
@@ -53,37 +52,34 @@ export function withWebTranscriptDeliveries(store: DeliveryStore, sessions: WebT
       const failure = note?.kind === "turn_failure" ? note : undefined;
       if (failure && turnRecordedFailure(await sessions.getEntries(session.id, { limit: DEDUPE_SCAN_LIMIT }), failure))
         return true;
+      const turnId = failure?.runId ?? d.id;
+      if (!failure && (await sessions.getEntries(session.id, { turnId })).some((entry) => entry.type === "assistant"))
+        return true;
       const scopeLabel = session.scopeId;
       const ownReply = d.provenance?.sourceThreadRef === d.destination.target;
       const via = d.provenance?.trigger && !ownReply ? d.provenance.trigger : undefined;
-      const callId = d.idempotencyKey;
-      try {
-        await sessions.appendMany(
-          lease,
-          failure
-            ? [
-                {
-                  type: "system",
-                  payload: {
-                    kind: "turn_failure",
-                    message: d.text,
-                    ...(failure.runId ? { runId: failure.runId } : {}),
-                  },
-                  scopeLabel,
+      await sessions.appendMany(
+        { ...lease, turnId },
+        failure
+          ? [
+              {
+                type: "system",
+                payload: {
+                  kind: "turn_failure",
+                  message: d.text,
+                  ...(failure.runId ? { runId: failure.runId } : {}),
                 },
-              ]
-            : [
-                {
-                  type: "tool_call",
-                  payload: { tool: DELIVER_TOOL, callId, text: d.text, ...(via ? { via } : {}) },
-                  scopeLabel,
-                },
-                { type: "tool_result", payload: { tool: DELIVER_TOOL, callId, result: "delivered" }, scopeLabel },
-              ],
-        );
-      } catch (err) {
-        if (!(err instanceof DuplicateCallError)) throw err;
-      }
+                scopeLabel,
+              },
+            ]
+          : [
+              {
+                type: "assistant",
+                payload: { text: d.text, ...(via ? { via } : {}) },
+                scopeLabel,
+              },
+            ],
+      );
       return true;
     } finally {
       await sessions.releaseLease(lease);

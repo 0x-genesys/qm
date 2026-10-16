@@ -3,17 +3,23 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { applyPgMigrations, registeredPgMigrations } from "../src/persistence/pg-pool.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
-import { ITEMS_BUCKET_DELETE_SQL, itemsBucketParams, itemsCopySql } from "../src/sessions/items-copy.ts";
+import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
+import { itemsCopySql, itemsCopySelectedSql, itemsSelectedRowsSql } from "../src/sessions/items-copy.ts";
 import { ITEM_INDEXES } from "../src/sessions/items-schema.ts";
-import { runItemsBulkCopy } from "../scripts/items-bulk-copy.ts";
 import { scopeId } from "../src/types.ts";
 
 type Pool = import("pg").Pool;
 
 const URL = process.env.DATABASE_URL;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the items copy test";
+const T0 = 1_700_000_000_000;
 
-async function withSchema(fn: (raw: Pool, url: string) => Promise<void>): Promise<void> {
+const ITEMS_MIGRATION = "sessions/store/0035-items";
+
+async function withSchema(
+  fn: (raw: Pool, url: string) => Promise<void>,
+  opts: { beforeItems?: (raw: Pool) => Promise<void> } = {},
+): Promise<void> {
   const pg = (await import("pg")).default;
   const admin = new pg.Pool({ connectionString: URL });
   const schema = `items_copy_${randomUUID().replaceAll("-", "")}`;
@@ -23,10 +29,18 @@ async function withSchema(fn: (raw: Pool, url: string) => Promise<void>): Promis
   const raw = new pg.Pool({ connectionString: url.toString() });
   try {
     createPostgresSessionStore(url.toString());
-    await applyPgMigrations(
-      raw,
-      registeredPgMigrations(url.toString()).filter((migration) => migration.id < "sessions/store/0035"),
+    createPostgresDirectoryStore(url.toString());
+    const migrations = registeredPgMigrations(url.toString()).filter(
+      (migration) => migration.id !== "sessions/store/0036-items-cutover",
     );
+    if (opts.beforeItems) {
+      await applyPgMigrations(
+        raw,
+        migrations.filter((migration) => migration.id !== ITEMS_MIGRATION),
+      );
+      await opts.beforeItems(raw);
+    }
+    await applyPgMigrations(raw, migrations);
     await fn(raw, url.toString());
   } finally {
     await raw.end();
@@ -37,49 +51,57 @@ async function withSchema(fn: (raw: Pool, url: string) => Promise<void>): Promis
 
 const scope = scopeId("personal", "alice");
 
-async function seed(raw: Pool, id: string, entries: Array<[string, unknown] | [string, unknown, "raw"]>, from = 0) {
+async function seed(raw: Pool, id: string, entries: Array<[string, unknown]>, from = 0) {
   await raw.query(
     "INSERT INTO sessions(id, type, scope_id, thread_ref, created_at) VALUES ($1, 'dm', $2, $3, 1) ON CONFLICT DO NOTHING",
     [id, scope, `web:${id}`],
   );
-  for (const [i, [type, payload, raw_]] of entries.entries())
+  for (const [i, [type, payload]] of entries.entries())
     await raw.query(
       "INSERT INTO session_entries(session_id, seq, parent_seq, type, payload, scope_label, created_at) VALUES ($1, $2, NULL, $3, $4, $5, $6)",
-      [id, from + i, type, raw_ ? payload : JSON.stringify(payload), scope, 1_700_000_000_000 + from + i],
+      [id, from + i, type, JSON.stringify(payload), scope, T0 + from + i],
     );
 }
 
 async function copyAll(raw: Pool, buckets = 4, delta = false): Promise<number> {
   let total = 0;
-  for (let bucket = 0; bucket < buckets; bucket++)
-    total += (await raw.query(itemsCopySql({ delta }), itemsBucketParams(bucket, buckets))).rowCount ?? 0;
+  for (let index = 0; index < buckets; index++)
+    total += (await raw.query(itemsCopySql({ delta, bucket: { index, count: buckets } }))).rows[0].rows;
   return total;
 }
 
 const items = async (raw: Pool, sessionId: string) =>
   (
     await raw.query(
-      `SELECT seq::int, turn_id, kind, author, call_id, elicit_id, wake_cause, error_code, body,
+      `SELECT seq::int, turn_id, kind, author, call_id, elicit_id, wake_cause, error_code, text, tool, step,
+              variant, is_error, hidden, external_id, through_seq::int, target_seq::int, approved, body,
               (extract(epoch FROM created_at) * 1000)::bigint::text AS ms
          FROM items WHERE session_id = $1 ORDER BY seq`,
       [sessionId],
     )
   ).rows as Array<Record<string, unknown> & { seq: number; body: Record<string, unknown> }>;
 
-test("items copy maps every legacy entry type and system kind", { skip }, async () => {
+test("items copy maps every legacy type, hoists fields into columns and strips them from body", { skip }, async () => {
   await withSchema(async (raw) => {
     const run = randomUUID();
     await seed(raw, "s1", [
       ["soul", { text: "persona" }],
-      ["user", { text: "hi", runId: run, securityTainted: true }],
-      ["user", { text: "also", steered: true }],
+      ["user", { text: "hi", runId: run, securityTainted: true, ts: "1.1", hidden: true, name: "Al" }],
+      ["user", { text: "also", steered: true, ts: "1.5" }],
       ["text_start", {}],
       ["text", { text: "narrating" }],
-      ["thinking", { thinking: "hmm" }],
+      ["thinking", { thinking: "hmm", thinkingSignature: "sig" }],
       ["tool_call", { tool: "execute", callId: "c1", args: { cmd: "ls" } }],
       [
         "tool_result",
-        { tool: "execute", callId: "c1", result: "out: hello\nerr: boom", stdout: "hello", stderr: "nope" },
+        {
+          tool: "execute",
+          callId: "c1",
+          result: "out: hello\nerr: boom",
+          stdout: "hello",
+          stderr: "nope",
+          isError: true,
+        },
       ],
       ["tool_call", { tool: "execute" }],
       ["assistant", { text: "done", deliveryKey: "k1", runId: "not-a-uuid", via: "cron" }],
@@ -90,18 +112,19 @@ test("items copy maps every legacy entry type and system kind", { skip }, async 
       ["system", { kind: "turn_failure", message: "failed", deliveryKey: "k2", runId: run }],
       ["system", { kind: "wake", text: "follow-up" }],
       ["system", { kind: "wake", cause: "cron", text: "fire" }],
-      ["system", { kind: "message_revision", action: "deleted", ts: "1.2" }],
+      ["system", { kind: "message_revision", action: "deleted", ts: "1.1" }],
       ["system", { kind: "goal", goal: {} }],
       ["system", { kind: "memory_context", snapshot: {} }],
       ["system", { kind: "file_event", direction: "in" }],
       ["user", "just a string"],
-      ["user", "not json {", "raw"],
-      ["user", { type: "x", $type: "y", text: "t" }],
+      ["user", { type: "x", $type: "y", $blobs: [], text: "t" }],
       ["assistant", 5],
       ["tool_result", { callId: "", result: { ok: true }, stdout: "kept" }],
+      ["user", { text: "" }],
     ]);
     await raw.query(
-      `INSERT INTO legacy_tape_steps(session_id, seq, step, wire) VALUES ('s1', 6, '{"id":"tape:1"}', '{"x":1}')`,
+      `INSERT INTO legacy_tape_steps(session_id, seq, step, wire)
+       VALUES ('s1', 6, '{"id":"tape:1","model":"m","index":2}', '{"x":1}'), ('s1', 5, '{"id":"tape:1","index":0}', NULL)`,
     );
 
     assert.equal(await copyAll(raw), 21);
@@ -128,68 +151,127 @@ test("items copy maps every legacy entry type and system kind", { skip }, async 
         [17, "Retraction"],
         [21, "UserMessage"],
         [22, "UserMessage"],
-        [23, "UserMessage"],
-        [24, "AgentMessage"],
-        [25, "ToolResult"],
+        [23, "AgentMessage"],
+        [24, "ToolResult"],
+        [25, "UserMessage"],
       ],
     );
-    assert.equal(
-      rows.every((row) => row.author === null),
-      true,
+    assert.equal(at(1).ms, String(T0 + 1));
+    assert.deepEqual(
+      [at(1).turn_id, at(1).text, at(1).hidden, at(1).external_id, at(1).body],
+      [run, "hi", true, "1.1", { name: "Al" }],
     );
-    assert.deepEqual(at(1).body, { text: "hi", runId: run });
-    assert.equal(at(1).turn_id, run);
-    assert.equal(at(1).ms, String(1_700_000_000_001));
-    assert.deepEqual(at(4).body, { text: "narrating", variant: "narration" });
-    assert.deepEqual(at(6).body, {
-      tool: "execute",
-      callId: "c1",
-      args: { cmd: "ls" },
-      step: { id: "tape:1" },
-      wire: { x: 1 },
-    });
-    assert.equal(at(6).call_id, "c1");
-    assert.equal(at(7).call_id, "c1");
-    assert.deepEqual(at(7).body, { tool: "execute", callId: "c1", result: "out: hello\nerr: boom", stderr: "nope" });
-    assert.equal(at(8).call_id, "missing-call:8");
-    assert.deepEqual(at(9).body, { text: "done", runId: "not-a-uuid", via: "cron" });
-    assert.equal(at(9).turn_id, null);
-    assert.deepEqual(at(10).body, { files: ["a.txt"], variant: "files_delivered" });
-    assert.equal(at(11).elicit_id, "r1");
-    assert.equal(at(12).elicit_id, "missing-elicit:12");
-    assert.deepEqual(at(14).body, { kind: "turn_failure", message: "failed", runId: run });
-    assert.equal(at(14).error_code, "turn_failure");
-    assert.equal(at(14).turn_id, run);
-    assert.equal(at(15).wake_cause, "system");
-    assert.equal(at(16).wake_cause, "cron");
-    assert.deepEqual(at(17).body, { kind: "message_revision", action: "deleted", ts: "1.2" });
-    assert.deepEqual(at(21).body, { text: "just a string" });
-    assert.deepEqual(at(22).body, { text: "not json {" });
-    assert.deepEqual(at(23).body, { $type: "x", $$type: "y", text: "t" });
-    assert.deepEqual(at(24).body, { value: 5 });
-    assert.equal(at(25).call_id, "missing-call:25");
-    assert.deepEqual(at(25).body, { callId: "", result: { ok: true }, stdout: "kept" });
+    assert.deepEqual([at(2).text, at(2).external_id, at(2).body], ["also", null, { ts: "1.5" }]);
+    assert.deepEqual([at(4).text, at(4).variant, at(4).body], ["narrating", "narration", {}]);
+    assert.deepEqual(
+      [at(5).text, at(5).step, at(5).body],
+      ["hmm", 0, { thinkingSignature: "sig", wire: { message: { id: "tape:1" } } }],
+    );
+    assert.deepEqual(
+      [at(6).call_id, at(6).tool, at(6).step, at(6).body],
+      ["c1", "execute", 2, { args: { cmd: "ls" }, wire: { x: 1, message: { id: "tape:1", model: "m" } } }],
+    );
+    assert.deepEqual(
+      [at(7).call_id, at(7).tool, at(7).text, at(7).is_error, at(7).body],
+      ["c1", "execute", "out: hello\nerr: boom", true, { stderr: "nope" }],
+    );
+    assert.equal(at(8).call_id, null);
+    assert.deepEqual(
+      [at(9).turn_id, at(9).text, at(9).variant, at(9).body],
+      [null, "done", null, { runId: "not-a-uuid", via: "cron" }],
+    );
+    assert.deepEqual([at(10).variant, at(10).text, at(10).body], ["files_delivered", null, { files: ["a.txt"] }]);
+    assert.deepEqual([at(11).elicit_id, at(11).body], ["r1", { command: "rm" }]);
+    assert.deepEqual([at(12).elicit_id, at(12).approved, at(12).body], ["missing-elicit:12", true, {}]);
+    assert.deepEqual([at(13).text, at(13).through_seq, at(13).body], ["summary", 3, {}]);
+    assert.deepEqual(
+      [at(14).error_code, at(14).text, at(14).turn_id, at(14).body],
+      ["turn_failure", "failed", run, {}],
+    );
+    assert.deepEqual([at(15).wake_cause, at(15).body], ["system", { text: "follow-up" }]);
+    assert.deepEqual([at(16).wake_cause, at(16).body], ["cron", { text: "fire" }]);
+    assert.deepEqual([at(17).target_seq, at(17).body], [1, { action: "deleted", ts: "1.1" }]);
+    assert.deepEqual([at(21).text, at(21).body], ["just a string", {}]);
+    assert.deepEqual([at(22).text, at(22).body], ["t", { type: "x", $type: "y", $blobs: [] }]);
+    assert.deepEqual(at(23).body, { value: 5 });
+    assert.deepEqual(
+      [at(24).call_id, at(24).text, at(24).body],
+      [null, null, { result: { ok: true }, stdout: "kept" }],
+    );
+    assert.deepEqual([at(25).text, at(25).body], [null, {}]);
   });
 });
 
-test("items copy repairs payloads jsonb rejects: escaped NULs and lone surrogates", { skip }, async () => {
+test("items copy deduces legacy authors from participants and directory names", { skip }, async () => {
   await withSchema(async (raw) => {
-    await seed(raw, "r", [
-      ["user", String.raw`{"text":"a\u0000b","keep":"\\u0000"}`, "raw"],
-      ["user", String.raw`{"text":"x\ud800y"}`, "raw"],
-      ["user", String.raw`{"text":"\udc00 \ud83d\ude00"}`, "raw"],
-      ["user", String.raw`{"text":"\ud800","literal":"\\ud800"}`, "raw"],
+    const join = (session: string, principal: string, from: number, to: number | null) =>
+      raw.query("INSERT INTO participants(session_id, principal_id, valid_from, valid_to) VALUES ($1, $2, $3, $4)", [
+        session,
+        principal,
+        from,
+        to,
+      ]);
+    await raw.query(
+      `INSERT INTO directory_members(org_id, principal_id, display_name, display_name_lc, type)
+       VALUES ('o', 'u:ann', 'Ann Lee', 'ann lee', 'internal'), ('o', 'u:bob', 'Bob', 'bob', 'internal')`,
+    );
+    await seed(raw, "solo", [
+      ["user", { text: "before ann joined" }],
+      ["user", { text: "ann alone" }],
+      ["user", { text: "both here", name: "bob" }],
+      ["user", { text: "both here, nameless" }],
+      ["user", { text: "overheard", overheard: true, ts: "9.1", name: "Ann Lee" }],
+      ["user", { text: "agent echo", overheard: true, ts: "9.2", sourceRole: "agent", name: "Ann Lee" }],
+      ["approval_resolved", { requestId: "r", approved: false }],
     ]);
-    assert.equal(await copyAll(raw, 1), 4);
+    await join("solo", "u:ann", T0 + 1, null);
+    await join("solo", "u:bob", T0 + 2, T0 + 6);
+    const counts = (await raw.query(itemsCopySql())).rows[0];
+    assert.deepEqual(counts, { rows: 7, author_eligible: 7, author_null: 3 });
     assert.deepEqual(
-      (await items(raw, "r")).map((row) => row.body),
+      (await items(raw, "solo")).map((row) => [row.seq, row.author]),
       [
-        { text: "ab", keep: "\\u0000" },
-        { text: "x\ufffdy" },
-        { text: "\ufffd \u{1f600}" },
-        { text: "\ufffd", literal: "\\ud800" },
+        [0, null],
+        [1, "u:ann"],
+        [2, "u:bob"],
+        [3, null],
+        [4, "u:ann"],
+        [5, null],
+        [6, "u:ann"],
       ],
     );
+  });
+});
+
+test("items CHECKs tie each hoisted column to its kinds and search indexes the text", { skip }, async () => {
+  await withSchema(async (raw) => {
+    await seed(raw, "c", []);
+    const insert = (cols: string, values: string) =>
+      raw.query(
+        `INSERT INTO items(tenant_id, session_id, seq, body, created_at, ${cols})
+         SELECT id, 'c', (SELECT count(*) FROM items), '{}', now(), ${values} FROM qm_tenant`,
+      );
+    await insert("kind, text", "'UserMessage', 'the quick brown fox'");
+    await insert("kind, call_id, tool, is_error", "'ToolResult', 'c1', 'execute', false");
+    for (const [cols, values, constraint] of [
+      ["kind, tool", "'UserMessage', 'execute'", /items_tool_kind/],
+      ["kind, variant", "'AgentMessage', 'reply'", /variant_check/],
+      ["kind, text", "'UserMessage', ''", /text_check/],
+      ["kind, hidden", "'SteeringMessage', true", /items_hidden_kind/],
+      ["kind, external_id", "'AgentMessage', '1.1'", /items_external_id_kind/],
+      ["kind, through_seq", "'Retraction', 1", /items_through_seq_kind/],
+      ["kind, target_seq", "'ContextCompaction', 1", /items_target_seq_kind/],
+      ["kind, approved", "'Elicitation', true", /items_approved_kind/],
+      ["kind, author", "'AgentMessage', 'u:ann'", /items_author_kind/],
+      ["kind, call_id, blob_sha", "'ToolResult', 'c2', sha256('x')", /items_blob/],
+    ] as const)
+      await assert.rejects(insert(cols, values), constraint);
+    await insert("kind, author", "'Stop', 'u:ann'");
+    await insert("kind, author", "'RuntimeChange', 'u:ann'");
+    const hits = await raw.query(
+      "SELECT seq::int FROM items WHERE session_id = 'c' AND search @@ to_tsquery('simple', 'brown & fox')",
+    );
+    assert.deepEqual(hits.rows, [{ seq: 0 }]);
   });
 });
 
@@ -205,7 +287,7 @@ test("items copy fails loudly on an unmapped entry type or system kind", { skip 
   });
 });
 
-test("a bucket can be deleted and recopied, and delta mode copies only new entries", { skip }, async () => {
+test("bucketed bulk copy partitions sessions and delta copies only new entries", { skip }, async () => {
   await withSchema(async (raw) => {
     for (let i = 0; i < 12; i++)
       await seed(raw, `s${i}`, [
@@ -213,15 +295,6 @@ test("a bucket can be deleted and recopied, and delta mode copies only new entri
         ["assistant", { text: `a${i}` }],
       ]);
     assert.equal(await copyAll(raw), 24);
-    const snapshot = async () =>
-      (await raw.query("SELECT session_id, seq, kind, body FROM items ORDER BY session_id, seq")).rows;
-    const before = await snapshot();
-    const deleted = await raw.query(ITEMS_BUCKET_DELETE_SQL, itemsBucketParams(1, 4));
-    assert.ok((deleted.rowCount ?? 0) > 0);
-    const recopied = await raw.query(itemsCopySql(), itemsBucketParams(1, 4));
-    assert.equal(recopied.rowCount, deleted.rowCount);
-    assert.deepEqual(await snapshot(), before);
-
     assert.equal(await copyAll(raw, 4, true), 0);
     await seed(
       raw,
@@ -234,7 +307,7 @@ test("a bucket can be deleted and recopied, and delta mode copies only new entri
       2,
     );
     await seed(raw, "fresh", [["user", { text: "new session" }]]);
-    assert.equal(await copyAll(raw, 4, true), 3);
+    assert.equal(await copyAll(raw, 1, true), 3);
     assert.deepEqual(
       (await items(raw, "s3")).map((row) => [row.seq, row.kind]),
       [
@@ -244,46 +317,163 @@ test("a bucket can be deleted and recopied, and delta mode copies only new entri
         [4, "Reasoning"],
       ],
     );
-    assert.equal(await copyAll(raw, 4, true), 0);
+    assert.equal(await copyAll(raw, 1, true), 0);
+    assert.throws(() => itemsCopySql({ bucket: { index: 4, count: 4 } }), /bucket 4 of 4 is invalid/);
   });
 });
 
-test("the bulk-copy runner copies every bucket, reruns one, and builds the indexes", { skip }, async () => {
-  await withSchema(async (raw, url) => {
-    for (let i = 0; i < 6; i++)
-      await seed(raw, `s${i}`, [
-        ["user", { text: `q${i}` }],
-        ["tool_call", { tool: "deliver", callId: `c${i}` }],
-      ]);
-    const log: string[] = [];
-    const first = await runItemsBulkCopy({
-      connectionString: url,
-      buckets: 3,
-      concurrency: 2,
-      log: (l) => log.push(l),
+test("the startup migration copies existing history and builds the indexes", { skip }, async () => {
+  await withSchema(
+    async (raw) => {
+      assert.deepEqual(
+        (await items(raw, "old")).map((row) => [row.seq, row.kind, row.text]),
+        [
+          [0, "UserMessage", "before items existed"],
+          [1, "ToolCall", null],
+        ],
+      );
+      const built = await raw.query(
+        `SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+          WHERE i.indrelid = 'items'::regclass AND i.indisvalid AND c.relname = ANY($1)`,
+        [ITEM_INDEXES.map((index) => index.name)],
+      );
+      assert.equal(built.rowCount, ITEM_INDEXES.length);
+    },
+    {
+      beforeItems: (raw) =>
+        seed(raw, "old", [
+          ["user", { text: "before items existed" }],
+          ["tool_call", { tool: "deliver", callId: "c1" }],
+        ]),
+    },
+  );
+});
+
+test(
+  "items copy repairs unsupported JSON escapes, preserves literals and rejects other broken payloads",
+  { skip },
+  async () => {
+    await withSchema(async (raw) => {
+      await seed(raw, "repair", []);
+      const payloads = [
+        String.raw`{"text":"nul\u0000end"}`,
+        String.raw`{"text":"high\ud800end"}`,
+        String.raw`{"text":"low\udc00end"}`,
+        String.raw`{"text":"pair\ud83d\ude00"}`,
+        String.raw`{"text":"literal\\u0000"}`,
+        null,
+        "7",
+        "true",
+      ];
+      for (const [seq, payload] of payloads.entries())
+        await raw.query(
+          "INSERT INTO session_entries(session_id,seq,type,payload,scope_label,created_at) VALUES('repair',$1,'user',$2,'personal:test',1)",
+          [seq, payload],
+        );
+      assert.equal(await copyAll(raw, 1), 8);
+      const result = await items(raw, "repair");
+      assert.deepEqual(
+        result.slice(0, 5).map((r) => r.text),
+        ["nulend", "high�end", "low�end", "pair😀", String.raw`literal\u0000`],
+      );
+      assert.deepEqual(
+        result.slice(5).map((r) => r.body),
+        [{}, { value: 7 }, { value: true }],
+      );
+      await raw.query("UPDATE session_entries SET payload='not json' WHERE seq=0");
+      await raw.query("DELETE FROM items");
+      await assert.rejects(copyAll(raw, 1), /invalid input syntax/);
+      assert.equal((await raw.query("SELECT count(*)::int AS n FROM items")).rows[0].n, 0);
     });
-    assert.equal(first.failed.length, 0);
-    assert.equal(first.rows, 12);
-    assert.match(log.join("\n"), /bucket 0\/3: \d+ rows/);
-    const rerun = await runItemsBulkCopy({
-      connectionString: url,
-      buckets: 3,
-      only: [2],
-      indexes: false,
-      log: () => {},
-    });
-    assert.equal(rerun.failed.length, 0);
-    assert.equal((await raw.query("SELECT count(*)::int AS n FROM items")).rows[0].n, 12);
-    const built = await raw.query(
-      `SELECT c.relname FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
-        WHERE i.indrelid = 'items'::regclass AND i.indisvalid AND c.relname = ANY($1)`,
-      [ITEM_INDEXES.map((index) => index.name)],
+  },
+);
+
+test("selected-key copying uses the same mapping on TEXT and JSONB without copying other rows", { skip }, async () => {
+  await withSchema(async (raw) => {
+    await seed(raw, "selected", [
+      ["user", { text: "one" }],
+      ["assistant", { text: "two" }],
+      ["soul", {}],
+    ]);
+    const client = await raw.connect();
+    try {
+      await client.query("CREATE TEMP TABLE items_copy_batch(session_id text,seq int,PRIMARY KEY(session_id,seq))");
+      await client.query("INSERT INTO items_copy_batch VALUES('selected',1),('selected',2)");
+      assert.equal((await client.query(itemsCopySelectedSql())).rows[0].rows, 1);
+      assert.deepEqual(
+        (await items(raw, "selected")).map((r) => r.text),
+        ["two"],
+      );
+      const expected = (await client.query(itemsSelectedRowsSql())).rows[0];
+      assert.equal(expected.kind, "AgentMessage");
+      assert.equal(expected.text, "two");
+      await client.query(
+        "CREATE TEMP TABLE source_rows AS SELECT session_id,seq,type,payload,created_at FROM session_entries",
+      );
+      await client.query("CREATE TEMP TABLE session_entries AS SELECT * FROM source_rows WITH NO DATA");
+      await client.query("ALTER TABLE pg_temp.session_entries ALTER COLUMN payload TYPE jsonb USING payload::jsonb");
+      await client.query(
+        "INSERT INTO pg_temp.session_entries SELECT session_id,seq,type,payload::jsonb,created_at FROM source_rows",
+      );
+      await client.query("DELETE FROM items");
+      assert.equal((await client.query(itemsCopySelectedSql())).rows[0].rows, 1);
+      assert.equal((await client.query(itemsSelectedRowsSql())).rows[0].text, "two");
+    } finally {
+      client.release();
+    }
+  });
+});
+
+test("items copy preserves missing call IDs as NULL and still constrains present IDs", { skip }, async () => {
+  await withSchema(async (raw) => {
+    await seed(raw, "nullable-calls", [
+      ["tool_call", { tool: "execute", command: "echo hello" }],
+      ["tool_result", { tool: "execute", result: "hello" }],
+      ["tool_call", { tool: "execute", callId: "" }],
+      ["tool_result", { tool: "execute", callId: null }],
+      ["tool_call", { tool: "execute", callId: "real-call" }],
+      ["tool_result", { tool: "execute", callId: "real-call" }],
+    ]);
+    await copyAll(raw, 1);
+    const rows = await items(raw, "nullable-calls");
+    assert.deepEqual(
+      rows.map((row) => row.call_id),
+      [null, null, null, null, "real-call", "real-call"],
     );
-    assert.equal(built.rowCount, ITEM_INDEXES.length);
-    await raw.query("UPDATE session_entries SET type = 'mystery' WHERE session_id = 's0' AND seq = 0");
-    await raw.query("TRUNCATE items");
-    const failing = await runItemsBulkCopy({ connectionString: url, buckets: 3, indexes: false, log: () => {} });
-    assert.equal(failing.failed.length, 1);
-    assert.match(failing.failed[0]!.error, /unmapped entry type=mystery/);
+    assert.ok(rows.every((row) => !("callId" in row.body)));
+    await assert.rejects(
+      raw.query("UPDATE items SET call_id='' WHERE session_id='nullable-calls' AND seq=0"),
+      /check constraint/,
+    );
+    await assert.rejects(
+      raw.query("UPDATE items SET call_id='real-call' WHERE session_id='nullable-calls' AND seq=0"),
+      /unique constraint/,
+    );
+    await assert.rejects(
+      raw.query("UPDATE items SET kind='UserMessage',tool=NULL WHERE session_id='nullable-calls' AND seq=4"),
+      /items_call_id_kind/,
+    );
+  });
+});
+
+test("payload parsing keeps ordinary JSON fast-path and Unicode repair semantics", { skip }, async () => {
+  await withSchema(async (raw) => {
+    const valid: Array<[string, unknown]> = [
+      [
+        String.raw`{"text":"ordinary \"quoted\" text","values":[1,true,null]}`,
+        { text: 'ordinary "quoted" text', values: [1, true, null] },
+      ],
+      [String.raw`{"text":"\u0041"}`, { text: "A" }],
+      [String.raw`{"text":"before\u0000after"}`, { text: "beforeafter" }],
+      [String.raw`{"text":"before\ud800after"}`, { text: "before�after" }],
+      [String.raw`{"text":"literal\\u0000"}`, { text: String.raw`literal\u0000` }],
+    ];
+    for (const [input, expected] of valid)
+      assert.deepEqual(
+        (await raw.query("SELECT items_copy_payload($1::text) AS parsed", [input])).rows[0].parsed,
+        expected,
+      );
+    for (const input of [String.raw`{"text":"\q"}`, '{"text":"unfinished"', String.raw`{"text":"\u0000","bad":}`])
+      await assert.rejects(raw.query("SELECT items_copy_payload($1::text)", [input]), /invalid input syntax/);
   });
 });

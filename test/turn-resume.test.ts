@@ -20,12 +20,7 @@ const assistant = (text: string, seq: number) => ent("assistant", { text }, seq)
 const toolCall = (seq: number) => ent("tool_call", { tool: "execute", callId: `c${seq}`, command: "make build" }, seq);
 const toolResult = (seq: number) => ent("tool_result", { callId: `c${seq - 1}`, result: "ok" }, seq);
 const steer = (text: string, seq: number) => ent("user", { text, ts: String(seq), steered: true }, seq);
-const delivered = (text: string, seq: number) =>
-  ent(
-    "tool_call",
-    { tool: "deliver", callId: `delivery:run:other-${seq}`, text, deliveryKey: `run:other-${seq}` },
-    seq,
-  );
+const delivered = (text: string, seq: number) => ent("assistant", { text, runId: "other-turn" }, seq);
 
 test("findTrailingPartialTurn finds the dead attempt's user entry and counts its partial work", () => {
   const entries = [
@@ -197,7 +192,7 @@ test("turnAtSeq reads through a mid-turn steer, which is the person adding to th
 });
 
 test("turnAtSeq ignores another conversation's delivery", () => {
-  const entries = [user("mine", 10), toolCall(11), delivered("Nightly report", 12)];
+  const entries = [ent("user", { text: "mine", runId: "my-turn" }, 10), toolCall(11), delivered("Nightly report", 12)];
   assert.deepEqual(turnAtSeq(entries, 10), { userSeq: 10, workEntries: 1 });
 });
 
@@ -299,4 +294,10 @@ test("resumeStrategy continues silently only when every call is answered and the
     }).kind,
     "retry",
   );
+});
+
+test("an unrelated message does not close an interrupted turn or supply its answer", () => {
+  const entries = [ent("user", { text: "mine", runId: "my-turn" }, 10), toolCall(11), delivered("Nightly report", 12)];
+  assert.deepEqual(findTrailingPartialTurn(entries, "mine"), { userSeq: 10, workEntries: 1 });
+  assert.deepEqual(turnAtSeq(entries, 10), { userSeq: 10, workEntries: 1 });
 });

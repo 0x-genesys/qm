@@ -1,8 +1,11 @@
 import type { SessionEntry } from "../types.ts";
 import { isOverheardEntry } from "../sessions/session-store.ts";
-import { isDeliveryEntry } from "../sessions/items.ts";
 
 const NOTE_HEAD = "(system note:";
+
+const entryTurnId = (entry: SessionEntry): unknown => (entry.payload as { runId?: unknown } | null)?.runId;
+const differentTurn = (entry: SessionEntry, turn: SessionEntry): boolean =>
+  entryTurnId(entry) != null && entryTurnId(turn) != null && entryTurnId(entry) !== entryTurnId(turn);
 
 export interface PartialTurn {
   userSeq: number;
@@ -25,8 +28,16 @@ export function findTrailingPartialTurn(entries: readonly SessionEntry[], inputT
   let workEntries = 0;
   for (let i = entries.length - 1; i >= 0; i--) {
     const e = entries[i]!;
-    if (e.type === "assistant") return null;
-    if (isDeliveryEntry(e)) continue;
+    if (e.type === "assistant") {
+      const start = entries
+        .slice(0, i)
+        .findLast(
+          (item) =>
+            item.type === "user" && !isOverheardEntry(item) && !isSteerEntry(item) && !isResumeNote(entryText(item)),
+        );
+      if (!start || !differentTurn(e, start)) return null;
+      continue;
+    }
     if (e.type === "tool_call" || e.type === "tool_result") {
       workEntries += 1;
       continue;
@@ -55,11 +66,11 @@ export function turnAtSeq(entries: readonly SessionEntry[], userSeq: number): Re
   let answer: RecordedTurn["answer"];
   for (let i = start + 1; i < entries.length; i++) {
     const e = entries[i]!;
+    if (e.type !== "user" && differentTurn(e, entries[start]!)) continue;
     if (e.type === "assistant") {
       answer = { seq: e.seq, text: entryText(e) };
       continue;
     }
-    if (isDeliveryEntry(e)) continue;
     if (e.type === "tool_call" || e.type === "tool_result") {
       workEntries += 1;
       continue;
@@ -86,7 +97,8 @@ export type ResumeStrategy =
 
 export function resumeStrategy(entries: readonly SessionEntry[], partial: PartialTurn): ResumeStrategy {
   if (partial.workEntries === 0) return { kind: "restart" };
-  const turn = entries.filter((e) => e.seq > partial.userSeq && !isDeliveryEntry(e));
+  const anchor = entries.find((e) => e.seq === partial.userSeq);
+  const turn = entries.filter((e) => e.seq > partial.userSeq && (!anchor || !differentTurn(e, anchor)));
   const answered = new Set<unknown>();
   for (const e of turn) {
     const payload = e.payload as { callId?: unknown; interrupted?: unknown } | null;

@@ -143,7 +143,7 @@ for (const backend of ["memory", "postgres"] as const) {
       await assert.rejects(store.setGoal(lease, goal("stale lease"), [notice]), /valid session lease/);
       assert.deepEqual(
         (await store.getEntries(id)).map((entry) => entry.payload),
-        [notice.payload],
+        [{ ...notice.payload, kind: "wake", cause: "system" }],
         "the notice lands with the goal and not with a rejected write",
       );
     }

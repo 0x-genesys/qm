@@ -1,4 +1,3 @@
-import { memoryBoundedEntries } from "../memory/context-boundary.ts";
 import type { SessionEntry } from "../types.ts";
 import { contextSummaryPayload } from "../sessions/session-store.ts";
 import { headSlice, tailSlice } from "../util/text.ts";
@@ -28,7 +27,7 @@ export function withoutWire(payload: unknown): Record<string, unknown> {
 }
 
 function modelReplayable(entries: SessionEntry[]): SessionEntry[] {
-  return memoryBoundedEntries(entries).filter(
+  return entries.filter(
     (e) =>
       ((e.type !== "thinking" && e.type !== "text") || isObj((e.payload as { step?: unknown } | null)?.step)) &&
       (e.payload as { kind?: unknown } | null)?.kind !== "turn_failure",

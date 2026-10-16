@@ -11,7 +11,7 @@ export const ITEMS_CUTOVER_SQL: readonly string[] = [
       WHERE NOT EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
                          WHERE c.relname = name AND c.relnamespace = current_schema()::regnamespace AND i.indisvalid);
      IF unready IS NOT NULL AND EXISTS (SELECT 1 FROM items) THEN
-       RAISE EXCEPTION 'items cutover: build the items indexes with scripts/items-bulk-copy.ts first; missing or invalid: %', unready;
+       RAISE EXCEPTION 'items cutover: build the items indexes with scripts/ops/items-copy.ts first; missing or invalid: %', unready;
      END IF;
    END $index_guard$`,
   ...ITEM_INDEXES.map((index) => itemIndexSql(index)),
@@ -40,12 +40,12 @@ export const ITEMS_CUTOVER_SQL: readonly string[] = [
        DELETE FROM session_entry_search WHERE session_id = OLD.session_id AND seq = OLD.seq;
        RETURN OLD;
      END IF;
-     IF ${SEARCHABLE_ITEM("NEW")} AND btrim(NEW.body ->> 'text') <> '' THEN
+     IF ${SEARCHABLE_ITEM("NEW")} AND btrim(NEW.text) <> '' THEN
        INSERT INTO session_entry_search(session_id, seq, type, author, text, created_at)
        VALUES (NEW.session_id, NEW.seq, ${searchTypeExpr("NEW")},
                CASE WHEN NEW.kind IN ${USER_KINDS} AND jsonb_typeof(NEW.body -> 'name') = 'string'
                     THEN NEW.body ->> 'name' END,
-               NEW.body ->> 'text', ${msOf("NEW.created_at")})
+               NEW.text, ${msOf("NEW.created_at")})
        ON CONFLICT (session_id, seq) DO NOTHING;
      END IF;
      RETURN NEW;

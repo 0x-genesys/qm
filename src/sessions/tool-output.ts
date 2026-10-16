@@ -120,9 +120,9 @@ export function createPostgresToolOutputStore(opts: {
       const rows = await opts.pool.q(
         `SELECT b.storage_key, i.created_at <= now() - interval '30 days' AS expired
            FROM items i
-      LEFT JOIN blobs b ON b.tenant_id = i.tenant_id AND b.sha256 = decode(i.body -> 'output' ->> 'blob', 'hex')
+      LEFT JOIN blobs b ON b.tenant_id = i.tenant_id AND b.sha256 = i.blob_sha
           WHERE i.tenant_id = qm_tenant_id() AND i.session_id = $1 AND i.kind = 'ToolResult' AND i.call_id = $2
-            AND jsonb_typeof(i.body -> 'output' -> 'blob') = 'string'`,
+            AND i.blob_sha IS NOT NULL`,
         [sessionId, callId],
       );
       const row = rows[0];

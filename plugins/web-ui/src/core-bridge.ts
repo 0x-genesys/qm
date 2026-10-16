@@ -2050,15 +2050,6 @@ export function entriesToMessages(entries: SessionEntry[], model?: Model<Api>): 
       }
       continue;
     }
-    if ((e.type === "tool_call" || e.type === "tool_result") && payload?.tool === "deliver") {
-      if (e.type === "tool_call") {
-        spillHeldPosts();
-        deliveryFiles.push(...deliveredFilesFromAttachments(payload?.files));
-        flushWork(text, e.createdAt, true, undefined, false, e.seq === undefined ? [] : [e.seq]);
-        posted = false;
-      }
-      continue;
-    }
     if (e.type !== "user" && ACTIVITY_TYPES.has(e.type)) {
       const activity: ToolActivity = {
         seq: e.seq ?? out.length,

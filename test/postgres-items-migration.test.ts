@@ -2,35 +2,29 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { applyPgMigrations, registeredPgMigrations } from "../src/persistence/pg-pool.ts";
-import { forModelContext } from "../src/harness/context-compaction.ts";
-import { reconstructMessagesFromHistory } from "../src/harness/replay.ts";
-import { itemsBucketParams, itemsCopySql } from "../src/sessions/items-copy.ts";
-import { ITEM_INDEXES, itemIndexSql } from "../src/sessions/items-schema.ts";
+import { ItemsCopyOperator } from "../scripts/ops/items-copy.ts";
+import { ITEM_INDEXES } from "../src/sessions/items-schema.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { scopeId, type EntryType, type SessionEntry } from "../src/types.ts";
 
 const URL = process.env.DATABASE_URL;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the items cutover test";
 
-const CUTOVER = "sessions/store/0035-items-cutover";
-
 test(
-  "pg items cutover: copied legacy history replays exactly as session_entries did, then items lock down",
+  "pg items cutover: live copy, catchup, online indexes and finish hand off promoted columns to E",
   { skip },
   async () => {
     const pg = (await import("pg")).default;
     const admin = new pg.Pool({ connectionString: URL });
-    const schema = `items_cutover_${randomUUID().replaceAll("-", "")}`;
-    await admin.query(`CREATE SCHEMA ${schema}`);
-    const url = new globalThis.URL(URL!);
-    url.searchParams.set("options", `-c search_path=${schema}`);
-    const raw = new pg.Pool({ connectionString: url.toString() });
+    const raw = new pg.Pool({ connectionString: URL });
+    const client = new pg.Client({ connectionString: URL });
+    await client.connect();
     try {
-      createPostgresSessionStore(url.toString());
-      const migrations = registeredPgMigrations(url.toString());
+      createPostgresSessionStore(URL!);
+      const migrations = registeredPgMigrations(URL!);
       await applyPgMigrations(
         raw,
-        migrations.filter((migration) => migration.id < CUTOVER),
+        migrations.filter((migration) => migration.id < "sessions/store/0035-items"),
       );
       const sessionId = randomUUID();
       const scope = scopeId("personal", "alice");
@@ -77,18 +71,34 @@ test(
         });
       }
 
-      await raw.query(itemsCopySql({ delta: true }), itemsBucketParams(0, 1));
-      await assert.rejects(applyPgMigrations(raw, migrations), /build the items indexes/);
-      for (const index of ITEM_INDEXES) await raw.query(itemIndexSql(index));
-      await applyPgMigrations(raw, migrations);
-
-      const store = createPostgresSessionStore(url.toString());
-      const copied = await store.getEntries(sessionId);
+      const op = new ItemsCopyOperator(client, 3);
+      await op.prepare();
+      while (await op.copyBatch()) continue;
+      await op.completeCopy();
+      await raw.query("UPDATE session_entries SET payload=$1 WHERE session_id=$2 AND seq=5", [
+        JSON.stringify({ text: "updated final answer" }),
+        sessionId,
+      ]);
+      while (await op.catchupBatch()) continue;
+      await op.verify();
+      await assert.rejects(op.finish(true), /build the items indexes/);
+      await op.indexes();
       assert.equal(
-        JSON.stringify(reconstructMessagesFromHistory(forModelContext(copied))),
-        JSON.stringify(reconstructMessagesFromHistory(forModelContext(legacyEntries))),
-        "replay of copied rows is byte-identical to replay of the legacy rows",
+        (await raw.query("SELECT count(*)::int AS n FROM pg_index WHERE indrelid='items'::regclass AND indisvalid"))
+          .rows[0].n,
+        ITEM_INDEXES.length + 1,
       );
+      await op.finish(true);
+      await applyPgMigrations(raw, migrations);
+      await op.cleanup();
+      assert.equal((await raw.query("SELECT to_regnamespace('items_copy_ops') AS n")).rows[0].n, null);
+
+      const store = createPostgresSessionStore(URL!);
+      const copied = await store.getEntries(sessionId);
+      assert.equal((copied[0]!.payload as { text: string }).text, "hello");
+      assert.equal((copied.find((entry) => entry.seq === 5)!.payload as { text: string }).text, "updated final answer");
+      assert.equal((copied.find((entry) => entry.seq === 4)!.payload as { result: string }).result, "out\n");
+      assert.equal((copied.find((entry) => entry.seq === 3)!.payload as { callId: string }).callId, "c1");
       assert.deepEqual(
         copied.map((entry) => [entry.seq, entry.type, entry.createdAt]),
         legacyEntries
@@ -151,7 +161,7 @@ test(
       assert.equal(Number((await raw.query("SELECT count(*) FROM items")).rows[0].count), 0);
     } finally {
       await raw.end();
-      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await client.end();
       await admin.end();
     }
   },

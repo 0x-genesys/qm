@@ -3,7 +3,6 @@ import { createAdminCall } from "../tools/admin.ts";
 import { scopeTeamsToTurn } from "../teams/teams.ts";
 import { externalSlackRequestAllowed, currentExternalSlackRun } from "../resolution/external-slack.ts";
 import { externalTools } from "./orchestrator/external-tools.ts";
-import { memoryBoundedEntries, memoryContextPayload, nextMemoryContext } from "../memory/context-boundary.ts";
 import { isBackendCredential } from "../credentials/keychain.ts";
 import { resolveBrowserModel } from "../model/browser-model.ts";
 import { memoryRecallDelta } from "../memory/recall-delta.ts";
@@ -1268,24 +1267,14 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         if (!input.runId || !deps.runs) return null;
         const seq = (await deps.runs.get(input.runId))?.turnUserSeq;
         if (seq == null) return null;
-        const entries = memoryBoundedEntries(await deps.sessions.getEntries(session.id));
+        const entries = await deps.sessions.getEntries(session.id);
         if (!entries.some((entry) => entry.seq === seq)) return null;
         return turnAtSeq(
           entries.filter((entry) => entry.seq >= seq),
           seq,
         );
       };
-      const initialMemoryWindow = await deps.sessions.getContextWindow(session.id);
-      const initialMemoryContext = initialMemoryWindow.entries.findLast((entry) => memoryContextPayload(entry));
-      const candidateMemoryContext = nextMemoryContext(
-        initialMemoryWindow.entries,
-        memoryView.snapshot,
-        await deps.sessions.latestEntrySeq(session.id),
-      );
-      let memoryContextChanged =
-        candidateMemoryContext.throughSeq >
-        (initialMemoryContext ? memoryContextPayload(initialMemoryContext)!.throughSeq : -1);
-      const recordedTurn = isRetry && !memoryContextChanged ? await recordedTurnForRun() : null;
+      const recordedTurn = isRetry ? await recordedTurnForRun() : null;
       if (recordedTurn?.answer) {
         const recordedAnswer = recordedTurn.answer;
         deps.auditLog.record({
@@ -1964,19 +1953,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const memoryWindow = await deps.sessions.getContextWindow(session.id);
 
         memoryView = await context.memorySnapshot();
-        const latestMemoryContext = memoryWindow.entries.findLast((entry) => memoryContextPayload(entry));
-        const nextContext = nextMemoryContext(
-          memoryWindow.entries,
-          memoryView.snapshot,
-          await deps.sessions.latestEntrySeq(session.id),
-        );
-        memoryContextChanged =
-          nextContext.throughSeq > (latestMemoryContext ? memoryContextPayload(latestMemoryContext)!.throughSeq : -1);
-        const memoryHistoryReset = nextContext.throughSeq >= 0;
         const captureDependencies = () => [
           ...memoryView.facts,
           ...(!memoryView.complete ||
-          memoryBoundedEntries(memoryWindow.entries).length > 0 ||
+          memoryWindow.entries.length > 0 ||
           toolCalls > 0 ||
           input.priorTurns?.length ||
           input.overheard?.length ||
@@ -1985,24 +1965,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ? [UNTRACKED_PROVENANCE]
             : []),
         ];
-        if (memoryContextChanged) await deps.harness.turns.resetSession?.(session.id);
-        const audienceWindow = async () => {
-          const window = await deps.sessions.getContextWindow(session.id);
-          return { ...window, entries: memoryBoundedEntries(window.entries, nextContext.throughSeq) };
-        };
+        const historyWindow = () => deps.sessions.getContextWindow(session.id);
         if (input.approval) {
           const p = await pending.get(input.approval.requestId);
           const decision = input.approval.approved ? "approve" : "deny";
-          const cutoffEntry = memoryHistoryReset
-            ? await deps.sessions.getEntry(session.id, nextContext.throughSeq)
-            : undefined;
-          if (cutoffEntry && (!p?.createdAt || p.createdAt <= cutoffEntry.createdAt))
-            return {
-              status: "refused",
-              sessionId: session.id,
-              reason:
-                "Conversation audience changed; submit a fresh request rather than resuming the previous approval.",
-            };
           if (!p || p.sessionId !== session.id) {
             deps.auditLog.record({
               at: Date.now(),
@@ -2338,18 +2304,16 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           deps.harness.models.shouldRespond &&
           !(
             isRetry &&
-            (recordedTurn ??
-              (!memoryContextChanged &&
-                findTrailingPartialTurn((await transcripts.forRender(session.id)).entries, input.text)))
+            (recordedTurn ?? findTrailingPartialTurn((await transcripts.forRender(session.id)).entries, input.text))
           )
         ) {
-          const detectHistory = filterHistory((await audienceWindow()).entries.slice(-DETECT_HISTORY_TAIL));
+          const detectHistory = filterHistory((await historyWindow()).entries.slice(-DETECT_HISTORY_TAIL));
           const detectStart = Date.now();
           const decision = await deps.harness.models.shouldRespond({
             session,
             message: input.text,
-            recentContext: memoryHistoryReset ? "" : (input.detectContext ?? ""),
-            ...(!memoryHistoryReset && input.detectOpener ? { threadOpener: input.detectOpener } : {}),
+            recentContext: input.detectContext ?? "",
+            ...(input.detectOpener ? { threadOpener: input.detectOpener } : {}),
             systemPrompt: resolution.systemPrompt,
             ...(input.gatewayContext?.reactionGuidance
               ? { reactionGuidance: input.gatewayContext.reactionGuidance }
@@ -2694,7 +2658,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                   scopeId: scopeId as ScopeId,
                   orgScopeId: resolution.orgScopeId,
                   liveTurn,
-                  memoryContext: memoryView.snapshot,
                   request: { ...input, readOnly: strictReadOnly, cancel: turnAbort.signal },
                 }),
               }
@@ -2715,10 +2678,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               }
             : {}),
           sessionHistory: (() => {
-            const historyView = async () =>
-              filterHistory(
-                forSearchView(memoryBoundedEntries(await deps.sessions.getEntries(session.id), nextContext.throughSeq)),
-              );
+            const historyView = async () => filterHistory(forSearchView(await deps.sessions.getEntries(session.id)));
             return {
               search: async (q: string, limit?: number) => searchSessionEntries(await historyView(), q, limit),
               open: async (seq: number) => openSessionEntry(await historyView(), seq),
@@ -2791,7 +2751,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         });
 
         const importedOverheard: OverheardEntryPayload[] = [];
-        if (!memoryHistoryReset && (!input.envelopeWrapped || humanTurn) && input.overheard?.length) {
+        if ((!input.envelopeWrapped || humanTurn) && input.overheard?.length) {
           const toImport = await transcripts
             .forRender(session.id)
             .then((read) => selectOverheardToImport(input.overheard!, recordedMessageTimestamps(read.entries)))
@@ -2811,8 +2771,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           if (importedEntries.length) importedOverheard.push(...toImport);
         }
 
-        const rawEntries = (await audienceWindow()).entries;
-        const priorTurns = memoryHistoryReset ? undefined : input.priorTurns;
+        const rawEntries = (await historyWindow()).entries;
+        const priorTurns = input.priorTurns;
         const visibleHistory = filterHistory(forModelContext(rawEntries));
         const recallStart = Date.now();
         const recalled = await context.recallMemory(memoryRecallQuery(input.text, visibleHistory));
@@ -3018,7 +2978,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           !syntheticPrompt && (input.text.trim() || inboundIssues.length)
             ? {
                 text: input.text,
-                memoryContext: nextContext,
                 ...(inboundIssues.length ? { environment: environmentNote(inboundIssuesNote(inboundIssues)) } : {}),
                 ...(humanTurn ? { speakerId: actor.id } : {}),
                 ...((messageTs ?? entryTs) ? { ts: messageTs ?? entryTs } : {}),
@@ -3217,7 +3176,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 const payload = isObj(entry.payload) ? { ...entry.payload } : {};
                 if (!recordedRecall && !payload.steered && !payload.overheard) {
                   recordedRecall = true;
-                  payload.memoryContext = nextContext;
                   payload.environmentSnapshot = snapshot.record;
                   if (environment) payload.environment = environment;
                   if (recall.text) payload.memoryRecall = recall.record;
@@ -3638,7 +3596,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               await adoptRuntime(segment.runtimeHandoff.choice);
               await deps.harness.turns.resetSession?.(session.id);
             }
-            let resumedHistory = filterHistory(forModelContext((await audienceWindow()).entries));
+            let resumedHistory = filterHistory(forModelContext((await historyWindow()).entries));
             if (recovery)
               resumedHistory = await withManagedRosterVersion(() =>
                 compactRecent({
@@ -3719,7 +3677,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             }
           }
           if (spine.surfaceOutboundCount === 0 && !silentPollNarration) {
-            const nudgeHistory = filterHistory(forModelContext((await audienceWindow()).entries));
+            const nudgeHistory = filterHistory(forModelContext((await historyWindow()).entries));
             result = await runHarnessTurn(
               "[system] You were addressed directly. Reply with the `slack` tool's `post` action, or decline explicitly with finish_silently — ending the turn without either is not allowed here.",
               inbound.images.length ? { images: inbound.images } : {},

@@ -58,11 +58,7 @@ test("shared transcript allowlists visible message fields and published replies"
 
 test("a delivery into the conversation is shared as the assistant's message", () => {
   assert.deepEqual(
-    sharedMessages([
-      entry("user", { text: "remind me" }, 1),
-      entry("tool_call", { tool: "deliver", callId: "delivery:k", text: "Standup now", deliveryKey: "k" }, 2),
-      entry("tool_result", { tool: "deliver", callId: "delivery:k", result: "delivered" }, 3),
-    ]),
+    sharedMessages([entry("user", { text: "remind me" }, 1), entry("assistant", { text: "Standup now" }, 2)]),
     [
       { role: "user", text: "remind me" },
       { role: "assistant", text: "Standup now" },
