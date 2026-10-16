@@ -54,6 +54,7 @@ import {
   recordedMessageTimestamps,
   reconstructMessagesFromHistory,
   seedPriorTurns,
+  userPromptText,
   zeroUsage,
   OMITTED_IMAGE_TEXT,
   type PiReplayMessage,
@@ -234,7 +235,7 @@ export function claudeReplayTranscript(messages: readonly PiReplayMessage[]): st
 }
 
 function promptText(turn: HarnessTurnInput): string {
-  const replay = claudeReplayTranscript(reconstructMessagesFromHistory(turn.history));
+  const replay = claudeReplayTranscript(reconstructMessagesFromHistory(turn.history, { requireUserStart: false }));
   const prior = turn.history.length
     ? ""
     : seedPriorTurns(turn.priorTurns ?? [])
@@ -364,19 +365,40 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
       });
     });
     const server = createSdkMcpServer({ name: "qm", version: "1", tools: definitions, alwaysLoad: true });
-    const userEntry = await turn.emit({
-      type: "user",
-      payload: {
-        text: turn.input,
-        ...((turn.triggerTs ?? turn.entryTs) ? { ts: turn.triggerTs ?? turn.entryTs } : {}),
-        ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
-      },
-      scopeLabel: turn.scopeLabel,
-    });
+    const continueTurn = !!turn.continueTurn && turn.history.some((e) => e.seq === turn.resumeUserSeq);
+    const userEntry = continueTurn
+      ? turn.history.find((e) => e.seq === turn.resumeUserSeq)
+      : await turn.emit({
+          type: "user",
+          payload: {
+            text: turn.input,
+            ...((turn.triggerTs ?? turn.entryTs) ? { ts: turn.triggerTs ?? turn.entryTs } : {}),
+            ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
+          },
+          scopeLabel: turn.scopeLabel,
+        });
     const requestedModel = turn.runtime?.modelId;
     const model = modelSupportedByHarness(requestedModel, "claude") ? requestedModel! : resolveModelId(turn.scopeLabel);
     const turnEffort = effort(turn.runtime?.effortLevel);
-    const text = promptText(turn);
+    const text = continueTurn
+      ? [
+          claudeReplayTranscript(
+            reconstructMessagesFromHistory(
+              turn.history.filter((e) => e.seq < turn.resumeUserSeq!),
+              { requireUserStart: false },
+            ),
+          ),
+          userPromptText((userEntry?.payload ?? {}) as Parameters<typeof userPromptText>[0]),
+          claudeReplayTranscript(
+            reconstructMessagesFromHistory(
+              turn.history.filter((e) => e.seq > turn.resumeUserSeq!),
+              { requireUserStart: false },
+            ),
+          ),
+        ]
+          .filter((value) => value.trim())
+          .join("\n\n")
+      : promptText(turn);
     const initial = userMessage(text, turn.images);
     if (turn.documents?.length && Array.isArray(initial.message.content)) {
       initial.message.content.push(...(preparedDocuments as unknown as typeof initial.message.content));
@@ -555,7 +577,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
       const step = recordedSteps++;
       try {
         await turn.recordLlmRequest?.({
-          turnSeq: userEntry.seq,
+          turnSeq: userEntry?.seq ?? null,
           step,
           model,
           promptEnvelope: recordedEnvelope,
@@ -791,7 +813,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
         recordedSteps++;
         try {
           await turn.recordLlmRequest?.({
-            turnSeq: userEntry.seq,
+            turnSeq: userEntry?.seq ?? null,
             step: 0,
             model,
             promptEnvelope: recordedEnvelope,
