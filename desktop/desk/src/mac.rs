@@ -28,6 +28,8 @@ type El = CFType;
 #[link(name = "ApplicationServices", kind = "framework")]
 extern "C" {
     fn AXUIElementCreateApplication(pid: i32) -> CFTypeRef;
+    fn AXUIElementCreateSystemWide() -> CFTypeRef;
+    fn AXUIElementGetPid(element: CFTypeRef, pid: *mut i32) -> i32;
     fn AXUIElementCopyAttributeValue(e: CFTypeRef, a: CFStringRef, v: *mut CFTypeRef) -> i32;
     fn AXUIElementCopyMultipleAttributeValues(e: CFTypeRef, names: CFTypeRef, options: u32, v: *mut CFTypeRef) -> i32;
     fn AXValueGetTypeID() -> usize;
@@ -79,7 +81,6 @@ extern "C" {
 #[link(name = "CoreFoundation", kind = "framework")]
 extern "C" {
     fn CFHash(cf: CFTypeRef) -> usize;
-    fn CFDictionaryGetValue(dict: CFTypeRef, key: CFTypeRef) -> CFTypeRef;
     fn CFGetTypeID(cf: CFTypeRef) -> usize;
     fn CFURLGetTypeID() -> usize;
     fn CFURLGetString(url: CFTypeRef) -> CFStringRef;
@@ -305,6 +306,20 @@ fn dead(e: &El) -> bool {
 
 fn app_element(pid: i32) -> El {
     unsafe { CFType::wrap_under_create_rule(AXUIElementCreateApplication(pid)) }
+}
+
+fn pid_of(element: &El) -> Option<i32> {
+    let mut pid = 0;
+    (unsafe { AXUIElementGetPid(element.as_CFTypeRef(), &mut pid) } == 0 && pid > 0).then_some(pid)
+}
+
+pub(crate) fn system_focused_pid() -> Option<i32> {
+    let system = unsafe { AXUIElementCreateSystemWide() };
+    if system.is_null() {
+        return None;
+    }
+    let system = unsafe { CFType::wrap_under_create_rule(system) };
+    pid_of(&attr(&system, "AXFocusedApplication")?)
 }
 
 fn text_of(v: &CFType) -> Option<String> {
@@ -695,16 +710,9 @@ fn on_current_space(win: u32) -> bool {
         return false;
     };
     windows.iter().any(|item| {
-        let item = unsafe { CFType::wrap_under_get_rule(*item as CFTypeRef) };
-        let Some(info) = item.downcast::<CFDictionary>() else {
-            return false;
-        };
-        let id = unsafe { CFDictionaryGetValue(info.as_CFTypeRef(), kCGWindowNumber as CFTypeRef) };
-        if id.is_null() {
-            return false;
-        }
-        let number = unsafe { CFType::wrap_under_get_rule(id) };
-        number.downcast::<CFNumber>().and_then(|n| n.to_i64()) == Some(i64::from(win))
+        let info = unsafe { CFDictionary::<CFString, CFType>::wrap_under_get_rule(*item as _) };
+        let key = unsafe { CFString::wrap_under_get_rule(kCGWindowNumber) };
+        info.find(key).and_then(|v| v.downcast::<CFNumber>()).and_then(|n| n.to_i64()) == Some(i64::from(win))
     })
 }
 
@@ -1393,7 +1401,7 @@ impl Desk {
                         })?
                     }
                 };
-                input::clickable(&input::app_element(pid), &e, i, r)
+                input::clickable(&app_element(pid), &e, i, r)
             }
         }
     }
@@ -1421,7 +1429,7 @@ impl Desk {
     fn aim(&self, pid: i32, w: &El, a: &Action) -> Result<Option<CGPoint>, Failure> {
         match a {
             Action::Click { target: Target::Index(i), button: Button::Left, count: 1, modifiers, hold_ms: 0 }
-                if modifiers.is_empty() && self.pressed(pid, &input::app_element(pid), *i)?.is_some() =>
+                if modifiers.is_empty() && self.pressed(pid, &app_element(pid), *i)?.is_some() =>
             {
                 Ok(None)
             }

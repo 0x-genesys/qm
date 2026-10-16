@@ -1,5 +1,6 @@
 use crate::cancellation;
 use crate::protocol::{Rect, Screenshot};
+use crate::tree::intersect as intersection;
 use base64::Engine;
 use block2::RcBlock;
 use core_foundation::array::CFArray;
@@ -275,12 +276,6 @@ fn touching(a: Rect, b: Rect) -> bool {
     (w > 0.0 && h >= -1.0) || (h > 0.0 && w >= -1.0)
 }
 
-fn intersection(a: Rect, b: Rect) -> Option<Rect> {
-    let (x, y) = (a.x.max(b.x), a.y.max(b.y));
-    let (w, h) = ((a.x + a.w).min(b.x + b.w) - x, (a.y + a.h).min(b.y + b.h) - y);
-    (w > 0.0 && h > 0.0).then_some(Rect { x, y, w, h })
-}
-
 fn union(a: Rect, b: Rect) -> Rect {
     let (x, y) = (a.x.min(b.x), a.y.min(b.y));
     Rect { x, y, w: (a.x + a.w).max(b.x + b.w) - x, h: (a.y + a.h).max(b.y + b.h) - y }
@@ -304,13 +299,6 @@ mod tests {
 
     fn tuple(r: Rect) -> (f64, f64, f64, f64) {
         (r.x, r.y, r.w, r.h)
-    }
-
-    #[test]
-    fn intersection_needs_shared_area() {
-        assert_eq!(intersection(r(0.0, 0.0, 100.0, 100.0), r(50.0, 60.0, 100.0, 100.0)).map(tuple), Some((50.0, 60.0, 50.0, 40.0)));
-        assert!(intersection(r(0.0, 0.0, 10.0, 10.0), r(10.0, 0.0, 10.0, 10.0)).is_none());
-        assert!(intersection(r(0.0, 0.0, 10.0, 10.0), r(30.0, 30.0, 10.0, 10.0)).is_none());
     }
 
     #[test]

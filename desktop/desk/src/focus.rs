@@ -1,6 +1,10 @@
 use crate::protocol::{ErrorCode, Failure};
-use core_foundation::base::{CFTypeRef, TCFType};
-use core_foundation::string::{CFString, CFStringRef};
+use core_foundation::base::{CFRetain, CFType, CFTypeRef, TCFType};
+use core_foundation::boolean::CFBoolean;
+use core_foundation::dictionary::CFDictionary;
+use core_foundation::string::CFString;
+use core_graphics::event::CGEvent;
+use foreign_types::ForeignType;
 use objc2::msg_send;
 use objc2::rc::autoreleasepool;
 use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
@@ -13,18 +17,7 @@ static EXPECTED_FOREGROUND: AtomicI32 = AtomicI32::new(0);
 
 #[link(name = "CoreGraphics", kind = "framework")]
 extern "C" {
-    fn CGEventPostToPid(pid: i32, event: *mut c_void);
-}
-#[link(name = "CoreFoundation", kind = "framework")]
-extern "C" {
-    fn CFDictionaryGetValue(dict: CFTypeRef, key: CFTypeRef) -> CFTypeRef;
-    fn CFBooleanGetValue(value: CFTypeRef) -> bool;
-    fn CFBooleanGetTypeID() -> usize;
-    fn CFGetTypeID(value: CFTypeRef) -> usize;
     fn CGSessionCopyCurrentDictionary() -> CFTypeRef;
-    fn AXUIElementCreateSystemWide() -> CFTypeRef;
-    fn AXUIElementCopyAttributeValue(element: CFTypeRef, attribute: CFStringRef, value: *mut CFTypeRef) -> i32;
-    fn AXUIElementGetPid(element: CFTypeRef, pid: *mut i32) -> i32;
 }
 
 fn screen_available() -> bool {
@@ -32,18 +25,9 @@ fn screen_available() -> bool {
     if session.is_null() {
         return false;
     }
-    let field = |name: &str| {
-        let key = CFString::new(name);
-        let v = unsafe { CFDictionaryGetValue(session, key.as_CFTypeRef()) };
-        if v.is_null() || unsafe { CFGetTypeID(v) } != unsafe { CFBooleanGetTypeID() } {
-            None
-        } else {
-            Some(unsafe { CFBooleanGetValue(v) })
-        }
-    };
-    let available = field("CGSSessionScreenIsLocked") != Some(true) && field("kCGSSessionOnConsoleKey") == Some(true);
-    unsafe { core_foundation::base::CFRelease(session) };
-    available
+    let session = unsafe { CFDictionary::<CFString, CFType>::wrap_under_create_rule(session as _) };
+    let field = |name: &str| session.find(CFString::new(name)).and_then(|v| v.downcast::<CFBoolean>()).map(bool::from);
+    field("CGSSessionScreenIsLocked") != Some(true) && field("kCGSSessionOnConsoleKey") == Some(true)
 }
 
 fn synthetic_focus(pid: i32, window: u32, subtype: i16) -> Result<(), Failure> {
@@ -64,28 +48,15 @@ fn synthetic_focus(pid: i32, window: u32, subtype: i16) -> Result<(), Failure> {
         if cg.is_null() {
             return Err(Failure::new(ErrorCode::ActionFailed, "Cannot convert background focus event"));
         }
-        unsafe { CGEventPostToPid(pid, cg) };
+        let event = unsafe { CGEvent::from_ptr(CFRetain(cg.cast()) as _) };
+        event.post_to_pid(pid);
         Ok::<(), Failure>(())
     })?;
     Ok(())
 }
 
 fn frontmost() -> Option<i32> {
-    let system = unsafe { AXUIElementCreateSystemWide() };
-    if system.is_null() {
-        return None;
-    }
-    let key = CFString::new("AXFocusedApplication");
-    let mut app: CFTypeRef = std::ptr::null();
-    let status = unsafe { AXUIElementCopyAttributeValue(system, key.as_concrete_TypeRef(), &mut app) };
-    unsafe { core_foundation::base::CFRelease(system) };
-    if status != 0 || app.is_null() {
-        return None;
-    }
-    let mut pid = 0;
-    let status = unsafe { AXUIElementGetPid(app, &mut pid) };
-    unsafe { core_foundation::base::CFRelease(app) };
-    (status == 0 && pid > 0).then_some(pid)
+    crate::mac::system_focused_pid()
 }
 
 pub struct Focus {

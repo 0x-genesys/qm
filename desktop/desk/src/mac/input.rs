@@ -2,24 +2,10 @@ use super::*;
 use crate::tree::clip;
 use objc2_app_kit::NSRunningApplication;
 
-#[link(name = "ApplicationServices", kind = "framework")]
-extern "C" {
-    fn AXUIElementGetPid(e: CFTypeRef, pid: *mut i32) -> i32;
-}
-
 const VIEW_SERVICES: &[&str] = &["com.apple.appkit.xpc.openAndSavePanelService"];
 const MENU_ITEMS: &[&str] = &["AXMenuItem", "AXMenuBarItem"];
 const SELECTS: &[&str] = &["AXRow", "AXCell", "AXOutlineRow", "AXListItem"];
 const TEXT_ROLES: &[&str] = &["AXTextField", "AXTextArea", "AXComboBox"];
-
-pub(super) fn app_element(pid: i32) -> El {
-    unsafe { CFType::wrap_under_create_rule(AXUIElementCreateApplication(pid)) }
-}
-
-fn pid_of(e: &El) -> Option<i32> {
-    let mut pid = 0;
-    (unsafe { AXUIElementGetPid(e.as_CFTypeRef(), &mut pid) } == 0).then_some(pid)
-}
 
 fn element_at(root: &El, p: CGPoint) -> Option<El> {
     let mut v: CFTypeRef = std::ptr::null();
