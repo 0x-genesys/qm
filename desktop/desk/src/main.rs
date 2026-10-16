@@ -5,6 +5,8 @@ mod text;
 mod tree;
 
 #[cfg(target_os = "macos")]
+mod capture;
+#[cfg(target_os = "macos")]
 mod pasteboard;
 
 #[cfg(target_os = "macos")]
