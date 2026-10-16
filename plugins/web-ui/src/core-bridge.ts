@@ -1595,8 +1595,9 @@ export async function pollRun(
 export interface SessionStateEvent {
   threadRef: string;
   sessionId?: string;
-  state: "working" | "awaiting_approval" | "idle" | "metadata";
+  state: "working" | "awaiting_approval" | "idle" | "metadata" | "ui";
   at: number;
+  ui?: unknown;
 }
 
 export interface InboxItemEvent {

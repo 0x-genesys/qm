@@ -3,7 +3,12 @@ import { createGoalRecord } from "../src/harness/goal.ts";
 import assert from "node:assert/strict";
 import { Check } from "typebox/value";
 import { fromJSONSchema, z, type ZodObject } from "zod";
-import { createAgentTools, pauseStampAfterToolCall, type ToolContextRef } from "../src/harness/agent-tools.ts";
+import {
+  createAgentTools,
+  GATED_TOOL_APPROVALS,
+  pauseStampAfterToolCall,
+  type ToolContextRef,
+} from "../src/harness/agent-tools.ts";
 import { resumeStrategy } from "../src/core/turn-resume.ts";
 import { reconstructMessagesFromHistory } from "../src/harness/replay.ts";
 import { createMemoryRunSignalStore, waitForClientResult } from "../src/runs/run-signal-store.ts";
@@ -4448,4 +4453,41 @@ test("client screenshots reach the model as images and remain subject to output 
     { type: "image", ...image },
   ]);
   assert.equal(unscreenable, true);
+});
+
+test("installing a shared sidebar always waits for the person's approval", async () => {
+  const installed: string[] = [];
+  let approved = false;
+  const ref: ToolContextRef = {
+    current: {
+      ...fakeToolContext(),
+      installSharedCanvas: async (id) => {
+        installed.push(id);
+        return null;
+      },
+    },
+    pendingApprovals: [],
+    scopeLabel: "personal:U1",
+    toolApprovalGate: (tool) => !GATED_TOOL_APPROVALS[tool] || approved,
+  };
+  const files = createAgentTools(ref).find((t) => t.name === "files")!;
+  await call(files, { action: "install_canvas", id: "f1" });
+  assert.deepEqual(installed, []);
+  const card = ref.pendingApprovals?.[0];
+  assert.equal(card?.summary, "file f1");
+  assert.deepEqual(
+    [card?.approvalKey, card?.reason, card?.grantModes],
+    [
+      "tool:files:install_canvas",
+      GATED_TOOL_APPROVALS["files:install_canvas"]!.reason,
+      { session: false, always: false },
+    ],
+  );
+  approved = true;
+  ref.pausedOnApproval = false;
+  assert.match(textOut(await call(files, { action: "install_canvas", id: "f1" })), /Installed/);
+  assert.deepEqual(installed, ["f1"]);
+  ref.current = fakeToolContext();
+  const plain = createAgentTools(ref).find((t) => t.name === "files")!;
+  assert.doesNotMatch(JSON.stringify(plain.parameters), /install_canvas/);
 });

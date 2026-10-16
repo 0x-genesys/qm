@@ -207,6 +207,7 @@ import { createTurnSandboxes } from "./orchestrator/sandboxes.ts";
 import type { EgressPolicy } from "../types.ts";
 import { isOpenScopeMember } from "../resolution/sharing-access.ts";
 import { createSurfaceToolDeps, type SpineState } from "./orchestrator/surface-tools.ts";
+import { GATED_TOOL_APPROVALS } from "../harness/agent-tools.ts";
 import { createAttachStaging } from "./orchestrator/attach-tool.ts";
 import { reconcileMessageRevisions, revisionAnchorAt } from "./message-revisions.ts";
 
@@ -2642,8 +2643,21 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             `[orchestrator] trigger delivery has no surface tools (missing deliveries store?) — reply would be lost session=${session.id}`,
           );
 
+        const canInstallCanvas =
+          deps.installSharedCanvas &&
+          liveTurn &&
+          (await deps.featureFlags?.enabled("ui_canvas", personalScope(actor.id))) === true;
         const baseTools = createToolContext({
           desktopClientId: desktopClientForTurn(input),
+          ...(canInstallCanvas
+            ? {
+                installSharedCanvas: (fileId: string) =>
+                  deps.installSharedCanvas!(actor.id, fileId, {
+                    threadRef: conversation.threadRef,
+                    sessionId: session.id,
+                  }),
+              }
+            : {}),
           sandbox: deps.sandbox,
           sandboxResources: turnSandboxResources,
           invalidateProvision,
@@ -3602,7 +3616,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                   },
                 }
               : {}),
-            ...(securityPolicy.toolApprovals === "all" ? { toolApprovalGate: authorizeToolCall } : {}),
+            toolApprovalGate:
+              securityPolicy.toolApprovals === "all"
+                ? authorizeToolCall
+                : (tool: string) => !GATED_TOOL_APPROVALS[tool] || authorizeToolCall(tool),
             systemPrompt,
             history: continuation?.history ?? history,
             tools,
