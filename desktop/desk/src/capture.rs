@@ -130,6 +130,7 @@ fn grab(filter: &SCContentFilter, at: Rect, source: Option<Rect>, tx: Parts) {
         config.setHeight(at.h.round().max(1.0) as usize);
         config.setShowsCursor(false);
         config.setIgnoreShadowsDisplay(true);
+        config.setIgnoreShadowsSingleWindow(true);
         if let Some(s) = source {
             config.setSourceRect(cg(s));
         }
