@@ -96,6 +96,8 @@ pub enum Action {
     SetValue {
         index: u32,
         value: String,
+        #[serde(default)]
+        submit: Option<bool>,
     },
     Perform {
         index: u32,

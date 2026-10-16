@@ -62,6 +62,18 @@ pub fn payload(text: &str, format: PasteFormat) -> (String, Option<String>) {
     }
 }
 
+pub fn flag(s: &str) -> Option<bool> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "on" | "1" | "checked" => Some(true),
+        "false" | "no" | "off" | "0" | "unchecked" => Some(false),
+        _ => None,
+    }
+}
+
+pub fn number(s: &str) -> Option<f64> {
+    s.trim().parse::<f64>().ok().filter(|n| n.is_finite()).or_else(|| flag(s).map(|b| if b { 1.0 } else { 0.0 }))
+}
+
 pub fn expected(text: &str, format: PasteFormat) -> Vec<String> {
     let (plain, html) = payload(text, format);
     let rendered = html.map(|h| strip_html(&h)).filter(|r| *r != plain);
@@ -199,5 +211,16 @@ mod tests {
         assert!(inserted("é", Some((1, 0)), "é😀", "😀"), "UTF-16 offsets");
         assert_eq!(expected("**hi** there", PasteFormat::Markdown), vec!["**hi** there".to_string(), "hi there".to_string()]);
         assert_eq!(expected("plain", PasteFormat::Text), vec!["plain".to_string()]);
+    }
+
+    #[test]
+    fn set_value_conversions() {
+        assert_eq!(flag(" Yes "), Some(true));
+        assert_eq!(flag("0"), Some(false));
+        assert_eq!(flag("maybe"), None);
+        assert_eq!(number("2.5"), Some(2.5));
+        assert_eq!(number("true"), Some(1.0));
+        assert_eq!(number("NaN"), None);
+        assert_eq!(number("ten"), None);
     }
 }
