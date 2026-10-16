@@ -1548,36 +1548,40 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       perf.credsMs += Date.now() - credsStart;
       // Service credentials: one read of the org's credential list and one grant scan feed both
       // the env-delivery gate (below) and the broker token mint (further down). Same grants gate both.
+      // Deployment-supplied credentials carry an implicit org-wide grant: every participant must
+      // be entitled to the org, exactly as an org grantee row would require.
+      const grantedServiceCredSlugs = async (records: readonly PublicServiceCredential[]): Promise<Set<string>> => {
+        const granted = new Set(
+          (
+            await deps.acl.grantsOfKind(
+              "service-cred",
+              conversation.audience,
+              scopeId,
+              resolution.orgScopeId,
+              principalEntitledToScope,
+            )
+          ).map((g) => parseRef(g.ref).id),
+        );
+        const orgWide =
+          conversation.audience.length > 0 &&
+          conversation.audience.every((p) =>
+            principalEntitledToScope(p, resolution.orgScopeId, scopeId, resolution.orgScopeId),
+          );
+        if (orgWide) for (const record of records) if (record.source === "deployment") granted.add(record.slug);
+        return granted;
+      };
       let serviceCredRecords: PublicServiceCredential[] = [];
       let grantedCredSlugs = new Set<string>();
       if (!strictReadOnly && deps.serviceCreds) {
         serviceCredRecords = (await deps.serviceCreds.listServiceCredentials(resolution.orgScopeId)).filter((record) =>
           serviceAllowed(record.slug),
         );
-        if (serviceCredRecords.length > 0) {
-          grantedCredSlugs = new Set(
-            (
-              await deps.acl.grantsOfKind(
-                "service-cred",
-                conversation.audience,
-                scopeId,
-                resolution.orgScopeId,
-                principalEntitledToScope,
-              )
-            ).map((g) => parseRef(g.ref).id),
-          );
-        }
+        if (serviceCredRecords.length > 0) grantedCredSlugs = await grantedServiceCredSlugs(serviceCredRecords);
       }
       const authorizeServiceCredential = async (slug: string): Promise<void> => {
         if (!serviceAllowed(slug)) throw new Error("Service is not approved for external Slack.");
-        const grants = await deps.acl.grantsOfKind(
-          "service-cred",
-          conversation.audience,
-          scopeId,
-          resolution.orgScopeId,
-          principalEntitledToScope,
-        );
-        if (!grants.some((grant) => parseRef(grant.ref).id === slug)) {
+        const records = (await deps.serviceCreds?.listServiceCredentials(resolution.orgScopeId)) ?? [];
+        if (!(await grantedServiceCredSlugs(records)).has(slug)) {
           throw new Error(`Service credential is no longer authorized: ${slug}`);
         }
       };
@@ -1723,14 +1727,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const records = (await deps.serviceCreds.listServiceCredentials(resolution.orgScopeId)).filter((record) =>
           serviceAllowed(record.slug),
         );
-        const grants = await deps.acl.grantsOfKind(
-          "service-cred",
-          conversation.audience,
-          scopeId,
-          resolution.orgScopeId,
-          principalEntitledToScope,
-        );
-        const granted = new Set(grants.map((grant) => parseRef(grant.ref).id));
+        const granted = await grantedServiceCredSlugs(records);
         const available = records.filter(
           (record) => !isBackendCredential(record) && record.enabled && record.hasSecret && granted.has(record.slug),
         );

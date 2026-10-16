@@ -936,6 +936,12 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
       const ref = encodeRef(serviceCredRef(slug));
       const allCreds = await deps.serviceCreds.listServiceCredentials(scope);
       const existing = allCreds.find((c) => c.slug === slug);
+      if (existing?.source === "deployment")
+        return {
+          error: `"${slug}" is supplied by this deployment's configuration and can't be edited, deleted or reused here.`,
+          code: "deployment_credential",
+          status: 409,
+        };
       const conflict = () => ({
         error: "Credential changed after this editor was loaded. Reload it before continuing.",
         code: "version_conflict",
