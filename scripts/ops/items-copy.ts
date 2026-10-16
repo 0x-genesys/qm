@@ -111,7 +111,7 @@ export class ItemsCopyOperator {
     });
   }
 
-  async assertState(phases: string[], lock: "UPDATE" | "SHARE" = "UPDATE") {
+  async assertState(phases: string[], lock: "UPDATE" | "SHARE" | "KEY SHARE" = "UPDATE") {
     const {
       rows: [cutover],
     } = await this.client.query(
@@ -237,18 +237,23 @@ export class ItemsCopyOperator {
     });
   }
 
-  async catchupBatch() {
+  async catchupBatch(worker = 0, workers = 1) {
     return this.transaction(async () => {
-      await this.assertState(["catchup", "verified", "ready"]);
-      return this.drainBatch();
-    });
+      await this.assertState(["catchup", "verified", "ready"], "KEY SHARE");
+      return this.drainBatch(worker, workers);
+    }, true);
   }
 
-  async drainBatch() {
+  async drainBatch(worker = 0, workers = 1) {
     await this.client.query("TRUNCATE pg_temp.items_copy_batch");
     const {
       rows: [entry],
-    } = await this.client.query(`SELECT * FROM ${dirty} ORDER BY touched_at,session_id LIMIT 1`);
+    } = await this.client.query(
+      `SELECT * FROM ${dirty}
+        WHERE (hashtext(session_id)::bigint & 2147483647) % $2 = $1
+        ORDER BY touched_at,session_id LIMIT 1`,
+      [worker, workers],
+    );
     if (!entry) return 0;
     const version = entry.copy_version ?? entry.version;
     const params = [entry.session_id, entry.cursor_seq ?? -1, this.batch];
@@ -455,6 +460,43 @@ export class ItemsCopyOperator {
   }
 }
 
+export async function catchupParallel(
+  url: string,
+  batch: number,
+  workers: number,
+  progress: (value: Record<string, unknown>) => void,
+  signal?: AbortSignal,
+) {
+  if (!Number.isSafeInteger(workers) || workers < 1 || workers > 32)
+    throw new Error("workers must be between 1 and 32");
+  let remaining = true;
+  while (remaining && !signal?.aborted) {
+    let failed: unknown = null;
+    const counts = await Promise.all(
+      Array.from({ length: workers }, async (_, worker) => {
+        const client = new pg.Client({ connectionString: url, application_name: "qm-items-copy" });
+        let batches = 0;
+        try {
+          await client.connect();
+          const op = new ItemsCopyOperator(client, batch);
+          while (failed === null && !signal?.aborted && (await op.catchupBatch(worker, workers))) {
+            if (++batches % 20 === 0) progress({ worker, batches, ...(await op.status()) });
+          }
+          return Number((await op.status()).queued);
+        } catch (error) {
+          failed ??= error;
+          return 0;
+        } finally {
+          await client.end();
+        }
+      }),
+    );
+    if (failed !== null) throw failed;
+    remaining = counts.some((count) => count > 0);
+  }
+  signal?.throwIfAborted();
+}
+
 async function main() {
   const { values, positionals } = parseArgs({
     allowPositionals: true,
@@ -519,8 +561,9 @@ async function main() {
       await op.completeCopy();
     }
     if (action === "catchup") {
-      let batches = 0;
-      while (await op.catchupBatch()) if (++batches % 20 === 0) console.log(JSON.stringify(await op.status()));
+      await catchupParallel(process.env.DATABASE_URL, op.batch, Number(values.workers), (value) =>
+        console.log(JSON.stringify(value)),
+      );
     }
     console.log(JSON.stringify(await op.status()));
   } finally {
