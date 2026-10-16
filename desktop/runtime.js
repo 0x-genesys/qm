@@ -88,7 +88,7 @@
   }
 
   function stateText(o) {
-    const cut = o.truncated ? " (truncated: size limit reached, later elements not shown)" : "";
+    const cut = o.truncated ? " (truncated: size limit reached, some elements not shown)" : "";
     const head = `${o.app} — "${o.window}" ${Math.round(o.frame.w)}x${Math.round(o.frame.h)}, ${o.elements} elements${cut}`;
     if (!o.diffed) return `${head}\n${o.tree}`;
     const removed = o.removed.length ? `\nremoved: ${idRanges(o.removed)}` : "";
@@ -282,7 +282,7 @@ app.typeText(text) types with the keyboard. "\\n" presses Return and "\\t" press
 app.paste(text, {format: text|markdown|html}) pastes through the clipboard, then restores the user's clipboard once the
   field shows the text. If it cannot confirm that, it fails and leaves the text on the clipboard instead.
   Prefer it for long, multi-line or formatted text. Needs a focused text field.
-app.raise() brings the window to the front; use when an app ignores background input.
+app.raise() explicitly brings the window to the front and takes focus.
 app.wait(ms)
 
 Await every computer operation before returning. Background callbacks persist within the turn and may run during a later call; do not schedule computer actions in background callbacks. Cancellation or timeout destroys the runtime.
