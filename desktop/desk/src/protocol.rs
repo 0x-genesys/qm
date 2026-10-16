@@ -238,6 +238,7 @@ pub struct Screenshot {
     pub width: u32,
     pub height: u32,
     pub pixels_per_point: f64,
+    pub frame: Rect,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

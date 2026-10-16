@@ -1051,5 +1051,5 @@ fn capture(w: &El, f: Rect) -> Result<Screenshot, Failure> {
     if !unsafe { CGPreflightScreenCaptureAccess() } {
         return Err(fail(ErrorCode::PermissionMissing, "Screen Recording not granted; run `desk permissions --prompt`"));
     }
-    crate::capture::window(window_id(w), f).map_err(|m| fail(ErrorCode::ActionFailed, m))
+    crate::capture::window(window_id(w), &[], f).map_err(|m| fail(ErrorCode::ActionFailed, m))
 }

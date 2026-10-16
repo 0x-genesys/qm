@@ -8,6 +8,9 @@ use core_foundation::dictionary::CFDictionary;
 use core_foundation::number::CFNumber;
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
 use core_foundation::string::{CFString, CFStringRef};
+use core_graphics::base::kCGImageAlphaPremultipliedLast;
+use core_graphics::color_space::{kCGColorSpaceSRGB, CGColorSpace};
+use core_graphics::context::CGContext;
 use core_graphics::image::CGImage;
 use core_graphics::window::{
     copy_window_info, create_image, kCGWindowImageBoundsIgnoreFraming, kCGWindowImageNominalResolution, kCGWindowListOptionIncludingWindow,
@@ -17,10 +20,9 @@ use foreign_types::ForeignType;
 use objc2::rc::Retained;
 use objc2::runtime::AnyClass;
 use objc2::AnyThread;
-use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSError, NSMutableData};
-use objc2_screen_capture_kit::{SCContentFilter, SCScreenshotManager, SCShareableContent, SCStreamConfiguration, SCWindow};
-use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender};
+use objc2_screen_capture_kit::{SCContentFilter, SCDisplay, SCScreenshotManager, SCShareableContent, SCStreamConfiguration, SCWindow};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 #[link(name = "ImageIO", kind = "framework")]
@@ -32,23 +34,38 @@ extern "C" {
 
 const TIMEOUT: Duration = Duration::from_secs(5);
 
-type Shot = Result<Screenshot, String>;
+struct Piece {
+    image: CGImage,
+    at: Rect,
+}
 
-pub fn window(id: u32, frame: Rect) -> Shot {
+unsafe impl Send for Piece {}
+
+enum Part {
+    Plan { area: Rect, pieces: usize },
+    Piece(Piece),
+}
+
+type Parts = Sender<Result<Part, String>>;
+
+pub fn window(id: u32, panels: &[u32], frame: Rect) -> Result<Screenshot, String> {
     if AnyClass::get(c"SCScreenshotManager").is_none() {
         return legacy(id, frame);
     }
     let above = above(id);
-    let (tx, rx) = sync_channel(1);
+    let panels = panels.to_vec();
+    let (tx, rx) = channel();
     let block = RcBlock::new(move |content: *mut SCShareableContent, error: *mut NSError| {
-        let started = unsafe { content.as_ref() }.ok_or_else(|| reason(error)).and_then(|c| shoot(c, id, &above, frame, tx.clone()));
-        if let Err(e) = started {
-            let _ = tx.try_send(Err(e));
+        let planned = unsafe { content.as_ref() }.ok_or_else(|| reason(error)).and_then(|c| plan(c, id, &above, &panels, frame, &tx));
+        if let Err(e) = planned {
+            let _ = tx.send(Err(e));
         }
     });
     unsafe { SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(true, false, &block) };
     drop(block);
-    wait(rx)
+    let (area, pieces) = collect(rx)?;
+    let image = compose(area, &pieces).ok_or("Could not compose the screenshot.")?;
+    encode(&image, area)
 }
 
 fn above(id: u32) -> Vec<(u32, i64)> {
@@ -67,58 +84,83 @@ fn above(id: u32) -> Vec<(u32, i64)> {
         .collect()
 }
 
-fn shoot(content: &SCShareableContent, id: u32, above: &[(u32, i64)], frame: Rect, tx: SyncSender<Shot>) -> Result<(), String> {
+fn plan(content: &SCShareableContent, id: u32, above: &[(u32, i64)], panels: &[u32], frame: Rect, tx: &Parts) -> Result<(), String> {
     let windows = unsafe { content.windows() };
     let target = windows.iter().find(|w| unsafe { w.windowID() } == id).ok_or("The window is not available to capture.")?;
-    let bounds = cg(frame);
-    let config = unsafe { SCStreamConfiguration::new() };
-    unsafe {
-        config.setWidth(frame.w.round().max(1.0) as usize);
-        config.setHeight(frame.h.round().max(1.0) as usize);
-        config.setShowsCursor(false);
-        config.setIgnoreShadowsDisplay(true);
-    }
     let pid = above.iter().find(|(w, _)| *w == id).map(|(_, p)| *p);
-    let front: Vec<Retained<SCWindow>> = windows
+    let candidates: Vec<(u32, Rect, bool)> = windows
         .iter()
-        .filter(|w| {
+        .filter_map(|w| {
             let wid = unsafe { w.windowID() };
-            wid != id && pid.is_some_and(|p| above.contains(&(wid, p))) && overlap(unsafe { w.frame() }, bounds) > 0.0
+            let (owner, shown) = (above.iter().find(|(a, _)| *a == wid).map(|(_, p)| *p), unsafe { w.isOnScreen() });
+            let forced = panels.contains(&wid);
+            (wid != id && shown && owner.is_some() && (forced || owner == pid)).then(|| (wid, rect(unsafe { w.frame() }), forced))
         })
         .collect();
-    let display = unsafe { content.displays() }
-        .iter()
-        .max_by(|a, b| overlap(unsafe { a.frame() }, bounds).total_cmp(&overlap(unsafe { b.frame() }, bounds)))
-        .filter(|d| !front.is_empty() && overlap(unsafe { d.frame() }, bounds) > 0.0);
-    let filter = match display {
-        Some(d) => {
-            let shown: Vec<Retained<SCWindow>> = std::iter::once(target.clone()).chain(front).collect();
-            unsafe {
-                config.setSourceRect(local(bounds, d.frame()));
-                SCContentFilter::initWithDisplay_includingWindows(SCContentFilter::alloc(), &d, &NSArray::from_retained_slice(&shown))
-            }
-        }
-        None => unsafe { SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), &target) },
-    };
-    let done = RcBlock::new(move |image: *mut objc2_core_graphics::CGImage, error: *mut NSError| {
-        let shot = match unsafe { image.as_ref() } {
-            Some(i) => encode(&unsafe { CGImage::from_ptr(CFRetain((i as *const objc2_core_graphics::CGImage).cast()) as _) }, frame),
-            None => Err(reason(error)),
-        };
-        let _ = tx.try_send(shot);
-    });
-    unsafe { SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(&filter, &config, Some(&done)) };
+    let (ids, area) = associated(frame, &candidates);
+    if ids.is_empty() {
+        tx.send(Ok(Part::Plan { area: frame, pieces: 1 })).map_err(|e| e.to_string())?;
+        let filter = unsafe { SCContentFilter::initWithDesktopIndependentWindow(SCContentFilter::alloc(), &target) };
+        grab(&filter, frame, None, tx.clone());
+        return Ok(());
+    }
+    let shown: Vec<Retained<SCWindow>> =
+        windows.iter().filter(|w| unsafe { w.windowID() } == id || ids.contains(&unsafe { w.windowID() })).collect();
+    let shown = NSArray::from_retained_slice(&shown);
+    let parts: Vec<(Retained<SCDisplay>, Rect)> =
+        unsafe { content.displays() }.iter().filter_map(|d| intersection(rect(unsafe { d.frame() }), area).map(|r| (d, r))).collect();
+    if parts.is_empty() {
+        return Err("The window is not on any display.".into());
+    }
+    tx.send(Ok(Part::Plan { area, pieces: parts.len() })).map_err(|e| e.to_string())?;
+    for (display, at) in parts {
+        let filter = unsafe { SCContentFilter::initWithDisplay_includingWindows(SCContentFilter::alloc(), &display, &shown) };
+        let origin = rect(unsafe { display.frame() });
+        grab(&filter, at, Some(Rect { x: at.x - origin.x, y: at.y - origin.y, w: at.w, h: at.h }), tx.clone());
+    }
     Ok(())
 }
 
-fn wait(rx: Receiver<Shot>) -> Shot {
+fn grab(filter: &SCContentFilter, at: Rect, source: Option<Rect>, tx: Parts) {
+    let config = unsafe { SCStreamConfiguration::new() };
+    unsafe {
+        config.setWidth(at.w.round().max(1.0) as usize);
+        config.setHeight(at.h.round().max(1.0) as usize);
+        config.setShowsCursor(false);
+        config.setIgnoreShadowsDisplay(true);
+        if let Some(s) = source {
+            config.setSourceRect(cg(s));
+        }
+    }
+    let done = RcBlock::new(move |image: *mut objc2_core_graphics::CGImage, error: *mut NSError| {
+        let piece = match unsafe { image.as_ref() } {
+            Some(i) => Ok(Part::Piece(Piece {
+                image: unsafe { CGImage::from_ptr(CFRetain((i as *const objc2_core_graphics::CGImage).cast()) as _) },
+                at,
+            })),
+            None => Err(reason(error)),
+        };
+        let _ = tx.send(piece);
+    });
+    unsafe { SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(filter, &config, Some(&done)) };
+}
+
+fn collect(rx: Receiver<Result<Part, String>>) -> Result<(Rect, Vec<Piece>), String> {
     let start = Instant::now();
+    let (mut plan, mut pieces) = (None, vec![]);
     loop {
+        if let Some((area, n)) = plan {
+            if pieces.len() == n {
+                return Ok((area, pieces));
+            }
+        }
         if cancellation::cancelled() {
             return Err("Computer action cancelled".into());
         }
         match rx.recv_timeout(Duration::from_millis(20)) {
-            Ok(shot) => return shot,
+            Ok(Ok(Part::Plan { area, pieces: n })) => plan = Some((area, n)),
+            Ok(Ok(Part::Piece(p))) => pieces.push(p),
+            Ok(Err(e)) => return Err(e),
             Err(RecvTimeoutError::Disconnected) => return Err("Screen capture ended without an image.".into()),
             Err(RecvTimeoutError::Timeout) if start.elapsed() >= TIMEOUT => return Err("Screen capture timed out.".into()),
             Err(RecvTimeoutError::Timeout) => {
@@ -128,11 +170,28 @@ fn wait(rx: Receiver<Shot>) -> Shot {
     }
 }
 
+fn compose(area: Rect, pieces: &[Piece]) -> Option<CGImage> {
+    let space = CGColorSpace::create_with_name(unsafe { kCGColorSpaceSRGB })?;
+    let (w, h) = (area.w.round().max(1.0), area.h.round().max(1.0));
+    let context = CGContext::create_bitmap_context(None, w as usize, h as usize, 8, 0, &space, kCGImageAlphaPremultipliedLast);
+    for p in pieces {
+        let at = Rect { x: p.at.x - area.x, y: h - (p.at.y - area.y) - p.at.h, w: p.at.w, h: p.at.h };
+        context.draw_image(
+            core_graphics::geometry::CGRect::new(
+                &core_graphics::geometry::CGPoint::new(at.x, at.y),
+                &core_graphics::geometry::CGSize::new(at.w, at.h),
+            ),
+            &p.image,
+        );
+    }
+    context.create_image()
+}
+
 fn reason(error: *mut NSError) -> String {
     unsafe { error.as_ref() }.map_or_else(|| "Screen capture returned nothing.".into(), |e| e.localizedDescription().to_string())
 }
 
-fn legacy(id: u32, frame: Rect) -> Shot {
+fn legacy(id: u32, frame: Rect) -> Result<Screenshot, String> {
     let bounds = core_graphics::geometry::CGRect::new(
         &core_graphics::geometry::CGPoint::new(frame.x, frame.y),
         &core_graphics::geometry::CGSize::new(frame.w, frame.h),
@@ -143,7 +202,7 @@ fn legacy(id: u32, frame: Rect) -> Shot {
     encode(&image, frame)
 }
 
-fn encode(image: &CGImage, frame: Rect) -> Shot {
+fn encode(image: &CGImage, area: Rect) -> Result<Screenshot, String> {
     let data = NSMutableData::new();
     let kind = CFString::from_static_string("public.png");
     let written = unsafe {
@@ -163,42 +222,90 @@ fn encode(image: &CGImage, frame: Rect) -> Shot {
         png_base64: base64::engine::general_purpose::STANDARD.encode(data.to_vec()),
         width,
         height,
-        pixels_per_point: if frame.w > 0.0 { width as f64 / frame.w } else { 1.0 },
+        pixels_per_point: if area.w > 0.0 { width as f64 / area.w } else { 1.0 },
+        frame: area,
     })
 }
 
-fn cg(r: Rect) -> CGRect {
-    CGRect::new(CGPoint::new(r.x, r.y), CGSize::new(r.w, r.h))
+fn associated(target: Rect, candidates: &[(u32, Rect, bool)]) -> (Vec<u32>, Rect) {
+    let mut ids: Vec<u32> = vec![];
+    let mut area = target;
+    let mut shown = vec![target];
+    loop {
+        let next = candidates
+            .iter()
+            .find(|(id, r, forced)| !ids.contains(id) && (*forced || shown.iter().any(|s| intersection(*s, *r).is_some())));
+        match next {
+            Some((id, r, _)) => {
+                ids.push(*id);
+                shown.push(*r);
+                area = union(area, *r);
+            }
+            None => return (ids, area),
+        }
+    }
 }
 
-fn overlap(a: CGRect, b: CGRect) -> f64 {
-    let w = (a.origin.x + a.size.width).min(b.origin.x + b.size.width) - a.origin.x.max(b.origin.x);
-    let h = (a.origin.y + a.size.height).min(b.origin.y + b.size.height) - a.origin.y.max(b.origin.y);
-    w.max(0.0) * h.max(0.0)
+fn intersection(a: Rect, b: Rect) -> Option<Rect> {
+    let (x, y) = (a.x.max(b.x), a.y.max(b.y));
+    let (w, h) = ((a.x + a.w).min(b.x + b.w) - x, (a.y + a.h).min(b.y + b.h) - y);
+    (w > 0.0 && h > 0.0).then_some(Rect { x, y, w, h })
 }
 
-fn local(r: CGRect, display: CGRect) -> CGRect {
-    CGRect::new(CGPoint::new(r.origin.x - display.origin.x, r.origin.y - display.origin.y), r.size)
+fn union(a: Rect, b: Rect) -> Rect {
+    let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+    Rect { x, y, w: (a.x + a.w).max(b.x + b.w) - x, h: (a.y + a.h).max(b.y + b.h) - y }
+}
+
+fn rect(r: objc2_core_foundation::CGRect) -> Rect {
+    Rect { x: r.origin.x, y: r.origin.y, w: r.size.width, h: r.size.height }
+}
+
+fn cg(r: Rect) -> objc2_core_foundation::CGRect {
+    objc2_core_foundation::CGRect::new(objc2_core_foundation::CGPoint::new(r.x, r.y), objc2_core_foundation::CGSize::new(r.w, r.h))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn rect(x: f64, y: f64, w: f64, h: f64) -> CGRect {
-        cg(Rect { x, y, w, h })
+    fn r(x: f64, y: f64, w: f64, h: f64) -> Rect {
+        Rect { x, y, w, h }
+    }
+
+    fn tuple(r: Rect) -> (f64, f64, f64, f64) {
+        (r.x, r.y, r.w, r.h)
     }
 
     #[test]
-    fn overlap_is_the_shared_area() {
-        assert_eq!(overlap(rect(0.0, 0.0, 100.0, 100.0), rect(50.0, 60.0, 100.0, 100.0)), 50.0 * 40.0);
-        assert_eq!(overlap(rect(0.0, 0.0, 10.0, 10.0), rect(10.0, 0.0, 10.0, 10.0)), 0.0);
-        assert_eq!(overlap(rect(0.0, 0.0, 10.0, 10.0), rect(30.0, 30.0, 10.0, 10.0)), 0.0);
+    fn intersection_needs_shared_area() {
+        assert_eq!(intersection(r(0.0, 0.0, 100.0, 100.0), r(50.0, 60.0, 100.0, 100.0)).map(tuple), Some((50.0, 60.0, 50.0, 40.0)));
+        assert!(intersection(r(0.0, 0.0, 10.0, 10.0), r(10.0, 0.0, 10.0, 10.0)).is_none());
+        assert!(intersection(r(0.0, 0.0, 10.0, 10.0), r(30.0, 30.0, 10.0, 10.0)).is_none());
     }
 
     #[test]
-    fn local_is_relative_to_the_display() {
-        let r = local(rect(-1500.0, 200.0, 800.0, 600.0), rect(-1920.0, 0.0, 1920.0, 1080.0));
-        assert_eq!((r.origin.x, r.origin.y, r.size.width, r.size.height), (420.0, 200.0, 800.0, 600.0));
+    fn menus_cascading_past_the_window_grow_the_shot() {
+        let window = r(100.0, 100.0, 400.0, 300.0);
+        let menu = (1, r(450.0, 150.0, 200.0, 300.0), false);
+        let submenu = (2, r(650.0, 200.0, 200.0, 100.0), false);
+        let elsewhere = (3, r(1000.0, 0.0, 100.0, 100.0), false);
+        let (ids, area) = associated(window, &[submenu, elsewhere, menu]);
+        assert_eq!(ids, vec![1, 2]);
+        assert_eq!(tuple(area), (100.0, 100.0, 750.0, 350.0));
+    }
+
+    #[test]
+    fn named_panels_join_without_touching_the_window() {
+        let (ids, area) = associated(r(0.0, 0.0, 100.0, 100.0), &[(7, r(200.0, 0.0, 50.0, 50.0), true)]);
+        assert_eq!(ids, vec![7]);
+        assert_eq!(tuple(area), (0.0, 0.0, 250.0, 100.0));
+    }
+
+    #[test]
+    fn a_lone_window_keeps_its_frame() {
+        let (ids, area) = associated(r(10.0, 20.0, 30.0, 40.0), &[]);
+        assert!(ids.is_empty());
+        assert_eq!(tuple(area), (10.0, 20.0, 30.0, 40.0));
     }
 }

@@ -89,6 +89,7 @@
 
   class App {
     #scale = 1;
+    #offset = { x: 0, y: 0 };
 
     constructor(name) {
       this.name = name;
@@ -99,7 +100,9 @@
       if (emit && tree) say(stateText(o));
       if (o.screenshot) {
         const image = await jpeg(o.screenshot);
-        this.#scale = image.width / o.frame.w;
+        const shot = o.screenshot.frame ?? o.frame;
+        this.#scale = image.width / shot.w;
+        this.#offset = { x: shot.x - o.frame.x, y: shot.y - o.frame.y };
         if (emit && images.length < 4 && imageSize + image.data.length <= IMAGE_BUDGET) {
           imageSize += image.data.length;
           images.push({ mimeType: "image/jpeg", data: image.data });
@@ -124,7 +127,8 @@
 
     #target(t) {
       if (typeof t === "number") return { index: t };
-      if (Array.isArray(t) && t.length === 2) return { point: { x: t[0] / this.#scale, y: t[1] / this.#scale } };
+      if (Array.isArray(t) && t.length === 2)
+        return { point: { x: this.#offset.x + t[0] / this.#scale, y: this.#offset.y + t[1] / this.#scale } };
       throw new Error("target must be an element index or [x, y] screenshot pixels");
     }
 

@@ -57,7 +57,7 @@ AppInfo     { name, bundle_id?, pid: i32, active: bool }
 Observation { app, bundle_id?, pid, window: string, frame: Rect, elements: u32, truncated: bool,
               diffed: bool, tree: string, removed: [u32], screenshot: Screenshot? }
 Rect        { x, y, w, h }                   // global screen points, top-left origin
-Screenshot  { png_base64, width, height, pixels_per_point }
+Screenshot  { png_base64, width, height, pixels_per_point, frame: Rect }   // frame = global screen points the image covers
 Failure     { code: ErrorCode, message: string, action: u32? }   // action = index of the failed action in a batch
 ErrorCode   = bad_request | unsupported_platform | permission_missing | app_not_found
             | no_window | bad_index | unknown_key | action_failed | paste_conflict
@@ -73,8 +73,9 @@ ErrorCode   = bad_request | unsupported_platform | permission_missing | app_not_
   strictly inside the visible area (Chromium pins scrolled-out elements to the viewport edge with zero height).
 - The tree is capped at about 60,000 characters of lines and 6,000 AX elements read (`truncated: true`).
 - `point` targets are **window-relative points** (origin = window top-left).
-  The screenshot is captured at nominal resolution, so one PNG pixel is about one point; `pixels_per_point` says what it really was.
-  Divide PNG pixels by `pixels_per_point` before sending a `point`.
+  The screenshot covers its own `frame`: the window plus the app's menus, popovers and sheets in front of it, so it can reach past the window.
+  It is captured at nominal resolution, so one PNG pixel is about one point; `pixels_per_point` says what it really was.
+  To send a `point`, divide PNG pixels by `pixels_per_point`, then add the screenshot `frame` origin minus the observation `frame` origin.
 - Observe before acting; absent snapshots are rejected. Ids are stable: an element keeps its id across observations of the same window for as long as it is the same AX object. A different window starts ids again. `index` in actions means this id, from the latest observation of that app.
 - With `diff` (the default) and an earlier observation of the same window, `tree` holds only new lines, prefixed `+ `, and changed ones, prefixed `~ `; `removed` lists ids that disappeared and `diffed` is true. When more than 60% of the lines are new or changed, or otherwise, `tree` is the whole tree, unprefixed, and `diffed` is false.
 - `act` returns as soon as its actions are sent. The next observation of that app (`observe`, or `act` with `observe`) first waits until 1 s has passed since the last action, then up to 5 s more while the window shows a busy or progress indicator. An observation with no action since the previous one does not wait. A batch of only `wait` actions does not count as an action.
