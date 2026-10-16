@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { SettingsState, load as loadSettings, states as settingsStates } from "../ui/settings.ts";
 import { CredentialState } from "../ui/settings-credentials.ts";
 import { GovernanceState, load, states } from "../ui/governance-state.ts";
@@ -373,6 +374,9 @@ test("governance credential editor previews effective capability and uses an in-
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.match(html, /function renderServiceCredentialCapability\(\)/);
+  const credentialsSource = readFileSync(new URL("../ui/settings-credentials.ts", import.meta.url), "utf8");
+  assert.match(credentialsSource, /deployment\s*\?\s*html`<div class="credential-actions hint">Read-only<\/div>`/);
+  assert.match(credentialsSource, /badge\("Supplied by deployment", "info"\)/);
   assert.match(html, /expectedUpdatedAt: c\.updatedAt/);
   assert.match(html, /function refreshServiceCredentialConflict\(\)/);
   assert.match(html, /credentialState.version = scEditVersion/);
