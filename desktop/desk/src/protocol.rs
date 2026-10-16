@@ -224,7 +224,7 @@ pub struct Observation {
     pub screenshot: Option<Screenshot>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rect {
     pub x: f64,

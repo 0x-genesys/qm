@@ -130,6 +130,10 @@ const NOTICES: &[&str] = &[
     "AXTitleChanged",
     "AXLayoutChanged",
     "AXFocusedUIElementChanged",
+    "AXFocusedWindowChanged",
+    "AXMainWindowChanged",
+    "AXSelectedRowsChanged",
+    "AXRowCountChanged",
     "AXSelectedChildrenChanged",
     "AXSelectedTextChanged",
     "AXMenuOpened",
@@ -244,7 +248,7 @@ struct App {
 struct Snapshot {
     window: u32,
     window_element: El,
-    origin: (f64, f64),
+    frame: Rect,
     elements: Vec<(u32, El)>,
     lines: HashMap<Key, String>,
     ids: tree::Ids<El>,
@@ -1215,7 +1219,7 @@ impl Desk {
             Snapshot {
                 window: win,
                 window_element: w.clone(),
-                origin: (f.x, f.y),
+                frame: f,
                 elements: walk.elements,
                 lines: lines.into_iter().collect(),
                 ids: walk.ids.carry(),
@@ -1299,8 +1303,8 @@ impl Desk {
         active()?;
         let (_, current) = window(app)?;
         let snapshot = self.cache.get(&app.pid).ok_or_else(|| fail(ErrorCode::BadIndex, "Observe before acting"))?;
-        let origin = frame(&current).map(|f| (f.x, f.y));
-        if current != snapshot.window_element || origin != Some(snapshot.origin) || !on_current_space(window_id(&current)) {
+        let current_frame = frame(&current);
+        if current != snapshot.window_element || current_frame != Some(snapshot.frame) || !on_current_space(window_id(&current)) {
             return Err(fail(ErrorCode::BadIndex, "The window changed or moved; observe again before acting"));
         }
         Ok(())
@@ -1328,7 +1332,7 @@ impl Desk {
     fn point(&self, pid: i32, t: Target) -> Result<CGPoint, Failure> {
         match t {
             Target::Point(p) => {
-                let o = self.cache.get(&pid).map(|s| s.origin).unwrap_or((0.0, 0.0));
+                let o = self.cache.get(&pid).map(|s| (s.frame.x, s.frame.y)).unwrap_or((0.0, 0.0));
                 Ok(pt(o.0 + p.x, o.1 + p.y))
             }
             Target::Index(i) => {
@@ -1442,6 +1446,9 @@ impl Desk {
                 )
             }
             Action::Scroll { target, direction, amount } => {
+                if input::menu_open(ax) {
+                    return Err(fail(ErrorCode::ActionFailed, input::MENU_OPEN));
+                }
                 if let Amount::Pages(n) = amount {
                     let area = match target {
                         Some(Target::Index(i)) => input::scroll_area(&self.element(pid, *i)?),

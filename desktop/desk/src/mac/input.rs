@@ -262,7 +262,13 @@ pub(super) fn set_value(pid: i32, e: &El, index: u32, value: &str, submit: Optio
     };
     let texty = has_role(e, TEXT_ROLES);
     if texty {
-        set_attr(e, "AXFocused", &CFBoolean::true_value().as_CFType());
+        let status = set_attr(e, "AXFocused", &CFBoolean::true_value().as_CFType());
+        if status != 0 {
+            return Err(fail(
+                ErrorCode::ActionFailed,
+                format!("focusing element {index} failed (AXError {status}); its value was not changed"),
+            ));
+        }
     }
     match set_attr(e, "AXValue", &new) {
         0 => {}
