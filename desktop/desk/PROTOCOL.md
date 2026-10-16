@@ -32,7 +32,7 @@ Amount   = { "pages": f64 } | { "pixels": u32 }
 Point    = { x: f64, y: f64 }
 ```
 
-`app` matches a running app's name or bundle id, case-insensitive. An installed app that is not running is opened in the background (`open -g`) first. A `press_key` chord is modifiers (`cmd`, `shift`, `opt`/`alt`, `ctrl`) joined by `+` and ending in a key, which is a letter, digit, punctuation, `return`, `tab`, `space`, `delete`, `escape`, `forwarddelete`, `home`, `end`, `pageup`, `pagedown`, arrows (`left` …), or `f1`–`f12`.
+`app` matches a running app's name or bundle id, case-insensitive. An installed app that is not running is opened in the background (`open -g`) first. A `press_key` chord is modifiers (`cmd`/`super`/`meta`, `shift`, `opt`/`alt`, `ctrl`, optionally with xdotool `_L`/`_R`) joined by `+` and ending in one key. Names are case-insensitive and ignore `_`: a character (looked up on the current keyboard layout, so `A` and `!` add Shift), an xdotool symbol name (`comma`, `exclam`), `return`, `tab`, `space`, `delete` (the Mac Delete key, Backspace), `forwarddelete`, `escape`, `home`, `end`, `pageup`/`prior`, `pagedown`/`next`, `insert`/`help`, arrows (`left` …), `f1`–`f20`, or keypad keys (`kp_0`–`kp_9`, `kp_enter`, `kp_add`, `kp_subtract`, `kp_multiply`, `kp_divide`, `kp_decimal`, `kp_equal`, `kp_clear`). A chord that is only modifiers presses the last one with the others held. Modifiers are sent as their own key-down and key-up events around the key.
 
 Example:
 
@@ -91,7 +91,7 @@ With `pace: true`, before each `click`, `scroll` and `drag`, desk writes `pointe
 - Other clicks, `drag`, `scroll`, `type_text`, `press_key`, and the Cmd+V of `paste`: CGEvents posted to the app's pid (`CGEventPostToPid`). The real pointer does not move. For a click in web content, desk brings an inactive app forward first; other background actions may be ignored.
 - `type_text` sends each character with the key code and Shift/Option flags that type it on the user's current keyboard layout, plus the character itself. `\n`, `\r\n` and `\r` press Return and `\t` presses Tab. Characters the layout cannot type (emoji, other scripts, dead-key accents) are sent as text on key code 0.
 - `paste` puts the text on the general pasteboard (plain text, plus HTML for `markdown` and `html`; markdown is converted to HTML), presses Cmd+V and, once the app has read it, restores the previous clipboard. The data is promised lazily so desk knows when the app reads it, and it is marked `org.nspasteboard.TransientType` so clipboard managers skip it. If the app does not read it within 3 s the action fails with `action_failed` (paste completion is unconfirmed). If the clipboard changes for another reason meanwhile, desk keeps that new content and fails with `paste_conflict`, because the app may have pasted it instead.
-- `click` holds `modifiers` and keeps the button down for `hold_ms`. `press_key` holds the key for `hold_ms`.
+- `click` holds `modifiers` (as modifier key presses around the click) and keeps the button down for `hold_ms`. `press_key` holds the key for `hold_ms`.
 - `scroll` sends pixel wheel events in 120 px steps; a page is 85% of the target element's height (or width), else the window's.
 - `select_text` finds `text` in the element's `AXValue` (the occurrence preceded by `prefix` and followed by `suffix`), focuses the element and sets `AXSelectedTextRange` to the text or a caret before or after it.
 - `set_value` writes `AXValue`. `perform` runs any listed AX action.

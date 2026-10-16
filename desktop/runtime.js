@@ -237,7 +237,9 @@ app.scroll(target | null, up|down|left|right, pages = 1 | {pixels})
 app.selectText(id, text, {prefix, suffix, selectionType: text|cursor_before|cursor_after}) prefix/suffix pick among repeats.
 app.setValue(id, value) writes the element's value directly.
 app.performSecondaryAction(id, action) runs an action the element lists, e.g. "ShowMenu", "Increment".
-app.pressKey("cmd+shift+t", {durationMs}) key names: letters, digits, punctuation, return, tab, space, delete, escape, arrows, home, end, pageup, pagedown, f1-f12.
+app.pressKey("cmd+shift+t", {durationMs}) xdotool-style names, case-insensitive: letters, digits, punctuation or its names
+  (comma, exclam), return, tab, space, delete (Backspace), forwarddelete, escape, arrows, home, end, Page_Up/Prior,
+  Page_Down/Next, Insert/Help, f1-f20, KP_0-KP_9, KP_Enter, KP_Add. "A" or "!" adds Shift. A modifier alone ("shift") presses it.
 app.typeText(text) types with the keyboard. "\\n" presses Return and "\\t" presses Tab, so they can submit
   a form or send a chat message; use paste for multi-line text.
 app.paste(text, {format: text|markdown|html}) pastes through the clipboard, then restores the user's clipboard.

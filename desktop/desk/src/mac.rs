@@ -1,4 +1,5 @@
 use crate::cancellation;
+use crate::keys;
 use crate::protocol::*;
 use crate::text::{self, Key as TextKey, Stroke};
 use crate::tree::{self, Key, ROOT};
@@ -85,6 +86,8 @@ const CLIPS: &[&str] = &["AXScrollArea", "AXWebArea"];
 const BORING: &[&str] = &["AXShowMenu", "AXScrollToVisible", "AXShowDefaultUI", "AXShowAlternateUI"];
 const BUSY: &[&str] = &["AXBusyIndicator", "AXProgressIndicator"];
 const PRESS_MS: u64 = 50;
+const RETURN: u16 = 36;
+const TAB: u16 = 48;
 const HOVER_MS: u64 = 30;
 static EVENT_NUMBER: AtomicI64 = AtomicI64::new(1);
 const SETTLE: Duration = Duration::from_millis(1000);
@@ -286,16 +289,18 @@ fn click_at(pid: i32, mut press: Press, p: CGPoint, button: Button, count: u8, m
         Button::Right => (CGEventType::RightMouseDown, CGEventType::RightMouseUp, CGMouseButton::Right),
         Button::Middle => (CGEventType::OtherMouseDown, CGEventType::OtherMouseUp, CGMouseButton::Center),
     };
-    for n in 1..=count.max(1) as i64 {
-        active()?;
-        if n > 1 {
-            press.number = EVENT_NUMBER.fetch_add(1, Ordering::Relaxed);
+    holding(pid, mods, || {
+        for n in 1..=count.max(1) as i64 {
+            active()?;
+            if n > 1 {
+                press.number = EVENT_NUMBER.fetch_add(1, Ordering::Relaxed);
+            }
+            mouse(pid, &press, down, p, b, n, flags(mods))?;
+            cancellation::wait(Duration::from_millis(hold));
+            mouse(pid, &press, up, p, b, n, flags(mods))?;
         }
-        mouse(pid, &press, down, p, b, n, flags(mods))?;
-        cancellation::wait(Duration::from_millis(hold));
-        mouse(pid, &press, up, p, b, n, flags(mods))?;
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn key(pid: i32, code: u16, flags: CGEventFlags, text: Option<&str>, hold: u32) -> Result<(), Failure> {
@@ -312,6 +317,53 @@ fn key(pid: i32, code: u16, flags: CGEventFlags, text: Option<&str>, hold: u32) 
         post(e, pid);
     }
     Ok(())
+}
+
+/// Presses or releases one modifier key as a flags-changed event; `held` is every modifier down
+/// after this event.
+fn modifier_key(pid: i32, m: Modifier, code: Option<u16>, held: &[Modifier]) -> Result<(), Failure> {
+    let down = held.contains(&m);
+    let e = CGEvent::new_keyboard_event(source()?, code.unwrap_or(keys::modifier_code(m)), down)
+        .map_err(|_| fail(ErrorCode::ActionFailed, "key event"))?;
+    e.set_type(CGEventType::FlagsChanged);
+    e.set_flags(flags(held));
+    post(e, pid);
+    Ok(())
+}
+
+/// Holds `mods` as real modifier key presses around `inner`, releasing them even if it fails.
+fn holding(pid: i32, mods: &[Modifier], inner: impl FnOnce() -> Result<(), Failure>) -> Result<(), Failure> {
+    let mut held = vec![];
+    let mut result = Ok(());
+    for m in mods {
+        held.push(*m);
+        if let Err(e) = modifier_key(pid, *m, None, &held) {
+            held.pop();
+            result = Err(e);
+            break;
+        }
+    }
+    if result.is_ok() {
+        result = inner();
+    }
+    while let Some(m) = held.pop() {
+        let released = modifier_key(pid, m, None, &held);
+        result = result.and(released);
+    }
+    result
+}
+
+fn press_chord(pid: i32, c: &keys::Chord, hold: u32) -> Result<(), Failure> {
+    holding(pid, &c.mods, || match c.lone {
+        Some(m) => {
+            let mut held = c.mods.clone();
+            held.push(m);
+            modifier_key(pid, m, Some(c.code), &held)?;
+            cancellation::wait(Duration::from_millis(hold.min(10_000) as u64));
+            modifier_key(pid, m, Some(c.code), &c.mods)
+        }
+        None => key(pid, c.code, flags(&c.mods), None, hold),
+    })
 }
 
 fn layout_data(source: CFTypeRef) -> Option<CFData> {
@@ -349,8 +401,8 @@ fn keyboard() -> HashMap<char, Stroke> {
 fn type_text(pid: i32, s: &str) -> Result<(), Failure> {
     for k in text::plan(s, &keyboard()) {
         match k {
-            TextKey::Return => key(pid, chord("return")?.0, CGEventFlags::empty(), None, 0)?,
-            TextKey::Tab => key(pid, chord("tab")?.0, CGEventFlags::empty(), None, 0)?,
+            TextKey::Return => key(pid, RETURN, CGEventFlags::empty(), None, 0)?,
+            TextKey::Tab => key(pid, TAB, CGEventFlags::empty(), None, 0)?,
             TextKey::Mapped(c, stroke) => {
                 let mut mods = vec![];
                 if stroke.shift {
@@ -368,10 +420,7 @@ fn type_text(pid: i32, s: &str) -> Result<(), Failure> {
 }
 
 fn paste(pid: i32, s: &str, format: PasteFormat) -> Result<(), Failure> {
-    let v = match keyboard().get(&'v') {
-        Some(k) => k.code,
-        None => chord("v")?.0,
-    };
+    let v = keys::resolve("v", &keyboard()).map_err(|m| fail(ErrorCode::UnknownKey, m))?.code;
     let cmd_v = || key(pid, v, CGEventFlags::CGEventFlagCommand, Some("v"), 0);
     crate::pasteboard::paste(s, format, cmd_v, &cancellation::cancelled)
 }
@@ -382,110 +431,6 @@ fn active() -> Result<(), Failure> {
     } else {
         Ok(())
     }
-}
-
-fn keycode(k: &str) -> Option<u16> {
-    const KEYS: &[(&str, u16)] = &[
-        ("a", 0),
-        ("s", 1),
-        ("d", 2),
-        ("f", 3),
-        ("h", 4),
-        ("g", 5),
-        ("z", 6),
-        ("x", 7),
-        ("c", 8),
-        ("v", 9),
-        ("b", 11),
-        ("q", 12),
-        ("w", 13),
-        ("e", 14),
-        ("r", 15),
-        ("y", 16),
-        ("t", 17),
-        ("1", 18),
-        ("2", 19),
-        ("3", 20),
-        ("4", 21),
-        ("6", 22),
-        ("5", 23),
-        ("=", 24),
-        ("9", 25),
-        ("7", 26),
-        ("-", 27),
-        ("8", 28),
-        ("0", 29),
-        ("]", 30),
-        ("o", 31),
-        ("u", 32),
-        ("[", 33),
-        ("i", 34),
-        ("p", 35),
-        ("return", 36),
-        ("enter", 36),
-        ("l", 37),
-        ("j", 38),
-        ("'", 39),
-        ("k", 40),
-        (";", 41),
-        ("\\", 42),
-        (",", 43),
-        ("/", 44),
-        ("n", 45),
-        ("m", 46),
-        (".", 47),
-        ("tab", 48),
-        ("space", 49),
-        ("`", 50),
-        ("delete", 51),
-        ("backspace", 51),
-        ("escape", 53),
-        ("esc", 53),
-        ("f5", 96),
-        ("f6", 97),
-        ("f7", 98),
-        ("f3", 99),
-        ("f8", 100),
-        ("f9", 101),
-        ("f11", 103),
-        ("f10", 109),
-        ("f12", 111),
-        ("home", 115),
-        ("pageup", 116),
-        ("forwarddelete", 117),
-        ("f4", 118),
-        ("end", 119),
-        ("f2", 120),
-        ("pagedown", 121),
-        ("f1", 122),
-        ("left", 123),
-        ("right", 124),
-        ("down", 125),
-        ("up", 126),
-    ];
-    let k = k.to_ascii_lowercase();
-    KEYS.iter().find(|(n, _)| *n == k).map(|(_, c)| *c)
-}
-
-fn chord(k: &str) -> Result<(u16, Vec<Modifier>), Failure> {
-    let unknown = || fail(ErrorCode::UnknownKey, format!("unknown key {k}"));
-    let (mods, last) = match k.rsplit_once('+') {
-        Some((m, "")) if !m.is_empty() => (m.strip_suffix('+').unwrap_or(m), "+"),
-        Some((m, last)) => (m, last),
-        None => ("", k),
-    };
-    let mods = mods
-        .split('+')
-        .filter(|m| !m.is_empty())
-        .map(|m| match m.to_ascii_lowercase().as_str() {
-            "cmd" | "command" | "meta" | "super" => Ok(Modifier::Command),
-            "shift" => Ok(Modifier::Shift),
-            "opt" | "option" | "alt" => Ok(Modifier::Option),
-            "ctrl" | "control" => Ok(Modifier::Control),
-            _ => Err(unknown()),
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok((keycode(last).ok_or_else(unknown)?, mods))
 }
 
 fn flags(mods: &[Modifier]) -> CGEventFlags {
@@ -955,8 +900,8 @@ impl Desk {
                 select(&self.element(pid, *index)?, text, prefix, suffix, *selection)
             }
             Action::PressKey { key: k, hold_ms } => {
-                let (code, mods) = chord(k)?;
-                key(pid, code, flags(&mods), None, *hold_ms)
+                let c = keys::resolve(k, &keyboard()).map_err(|m| fail(ErrorCode::UnknownKey, m))?;
+                press_chord(pid, &c, *hold_ms)
             }
             Action::Scroll { target, direction, amount } => {
                 let p = match target {

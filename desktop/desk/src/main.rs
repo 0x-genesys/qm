@@ -1,4 +1,5 @@
 mod cancellation;
+mod keys;
 mod protocol;
 mod text;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
