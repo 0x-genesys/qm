@@ -27,5 +27,5 @@ All running apps can be observed and controlled, subject to macOS permissions.
 - **Screenshots.** They use `CGWindowListCreateImage`, deprecated in macOS 14 in favour of ScreenCaptureKit. On macOS 15+ it may return nothing or prompt monthly. `pixels_per_point` also needs checking on a Retina screen.
 - **`_AXUIElementGetWindow`** (private, widely used) maps the AX window to a window id for capture and event targeting.
 - **`AXManualAccessibility`** is set on each app so Electron and Chrome apps expose their trees.
-- **Speed.** Each element costs about 7 AX round trips, so big windows may take seconds. The 800-element cap bounds this.
+- **Speed.** Each element costs about 7 AX round trips, so big windows may take seconds. Skipping offscreen subtrees and the 6,000-element read cap bound this.
 - **Universal binary:** `cargo build --release --target aarch64-apple-darwin --target x86_64-apple-darwin`, then `lipo`.

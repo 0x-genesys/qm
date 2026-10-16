@@ -64,14 +64,19 @@ ErrorCode   = bad_request | unsupported_platform | permission_missing | app_not_
 
 ## Observation semantics
 
-- The tree covers the app's focused window (else main, else first). One line per kept element:
-  `[id] Role "title" (description) = "value" [focused disabled selected settable] <Actions> @x,y wxh`.
-  Unlabelled containers are folded away; indentation shows nesting. Capped at 800 elements (`truncated: true`).
-- Frames and `point` targets are **window-relative points** (origin = window top-left).
+- The tree covers the visible part of the app's focused window (else main, else first). One line per kept element:
+  `[id] Role "title" (description) = "value" [focused disabled selected settable] <Actions>`.
+  Unlabelled containers are folded away; indentation shows nesting.
+- Children outside the window, or outside an enclosing `AXScrollArea` or `AXWebArea`, are not walked. Each container
+  that had some gets one note line, `… N more offscreen; scroll to reveal`. Zero-size frames count as offscreen unless
+  strictly inside the visible area (Chromium pins scrolled-out elements to the viewport edge with zero height). In a
+  container of more than 100 children, reading stops at the first child below the visible area.
+- The tree is capped at about 60,000 characters of lines and 6,000 AX elements read (`truncated: true`).
+- `point` targets are **window-relative points** (origin = window top-left).
   The screenshot is captured at nominal resolution, so one PNG pixel is about one point; `pixels_per_point` says what it really was.
   Divide PNG pixels by `pixels_per_point` before sending a `point`.
 - Observe before acting; absent snapshots are rejected. Ids are stable: an element keeps its id across observations of the same window for as long as it is the same AX object. A different window starts ids again. `index` in actions means this id, from the latest observation of that app.
-- With `diff` (the default) and an earlier observation of the same window, `tree` holds only new or changed lines, `removed` lists ids that disappeared and `diffed` is true. Otherwise `tree` is the whole tree.
+- With `diff` (the default) and an earlier observation of the same window, `tree` holds only new lines, prefixed `+ `, and changed ones, prefixed `~ `; `removed` lists ids that disappeared and `diffed` is true. When more than 60% of the lines are new or changed, or otherwise, `tree` is the whole tree, unprefixed, and `diffed` is false.
 - After the actions, `act` waits 1 s, then up to 5 s more while the window shows a busy or progress indicator, whether or not it observes.
 - A batch stops at the first failed action. `acted.completed` counts what ran; the observation or `observation_failure` comes back without losing the completion count.
 
@@ -81,7 +86,8 @@ With `pace: true`, before each `click`, `scroll` and `drag`, desk writes `pointe
 
 ## How actions are delivered
 
-- `click` on an index, left button, single: `AXPress` if the element offers it (no pointer, no focus change); otherwise a synthetic click at the element's center.
+- `click` on an index, left button, single: `AXPress` if the element offers it (no pointer, no focus change); otherwise a synthetic click at the center of the element's visible part.
+- An index target that is offscreen (outside the window or an enclosing scroll or web area) is first sent `AXScrollToVisible`; if it is still offscreen 250 ms later, the action fails with `action_failed`.
 - Other clicks, `drag`, `scroll`, `type_text`, `press_key`: CGEvents posted to the app's pid (`CGEventPostToPid`). The real pointer does not move and the app is not brought forward. Some apps ignore events while in the background; then send `raise` first.
 - `click` holds `modifiers` and keeps the button down for `hold_ms`. `press_key` holds the key for `hold_ms`.
 - `scroll` sends pixel wheel events in 120 px steps; a page is 85% of the target element's height (or width), else the window's.

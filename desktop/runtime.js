@@ -57,11 +57,23 @@
     return { data: btoa(binary), width: canvas.width, height: canvas.height };
   }
 
+  function idRanges(ids) {
+    const out = [];
+    for (let i = 0; i < ids.length; i++) {
+      let j = i;
+      while (j + 1 < ids.length && ids[j + 1] === ids[j] + 1) j++;
+      out.push(j > i ? `${ids[i]}-${ids[j]}` : `${ids[i]}`);
+      i = j;
+    }
+    return out.join(", ");
+  }
+
   function stateText(o) {
-    const head = `${o.app} — "${o.window}" ${Math.round(o.frame.w)}x${Math.round(o.frame.h)}, ${o.elements} elements${o.truncated ? " (truncated)" : ""}`;
+    const cut = o.truncated ? " (truncated: size limit reached, later elements not shown)" : "";
+    const head = `${o.app} — "${o.window}" ${Math.round(o.frame.w)}x${Math.round(o.frame.h)}, ${o.elements} elements${cut}`;
     if (!o.diffed) return `${head}\n${o.tree}`;
-    const removed = o.removed.length ? `\nremoved: ${o.removed.join(", ")}` : "";
-    return `${head}, changes since last state:\n${o.tree || "(no changes)\n"}${removed}`;
+    const removed = o.removed.length ? `\nremoved: ${idRanges(o.removed)}` : "";
+    return `${head}, changes since last state (+ added, ~ changed):\n${o.tree || "(no changes)\n"}${removed}`;
   }
 
   const MODIFIERS = {
@@ -202,15 +214,18 @@ computer.getApp(nameOrBundleId) -> App. Opens an installed app in the background
 All apps are available subject to macOS permissions.
 
 Observation (each emits into the result; pass {emit: false} to only return the data):
-app.getAXState({disableDiffing}) the focused window's accessibility tree. Lines read
-  [id] Role "title" (description) = "value" [focused disabled selected settable] <Actions> @x,y wxh
-  with window-relative point frames. Ids stay stable across observations of the same window.
-  By default only changed or new lines are shown, plus removed ids; disableDiffing: true shows the whole tree.
+app.getAXState({disableDiffing}) the visible part of the focused window's accessibility tree. Lines read
+  [id] Role "title" (description) = "value" [focused disabled selected settable] <Actions>
+  Content scrolled out of view is summarised as "… N more offscreen; scroll to reveal".
+  Ids stay stable across observations of the same window.
+  By default only new (+) or changed (~) lines are shown, plus removed ids; when most lines changed, or with
+  disableDiffing: true, the whole tree is shown.
 app.getScreenshot() a JPEG of the window. app.getAXStateAndScreenshot({disableDiffing}) both.
 
 Actions (each waits about a second, longer while a progress indicator shows; observe again to see the result):
 app.click(target, {mouseButton: left|right|middle, clickCount, key: "cmd+shift", durationMs})
   target is an element id from the tree or [x, y] in pixels of the latest screenshot.
+  An offscreen element is scrolled into view first; if that fails, the click fails.
 app.drag([x, y], [x, y]) screenshot pixels.
 app.scroll(target | null, up|down|left|right, pages = 1 | {pixels})
 app.selectText(id, text, {prefix, suffix, selectionType: text|cursor_before|cursor_after}) prefix/suffix pick among repeats.

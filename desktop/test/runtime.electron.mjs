@@ -19,7 +19,7 @@ import path from "node:path";
 import { createInterface } from 'node:readline';
 createInterface({input: process.stdin}).on('line', line => {
  const {id,cmd} = JSON.parse(line);
- const observation = {app:'Fixture',window:'Fixture window',frame:{w:100,h:100},elements:1,tree:'[1] Button',diffed:false,removed:[],...(cmd.screenshot ? {screenshot:{png_base64:${JSON.stringify(screenshot)}}}: {})};
+ const observation = {app:'Fixture',window:'Fixture window',frame:{w:100,h:100},elements:1,tree:'[1] Button',diffed:false,removed:[],...(cmd.diff ? {tree:'~ [1] Button',diffed:true,removed:[3,4,5,9]} : {}),...(cmd.screenshot ? {screenshot:{png_base64:${JSON.stringify(screenshot)}}}: {})};
  const reply = cmd.type === 'apps' ? {type:'apps',apps:[{name:'Fixture',bundle_id:'test.fixture',pid:1,active:true}]} : cmd.type === 'observe' ? {type:'observation',...observation} : {type:'acted',completed:1, failure:null};
  process.stdout.write(JSON.stringify({id,reply})+'\\n');
 });
@@ -44,6 +44,8 @@ createInterface({input: process.stdin}).on('line', line => {
     );
     assert.match(result.content, /Fixture window/);
     assert.equal(result.content.split("Fixture window").length - 1, 1);
+    assert.match(result.content, /changes since last state \(\+ added, ~ changed\)/);
+    assert.match(result.content, /removed: 3-5, 9/);
     result = await call("await fixture.getScreenshot()");
     assert.equal(result.images?.[0]?.mimeType, "image/jpeg");
     assert.ok(result.images[0].data.length > 0);
