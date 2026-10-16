@@ -263,7 +263,11 @@ fn prepare(pid: i32, ax: &El, win: u32, p: CGPoint) -> Result<Press, Failure> {
     Ok(Press { win, number: EVENT_NUMBER.fetch_add(1, Ordering::Relaxed) })
 }
 
-fn click_at(pid: i32, mut press: Press, p: CGPoint, button: Button, count: u8, mods: &[Modifier], hold: u32) -> Result<(), Failure> {
+fn click_at(pid: i32, press: Press, p: CGPoint, button: Button, count: u8, mods: &[Modifier], hold: u32) -> Result<(), Failure> {
+    with_modifiers(pid, flags(mods), || click_at_inner(pid, press, p, button, count, mods, hold))
+}
+
+fn click_at_inner(pid: i32, mut press: Press, p: CGPoint, button: Button, count: u8, mods: &[Modifier], hold: u32) -> Result<(), Failure> {
     let hold = if hold == 0 { PRESS_MS } else { hold.min(10_000) as u64 };
     let (down, up, b) = match button {
         Button::Left => (CGEventType::LeftMouseDown, CGEventType::LeftMouseUp, CGMouseButton::Left),
@@ -288,20 +292,7 @@ fn key(pid: i32, code: u16, flags: CGEventFlags, text: Option<&str>, hold: u32) 
 
 fn send_key_events(pid: i32, steps: Vec<crate::keys::Event>, text: Option<&str>, hold: u32) -> Result<(), Failure> {
     active()?;
-    let mut prepared = Vec::new();
-    for step in steps {
-        let e = CGEvent::new_keyboard_event(source()?, step.code, step.down).map_err(|_| fail(ErrorCode::ActionFailed, "key event"))?;
-        if step.modifier {
-            e.set_type(CGEventType::FlagsChanged);
-        }
-        e.set_flags(CGEventFlags::from_bits_truncate(step.flags));
-        if !step.modifier {
-            if let Some(t) = text {
-                e.set_string(t);
-            }
-        }
-        prepared.push((step, e));
-    }
+    let prepared = steps.into_iter().map(|step| key_event(step, text)).collect::<Result<Vec<_>, _>>()?;
     let mut failure = None;
     let mut releasing = false;
     for (step, e) in prepared {
@@ -323,6 +314,40 @@ fn send_key_events(pid: i32, steps: Vec<crate::keys::Event>, text: Option<&str>,
         post(e, pid);
     }
     failure.map_or(Ok(()), Err)
+}
+
+fn key_event(step: crate::keys::Event, text: Option<&str>) -> Result<(crate::keys::Event, CGEvent), Failure> {
+    let e = CGEvent::new_keyboard_event(source()?, step.code, step.down).map_err(|_| fail(ErrorCode::ActionFailed, "key event"))?;
+    if step.modifier {
+        e.set_type(CGEventType::FlagsChanged);
+    }
+    e.set_flags(CGEventFlags::from_bits_truncate(step.flags));
+    if !step.modifier {
+        if let Some(t) = text {
+            e.set_string(t);
+        }
+    }
+    Ok((step, e))
+}
+
+fn with_modifiers(pid: i32, flags: CGEventFlags, action: impl FnOnce() -> Result<(), Failure>) -> Result<(), Failure> {
+    let prepared = crate::keys::events(0, flags.bits())
+        .into_iter()
+        .filter(|e| e.modifier)
+        .map(|step| key_event(step, None))
+        .collect::<Result<Vec<_>, _>>()?;
+    let (down, up): (Vec<_>, Vec<_>) = prepared.into_iter().partition(|(step, _)| !step.release);
+    let result = (|| {
+        for (_, event) in down {
+            active()?;
+            post(event, pid);
+        }
+        action()
+    })();
+    for (_, event) in up {
+        post(event, pid);
+    }
+    result
 }
 
 fn layout_data(source: CFTypeRef) -> Option<CFData> {
