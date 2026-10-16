@@ -273,7 +273,8 @@ app.performSecondaryAction(id, action) runs an action the element lists, e.g. "S
 app.pressKey("cmd+shift+t", {durationMs}) key names: letters, digits, punctuation, return, tab, space, delete, escape, arrows, home, end, pageup, pagedown, f1-f20, KP_Enter/KP_0/KP_Add and other keypad names. Modifier names support left/right forms such as Control_R.
 app.typeText(text) types with the keyboard. "\\n" presses Return and "\\t" presses Tab, so they can submit
   a form or send a chat message; use paste for multi-line text.
-app.paste(text, {format: text|markdown|html}) pastes through the clipboard, then restores the user's clipboard.
+app.paste(text, {format: text|markdown|html}) pastes through the clipboard, then restores the user's clipboard once the
+  field shows the text. If it cannot confirm that, it fails and leaves the text on the clipboard instead.
   Prefer it for long, multi-line or formatted text. Needs a focused text field.
 app.raise() brings the window to the front; use when an app ignores background input.
 app.wait(ms)

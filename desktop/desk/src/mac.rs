@@ -455,13 +455,41 @@ fn type_text(pid: i32, s: &str) -> Result<(), Failure> {
     Ok(())
 }
 
-fn paste(pid: i32, s: &str, format: PasteFormat) -> Result<(), Failure> {
+/// The focused field's text and selection, read before Cmd+V and compared after it.
+struct Field {
+    element: El,
+    value: String,
+    selection: Option<(usize, usize)>,
+}
+
+fn field(ax: &El) -> Option<Field> {
+    let element = attr(ax, "AXFocusedUIElement")?;
+    let value = attr(&element, "AXValue")?.downcast::<CFString>()?.to_string();
+    let selection = ax_value::<[isize; 2]>(&element, "AXSelectedTextRange", 4)
+        .filter(|[start, len]| *start >= 0 && *len >= 0)
+        .map(|[start, len]| (start as usize, len as usize));
+    Some(Field { element, value, selection })
+}
+
+fn paste(pid: i32, ax: &El, s: &str, format: PasteFormat) -> Result<(), Failure> {
     let v = match keyboard().get(&'v') {
         Some(k) => k.code,
         None => chord("v")?.0,
     };
+    let before = field(ax);
+    let pasted = text::expected(s, format);
+    let mut check = || {
+        use crate::pasteboard::Check;
+        match (&before, field(ax)) {
+            (Some(b), Some(now)) if now.element == b.element && text::inserted(&b.value, b.selection, &now.value, &pasted) => {
+                Check::Landed
+            }
+            (Some(_), Some(_)) => Check::NotYet,
+            _ => Check::Unreadable,
+        }
+    };
     let cmd_v = || key(pid, v, CGEventFlags::CGEventFlagCommand, Some("v"), 0);
-    crate::pasteboard::paste(s, format, cmd_v, &cancellation::cancelled)
+    crate::pasteboard::paste(s, format, cmd_v, &mut check, &cancellation::cancelled)
 }
 
 fn active() -> Result<(), Failure> {
@@ -1136,7 +1164,7 @@ impl Desk {
                 click_at(pid, prepare(pid, ax, win, p)?, p, *button, *count, modifiers, *hold_ms)
             }
             Action::TypeText { text } => type_text(pid, text),
-            Action::Paste { text, format } => paste(pid, text, *format),
+            Action::Paste { text, format } => paste(pid, ax, text, *format),
             Action::SelectText { index, text, prefix, suffix, selection } => {
                 select(&self.element(pid, *index)?, text, prefix, suffix, *selection)
             }

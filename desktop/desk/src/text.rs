@@ -62,6 +62,64 @@ pub fn payload(text: &str, format: PasteFormat) -> (String, Option<String>) {
     }
 }
 
+/// The plain texts a paste of `text` may leave in a field: the plain payload, and for formatted
+/// pastes also the text of the HTML.
+pub fn expected(text: &str, format: PasteFormat) -> Vec<String> {
+    let (plain, html) = payload(text, format);
+    let mut out = vec![plain];
+    if let Some(rendered) = html.map(|h| strip_html(&h)).filter(|r| !out.contains(r)) {
+        out.push(rendered);
+    }
+    out
+}
+
+fn norm(s: &[u16]) -> String {
+    String::from_utf16_lossy(s).replace("\r\n", "\n").replace(['\r', '\u{2028}', '\u{2029}'], "\n").replace('\u{a0}', " ")
+}
+
+fn squeeze(s: &str) -> String {
+    s.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+fn insertion(before: &[char], pasted: &[char], after: &[char]) -> bool {
+    if after.len() != before.len() + pasted.len() {
+        return false;
+    }
+    let common = before.iter().zip(after).take_while(|(x, y)| x == y).count();
+    (common.saturating_sub(pasted.len())..=common).any(|i| {
+        after[..i] == before[..i] && after[i..i + pasted.len()] == *pasted && after[i + pasted.len()..] == before[i..]
+    })
+}
+
+/// Whether `after` is exactly `before` with one of `pasted` inserted at the selection (UTF-16
+/// `[start, length]`), or anywhere when the selection is unknown. Line endings and non-breaking
+/// spaces are normalised; whitespace is ignored only when the inserted text has other content.
+/// This is the evidence desk needs before it restores the user's clipboard.
+pub fn inserted(before: &str, selection: Option<(usize, usize)>, after: &str, pasted: &[String]) -> bool {
+    let b: Vec<u16> = before.encode_utf16().collect();
+    let (head, tail) = match selection {
+        Some((start, len)) if start + len <= b.len() => (norm(&b[..start]), norm(&b[start + len..])),
+        Some(_) => return false,
+        None => (norm(&b), String::new()),
+    };
+    let after = norm(&after.encode_utf16().collect::<Vec<_>>());
+    if squeeze(&norm(&b)) == squeeze(&after) {
+        return false;
+    }
+    let chars = |s: &str| s.chars().collect::<Vec<_>>();
+    pasted.iter().map(|p| norm(&p.encode_utf16().collect::<Vec<_>>())).filter(|p| !p.is_empty()).any(|p| {
+        let loose = !squeeze(&p).is_empty();
+        if selection.is_some() {
+            let exact = format!("{head}{p}{tail}") == after;
+            let (sh, sp, st, sa) = (squeeze(&head), squeeze(&p), squeeze(&tail), squeeze(&after));
+            exact || (loose && format!("{sh}{sp}{st}") == sa)
+        } else {
+            insertion(&chars(&head), &chars(&p), &chars(&after))
+                || (loose && insertion(&chars(&squeeze(&head)), &chars(&squeeze(&p)), &chars(&squeeze(&after))))
+        }
+    })
+}
+
 fn strip_html(html: &str) -> String {
     let mut out = String::new();
     let mut rest = html;
@@ -167,5 +225,26 @@ mod tests {
     fn paste_format_defaults_to_text() {
         let a: crate::protocol::Action = serde_json::from_str(r#"{"type":"paste","text":"x"}"#).unwrap();
         assert!(matches!(a, crate::protocol::Action::Paste { format: PasteFormat::Text, .. }));
+    }
+    #[test]
+    fn insertion_must_match_the_pasted_text_at_the_selection() {
+        let t = |s: &str| vec![s.to_string()];
+        assert!(inserted("ab", Some((1, 0)), "aXYb", &t("XY")));
+        assert!(inserted("a old b", Some((2, 3)), "a new b", &t("new")), "replaces the selection");
+        assert!(inserted("ab", None, "aXYb", &t("XY")), "unknown selection: anywhere");
+        assert!(inserted("", Some((0, 0)), "line1\rline2", &t("line1\nline2")), "line endings normalised");
+        assert!(inserted("x", Some((1, 0)), "x one\n two", &t("one two")), "whitespace-only differences");
+        assert!(!inserted("ab", Some((1, 0)), "ab", &t("XY")), "nothing changed");
+        assert!(!inserted("ab", Some((1, 0)), "aZb", &t("XY")), "something else changed");
+        assert!(!inserted("ab", Some((0, 0)), "aXYb", &t("XY")), "inserted at the wrong place");
+        assert!(!inserted("aXb", Some((1, 1)), "aXb", &t("X")), "replacing a selection with itself is no evidence");
+        assert!(!inserted("aXb", Some((1, 0)), "aXb", &t("X")), "unchanged text that already contains the paste");
+        assert!(!inserted("ab", None, "aXYbZ", &t("XY")), "unknown selection still needs nothing else to change");
+        assert!(!inserted("a", Some((1, 0)), "a\n", &t("\t")), "whitespace pastes need an exact match");
+        assert!(!inserted("ab", Some((5, 0)), "aXYb", &t("XY")), "stale selection");
+        assert!(!inserted("ab", Some((1, 0)), "aXYb", &[]), "nothing expected");
+        let md = expected("**hi** there", PasteFormat::Markdown);
+        assert!(inserted("", Some((0, 0)), "hi there", &md), "rich paste of markdown");
+        assert!(inserted("", Some((0, 0)), "**hi** there", &md), "plain paste of markdown");
     }
 }
