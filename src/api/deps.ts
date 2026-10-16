@@ -188,6 +188,7 @@ export interface ServerDeps {
   backgroundOwnership?: BackgroundOwnershipControl;
   deploymentControlSecret?: string;
   spendExportToken?: string;
+  sessionStatusToken?: string;
   deployDialTimeoutMs?: number;
   deployAppsDomain?: string;
   deployGateSecret?: string;

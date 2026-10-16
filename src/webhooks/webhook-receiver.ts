@@ -1,11 +1,15 @@
 import type { Destination, Webhook } from "../types.ts";
-import type { WebhookStore } from "./webhook-store.ts";
+import { webhookThreadRef, type WebhookStore } from "./webhook-store.ts";
 import { getVerifier, type VerifierInput } from "./verifiers.ts";
 import { runTrigger, type TriggerDeps } from "../triggers/run-trigger.ts";
 import { buildWebhookWakeEnvelope, capForEscaping } from "../core/wake-envelope.ts";
 import { errMessage, reportFailure, reportFailureAs } from "../util/errors.ts";
 
-export type DeliverResult = { status: 202 } | { status: 200; body: string } | { status: 401 } | { status: 404 };
+export type DeliverResult =
+  | { status: 202; deliveryId: string; sessionRef: string }
+  | { status: 200; body: string }
+  | { status: 401 }
+  | { status: 404 };
 
 export interface WebhookReceiver {
   deliver(id: string, req: { headers: VerifierInput["headers"]; rawBody: string }): Promise<DeliverResult>;
@@ -101,7 +105,7 @@ export function createWebhookReceiver(deps: WebhookReceiverDeps): WebhookReceive
       if (!passesFilters(wh.filters, parsed)) return { status: 200, body: "skipped" };
 
       const deliveryId = verifier.deliveryId(input);
-      const fireKey = `webhook:${wh.id}:${deliveryId}`;
+      const fireKey = webhookThreadRef(wh.id, deliveryId);
       if (await deps.idempotency.committed(fireKey)) return { status: 200, body: "duplicate" };
 
       const event = renderEvent(wh, deliveryId, parsed, req.rawBody);
@@ -144,7 +148,7 @@ export function createWebhookReceiver(deps: WebhookReceiverDeps): WebhookReceive
           reportFailure("webhook: fire", e, `webhook=${wh.id}`);
         });
 
-      return { status: 202 };
+      return { status: 202, deliveryId, sessionRef: fireKey };
     },
   };
 }

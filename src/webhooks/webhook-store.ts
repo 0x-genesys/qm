@@ -12,6 +12,16 @@ import {
 import { hashId } from "../util/crypto.ts";
 import { getVerifier } from "./verifiers.ts";
 
+const WEBHOOK_THREAD_PREFIX = "webhook:";
+
+export function webhookThreadRef(webhookId: string, deliveryId: string): string {
+  return `${WEBHOOK_THREAD_PREFIX}${webhookId}:${deliveryId}`;
+}
+
+export function isWebhookThreadRef(ref: string): boolean {
+  return ref.startsWith(WEBHOOK_THREAD_PREFIX) && ref.length > WEBHOOK_THREAD_PREFIX.length;
+}
+
 export interface CreateWebhookInput extends CreateTriggerInput {
   action: string;
   verification: Webhook["verification"];
