@@ -402,6 +402,7 @@ async function directAnthropicJson(
       messages: [{ role: "user", content: userPrompt }],
     }),
     signal: AbortSignal.timeout(2_000),
+    redirect: "error",
   });
   if (!res.ok) return undefined;
   const json = (await res.json()) as { content?: Array<{ type?: string; text?: string }> };
