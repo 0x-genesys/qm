@@ -424,11 +424,16 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       const { screening } = resolution.securityPolicy;
       if (screening === "off") return "allow";
       const scopeLabel = deps.resolution.scopeFor(conversation, actor);
+      const session = sessionId
+        ? await deps.sessions.get(sessionId).catch(swallowAs("orchestrator: steer session", null))
+        : null;
       Object.assign(currentModelRequestContext(), {
         sessionId,
         actorId: actor.id,
         scopeId: scopeLabel,
-        origin: sessionOrigin(conversation.threadRef),
+        origin: session
+          ? await originThroughParents(session, (id) => deps.sessions.get(id))
+          : sessionOrigin(conversation.threadRef),
       });
       const bounded = securityScreenPayload({
         surface: "external",

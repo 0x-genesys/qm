@@ -879,7 +879,11 @@ test("carried skill and steer screens tell the model gateway which session they 
       models: { "claude-haiku-4-5": "m" },
     },
   }).models.screenSecurity;
-  const { orchestrator, config } = buildOrchestrator({ skills, harness, isCurrentSharedScopeMember: async () => true });
+  const { orchestrator, config, sessions } = buildOrchestrator({
+    skills,
+    harness,
+    isCurrentSharedScopeMember: async () => true,
+  });
   await config.setSharingPosture(scopeId("org", ORG), "open");
   const conversation: Conversation = {
     kind: "channel",
@@ -908,11 +912,14 @@ test("carried skill and steer screens tell the model gateway which session they 
     turnContext,
   );
 
-  assert.equal(
-    await orchestrator.screenSecuritySteer({ payload: "[]", actor, conversation, sessionId: result.sessionId }),
-    "allow",
-  );
+  const steer = () =>
+    orchestrator.screenSecuritySteer({ payload: "[]", actor, conversation, sessionId: result.sessionId });
+  assert.equal(await steer(), "allow");
   assert.deepEqual(contextHeaders(requests.at(-1)!.headers), turnContext);
+  const cron = await sessions.getOrCreateByThread("agent:main:cron:nightly", "channel", scopeId("channel", "C1"));
+  await sessions.setParentSession(result.sessionId!, cron.id);
+  assert.equal(await steer(), "allow");
+  assert.deepEqual(contextHeaders(requests.at(-1)!.headers), { ...turnContext, "x-qm-origin": "cron" });
 });
 
 test("Open uses the exact skill snapshot that passed screening despite an in-flight source update", async () => {

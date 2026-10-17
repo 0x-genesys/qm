@@ -1,7 +1,7 @@
 import "./support/auto-fake-sprites.ts";
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { createServer as httpServer } from "node:http";
+import { createServer as httpServer, type RequestListener } from "node:http";
 import type { AddressInfo } from "node:net";
 import { createPiHarness, probeModel } from "../src/harness/pi-harness.ts";
 import { createHarnessRouter } from "../src/harness/harness-router.ts";
@@ -176,27 +176,57 @@ test("the goal governor judges with its turn's context", async (t) => {
   assert.deepEqual(contextHeaders(requests.at(-1)!.headers), { ...cronHeaders, "x-qm-purpose": "judge" });
 });
 
-async function gatewayApp(t: TestContext, overrides: Partial<Config> = {}) {
+async function listen(t: TestContext, handler: RequestListener): Promise<string> {
+  const server = httpServer(handler);
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+  return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+}
+
+test("a gateway redirect to another origin is never followed", async (t) => {
+  const redirected: string[] = [];
+  const elsewhere = await listen(t, (req, res) => {
+    redirected.push(req.url!);
+    res.end();
+  });
+  let answered = 0;
+  const url = await listen(t, (_req, res) => {
+    answered++;
+    res.writeHead(307, { location: `${elsewhere}/v1/messages` });
+    res.end();
+  });
+  const harness = createPiHarness({ defaultModelId: "claude-haiku-4-5", modelGateway: { ...gateway, url } });
+
+  await withModelRequestContext(cronContext, () => harness.models.pickAckEmoji!("can you check the deploy?", ["eyes"]));
+  assert.equal(answered, 1);
+  assert.deepEqual(redirected, []);
+});
+
+async function gatewayApp(
+  t: TestContext,
+  overrides: Partial<Config> = {},
+  hold?: (headers: Record<string, unknown>) => Promise<void>,
+) {
   const seen: Array<Record<string, unknown>> = [];
-  const upstream = httpServer(async (req, res) => {
+  const url = await listen(t, async (req, res) => {
     for await (const chunk of req) void chunk;
     if (req.method !== "POST") {
       res.writeHead(404);
       return res.end();
     }
-    seen.push(Object.fromEntries(Object.entries(req.headers).filter(([name]) => name.startsWith("x-qm-"))));
+    const headers = Object.fromEntries(Object.entries(req.headers).filter(([name]) => name.startsWith("x-qm-")));
+    seen.push(headers);
+    await hold?.(headers);
     res.writeHead(200, { "content-type": "text/event-stream" });
     res.end(anthropicStream('{"decision":"auto"}'));
   });
-  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise<void>((resolve) => upstream.close(() => resolve())));
   const config = testConfig({
     harness: "pi",
     modelId: "claude-haiku-4-5",
     titleModelId: "claude-haiku-4-5",
     detectModelId: "claude-haiku-4-5",
     judgeModelId: "claude-haiku-4-5",
-    modelGateway: { ...gateway, url: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}` },
+    modelGateway: { ...gateway, url },
     ...overrides,
   });
   const sent = (purpose: string, sessionId?: string) =>
@@ -340,18 +370,28 @@ test("API work carries its token's turn, the admin replaying screens, or the mem
   assert.deepEqual(sent("security_screen"), { "x-qm-actor": "admin-alice", "x-qm-purpose": "security_screen" });
 });
 
-test("debounced memory capture keeps the context of the turn it came from", async (t) => {
-  const { built, sent } = await gatewayApp(t, { memoryCaptureQuietMs: 200 });
-  const sessions: Record<string, string | undefined> = {};
-  for (const id of ["U1", "U2"])
-    sessions[id] = (
-      await built.app.turn({
-        surface: "test",
-        actor: { externalId: id },
-        conversation: { kind: "dm", threadRef: `dm:${id}:debounce` },
-        text: "Remember that I prefer short replies",
-      })
-    ).sessionId;
+test("debounced memory capture keeps the context of the turn it came from, even while turns overlap", async (t) => {
+  let release!: () => void;
+  const bothTurnsInFlight = new Promise<void>((resolve) => (release = resolve));
+  let turnsInFlight = 0;
+  const { built, sent } = await gatewayApp(t, { memoryCaptureQuietMs: 200 }, async (headers) => {
+    if (headers["x-qm-purpose"] !== "turn") return;
+    if (++turnsInFlight === 2) release();
+    await bothTurnsInFlight;
+  });
+  const sessions = Object.fromEntries(
+    await Promise.all(
+      ["U1", "U2"].map(async (id) => {
+        const result = await built.app.turn({
+          surface: "test",
+          actor: { externalId: id },
+          conversation: { kind: "dm", threadRef: `dm:${id}:debounce` },
+          text: "Remember that I prefer short replies",
+        });
+        return [id, result.sessionId] as const;
+      }),
+    ),
+  );
   await settle(async () => Object.values(sessions).every((id) => !!sent("memory_capture", id)));
   for (const [id, sessionId] of Object.entries(sessions))
     assert.deepEqual(sent("memory_capture", sessionId), {
