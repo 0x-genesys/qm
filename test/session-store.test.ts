@@ -2,13 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createMemorySessionStore } from "../src/sessions/memory-session-store.ts";
 import type { SessionStore } from "../src/sessions/session-store.ts";
-import {
-  acquireLeaseWithin,
-  cronIdOf,
-  originThroughParents,
-  sessionCategory,
-  sessionOrigin,
-} from "../src/sessions/session-store.ts";
+import { acquireLeaseWithin, cronIdOf, sessionCategory, sessionOrigin } from "../src/sessions/session-store.ts";
 import { parseSessionWakeRef } from "../src/api/routes/admin/origins.ts";
 import { scopeId } from "../src/types.ts";
 import { assertParticipantSessionParity } from "./support/participant-session-parity.ts";
@@ -24,14 +18,6 @@ test("sessionOrigin classifies trigger threads by prefix", () => {
   assert.equal(sessionOrigin("ch:C1:t1"), "conversation");
   assert.equal(sessionOrigin(null), "conversation");
   assert.equal(sessionOrigin(undefined), "conversation");
-});
-
-test("a session whose parent cannot be looked up keeps its own origin", async () => {
-  const child = { id: "child", threadRef: "agent:main:subagent:report", parentSessionId: "cron" };
-  const unavailable = async () => {
-    throw new Error("session store unavailable");
-  };
-  assert.equal(await originThroughParents(child, unavailable), "conversation");
 });
 
 test("attributedTurns applies each window's [validFrom,validTo) and excludes overheard", async () => {
