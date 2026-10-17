@@ -367,7 +367,11 @@ test("API work carries its token's turn, the admin replaying screens, or the mem
     body: "{}",
   });
   assert.equal(replay.status, 200, await replay.text());
-  assert.deepEqual(sent("security_screen"), { "x-qm-actor": "admin-alice", "x-qm-purpose": "security_screen" });
+  assert.deepEqual(sent("security_screen"), {
+    "x-qm-actor": "admin-alice",
+    "x-qm-scope": "org:default-org",
+    "x-qm-purpose": "security_screen",
+  });
 
   const enabled = await fetch(`${base}/v1/admin/model-registry/claude-haiku-4-5/enable`, {
     method: "POST",
