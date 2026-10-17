@@ -29,6 +29,7 @@ import type {
   Destination,
   EntryType,
   ScopeId,
+  Session,
   SessionEntry,
   SessionType,
   TurnResult,
@@ -300,6 +301,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
 
   const securitySteersInFlight = new Set<string>();
   const { compactContextIfNeeded, compactRecent, scheduleBackgroundCompaction } = createCompaction(deps);
+  const originOf = async (session: Session | null) =>
+    session
+      ? originThroughParents(session, (id) => deps.sessions.get(id)).catch(
+          swallowAs("orchestrator: session origin", undefined),
+        )
+      : undefined;
 
   async function approvalSummary(
     scopeId: ScopeId,
@@ -431,9 +438,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         sessionId,
         actorId: actor.id,
         scopeId: scopeLabel,
-        origin: session
-          ? await originThroughParents(session, (id) => deps.sessions.get(id))
-          : sessionOrigin(conversation.threadRef),
+        origin: sessionId ? await originOf(session) : sessionOrigin(conversation.threadRef),
       });
       const bounded = securityScreenPayload({
         surface: "external",
@@ -508,7 +513,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         sessionId,
         actorId: principalId,
         scopeId: session.scopeId,
-        origin: await originThroughParents(session, (id) => deps.sessions.get(id)),
+        origin: await originOf(session),
       });
       let entries = (await transcripts.forViewer(sessionId, principalId)).entries;
       if (participantIds?.length) {
@@ -1306,7 +1311,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         desktopClientForTurn(input) ? [desktopComputerTool] : undefined,
       );
       screenSession.id = session.id;
-      const origin = await originThroughParents(session, (id) => deps.sessions.get(id));
+      const origin = await originOf(session);
       Object.assign(currentModelRequestContext(), { sessionId: session.id, origin });
       if (!input.sessionParticipantIds?.length && !automatedTurn)
         await deps.sessions.addParticipant(session.id, actor.id);
