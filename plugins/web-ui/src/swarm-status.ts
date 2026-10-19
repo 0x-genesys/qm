@@ -21,7 +21,7 @@ export type Status = "running" | "idle" | "starting" | "paused" | "stopped" | "f
 
 const ORDER: Status[] = ["running", "idle", "starting", "paused", "stopped", "failed", "expired"];
 
-export function expired(view: SwarmView, now: number): boolean {
+function expired(view: SwarmView, now: number): boolean {
   return view.expiresAt !== undefined && now >= view.expiresAt;
 }
 
