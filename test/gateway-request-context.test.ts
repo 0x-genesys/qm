@@ -7,6 +7,8 @@ import { buildModelRuntime, createPiHarness, probeModel } from "../src/harness/p
 import { createHarnessRouter } from "../src/harness/harness-router.ts";
 import type { HarnessTurnInput } from "../src/harness/harness.ts";
 import { getRequiredModel } from "../src/model/pi-models.ts";
+import { createGatewayCatalog } from "../src/model/gateway-catalog.ts";
+import { setGatewayModels } from "../src/model/gateway-models.ts";
 import { withModelRequestContext } from "../src/model/request-context.ts";
 import { mintCapabilityToken } from "../src/auth/capability-token.ts";
 import { createInsecureTestServer } from "../src/api/server.ts";
@@ -195,21 +197,32 @@ test("a gateway redirect to another origin is never followed", async (t) => {
     res.writeHead(307, { location: `${elsewhere}/v1/messages` });
     res.end();
   });
-  const harness = createPiHarness({ defaultModelId: "claude-haiku-4-5", modelGateway: { ...gateway, url } });
-  const runtime = await buildModelRuntime(
-    {},
-    { ...gateway, url, models: { ...gateway.models, "gpt-5.5": "router/gpt" } },
-    "turn",
+  const chat = {
+    model_group: "vendor/chat",
+    mode: "chat",
+    supports_function_calling: true,
+    max_input_tokens: 128000,
+    max_output_tokens: 8192,
+    input_cost_per_token: 0.000002,
+    output_cost_per_token: 0.000008,
+  };
+  const routes = { ...gateway.models, "gpt-5.5": "router/gpt" };
+  const listed = [...Object.values(routes), chat.model_group].map((id) => ({ id }));
+  const catalog = createGatewayCatalog({ ...gateway, url, models: routes }, async (input) =>
+    Response.json({ data: String(input).endsWith("/models") ? listed : [chat] }),
   );
+  t.after(() => setGatewayModels([]));
+  const harness = createPiHarness({ defaultModelId: "claude-haiku-4-5", modelGateway: { ...gateway, url } });
+  const runtime = await buildModelRuntime({}, catalog.transport, "turn");
 
   await withModelRequestContext(cronContext, async () => {
     await harness.models.pickAckEmoji!("can you check the deploy?", ["eyes"]);
-    for (const id of ["claude-haiku-4-5", "gpt-5.5"])
+    for (const id of ["claude-haiku-4-5", "gpt-5.5", "gateway/vendor/chat"])
       await runtime.completeSimple(getRequiredModel(id), {
         messages: [{ role: "user", content: "hello", timestamp: 0 }],
       });
   });
-  assert.deepEqual(answered, ["ack_emoji", "turn", "turn"]);
+  assert.deepEqual(answered, ["ack_emoji", "turn", "turn", "turn"]);
   assert.deepEqual(redirected, []);
 });
 
