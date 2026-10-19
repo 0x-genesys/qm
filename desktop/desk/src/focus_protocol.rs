@@ -54,7 +54,7 @@ impl Scope {
         }
         match subtype {
             KEY_FOCUS_TAKEN if destination == self.foreground && subject != destination && self.targets.contains(&subject) => {
-                if self.lease.is_none() {
+                if self.lease.is_none_or(|lease| lease.returned) {
                     self.lease = Some(Lease { thief: subject, victim: destination, released: false, returned: false });
                     Decision::Suppress
                 } else {
@@ -142,6 +142,18 @@ mod tests {
 
     fn scope() -> Scope {
         Scope::new(100, 200, 300)
+    }
+
+    #[test]
+    fn completed_pairs_allow_the_next_background_action() {
+        let mut s = scope();
+        for id in [7, 8, 9] {
+            assert_eq!(s.notification(0, 200, KEY_FOCUS_TAKEN, 300, 0), Decision::Suppress);
+            assert_eq!(s.notification(0, 400, KEY_FOCUS_CHANGED, 300, id), Decision::Release(id as u32));
+            s.released(true);
+            assert_eq!(s.notification(0, 200, KEY_FOCUS_RETURNED, 0, 0), Decision::Suppress);
+            assert_eq!(s.keyboard(0, 300), Decision::Redirect(200));
+        }
     }
 
     #[test]
