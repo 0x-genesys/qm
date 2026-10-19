@@ -108,3 +108,20 @@ test("a session written during the pass stays queued with a reset cursor", { ski
     assert.equal(await count(client, "SELECT count(*)::int AS n FROM items WHERE text='changed'"), 32);
   });
 });
+
+test("finish drains queued sessions in bulk after an operator marks the copy verified", { skip }, async () => {
+  await fixture(async (client, _url, op) => {
+    await client.query(`UPDATE session_entries SET payload='{"text":"changed"}' WHERE seq=0`);
+    await client.query(`DELETE FROM session_entries WHERE seq=2`);
+    await client.query(`INSERT INTO session_entries(session_id,seq,type,payload,scope_label,created_at)
+      SELECT id,7,'assistant','{"text":"new"}','personal:alice',1700000000007 FROM sessions`);
+    await op.indexes();
+    await client.query("UPDATE items_copy_ops.state SET phase='verified',updated_at=now() WHERE phase='catchup'");
+    await op.finish(true);
+    assert.equal(await count(client, "SELECT count(*)::int AS n FROM items_copy_ops.dirty"), 0);
+    assert.equal(await count(client, "SELECT count(*)::int AS n FROM items WHERE seq=2"), 0);
+    assert.equal(await count(client, "SELECT count(*)::int AS n FROM items WHERE text='changed'"), 32);
+    assert.equal(await count(client, "SELECT count(*)::int AS n FROM items WHERE text='new'"), 32);
+    assert.equal((await client.query("SELECT phase FROM items_copy_ops.state")).rows[0].phase, "ready");
+  });
+});

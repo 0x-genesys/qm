@@ -332,7 +332,13 @@ export class ItemsCopyOperator {
         "SELECT count(*)::int AS n FROM public.session_leases WHERE expires_at>(extract(epoch FROM clock_timestamp())*1000)::bigint",
       );
       if (leases.n) throw new Error("active session leases remain; drain writers before finishing the copy");
-      while (await this.drainBatch()) continue;
+      await this.snapshotDirty();
+      for (let cursor: { session: string; seq: number } | null = { session: "", seq: -1 }; cursor;)
+        cursor = (await this.bulkStep(cursor)).next;
+      const {
+        rows: [left],
+      } = await this.client.query(`SELECT count(*)::int AS n FROM ${dirty}`);
+      if (left.n) throw new Error("queued items changes remain after the final drain");
       const {
         rows: [{ valid }],
       } = await this.client.query(
@@ -471,43 +477,47 @@ export class ItemsCopyOperator {
   async bulkCatchupBatch(cursor: { session: string; seq: number }, window = 50) {
     return this.transaction(async () => {
       await this.assertState(["catchup", "verified", "ready"], "KEY SHARE");
-      await this.client.query(
-        `INSERT INTO pg_temp.items_copy_batch
-          WITH s AS (SELECT session_id FROM pg_temp.items_copy_snap WHERE session_id>=$1 ORDER BY session_id LIMIT $4),
-               k AS (SELECT e.session_id,e.seq FROM s JOIN public.session_entries e USING(session_id)
-                     UNION SELECT i.session_id,i.seq::int FROM s JOIN public.items i
-                       ON i.tenant_id=(SELECT id FROM public.qm_tenant) AND i.session_id=s.session_id)
-          SELECT session_id,seq FROM k WHERE (session_id,seq)>($1,$2) ORDER BY session_id,seq LIMIT $3`,
-        [cursor.session, cursor.seq, this.batch, window],
-      );
-      const {
-        rows: [last],
-      } = await this.client.query(
-        "SELECT session_id,seq,(SELECT count(*)::int FROM pg_temp.items_copy_batch) AS n FROM pg_temp.items_copy_batch ORDER BY session_id DESC,seq DESC LIMIT 1",
-      );
-      const n = (last?.n ?? 0) as number;
-      if (n) await this.replaceSelected();
-      let done: string | null;
-      let next: { session: string; seq: number } | null;
-      if (n < this.batch) {
-        const {
-          rows: [w],
-        } = await this.client.query(
-          "SELECT max(session_id) AS hi FROM (SELECT session_id FROM pg_temp.items_copy_snap WHERE session_id>=$1 ORDER BY session_id LIMIT $2) s",
-          [cursor.session, window],
-        );
-        done = w.hi;
-        next =
-          w.hi === null || (w.hi === cursor.session && cursor.seq === 2147483647)
-            ? null
-            : { session: w.hi, seq: 2147483647 };
-        if (done !== null) await this.finishSnapshot("s.session_id>=$1 AND s.session_id<=$2", [cursor.session, done]);
-      } else {
-        next = { session: last.session_id, seq: last.seq };
-        await this.finishSnapshot("s.session_id>=$1 AND s.session_id<$2", [cursor.session, last.session_id]);
-      }
-      return { rows: n, next };
+      return this.bulkStep(cursor, window);
     }, true);
+  }
+  async bulkStep(cursor: { session: string; seq: number }, window = 50) {
+    await this.client.query("TRUNCATE pg_temp.items_copy_batch");
+    await this.client.query(
+      `INSERT INTO pg_temp.items_copy_batch
+        WITH s AS (SELECT session_id FROM pg_temp.items_copy_snap WHERE session_id>=$1 ORDER BY session_id LIMIT $4),
+             k AS (SELECT e.session_id,e.seq FROM s JOIN public.session_entries e USING(session_id)
+                   UNION SELECT i.session_id,i.seq::int FROM s JOIN public.items i
+                     ON i.tenant_id=(SELECT id FROM public.qm_tenant) AND i.session_id=s.session_id)
+        SELECT session_id,seq FROM k WHERE (session_id,seq)>($1,$2) ORDER BY session_id,seq LIMIT $3`,
+      [cursor.session, cursor.seq, this.batch, window],
+    );
+    const {
+      rows: [last],
+    } = await this.client.query(
+      "SELECT session_id,seq,(SELECT count(*)::int FROM pg_temp.items_copy_batch) AS n FROM pg_temp.items_copy_batch ORDER BY session_id DESC,seq DESC LIMIT 1",
+    );
+    const n = (last?.n ?? 0) as number;
+    if (n) await this.replaceSelected();
+    let done: string | null;
+    let next: { session: string; seq: number } | null;
+    if (n < this.batch) {
+      const {
+        rows: [w],
+      } = await this.client.query(
+        "SELECT max(session_id) AS hi FROM (SELECT session_id FROM pg_temp.items_copy_snap WHERE session_id>=$1 ORDER BY session_id LIMIT $2) s",
+        [cursor.session, window],
+      );
+      done = w.hi;
+      next =
+        w.hi === null || (w.hi === cursor.session && cursor.seq === 2147483647)
+          ? null
+          : { session: w.hi, seq: 2147483647 };
+      if (done !== null) await this.finishSnapshot("s.session_id>=$1 AND s.session_id<=$2", [cursor.session, done]);
+    } else {
+      next = { session: last.session_id, seq: last.seq };
+      await this.finishSnapshot("s.session_id>=$1 AND s.session_id<$2", [cursor.session, last.session_id]);
+    }
+    return { rows: n, next };
   }
   async finishSnapshot(range: string, params: string[]) {
     await this.client.query(
