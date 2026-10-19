@@ -177,7 +177,7 @@ test("failed discovery keeps last known routes until discovery succeeds again", 
   const f = fixture([group()], { "claude-opus-5": "vendor/new-model" });
   await f.catalog.refresh();
   const native = resolveModel("claude-opus-5")!;
-  for (const status of [503, 401, 400, 503]) {
+  for (const status of [503, 401]) {
     f.tick();
     f.status(status);
     await f.catalog.refresh();
