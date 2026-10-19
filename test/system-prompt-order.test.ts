@@ -21,7 +21,10 @@ import { createAuditLog } from "../src/audit/audit-log.ts";
 import { createRateLimiter } from "../src/ratelimit/rate-limiter.ts";
 import { createMockHarness } from "../src/harness/mock-harness.ts";
 import { createPiHarness } from "../src/harness/pi-harness.ts";
-import { contextHeaders, recordRequests } from "./support/gateway-stream.ts";
+import { anthropicStream, contextHeaders, recordRequests } from "./support/gateway-stream.ts";
+import { settle } from "./support/settle.ts";
+import { createMemoryRunSignalStore } from "../src/runs/run-signal-store.ts";
+import { withModelRequestContext } from "../src/model/request-context.ts";
 import { createCronStore, type CronStore } from "../src/cron/cron-store.ts";
 import { createDeployStore } from "../src/deploy/deploy-store.ts";
 import { createDockerDeployProvider } from "../src/deploy/docker-deploy-provider.ts";
@@ -925,6 +928,75 @@ test("carried skill and steer screens tell the model gateway which session they 
   assert.equal(await steer(), "allow");
   const { "x-qm-origin": _unresolved, ...unresolvedOrigin } = turnContext;
   assert.deepEqual(contextHeaders(requests.at(-1)!.headers), unresolvedOrigin);
+});
+
+test("a steer delivered by notification is screened in the context of the turn it steers", async (t) => {
+  let release!: () => void;
+  const turnHeld = new Promise<void>((resolve) => (release = resolve));
+  let turnStarted!: () => void;
+  const started = new Promise<void>((resolve) => (turnStarted = resolve));
+  const screens: Array<Record<string, string>> = [];
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    release();
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    const headers = new Headers(init?.headers);
+    if (headers.get("x-qm-purpose") === "turn") {
+      turnStarted();
+      await turnHeld;
+    }
+    if (headers.get("x-qm-purpose") === "security_screen" && String(init?.body).includes("UPDATED_INBOX_SNAPSHOT"))
+      screens.push(contextHeaders(headers));
+    return new Response(anthropicStream('{"decision":"auto"}'), { headers: { "content-type": "text/event-stream" } });
+  }) as typeof fetch;
+  const signals = createMemoryRunSignalStore();
+  const { orchestrator } = buildOrchestrator({
+    harness: createPiHarness({
+      defaultModelId: "claude-haiku-4-5",
+      detectModelId: "claude-haiku-4-5",
+      modelGateway: {
+        url: "https://gateway.test",
+        apiKey: "k",
+        apiKeyHeader: "api-key",
+        models: { "claude-haiku-4-5": "m" },
+      },
+      signals,
+    }),
+  });
+  const thread = "web:alice:inbox";
+  const turn = orchestrator.handleTurn(dm(thread, "hello", { surface: "web", runId: "run-steered" }));
+  await started;
+  const steer = (ts: string) =>
+    signals.send("run-steered", {
+      kind: "steer",
+      text: "summarize again",
+      ts,
+      request: {
+        surface: "web",
+        actor: { externalId: actor.id },
+        conversation: { kind: "dm", threadRef: thread },
+        text: "summarize again",
+        conversationHeader: "UPDATED_INBOX_SNAPSHOT",
+      },
+    });
+  const sender = { sessionId: "session-sender", actorId: "U2", scopeId: "personal:U2", origin: "cron" as const };
+  await withModelRequestContext(sender, () => steer("1"));
+  await settle(async () => screens.length === 1);
+  await steer("2");
+  await settle(async () => screens.length === 2);
+  release();
+  const result = await turn;
+  assert.equal(result.status, "ok", result.reason);
+  const turnContext = {
+    "x-qm-session-id": result.sessionId!,
+    "x-qm-actor": actor.id,
+    "x-qm-scope": scopeId("personal", actor.id),
+    "x-qm-origin": "conversation",
+    "x-qm-purpose": "security_screen",
+  };
+  assert.deepEqual(screens, [turnContext, turnContext]);
 });
 
 test("Open uses the exact skill snapshot that passed screening despite an in-flight source update", async () => {
