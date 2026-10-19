@@ -914,6 +914,10 @@ export function createPostgresSessionStore(
         prepare: [SESSION_ORIGIN_BACKFILL_SQL],
         statements: [],
       },
+      {
+        id: "sessions/store/0035-spend-days-cron-rebuild",
+        statements: [`INSERT INTO session_spend_dirty(day) SELECT day FROM session_spend_days ON CONFLICT DO NOTHING`],
+      },
       ...(opts.stageItemsCutover
         ? []
         : [
