@@ -54,7 +54,7 @@ export interface Swarm {
   ownerId: string;
   participants: string[];
   createdAt: number;
-  expiresAt: number;
+  expiresAt?: number;
   template: SwarmTemplate;
   settings: SwarmSettings;
   backend: SandboxBackendName;
@@ -67,8 +67,12 @@ export interface Swarm {
   pending: boolean;
 }
 
+export function swarmExpired(swarm: Swarm): boolean {
+  return swarm.expiresAt !== undefined && Date.now() >= swarm.expiresAt;
+}
+
 export function assertSwarmOpen(swarm: Swarm): void {
-  if (Date.now() >= swarm.expiresAt) throw new NonRetryableTurnError("swarm work window expired");
+  if (swarmExpired(swarm)) throw new NonRetryableTurnError("swarm work window expired");
 }
 
 export interface SwarmStore {
