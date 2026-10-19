@@ -105,20 +105,24 @@ export type ModelRequestPurpose =
   | "browser"
   | "probe";
 
+export const MODEL_REQUEST_CONTEXT_HEADERS = {
+  "x-qm-session-id": "sessionId",
+  "x-qm-actor": "actorId",
+  "x-qm-scope": "scopeId",
+  "x-qm-purpose": "purpose",
+  "x-qm-origin": "origin",
+} as const;
+
 export function modelGatewayHeaders(
   config: Pick<ModelGatewayTransportConfig, "apiKey" | "apiKeyHeader">,
   purpose?: ModelRequestPurpose,
 ): Record<string, string> {
-  const { sessionId, actorId, scopeId, origin } = currentModelRequestContext();
+  const context = { ...currentModelRequestContext(), purpose };
   const headers: Record<string, string> = { [config.apiKeyHeader]: config.apiKey };
-  for (const [name, value] of Object.entries({
-    "x-qm-session-id": sessionId,
-    "x-qm-actor": actorId,
-    "x-qm-scope": scopeId,
-    "x-qm-purpose": purpose,
-    "x-qm-origin": origin,
-  }))
+  for (const [name, field] of Object.entries(MODEL_REQUEST_CONTEXT_HEADERS)) {
+    const value = context[field];
     if (attestable(value)) headers[name] = value;
+  }
   return headers;
 }
 
