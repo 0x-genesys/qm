@@ -249,12 +249,11 @@ async function authorize(ctx: ApiCtx, linkSlack = false): Promise<void> {
     });
     if (typeof link.connected_account_id !== "string" || !/^ca_[a-zA-Z0-9_-]+$/.test(link.connected_account_id))
       throw new Error("Invalid account");
-    if (typeof callbackUrl === "string" && ctx.deps.composioReturns) {
-      await ctx.deps.composioReturns.put(`${userId}:${link.connected_account_id}`, {
-        url: callbackUrl,
-        expiresAt: Date.now() + 20 * 60_000,
-      });
-    }
+    await ctx.deps.composioReturns?.put(`${userId}:${link.connected_account_id}`, {
+      url: typeof callbackUrl === "string" ? callbackUrl : null,
+      toolkit,
+      expiresAt: Date.now() + 20 * 60_000,
+    });
     const url = new URL(String(link.redirect_url));
     if (
       !(
@@ -476,10 +475,20 @@ async function completeAuth(ctx: ApiCtx): Promise<void> {
     return sendJson(ctx.res, 403, { error: "browser_identity_required" });
   const access = await credential(ctx);
   if (!access) return;
+  const connectFailed = () =>
+    audit(ctx.deps, {
+      principalId: access.principal,
+      action: "composio.connect_failed",
+      resource: "unknown",
+      scopeLabel: scopeId("personal", access.principal),
+    });
   const sessionUri = (ctx.body as { sessionUri?: unknown } | null)?.sessionUri;
-  if (typeof sessionUri !== "string" || !sessionUri || sessionUri.length > 8192)
+  if (typeof sessionUri !== "string" || !sessionUri || sessionUri.length > 8192) {
+    connectFailed();
     return sendJson(ctx.res, 400, { error: "invalid_session" });
+  }
   const userId = composioUserId(orgId(), canonicalPerson(access.principal));
+  let accountId: string;
   try {
     const result = await request(ctx, access.key, "/connected_accounts/complete_auth", {
       session_uri: sessionUri,
@@ -487,20 +496,31 @@ async function completeAuth(ctx: ApiCtx): Promise<void> {
     });
     if (typeof result.connected_account_id !== "string" || !/^ca_[a-zA-Z0-9_-]+$/.test(result.connected_account_id))
       throw new Error("Invalid account");
-    const key = `${userId}:${result.connected_account_id}`;
-    const saved = await ctx.deps.composioReturns?.get(key);
-    await ctx.deps.composioReturns?.delete(key);
-    return sendJson(ctx.res, 200, { returnTo: saved && saved.expiresAt > Date.now() ? saved.url : null });
-  } catch {
+    accountId = result.connected_account_id;
+  } catch (error) {
+    const mask = createExactSecretValueMasker([access.key]);
+    reportFailure("composio: complete-auth", new Error(mask(redactSecrets(errMessage(error)))));
+    connectFailed();
     return sendJson(ctx.res, 400, {
       error: "verification_failed",
       message: "Sign in to the QM account that started this connection and try connecting again.",
     });
   }
+  const key = `${userId}:${accountId}`;
+  const saved = await ctx.deps.composioReturns?.get(key);
+  await ctx.deps.composioReturns?.delete(key);
+  audit(ctx.deps, {
+    principalId: access.principal,
+    action: "composio.connected",
+    resource: saved?.toolkit ?? "unknown",
+    scopeLabel: scopeId("personal", access.principal),
+  });
+  return sendJson(ctx.res, 200, { returnTo: saved && saved.expiresAt > Date.now() ? saved.url : null });
 }
 
 export interface ComposioReturn {
-  url: string;
+  url: string | null;
+  toolkit: string;
   expiresAt: number;
 }
 
