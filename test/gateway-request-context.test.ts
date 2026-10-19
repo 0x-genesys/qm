@@ -183,7 +183,7 @@ async function listen(t: TestContext, handler: RequestListener): Promise<string>
   return `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 }
 
-test("a gateway redirect to another origin is never followed", async (t) => {
+test("the ack emoji call never follows a gateway redirect to another origin", async (t) => {
   const redirected: string[] = [];
   const elsewhere = await listen(t, (req, res) => {
     redirected.push(req.url!);
