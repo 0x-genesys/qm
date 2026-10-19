@@ -26,10 +26,13 @@ static CGEventRef witness(CGEventTapProxy proxy, CGEventType type, CGEventRef ev
     (void)proxy;
     (void)context;
     if ((uint32_t)type == 21) {
-        fprintf(stderr, "%.6f process-notification source=%lld target=%lld foreground=%d\n",
+        fprintf(stderr, "%.6f process-notification source=%lld target=%lld subtype=0x%llx subject=%lld theft=%lld foreground=%d\n",
             elapsed(),
             CGEventGetIntegerValueField(event, kCGEventSourceUnixProcessID),
             CGEventGetIntegerValueField(event, kCGEventTargetUnixProcessID),
+            (unsigned long long)CGEventGetIntegerValueField(event, (CGEventField)64),
+            CGEventGetIntegerValueField(event, (CGEventField)73),
+            CGEventGetIntegerValueField(event, (CGEventField)71),
             focused_pid());
     }
     return event;
