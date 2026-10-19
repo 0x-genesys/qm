@@ -48,8 +48,8 @@ impl Scope {
         self.lease = None;
     }
 
-    pub fn notification(&mut self, source: i32, destination: i32, subtype: i64, subject: i32, theft_id: i64) -> Decision {
-        if self.yielded || source == self.owner {
+    pub fn notification(&mut self, destination: i32, subtype: i64, subject: i32, theft_id: i64) -> Decision {
+        if self.yielded {
             return Decision::Pass;
         }
         match subtype {
@@ -148,10 +148,10 @@ mod tests {
     fn completed_pairs_allow_the_next_background_action() {
         let mut s = scope();
         for id in [7, 8, 9] {
-            assert_eq!(s.notification(0, 200, KEY_FOCUS_TAKEN, 300, 0), Decision::Suppress);
-            assert_eq!(s.notification(0, 400, KEY_FOCUS_CHANGED, 300, id), Decision::Release(id as u32));
+            assert_eq!(s.notification(200, KEY_FOCUS_TAKEN, 300, 0), Decision::Suppress);
+            assert_eq!(s.notification(400, KEY_FOCUS_CHANGED, 300, id), Decision::Release(id as u32));
             s.released(true);
-            assert_eq!(s.notification(0, 200, KEY_FOCUS_RETURNED, 0, 0), Decision::Suppress);
+            assert_eq!(s.notification(200, KEY_FOCUS_RETURNED, 0, 0), Decision::Suppress);
             assert_eq!(s.keyboard(0, 300), Decision::Redirect(200));
         }
     }
@@ -159,17 +159,17 @@ mod tests {
     #[test]
     fn nested_leases_stop_and_a_forwarded_key_cannot_loop() {
         let mut s = scope();
-        s.notification(0, 200, KEY_FOCUS_TAKEN, 300, 0);
+        s.notification(200, KEY_FOCUS_TAKEN, 300, 0);
         let Decision::Redirect(destination) = s.user_event(10, 0, 300) else { panic!() };
         assert_eq!(s.user_event(10, 0, destination), Decision::Pass);
-        assert!(matches!(s.notification(0, 200, KEY_FOCUS_TAKEN, 300, 0), Decision::Stop(_)));
+        assert!(matches!(s.notification(200, KEY_FOCUS_TAKEN, 300, 0), Decision::Stop(_)));
         assert_eq!(s.keyboard(0, 300), Decision::Pass);
     }
 
     #[test]
     fn app_switching_and_direct_target_input_yield_without_consuming_events() {
         let mut s = scope();
-        s.notification(0, 200, KEY_FOCUS_TAKEN, 300, 0);
+        s.notification(200, KEY_FOCUS_TAKEN, 300, 0);
         assert_eq!(s.user_event(10, 0, 300), Decision::Redirect(200));
         assert_eq!(s.user_event(11, 0, 300), Decision::Redirect(200));
         assert_eq!(s.user_event(10, 100, 300), Decision::Pass);
@@ -184,21 +184,21 @@ mod tests {
     #[test]
     fn release_is_tied_to_an_observed_target_lease() {
         let mut s = scope();
-        assert_eq!(s.notification(0, 400, KEY_FOCUS_CHANGED, 300, 7), Decision::Pass);
-        assert_eq!(s.notification(0, 200, KEY_FOCUS_TAKEN, 300, 0), Decision::Suppress);
-        assert_eq!(s.notification(0, 400, KEY_FOCUS_CHANGED, 900, 7), Decision::Pass);
-        assert_eq!(s.notification(0, 400, KEY_FOCUS_CHANGED, 300, 7), Decision::Release(7));
+        assert_eq!(s.notification(400, KEY_FOCUS_CHANGED, 300, 7), Decision::Pass);
+        assert_eq!(s.notification(200, KEY_FOCUS_TAKEN, 300, 0), Decision::Suppress);
+        assert_eq!(s.notification(400, KEY_FOCUS_CHANGED, 900, 7), Decision::Pass);
+        assert_eq!(s.notification(400, KEY_FOCUS_CHANGED, 300, 7), Decision::Release(7));
         s.released(true);
-        assert_eq!(s.notification(0, 400, KEY_FOCUS_CHANGED, 300, 7), Decision::Pass);
-        assert_eq!(s.notification(0, 200, KEY_FOCUS_RETURNED, 0, 0), Decision::Suppress);
-        assert_eq!(s.notification(0, 200, KEY_FOCUS_RETURNED, 0, 0), Decision::Pass);
+        assert_eq!(s.notification(400, KEY_FOCUS_CHANGED, 300, 7), Decision::Pass);
+        assert_eq!(s.notification(200, KEY_FOCUS_RETURNED, 0, 0), Decision::Suppress);
+        assert_eq!(s.notification(200, KEY_FOCUS_RETURNED, 0, 0), Decision::Pass);
     }
 
     #[test]
     fn only_misrouted_external_keys_are_forwarded() {
         let mut s = scope();
         assert_eq!(s.keyboard(0, 300), Decision::Pass);
-        s.notification(0, 200, KEY_FOCUS_TAKEN, 300, 0);
+        s.notification(200, KEY_FOCUS_TAKEN, 300, 0);
         assert_eq!(s.keyboard(0, 300), Decision::Redirect(200));
         assert_eq!(s.keyboard(100, 300), Decision::Pass);
         assert_eq!(s.keyboard(0, 200), Decision::Pass);
@@ -208,38 +208,38 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_notifications_and_our_synthetic_events_pass() {
+    fn unrelated_notifications_pass() {
         let mut s = scope();
-        for (source, destination, subject) in [(100, 200, 300), (0, 900, 300), (0, 200, 900)] {
-            assert_eq!(s.notification(source, destination, KEY_FOCUS_TAKEN, subject, 1), Decision::Pass);
+        for (destination, subject) in [(900, 300), (200, 900)] {
+            assert_eq!(s.notification(destination, KEY_FOCUS_TAKEN, subject, 1), Decision::Pass);
         }
-        assert_eq!(s.notification(0, 200, 99, 300, 1), Decision::Pass);
+        assert_eq!(s.notification(200, 99, 300, 1), Decision::Pass);
     }
 
     #[test]
     fn genuine_activation_is_never_suppressed() {
         let mut s = scope();
-        s.notification(0, 200, KEY_FOCUS_TAKEN, 300, 0);
-        assert!(matches!(s.notification(0, 200, NEW_FRONT, 300, 0), Decision::Stop(_)));
+        s.notification(200, KEY_FOCUS_TAKEN, 300, 0);
+        assert!(matches!(s.notification(200, NEW_FRONT, 300, 0), Decision::Stop(_)));
         assert_eq!(s.keyboard(0, 300), Decision::Pass);
-        assert_eq!(s.notification(0, 400, KEY_FOCUS_CHANGED, 300, 7), Decision::Pass);
+        assert_eq!(s.notification(400, KEY_FOCUS_CHANGED, 300, 7), Decision::Pass);
     }
 
     #[test]
     fn delegated_processes_require_explicit_registration() {
         let mut s = scope();
-        assert_eq!(s.notification(0, 200, KEY_FOCUS_TAKEN, 301, 0), Decision::Pass);
+        assert_eq!(s.notification(200, KEY_FOCUS_TAKEN, 301, 0), Decision::Pass);
         s.include(301);
-        assert_eq!(s.notification(0, 200, KEY_FOCUS_TAKEN, 301, 0), Decision::Suppress);
+        assert_eq!(s.notification(200, KEY_FOCUS_TAKEN, 301, 0), Decision::Suppress);
         assert_eq!(s.keyboard(0, 301), Decision::Redirect(200));
     }
 
     #[test]
     fn invalid_ids_and_failed_release_do_not_repeat() {
         let mut s = scope();
-        s.notification(0, 200, KEY_FOCUS_TAKEN, 300, 0);
-        assert!(matches!(s.notification(0, 400, KEY_FOCUS_CHANGED, 300, -1), Decision::Stop(_)));
-        assert_eq!(s.notification(0, 400, KEY_FOCUS_CHANGED, 300, i64::MAX), Decision::Pass);
+        s.notification(200, KEY_FOCUS_TAKEN, 300, 0);
+        assert!(matches!(s.notification(400, KEY_FOCUS_CHANGED, 300, -1), Decision::Stop(_)));
+        assert_eq!(s.notification(400, KEY_FOCUS_CHANGED, 300, i64::MAX), Decision::Pass);
         s.released(false);
         assert_eq!(s.keyboard(0, 300), Decision::Pass);
     }

@@ -58,7 +58,6 @@ unsafe extern "C-unwind" fn receive(_: CGEventTapProxy, kind: CGEventType, event
     }
     let decision = if kind.0 == PROCESS_NOTIFICATION {
         scope.notification(
-            source,
             destination,
             field(NOTIFICATION_SUBTYPE),
             i32::try_from(field(FOCUS_SUBJECT_PID)).unwrap_or(-1),
