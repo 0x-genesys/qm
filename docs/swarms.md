@@ -229,8 +229,9 @@ running, idle, starting, paused, stopped, failed, and expired workers; when expa
 grouped under their parent (20 per group, with "show more"); per-worker Pause,
 Resume, and Stop; and Pause all, Resume all, and Stop all (with a confirm), which
 apply this action to the root's direct children so it cascades. The strip
-refreshes every few seconds only while workers are running, idle, or starting and
-the tab is visible. Once a set work window passes, the strip shows workers as expired.
+refreshes every few seconds while any worker is not paused, stopped, or failed and
+the tab is visible. Once a set work window passes, the strip shows workers as
+expired and keeps refreshing, since the root can extend the window.
 
 ## Defaults
 

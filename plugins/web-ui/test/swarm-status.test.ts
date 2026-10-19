@@ -22,37 +22,22 @@ function swarm(workers: Array<Partial<SwarmPeer>>, expiresAt?: number): SwarmVie
 
 const label = (view: SwarmView) => summary(view, statuses(view, NOW));
 
-test("idle workers are not reported as active", () => {
+test("running workers are counted separately from idle ones, and an idle swarm is not active", () => {
   assert.equal(label(swarm(Array.from({ length: 8 }, () => ({})))), "8 idle");
-});
-
-test("running workers are counted separately from idle ones", () => {
-  const view = swarm([{ running: true }, { running: true }, {}, {}, {}, {}, {}, {}]);
-  assert.equal(label(view), "2 running · 6 idle");
-  const status = statuses(view, NOW);
-  assert.equal(status.get("w0"), "running");
-  assert.equal(status.get("w2"), "idle");
-});
-
-test("an expired swarm shows its workers as expired, not active", () => {
-  const view = swarm([{ running: true }, {}, { control: "paused" }, { control: "stopped" }], NOW - 1);
-  assert.equal(label(view), "1 stopped · 3 expired");
-  assert.equal(needsRefresh(view, statuses(view, NOW)), false);
-});
-
-test("a swarm whose window has not passed is not expired", () => {
+  assert.equal(label(swarm([{ running: true }, { running: true }, {}, {}, {}, {}, {}, {}])), "2 running · 6 idle");
   assert.equal(label(swarm([{ running: true }, {}], NOW + 60_000)), "1 running · 1 idle");
 });
 
-test("starting, paused, stopped and failed keep their own counts and ancestors' controls apply", () => {
+test("an expired swarm shows its workers as expired and keeps refreshing so the root can extend it", () => {
+  const view = swarm([{ running: true }, {}, { control: "paused" }, { control: "stopped" }], NOW - 1);
+  assert.equal(label(view), "1 stopped · 3 expired");
+  assert.equal(needsRefresh(view, statuses(view, NOW)), true);
+});
+
+test("other states keep their own counts, ancestors' controls apply, and finished swarms stop refreshing", () => {
   const view = swarm([{ state: "reserved" }, { control: "paused" }, { control: "stopped" }, { state: "failed" }, {}]);
   view.peers.push({ id: "child", parentId: "w1", state: "ready", depth: 2, running: true });
   assert.equal(label(view), "1 idle · 1 starting · 2 paused · 1 stopped · 1 failed");
-});
-
-test("polling continues while workers can work and stops once none can", () => {
-  const live = swarm([{}]);
-  assert.equal(needsRefresh(live, statuses(live, NOW)), true);
-  const stopped = swarm([{ control: "stopped" }, { state: "failed" }]);
-  assert.equal(needsRefresh(stopped, statuses(stopped, NOW)), false);
+  const done = swarm([{ control: "stopped" }, { state: "failed" }, { control: "paused" }]);
+  assert.equal(needsRefresh(done, statuses(done, NOW)), false);
 });

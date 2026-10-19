@@ -65,6 +65,6 @@ export function summary(view: SwarmView, status: Map<string, Status>): string {
 
 export function needsRefresh(view: SwarmView, status: Map<string, Status>): boolean {
   return view.peers.some(
-    (peer) => peer.id !== view.id && ["running", "idle", "starting"].includes(status.get(peer.id) ?? "idle"),
+    (peer) => peer.id !== view.id && !["paused", "stopped", "failed"].includes(status.get(peer.id) ?? "idle"),
   );
 }
