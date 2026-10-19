@@ -1224,6 +1224,7 @@ export async function buildModelRuntime(
     const routed = {
       ...retained(options),
       apiKey: request.apiKey,
+      fetchOptions: { redirect: "error" },
       transformHeaders: async (headers: ProviderHeaders) => ({
         ...(options?.transformHeaders ? await options.transformHeaders(headers) : headers),
         ...request.headers,

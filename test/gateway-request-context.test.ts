@@ -3,7 +3,7 @@ import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { createServer as httpServer, type RequestListener } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createPiHarness, probeModel } from "../src/harness/pi-harness.ts";
+import { buildModelRuntime, createPiHarness, probeModel } from "../src/harness/pi-harness.ts";
 import { createHarnessRouter } from "../src/harness/harness-router.ts";
 import type { HarnessTurnInput } from "../src/harness/harness.ts";
 import { getRequiredModel } from "../src/model/pi-models.ts";
@@ -189,16 +189,27 @@ test("a gateway redirect to another origin is never followed", async (t) => {
     redirected.push(req.url!);
     res.end();
   });
-  let answered = 0;
-  const url = await listen(t, (_req, res) => {
-    answered++;
+  const answered: unknown[] = [];
+  const url = await listen(t, (req, res) => {
+    answered.push(req.headers["x-qm-purpose"]);
     res.writeHead(307, { location: `${elsewhere}/v1/messages` });
     res.end();
   });
   const harness = createPiHarness({ defaultModelId: "claude-haiku-4-5", modelGateway: { ...gateway, url } });
+  const runtime = await buildModelRuntime(
+    {},
+    { ...gateway, url, models: { ...gateway.models, "gpt-5.5": "router/gpt" } },
+    "turn",
+  );
 
-  await withModelRequestContext(cronContext, () => harness.models.pickAckEmoji!("can you check the deploy?", ["eyes"]));
-  assert.equal(answered, 1);
+  await withModelRequestContext(cronContext, async () => {
+    await harness.models.pickAckEmoji!("can you check the deploy?", ["eyes"]);
+    for (const id of ["claude-haiku-4-5", "gpt-5.5"])
+      await runtime.completeSimple(getRequiredModel(id), {
+        messages: [{ role: "user", content: "hello", timestamp: 0 }],
+      });
+  });
+  assert.deepEqual(answered, ["ack_emoji", "turn", "turn"]);
   assert.deepEqual(redirected, []);
 });
 
