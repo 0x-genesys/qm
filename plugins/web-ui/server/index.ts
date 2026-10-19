@@ -1298,6 +1298,15 @@ const apiRoutes: readonly WebRoute[] = [
       c.res.end();
     },
   },
+  ...["reply-status", "reply"].map((action) => ({
+    method: "POST",
+    path: `/api/composio/slack/${action}`,
+    handle: async (c: WebCtx) => {
+      const body = await readJson(c.req, c.res, false);
+      if (!body) return;
+      return relayCore(c.res, "POST", `/v1/composio/slack/${action}`, JSON.stringify(body));
+    },
+  })),
   { method: "GET", path: "/api/composio/slack", handle: (c) => relayCore(c.res, "GET", "/v1/composio/slack") },
   {
     method: "POST",
@@ -2181,7 +2190,17 @@ const apiRoutes: readonly WebRoute[] = [
       const { res, user } = c;
       const provider = c.params.provider!;
       const callback = `${PUBLIC_URL}/v1/connectors/oauth/${encodeURIComponent(provider)}/callback`;
-      const params = new URLSearchParams({ principalId: user, redirectUri: callback, returnTo: "/keychain" });
+      const body = await readJson<{ returnTo?: unknown }>(c.req, res);
+      if (!body) return;
+      const returnTo =
+        typeof body?.returnTo === "string" &&
+        body.returnTo.startsWith("/") &&
+        !body.returnTo.startsWith("//") &&
+        !body.returnTo.includes("\\") &&
+        new URL(body.returnTo, PUBLIC_URL).origin === new URL(PUBLIC_URL).origin
+          ? body.returnTo
+          : "/keychain";
+      const params = new URLSearchParams({ principalId: user, redirectUri: callback, returnTo });
       const corePath = `/v1/connectors/oauth/${encodeURIComponent(provider)}/start?${params.toString()}`;
       return relayCore(res, "GET", corePath);
     },

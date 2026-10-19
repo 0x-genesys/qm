@@ -230,7 +230,10 @@ export interface Destination {
   pin?: { messageTs: string; remove?: boolean };
   identity?: string;
   debugFooter?: string;
-  webTranscript?: { kind: "reply" } | { kind: "turn_failure"; notBefore: number; runId?: string };
+  webTranscript?:
+    | { kind: "reply" }
+    | { kind: "slack_reply"; sessionId: string; ts: string; name: string }
+    | { kind: "turn_failure"; notBefore: number; runId?: string };
 }
 
 export interface CandidateDestination extends Destination {

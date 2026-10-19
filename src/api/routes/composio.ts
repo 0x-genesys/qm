@@ -1,3 +1,6 @@
+import { hasSlackAccount } from "./slack-composio.ts";
+import { slackReply } from "./slack-reply.ts";
+import { nativeSlackConfigured, nativeSlackConnection } from "./slack-native.ts";
 import { isBackendCredential } from "../../credentials/keychain.ts";
 import { livePersonCapability } from "../artifact-share.ts";
 import { mintSignedPayload, verifySignedPayload } from "../../auth/signed-token.ts";
@@ -21,7 +24,7 @@ export function composioUserId(org: string, principal: string): string {
     .digest("hex")}`;
 }
 
-function composioUserIds(principal: string): string[] {
+export function composioUserIds(principal: string): string[] {
   return [...new Set(personIds(principal).map((id) => composioUserId(orgId(), id)))];
 }
 
@@ -48,7 +51,7 @@ async function activeRun(ctx: ApiCtx): Promise<boolean> {
   return true;
 }
 
-async function credential(ctx: ApiCtx): Promise<{ key: string; principal: string } | null> {
+export async function credential(ctx: ApiCtx): Promise<{ key: string; principal: string } | null> {
   if (!(await activeRun(ctx))) return null;
   const principal = ctx.capability?.actorId ?? ctx.actor?.p;
   if (!principal) {
@@ -145,7 +148,7 @@ function executeFailureCause(error: unknown, timedOut: boolean): string {
 
 const EXECUTE_TIMEOUT_MS = 90_000;
 
-async function request(
+export async function request(
   ctx: ApiCtx,
   key: string,
   path: string,
@@ -520,10 +523,33 @@ export interface SlackAccountLink {
 }
 
 async function slackStatus(ctx: ApiCtx): Promise<void> {
-  const access = await credential(ctx);
-  if (!access) return;
+  ctx.res.setHeader("Cache-Control", "no-store");
   const installation = await ctx.deps.slackInstallation?.get();
   const workspaceInstalled = Boolean(installation?.botToken || ctx.deps.slackEnvBotToken);
+  let nativeOAuth = false;
+  if (ctx.actor && !ctx.actor.imp && !ctx.capability) {
+    try {
+      if (!(await activePrincipal(ctx.deps, ctx.actor.p))) return sendJson(ctx.res, 403, { error: "forbidden" });
+      const native = await nativeSlackConnection(ctx);
+      if (native)
+        return sendJson(ctx.res, 200, {
+          connected: true,
+          user: native.user,
+          workspace: native.workspace,
+          nativeOAuth: true,
+          workspaceInstalled,
+        });
+      nativeOAuth = await nativeSlackConfigured(ctx);
+      if (nativeOAuth && !(await hasSlackAccount(ctx)))
+        return sendJson(ctx.res, 200, { connected: false, nativeOAuth, workspaceInstalled });
+    } catch (error) {
+      reportFailure("Slack connection status", error);
+      return sendJson(ctx.res, 502, { error: "slack_unavailable" });
+    }
+  }
+  const access = await credential(ctx);
+  if (!access) return;
+
   ctx.res.setHeader("Cache-Control", "no-store");
   let failed = false;
   for (const id of personIds(access.principal)) {
@@ -551,7 +577,7 @@ async function slackStatus(ctx: ApiCtx): Promise<void> {
   }
   return failed
     ? sendJson(ctx.res, 502, { error: "status_unavailable" })
-    : sendJson(ctx.res, 200, { connected: false, workspaceInstalled });
+    : sendJson(ctx.res, 200, { connected: false, workspaceInstalled, nativeOAuth });
 }
 
 async function completeSlack(ctx: ApiCtx): Promise<void> {
@@ -726,6 +752,8 @@ export const composioRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "GET", path: "/v1/composio/tools", auth: "either", handle: tools },
   { method: "POST", path: "/v1/composio/execute", auth: "either", handle: execute },
   { method: "POST", path: "/v1/composio/complete-auth", auth: "source", handle: completeAuth },
+  { method: "POST", path: "/v1/composio/slack/reply-status", auth: "source", handle: (ctx) => slackReply(ctx, false) },
+  { method: "POST", path: "/v1/composio/slack/reply", auth: "source", handle: (ctx) => slackReply(ctx, true) },
   { method: "GET", path: "/v1/composio/slack", auth: "source", handle: slackStatus },
   { method: "POST", path: "/v1/composio/slack/authorize", auth: "source", handle: (ctx) => authorize(ctx, true) },
   { method: "POST", path: "/v1/composio/slack/complete", auth: "source", handle: completeSlack },
