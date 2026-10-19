@@ -71,7 +71,7 @@ impl Focus {
             return Err(Failure::new(ErrorCode::ActionFailed, "Screen is locked or console session unavailable"));
         }
         let original = frontmost().ok_or_else(|| Failure::new(ErrorCode::ActionFailed, "Cannot identify the foreground app"))?;
-        let intervention = crate::intervention::Intervention::begin(target)?;
+        let intervention = crate::intervention::Intervention::begin(target, original)?;
         if original == target {
             EXPECTED_FOREGROUND.store(original, Ordering::Release);
             return Ok(Self { target, activated: false, intervention: Some(intervention) });

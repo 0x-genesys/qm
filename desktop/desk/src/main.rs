@@ -1,6 +1,8 @@
 mod cancellation;
 #[cfg(target_os = "macos")]
 mod focus;
+#[cfg(any(target_os = "macos", test))]
+mod focus_protocol;
 #[cfg(target_os = "macos")]
 mod intervention;
 #[cfg(any(target_os = "macos", test))]

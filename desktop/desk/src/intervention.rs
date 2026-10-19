@@ -1,112 +1,209 @@
+use crate::focus_protocol::{Decision, Scope, PROCESS_NOTIFICATION};
 use crate::protocol::{ErrorCode, Failure};
+use core_foundation::base::TCFType;
+use core_foundation::mach_port::CFMachPort;
 use core_foundation::runloop::{kCFRunLoopDefaultMode, CFRunLoop};
-use core_graphics::event::{CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventType, EventField};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-
-static TARGET_INTERVENED: AtomicBool = AtomicBool::new(false);
-static ROOT_TARGET: AtomicI32 = AtomicI32::new(0);
-static DELEGATED_TARGET: AtomicI32 = AtomicI32::new(0);
-use std::sync::{mpsc, Arc};
+use objc2_core_graphics::{
+    CGEvent, CGEventField, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement, CGEventTapProxy, CGEventType,
+};
+use std::ffi::c_void;
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-fn is_target_intervention(source: i64, destination: i64, own: i64, target: i32, delegated: i32) -> bool {
-    source != own && (destination == i64::from(target) || (delegated != 0 && destination == i64::from(delegated)))
+type ReleaseKeyFocus = unsafe extern "C" fn(u32) -> i32;
+const NOTIFICATION_SUBTYPE: CGEventField = CGEventField(64);
+const FOCUS_THEFT_ID: CGEventField = CGEventField(71);
+const FOCUS_SUBJECT_PID: CGEventField = CGEventField(73);
+static ACTIVE: Mutex<Option<Arc<Context>>> = Mutex::new(None);
+
+struct Context {
+    scope: Mutex<Scope>,
+    failure: Mutex<Option<String>>,
+    release: Option<ReleaseKeyFocus>,
+}
+
+impl Context {
+    fn fail(&self, message: impl Into<String>) {
+        if let Ok(mut failure) = self.failure.lock() {
+            if failure.is_none() {
+                *failure = Some(message.into());
+            }
+        }
+    }
+}
+
+unsafe extern "C-unwind" fn receive(_: CGEventTapProxy, kind: CGEventType, event: NonNull<CGEvent>, info: *mut c_void) -> *mut CGEvent {
+    let context = unsafe { &*(info as *const Context) };
+    let original = event.as_ptr();
+    if kind.0 >= u32::MAX - 1 {
+        context.fail("Focus protection event tap was disabled; stopped");
+        return original;
+    }
+    if context.failure.lock().map(|failure| failure.is_some()).unwrap_or(true) {
+        return original;
+    }
+    let value = unsafe { event.as_ref() };
+    let field = |id| CGEvent::integer_value_field(Some(value), id);
+    let source = i32::try_from(field(CGEventField::EventSourceUnixProcessID)).unwrap_or(-1);
+    let destination = i32::try_from(field(CGEventField::EventTargetUnixProcessID)).unwrap_or(-1);
+    let Ok(mut scope) = context.scope.lock() else {
+        context.fail("Focus protection state is unavailable; stopped");
+        return original;
+    };
+    if crate::cancellation::cancelled() {
+        scope.yield_to_user();
+    }
+    let decision = if kind.0 == PROCESS_NOTIFICATION {
+        scope.notification(
+            source,
+            destination,
+            field(NOTIFICATION_SUBTYPE),
+            i32::try_from(field(FOCUS_SUBJECT_PID)).unwrap_or(-1),
+            field(FOCUS_THEFT_ID),
+        )
+    } else {
+        scope.user_event(kind.0, source, destination)
+    };
+    match decision {
+        Decision::Pass => original,
+        Decision::Suppress => std::ptr::null_mut(),
+        Decision::Redirect(pid) => {
+            CGEvent::set_integer_value_field(Some(value), CGEventField::EventTargetUnixProcessID, i64::from(pid));
+            CGEvent::post_to_pid(pid, Some(value));
+            std::ptr::null_mut()
+        }
+        Decision::Release(id) => {
+            let status = context.release.map(|release| unsafe { release(id) }).unwrap_or(-1);
+            scope.released(status == 0);
+            if status != 0 {
+                context.fail(format!("Releasing target key-focus lease failed (status {status}); stopped"));
+            }
+            original
+        }
+        Decision::Stop(message) => {
+            context.fail(message);
+            original
+        }
+        Decision::Intervened => {
+            context.fail("User interacted with the target or requested an app switch; stopped");
+            original
+        }
+    }
 }
 
 pub fn include_target(pid: i32) {
-    let root = ROOT_TARGET.load(Ordering::Acquire);
-    if root != 0 && pid != root {
-        DELEGATED_TARGET.store(pid, Ordering::Release);
+    if let Ok(active) = ACTIVE.lock() {
+        if let Some(context) = active.as_ref() {
+            if let Ok(mut scope) = context.scope.lock() {
+                scope.include(pid);
+            }
+        }
     }
 }
 
 pub struct Intervention {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    context: Arc<Context>,
 }
 
 impl Intervention {
-    pub fn begin(target: i32) -> Result<Self, Failure> {
-        TARGET_INTERVENED.store(false, Ordering::Release);
-        ROOT_TARGET.store(target, Ordering::Release);
-        DELEGATED_TARGET.store(0, Ordering::Release);
+    pub fn begin(target: i32, foreground: i32) -> Result<Self, Failure> {
+        let release = if target == foreground {
+            None
+        } else {
+            let pointer = unsafe { libc::dlsym(libc::RTLD_DEFAULT, c"_CPSReleaseKeyFocusWithID".as_ptr()) };
+            if pointer.is_null() {
+                return Err(Failure::new(
+                    ErrorCode::ActionFailed,
+                    "Key-focus lease release is unavailable; background input was not started",
+                ));
+            }
+            Some(unsafe { std::mem::transmute::<*mut c_void, ReleaseKeyFocus>(pointer) })
+        };
+        let context = Arc::new(Context {
+            scope: Mutex::new(Scope::new(std::process::id() as i32, foreground, target)),
+            failure: Mutex::new(None),
+            release,
+        });
         let stop = Arc::new(AtomicBool::new(false));
-        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let quit = Arc::clone(&stop);
+        let callback_context = Arc::clone(&context);
+        let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         let thread = thread::spawn(move || {
-            let tap = CGEventTap::new(
-                CGEventTapLocation::AnnotatedSession,
-                CGEventTapPlacement::HeadInsertEventTap,
-                CGEventTapOptions::ListenOnly,
-                vec![
-                    CGEventType::LeftMouseDown,
-                    CGEventType::RightMouseDown,
-                    CGEventType::OtherMouseDown,
-                    CGEventType::KeyDown,
-                    CGEventType::FlagsChanged,
-                ],
-                move |_, kind, event| {
-                    if matches!(kind, CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput) {
-                        TARGET_INTERVENED.store(true, Ordering::Release);
-                        return None;
-                    }
-                    let source = event.get_integer_value_field(EventField::EVENT_SOURCE_UNIX_PROCESS_ID);
-                    let destination = event.get_integer_value_field(EventField::EVENT_TARGET_UNIX_PROCESS_ID);
-                    if is_target_intervention(
-                        source,
-                        destination,
-                        i64::from(std::process::id()),
-                        target,
-                        DELEGATED_TARGET.load(Ordering::Acquire),
-                    ) {
-                        TARGET_INTERVENED.store(true, Ordering::Release);
-                    }
-                    None
-                },
-            );
-            let Ok(tap) = tap else {
-                let _ = ready_tx.send(Err("Could not create the target-input event tap"));
+            let mask = (1 << PROCESS_NOTIFICATION) | (1 << 1) | (1 << 3) | (1 << 25) | (1 << 10) | (1 << 11) | (1 << 12);
+            let tap = unsafe {
+                CGEvent::tap_create(
+                    CGEventTapLocation::AnnotatedSessionEventTap,
+                    CGEventTapPlacement::TailAppendEventTap,
+                    CGEventTapOptions::Default,
+                    mask,
+                    Some(receive),
+                    Arc::as_ptr(&callback_context) as *mut c_void,
+                )
+            };
+            let Some(tap) = tap else {
+                let _ = ready_tx.send(Err("Could not create the focus-protection event tap"));
                 return;
             };
-            let Ok(source) = tap.mach_port.create_runloop_source(0) else {
-                let _ = ready_tx.send(Err("Could not create the target-input run-loop source"));
+            let port = unsafe { CFMachPort::wrap_under_get_rule((&*tap as *const objc2_core_foundation::CFMachPort).cast_mut().cast()) };
+            let Ok(source) = port.create_runloop_source(0) else {
+                let _ = ready_tx.send(Err("Could not create the focus-protection run-loop source"));
                 return;
             };
             let runloop = CFRunLoop::get_current();
             runloop.add_source(&source, unsafe { kCFRunLoopDefaultMode });
-            tap.enable();
+            CGEvent::tap_enable(&tap, true);
             if ready_tx.send(Ok(())).is_ok() {
                 while !quit.load(Ordering::Acquire) {
                     CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, Duration::from_millis(30), false);
                 }
             }
+            CGEvent::tap_enable(&tap, false);
             runloop.remove_source(&source, unsafe { kCFRunLoopDefaultMode });
         });
         let ready = ready_rx.recv_timeout(Duration::from_millis(350));
         if matches!(ready, Ok(Ok(()))) {
-            return Ok(Self { stop, thread: Some(thread) });
+            if let Ok(mut active) = ACTIVE.lock() {
+                *active = Some(Arc::clone(&context));
+            }
+            return Ok(Self { stop, thread: Some(thread), context });
         }
         stop.store(true, Ordering::Release);
         let message = match ready {
             Ok(Err(message)) => message,
-            Err(mpsc::RecvTimeoutError::Timeout) => "Target-input monitoring did not start within 350 ms",
-            _ => "Target-input monitoring stopped before initialization",
+            Err(mpsc::RecvTimeoutError::Timeout) => "Focus protection did not start within 350 ms",
+            _ => "Focus protection stopped before initialization",
         };
         Err(Failure::new(ErrorCode::ActionFailed, message))
     }
 
     pub fn check(&self) -> Result<(), Failure> {
-        check_current()
+        let failure = self
+            .context
+            .failure
+            .lock()
+            .map_err(|_| Failure::new(ErrorCode::ActionFailed, "Focus protection state is unavailable; stopped"))?;
+        if let Some(message) = failure.as_ref() {
+            return Err(Failure::new(ErrorCode::ActionFailed, message.clone()));
+        }
+        Ok(())
     }
 }
 
 pub fn check_current() -> Result<(), Failure> {
-    if TARGET_INTERVENED.load(Ordering::Acquire) {
-        Err(Failure::new(ErrorCode::ActionFailed, "User interacted with target app; stopped"))
-    } else {
-        Ok(())
+    let active = ACTIVE.lock().map_err(|_| Failure::new(ErrorCode::ActionFailed, "Focus protection state is unavailable; stopped"))?;
+    if let Some(context) = active.as_ref() {
+        let failure =
+            context.failure.lock().map_err(|_| Failure::new(ErrorCode::ActionFailed, "Focus protection state is unavailable; stopped"))?;
+        if let Some(message) = failure.as_ref() {
+            return Err(Failure::new(ErrorCode::ActionFailed, message.clone()));
+        }
     }
+    Ok(())
 }
 
 impl Drop for Intervention {
@@ -115,23 +212,8 @@ impl Drop for Intervention {
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
-        ROOT_TARGET.store(0, Ordering::Release);
-        DELEGATED_TARGET.store(0, Ordering::Release);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_target_intervention;
-
-    #[test]
-    fn ignores_agent_and_other_app_input() {
-        assert!(is_target_intervention(99, 42, 10, 20, 42));
-        assert!(!is_target_intervention(10, 42, 10, 20, 42));
-        assert!(!is_target_intervention(99, 0, 10, 20, 0));
-        assert!(!is_target_intervention(23, 42, 23, 42, 0));
-        assert!(!is_target_intervention(17, 99, 23, 42, 0));
-        assert!(is_target_intervention(0, 42, 23, 42, 0));
-        assert!(is_target_intervention(17, 42, 23, 42, 0));
+        if let Ok(mut active) = ACTIVE.lock() {
+            *active = None;
+        }
     }
 }
