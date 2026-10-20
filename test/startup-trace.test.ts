@@ -47,6 +47,7 @@ test(
   { skip },
   async () => {
     const pg = await pgFor("startup-trace-union");
+    await Promise.all([1, 2, 3].map(() => pg.q("SELECT 1")));
     const [record] = await traced(async () => {
       assert.deepEqual(await pg.q("SELECT 1 AS n"), [{ n: 1 }]);
       startupMark("turn");
@@ -94,7 +95,7 @@ test("real pg: a saturated pool reports connection wait separately from the roun
 });
 
 test(
-  "real pg: concurrent turns on one shared pool keep separate counts, untraced and detached work count nowhere",
+  "real pg: concurrent turns on one shared pool keep separate counts; detached and callback-form work count nowhere",
   { skip },
   async () => {
     const pg = await pgFor("startup-trace-leak", 2);
@@ -124,9 +125,7 @@ test(
     await outside;
     await pg.close();
     assert.equal(a[0]!.queries, 4);
-    assert.equal(a[0]!.untracedCalls, 0);
     assert.equal(b[0]!.queries, 6);
-    assert.equal(b[0]!.untracedCalls, 3);
   },
 );
 

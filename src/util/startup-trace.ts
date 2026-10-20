@@ -22,7 +22,6 @@ interface StartupSegment extends StartupTotals {
 
 export interface StartupRecord extends StartupTotals {
   outcome: string;
-  untracedCalls: number;
   totalMs: number;
   segments: StartupSegment[];
 }
@@ -31,7 +30,6 @@ interface Trace {
   start: number;
   closed: boolean;
   queries: number;
-  untraced: number;
   wait: Busy;
   roundTrip: Busy;
   db: Busy;
@@ -94,7 +92,6 @@ function close(trace: Trace, outcome: string): void {
     poolWaitMs: Math.round(end.poolWaitMs),
     queryRoundTripMs: Math.round(end.queryRoundTripMs),
     dbBusyMs: Math.round(end.dbBusyMs),
-    untracedCalls: trace.untraced,
     segments,
   };
   const emit = trace.emit;
@@ -116,7 +113,6 @@ export async function traceStartup<T extends { status: string }>(
     start: performance.now(),
     closed: false,
     queries: 0,
-    untraced: 0,
     wait: busy(),
     roundTrip: busy(),
     db: busy(),
@@ -220,8 +216,8 @@ function settle(run: () => unknown, s: Span): unknown {
   );
 }
 
-const untraceable = (args: unknown[]): boolean =>
-  args.some(
+const promiseCall = (args: unknown[]): boolean =>
+  !args.some(
     (arg) =>
       typeof arg === "function" ||
       (typeof arg === "object" &&
@@ -230,24 +226,13 @@ const untraceable = (args: unknown[]): boolean =>
           typeof (arg as { callback?: unknown }).callback === "function")),
   );
 
-function traced(args: unknown[]): Trace | undefined {
-  const trace = live();
-  if (!trace || !untraceable(args)) return trace;
-  trace.untraced += 1;
-  return undefined;
-}
-
 function delegate<K extends string>(target: Record<K, unknown>, key: K): (...args: unknown[]) => unknown {
-  const own = Object.prototype.hasOwnProperty.call(target, key)
-    ? (target[key] as (...args: unknown[]) => unknown)
-    : null;
   return (...args) =>
-    (own ?? (Object.getPrototypeOf(target) as Record<K, (...args: unknown[]) => unknown>)[key]).apply(target, args);
+    (Object.getPrototypeOf(target) as Record<K, (...a: unknown[]) => unknown>)[key].apply(target, args);
 }
 
 export function traceStartupQueries(pool: Pool): Pool {
-  let poolQuerySpan: Span | "untraced" | undefined;
-  const internalClients = new WeakSet<object>();
+  let poolQuerySpan: Span | undefined;
   const connect = delegate(pool, "connect");
   const query = delegate(pool, "query");
   pool.connect = ((...args: unknown[]) => {
@@ -256,27 +241,17 @@ export function traceStartupQueries(pool: Pool): Pool {
     if (inner && typeof args[0] === "function") {
       const callback = args[0] as (...cbArgs: unknown[]) => void;
       return connect((...cbArgs: unknown[]) => {
-        if (!cbArgs[0] && cbArgs[1]) {
-          if (inner !== "untraced") inner.acquired();
-          internalClients.add(cbArgs[1] as object);
-        }
+        if (!cbArgs[0]) inner.acquired();
         callback(...cbArgs);
       });
     }
-    const trace = traced(args);
-    if (!trace) return connect(...args);
+    const trace = live();
+    if (!trace || !promiseCall(args)) return connect(...args);
     return settle(() => connect(...args), span(trace, "wait", false));
   }) as Pool["connect"];
   pool.query = ((...args: unknown[]) => {
-    const trace = traced(args);
-    if (!trace) {
-      poolQuerySpan = "untraced";
-      try {
-        return query(...args);
-      } finally {
-        poolQuerySpan = undefined;
-      }
-    }
+    const trace = live();
+    if (!trace || !promiseCall(args)) return query(...args);
     const s = span(trace, "wait", true);
     poolQuerySpan = s;
     try {
@@ -288,9 +263,8 @@ export function traceStartupQueries(pool: Pool): Pool {
   pool.on("connect", (client: PoolClient) => {
     const clientQuery = delegate(client, "query");
     client.query = ((...args: unknown[]) => {
-      if (internalClients.delete(client)) return clientQuery(...args);
-      const trace = traced(args);
-      if (!trace) return clientQuery(...args);
+      const trace = live();
+      if (!trace || !promiseCall(args)) return clientQuery(...args);
       return settle(() => clientQuery(...args), span(trace, "roundTrip", true));
     }) as PoolClient["query"];
   });
