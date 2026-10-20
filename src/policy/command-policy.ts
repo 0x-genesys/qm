@@ -489,13 +489,17 @@ function executedPayloads(root: Node): Executed {
       if (body) feed(body.text, heredocReceivers(node, redirect!));
     }
     if (node.type === "pipeline") {
-      const stages = node.namedChildren.map(commandOf);
+      const stageNodes = node.namedChildren;
+      const stages = stageNodes.map(commandOf);
       for (let i = 1; i < stages.length; i++) {
         const [producer, consumer] = [stages[i - 1], stages[i]];
-        if (!producer || !consumer) continue;
+        if (!consumer) continue;
         const consumerArgv = argvOf(consumer);
         if (stdinReader(consumerArgv) === "shell")
-          for (const upstream of stages.slice(0, i)) if (upstream) shellFed.add(upstream.id);
+          for (const upstream of stageNodes.slice(0, i))
+            for (const command of upstream ? [upstream, ...upstream.descendantsOfType("command")] : [])
+              if (command) shellFed.add(command.id);
+        if (!producer) continue;
         const payload = literalProducerPayload(argvOf(producer));
         if (payload) feed(payload, [consumerArgv]);
       }
@@ -591,8 +595,12 @@ function firstMatch(scannable: string, rules: readonly CommandRule[]): CommandEv
 
 function containsInOrder(args: readonly string[], words: readonly string[]): boolean {
   let next = 0;
-  for (const arg of args) if (arg === words[next]) next++;
+  for (const arg of args) if (arg === words[next] || arg.startsWith(`${words[next]}=`)) next++;
   return next === words.length;
+}
+
+function invokes(argv: readonly string[], [name, ...words]: readonly string[]): boolean {
+  return argv.some((arg, at) => basename(arg) === name && containsInOrder(argv.slice(at + 1), words));
 }
 
 function argvMatch(
@@ -601,12 +609,8 @@ function argvMatch(
   kind: "floor" | "layer",
 ): CommandEvaluation | null {
   for (const rule of rules) {
-    const [name, ...args] = rule.argv;
     const hit = commands.find(
-      (command) =>
-        (!rule.pipedIntoShell || command.pipedIntoShell) &&
-        basename(command.argv[0] ?? "") === name &&
-        containsInOrder(command.argv.slice(1), args),
+      (command) => (!rule.pipedIntoShell || command.pipedIntoShell) && invokes(command.argv, rule.argv),
     );
     if (hit) {
       return {
@@ -633,12 +637,9 @@ export function evaluateCommandWithLayer(
   const { lines, commands, tooDeep } = scan(command, 0);
   const policyMatch = firstMatch(lines.join("\n"), policy.rules);
   if (policyMatch?.decision === "deny") return policyMatch;
+  if (policy.mode === "allowlist" && !policyMatch) return { decision: "deny", reason: "not in allowlist" };
   const floorMatch = argvMatch(commands, FLOOR_ARGV_RULES, "floor");
   if (floorMatch) return floorMatch;
   if (tooDeep) return { decision: "require_approval", reason: "nested too deeply to inspect", rule: { kind: "floor" } };
-  if (policyMatch) return policyMatch;
-  if (policy.mode === "allowlist") {
-    return { decision: "deny", reason: "not in allowlist" };
-  }
-  return argvMatch(commands, layerRules, "layer") ?? { decision: "allow" };
+  return policyMatch ?? argvMatch(commands, layerRules, "layer") ?? { decision: "allow" };
 }
