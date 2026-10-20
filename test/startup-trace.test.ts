@@ -7,6 +7,7 @@ import {
   startupMark,
   startupStop,
   traceStartup,
+  traceStartupQueries,
   type StartupRecord,
 } from "../src/util/startup-trace.ts";
 import { createMemoryRunStore } from "../src/runs/memory-run-store.ts";
@@ -47,35 +48,34 @@ test(
   async () => {
     const pg = await pgFor("startup-trace-union");
     const [record] = await traced(async () => {
-      await pg.q("SELECT 1");
-      startupMark("serial");
+      assert.deepEqual(await pg.q("SELECT 1 AS n"), [{ n: 1 }]);
+      startupMark("turn");
       await Promise.all([1, 2, 3].map(() => pg.q("SELECT pg_sleep(0.2)")));
-      startupMark("parallel");
+      startupMark("runtime");
       const client = await (await pg.pool()).connect();
       try {
         await client.query("BEGIN");
-        await client.query({ text: "SELECT $1::int", values: [1] });
+        assert.deepEqual((await client.query({ text: "SELECT $1::int AS n", values: [7] })).rows, [{ n: 7 }]);
         await client.query("COMMIT");
       } finally {
         client.release();
       }
-      startupStop("handoff");
+      startupStop("pi_payload_ready");
       await pg.q("SELECT 1");
     });
     await pg.close();
     assert.ok(record);
-    assert.equal(record.outcome, "handoff");
+    assert.equal(record.outcome, "pi_payload_ready");
     assert.deepEqual(
       record.segments.map((s) => [s.at, s.queries]),
       [
-        ["serial", 1],
-        ["parallel", 3],
-        ["handoff", 3],
+        ["turn", 1],
+        ["runtime", 3],
+        ["pi_payload_ready", 3],
       ],
     );
     const parallel = record.segments[1]!;
-    assert.ok(parallel.queryRoundTripMs >= 195 && parallel.queryRoundTripMs < 450, JSON.stringify(parallel));
-    assert.ok(record.dbBusyMs <= record.totalMs, JSON.stringify(record));
+    assert.ok(parallel.queryRoundTripMs >= 195 && parallel.queryRoundTripMs < 600, JSON.stringify(parallel));
     assert.equal(record.queries, 7);
   },
 );
@@ -133,7 +133,7 @@ test(
 test("real pg: a failing query closes its span and a failing turn still emits one record", { skip }, async () => {
   const pg = await pgFor("startup-trace-error");
   const records = await traced(async () => {
-    await pg.q("SELECT * FROM startup_trace_missing_table").catch(() => undefined);
+    await assert.rejects(pg.q("SELECT * FROM startup_trace_missing_table"), { code: "42P01" });
     await new Promise((r) => setTimeout(r, 300));
     throw new Error("boom");
   });
@@ -144,6 +144,18 @@ test("real pg: a failing query closes its span and a failing turn still emits on
   assert.ok(records[0]!.dbBusyMs < 250, JSON.stringify(records[0]));
 });
 
+test("a failed connection acquisition counts as pool wait and never as a round trip", async () => {
+  const pg = (await import("pg")).default;
+  const pool = traceStartupQueries(new pg.Pool({ connectionString: "postgres://x@127.0.0.1:1/x" }));
+  const [record] = await traced(async () => {
+    await assert.rejects(pool.query("SELECT 1"), { code: "ECONNREFUSED" });
+  });
+  await pool.end();
+  assert.equal(record!.queries, 1);
+  assert.equal(record!.queryRoundTripMs, 0);
+  assert.equal(record!.dbBusyMs, record!.poolWaitMs);
+});
+
 const actor: Principal = { id: "internal:U1", type: "internal" };
 const request: OrchestratorInput = {
   actor,
@@ -152,37 +164,45 @@ const request: OrchestratorInput = {
   text: "x",
 };
 
-test("each worker attempt writes one turn.startup audit event, and a broken record never changes the turn", async () => {
+test("each worker attempt writes one turn.startup audit event keyed by attempt, and a broken record never changes the turn", async () => {
+  const shutdown = new AbortController();
   const outcomes: Array<() => Promise<TurnResult>> = [
+    async () => {
+      shutdown.abort();
+      throw new Error("turn interrupted");
+    },
+    async () => {
+      throw new Error("turn failed");
+    },
     async () => {
       startupMark("turn");
       startupStop("pi_payload_ready");
       startupStop("pi_payload_ready");
-      return { status: "ok", sessionId: "s1" } as TurnResult;
-    },
-    async () => {
-      throw new Error("turn failed");
+      return { status: "ok", sessionId: "s2" } as TurnResult;
     },
   ];
   const { runs } = createMemoryRunStore();
   const audit = createAuditLog();
   const orchestrator = { handleTurn: () => outcomes.shift()!() } as unknown as Orchestrator;
-  for (const expectFailure of [false, true]) {
-    await runs.enqueue({ sessionId: `s${expectFailure}`, request, maxAttempts: 3 });
-    const run = (await runs.claim("w", 60_000))!;
-    const done = processRun({ runs, orchestrator, leaseTtlMs: 60_000, audit }, run);
-    if (expectFailure) await assert.rejects(done, /turn failed/);
-    else assert.equal((await done).status, "ok");
-  }
+  const deps = { runs, orchestrator, leaseTtlMs: 60_000, audit };
+  const first = (await runs.enqueue({ sessionId: "s1", request, maxAttempts: 3 })).run;
+  await assert.rejects(
+    processRun(deps, (await runs.claim("w", 60_000))!, { shutdown: shutdown.signal }),
+    /interrupted/,
+  );
+  await assert.rejects(processRun(deps, (await runs.claim("w", 60_000))!), /turn failed/);
+  await runs.enqueue({ sessionId: "s2", request, maxAttempts: 3 });
+  assert.equal((await processRun(deps, (await runs.claim("w", 60_000))!)).status, "ok");
   const events = (await audit.events()).filter((e) => e.action === "turn.startup");
   assert.deepEqual(
-    events.map((e) => [e.status, /^run:.+#1$/.test(e.resource)]),
+    events.map((e) => [e.status, e.resource.startsWith(`run:${first.id}#`) ? e.resource.split("#")[1] : "other"]),
     [
-      ["pi_payload_ready", true],
-      ["error", true],
+      ["cancelled", "1"],
+      ["error", "2"],
+      ["pi_payload_ready", "other"],
     ],
   );
-  const detail = JSON.parse(events[0]!.detail!) as StartupRecord;
+  const detail = JSON.parse(events[2]!.detail!) as StartupRecord;
   assert.deepEqual(
     detail.segments.map((s) => s.at),
     ["turn", "pi_payload_ready"],

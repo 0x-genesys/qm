@@ -2,22 +2,20 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Pool, PoolClient } from "pg";
 import { swallow } from "./errors.ts";
 
-const MAX_MARKS = 16;
-
 interface Busy {
   active: number;
   since: number;
   total: number;
 }
 
-export interface StartupTotals {
+interface StartupTotals {
   queries: number;
   poolWaitMs: number;
   queryRoundTripMs: number;
   dbBusyMs: number;
 }
 
-export interface StartupSegment extends StartupTotals {
+interface StartupSegment extends StartupTotals {
   at: string;
   ms: number;
 }
@@ -135,14 +133,31 @@ export async function traceStartup<T extends { status: string }>(
   }
 }
 
-export function startupMark(at: string): void {
+export type StartupMark =
+  | "models"
+  | "received"
+  | "session"
+  | "credentials"
+  | "lease"
+  | "context"
+  | "recall_start"
+  | "recall"
+  | "turn"
+  | "runtime"
+  | "harness"
+  | "compiled"
+  | "pi_payload"
+  | "claude_auth"
+  | "claude_init";
+
+export function startupMark(at: StartupMark): void {
   const trace = live();
-  if (!trace || trace.marks.length >= MAX_MARKS - 1 || trace.marks.some((m) => m.at === at)) return;
+  if (!trace || trace.marks.some((m) => m.at === at)) return;
   const now = performance.now();
   trace.marks.push({ at, ms: now - trace.start, ...totals(trace, now) });
 }
 
-export function startupStop(at: string): void {
+export function startupStop(at: "pi_payload_ready" | "claude_handoff"): void {
   const trace = live();
   if (trace) close(trace, at);
 }
@@ -181,15 +196,19 @@ function span(trace: Trace, phase: "wait" | "roundTrip", query: boolean): Span {
   };
 }
 
-function settle<R>(run: () => unknown, s: Span): Promise<R> {
-  let result: Promise<R>;
+function settle(run: () => unknown, s: Span): unknown {
+  let result: unknown;
   try {
-    result = run() as Promise<R>;
+    result = run();
   } catch (error) {
     s.end();
     throw error;
   }
-  return result.then(
+  if (typeof (result as { then?: unknown } | null)?.then !== "function") {
+    s.end();
+    return result;
+  }
+  return (result as Promise<unknown>).then(
     (value) => {
       s.end();
       return value;
@@ -205,7 +224,10 @@ const untraceable = (args: unknown[]): boolean =>
   args.some(
     (arg) =>
       typeof arg === "function" ||
-      (typeof arg === "object" && arg !== null && typeof (arg as { submit?: unknown }).submit === "function"),
+      (typeof arg === "object" &&
+        arg !== null &&
+        (typeof (arg as { submit?: unknown }).submit === "function" ||
+          typeof (arg as { callback?: unknown }).callback === "function")),
   );
 
 function traced(args: unknown[]): Trace | undefined {
@@ -215,19 +237,29 @@ function traced(args: unknown[]): Trace | undefined {
   return undefined;
 }
 
+function delegate<K extends string>(target: Record<K, unknown>, key: K): (...args: unknown[]) => unknown {
+  const own = Object.prototype.hasOwnProperty.call(target, key)
+    ? (target[key] as (...args: unknown[]) => unknown)
+    : null;
+  return (...args) =>
+    (own ?? (Object.getPrototypeOf(target) as Record<K, (...args: unknown[]) => unknown>)[key]).apply(target, args);
+}
+
 export function traceStartupQueries(pool: Pool): Pool {
   let poolQuerySpan: Span | "untraced" | undefined;
   const internalClients = new WeakSet<object>();
-  const connect = pool.connect.bind(pool) as (...args: unknown[]) => unknown;
-  const query = pool.query.bind(pool) as (...args: unknown[]) => unknown;
+  const connect = delegate(pool, "connect");
+  const query = delegate(pool, "query");
   pool.connect = ((...args: unknown[]) => {
     const inner = poolQuerySpan;
     poolQuerySpan = undefined;
     if (inner && typeof args[0] === "function") {
       const callback = args[0] as (...cbArgs: unknown[]) => void;
       return connect((...cbArgs: unknown[]) => {
-        if (inner !== "untraced") inner.acquired();
-        if (cbArgs[1]) internalClients.add(cbArgs[1] as object);
+        if (!cbArgs[0] && cbArgs[1]) {
+          if (inner !== "untraced") inner.acquired();
+          internalClients.add(cbArgs[1] as object);
+        }
         callback(...cbArgs);
       });
     }
@@ -254,7 +286,7 @@ export function traceStartupQueries(pool: Pool): Pool {
     }
   }) as Pool["query"];
   pool.on("connect", (client: PoolClient) => {
-    const clientQuery = client.query.bind(client) as (...args: unknown[]) => unknown;
+    const clientQuery = delegate(client, "query");
     client.query = ((...args: unknown[]) => {
       if (internalClients.delete(client)) return clientQuery(...args);
       const trace = traced(args);

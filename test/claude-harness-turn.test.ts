@@ -52,6 +52,7 @@ mock.module("@anthropic-ai/claude-agent-sdk", {
 });
 
 const { createClaudeHarness } = await import("../src/harness/claude-harness.ts");
+const { traceStartup } = await import("../src/util/startup-trace.ts");
 
 function assistantMessage(id: string, text: string, usage: Record<string, number>): FakeSdkMessage {
   return {
@@ -880,5 +881,38 @@ test("Claude records the stop when the worker cancels a turn before any output",
   assert.deepEqual(
     entries.filter((e) => e.type !== "user").map((e) => e.payload),
     [{ kind: "turn_stopped", reason: "because the run was cancelled" }],
+  );
+});
+
+test("Claude closes the startup trace at the turn's handoff, not at a one-shot helper call", async () => {
+  let prompted = 0;
+  currentScript = async function* (prompts) {
+    await prompts[Symbol.asyncIterator]().next();
+    prompted += 1;
+    yield resultMessage("no");
+  };
+  const harness = createClaudeHarness({});
+  const records: Array<{ outcome: string; segments: Array<{ at: string }> }> = [];
+  await traceStartup(
+    (record) => records.push(record),
+    async () => {
+      await harness.models.shouldRespond!({
+        session: { id: "session-1" },
+        message: "hi",
+        recentContext: "",
+        systemPrompt: "",
+        history: [],
+        recordModelCall: () => {},
+      } as never);
+      assert.equal(records.length, 0);
+      await harness.turns.runTurn(harnessTurn().turn);
+      return { status: "ok" };
+    },
+    () => "error",
+  );
+  assert.equal(prompted, 2);
+  assert.deepEqual(
+    records.map((r) => [r.outcome, r.segments.map((s) => s.at)]),
+    [["claude_handoff", ["claude_auth", "claude_init", "claude_handoff"]]],
   );
 });
