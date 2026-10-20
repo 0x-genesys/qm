@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
 import { Language, Parser, type Node } from "web-tree-sitter";
-import type { CommandDecision, CommandPolicy, CommandRule } from "../types.ts";
+import type { ArgvRule, CommandDecision, CommandPolicy, CommandRule } from "../types.ts";
 import { errMessage } from "../util/errors.ts";
 import { compileSafeRegex } from "../util/safe-regex.ts";
 
@@ -17,7 +17,10 @@ const ORG_FLOOR_RULES: CommandRule[] = [
   },
   { pattern: "\\b(drop|truncate)\\s+table\\b", decision: "require_approval", reason: "destructive SQL" },
   { pattern: "\\bmkfs\\b|:\\(\\)\\s*\\{", decision: "deny", reason: "destructive / fork bomb" },
-  { pattern: "\\bcurl\\b.*\\|\\s*(sh|bash)\\b", decision: "require_approval", reason: "pipe-to-shell" },
+];
+
+const FLOOR_ARGV_RULES: ArgvRule[] = [
+  { argv: ["curl"], pipedIntoShell: true, decision: "require_approval", reason: "pipe-to-shell" },
 ];
 
 export function defaultOrgPolicy(): CommandPolicy {
@@ -125,15 +128,27 @@ export interface CommandEvaluation {
   reason?: string;
   matched?: string;
   approvalKey?: string;
+  rule?: { kind: "policy"; index: number } | { kind: "floor" | "layer" };
+}
+
+interface ExecutedCommand {
+  argv: string[];
+  pipedIntoShell: boolean;
 }
 
 interface Executed {
   scripts: string[];
   code: string[];
+  commands: ExecutedCommand[];
+}
+
+interface Scan {
+  lines: string[];
+  commands: ExecutedCommand[];
 }
 
 export function scannableCommand(command: string): string {
-  return scanLines(command, 0).join("\n");
+  return scan(command, 0).lines.join("\n");
 }
 
 function parse(command: string) {
@@ -142,16 +157,21 @@ function parse(command: string) {
   return tree;
 }
 
-function scanLines(command: string, depth: number): string[] {
+function scan(command: string, depth: number): Scan {
+  if (depth >= MAX_DEPTH) return { lines: [command], commands: [] };
   const tree = parse(command);
   try {
-    const executed = depth < MAX_DEPTH ? executedPayloads(tree.rootNode) : { scripts: [], code: [] };
-    return [
-      ...(tree.rootNode.hasError ? [command] : []),
-      render(tree.rootNode),
-      ...executed.code,
-      ...executed.scripts.flatMap((script) => scanLines(script, depth + 1)),
-    ];
+    const executed = executedPayloads(tree.rootNode);
+    const nested = executed.scripts.map((script) => scan(script, depth + 1));
+    return {
+      lines: [
+        ...(tree.rootNode.hasError ? [command] : []),
+        render(tree.rootNode),
+        ...executed.code,
+        ...nested.flatMap((inner) => inner.lines),
+      ],
+      commands: [...executed.commands, ...nested.flatMap((inner) => inner.commands)],
+    };
   } finally {
     tree.delete();
   }
@@ -254,6 +274,30 @@ function commandWords(command: Node): Node[][] {
     else words.push([word]);
   }
   return words;
+}
+
+const EXPANSIONS = [
+  "simple_expansion",
+  "expansion",
+  "command_substitution",
+  "process_substitution",
+  "arithmetic_expansion",
+];
+
+export function plainArgv(command: string): string[] | undefined {
+  const tree = parse(command);
+  try {
+    const [only, ...rest] = tree.rootNode.namedChildren;
+    if (tree.rootNode.hasError || rest.length || only?.type !== "command") return undefined;
+    if (
+      only.namedChildren.some((child) => child?.type === "herestring_redirect" || child?.type === "variable_assignment")
+    )
+      return undefined;
+    if (only.descendantsOfType(EXPANSIONS).length) return undefined;
+    return argvOf(only);
+  } finally {
+    tree.delete();
+  }
 }
 
 function argvOf(command: Node): string[] {
@@ -403,8 +447,9 @@ function heredocReceivers(statement: Node, redirect: Node): string[][] {
 }
 
 function executedPayloads(root: Node): Executed {
-  const executed: Executed = { scripts: [], code: [] };
+  const executed: Executed = { scripts: [], code: [], commands: [] };
   const variables = new Map<string, string>();
+  const shellFed = new Set<number>();
   const feed = (text: string, readers: string[][]) => {
     const kinds = readers.map(stdinReader);
     if (kinds.includes("shell")) executed.scripts.push(text);
@@ -419,9 +464,12 @@ function executedPayloads(root: Node): Executed {
     if (node.type === "command") {
       const words = commandWords(node);
       const argv = argvOf(node);
+      const chain = wrapperChain(argv);
+      const inner = chain.at(-1)!;
+      executed.commands.push(...chain.map((level) => ({ argv: level, pipedIntoShell: shellFed.has(node.id) })));
       executed.scripts.push(...shellPayloads(argv));
-      executed.code.push(...sqlClientPayloads(innermost(argv)));
-      const position = argv.length - innermost(argv).length;
+      executed.code.push(...sqlClientPayloads(inner));
+      const position = argv.length - inner.length;
       const word = words[position];
       const variable = word?.length === 1 ? variableName(word[0]!) : undefined;
       const value = variable === undefined ? undefined : variables.get(variable);
@@ -438,8 +486,11 @@ function executedPayloads(root: Node): Executed {
       const stages = node.namedChildren.map(commandOf);
       for (let i = 1; i < stages.length; i++) {
         const [producer, consumer] = [stages[i - 1], stages[i]];
-        const payload = producer && consumer ? literalProducerPayload(argvOf(producer)) : undefined;
-        if (payload) feed(payload, [argvOf(consumer!)]);
+        if (!producer || !consumer) continue;
+        const consumerArgv = argvOf(consumer);
+        if (stdinReader(consumerArgv) === "shell") shellFed.add(producer.id);
+        const payload = literalProducerPayload(argvOf(producer));
+        if (payload) feed(payload, [consumerArgv]);
       }
     }
     for (const child of node.children) if (child) visit(child);
@@ -507,7 +558,7 @@ function sqlClientPayloads(words: string[]): string[] {
 }
 
 function firstMatch(scannable: string, rules: readonly CommandRule[]): CommandEvaluation | null {
-  for (const rule of rules) {
+  for (const [index, rule] of rules.entries()) {
     let re: RegExp;
     try {
       re = compileSafeRegex(rule.pattern, "i");
@@ -524,6 +575,39 @@ function firstMatch(scannable: string, rules: readonly CommandRule[]): CommandEv
         ...(rule.reason ? { reason: rule.reason } : {}),
         matched: hit[0],
         approvalKey: rule.pattern,
+        rule: { kind: "policy", index },
+      };
+    }
+  }
+  return null;
+}
+
+function containsInOrder(args: readonly string[], words: readonly string[]): boolean {
+  let next = 0;
+  for (const arg of args) if (arg === words[next]) next++;
+  return next === words.length;
+}
+
+function argvMatch(
+  commands: readonly ExecutedCommand[],
+  rules: readonly ArgvRule[],
+  kind: "floor" | "layer",
+): CommandEvaluation | null {
+  for (const rule of rules) {
+    const [name, ...args] = rule.argv;
+    const hit = commands.find(
+      (command) =>
+        (!rule.pipedIntoShell || command.pipedIntoShell) &&
+        basename(command.argv[0] ?? "") === name &&
+        containsInOrder(command.argv.slice(1), args),
+    );
+    if (hit) {
+      return {
+        decision: rule.decision,
+        ...(rule.reason ? { reason: rule.reason } : {}),
+        matched: hit.argv.join(" "),
+        approvalKey: `argv:${JSON.stringify(rule.argv)}${rule.pipedIntoShell ? "|shell" : ""}`,
+        rule: { kind },
       };
     }
   }
@@ -531,26 +615,22 @@ function firstMatch(scannable: string, rules: readonly CommandRule[]): CommandEv
 }
 
 export function evaluateCommand(command: string, policy: CommandPolicy): CommandEvaluation {
-  const matched = firstMatch(scannableCommand(command), policy.rules);
-  if (matched) return matched;
-  if (policy.mode === "allowlist") {
-    return { decision: "deny", reason: "not in allowlist" };
-  }
-  return { decision: "allow" };
+  return evaluateCommandWithLayer(command, policy, []);
 }
 
 export function evaluateCommandWithLayer(
   command: string,
   policy: CommandPolicy,
-  layerRules: readonly CommandRule[],
+  layerRules: readonly ArgvRule[],
 ): CommandEvaluation {
-  const scannable = scannableCommand(command);
-  const scopeMatch = firstMatch(scannable, policy.rules);
-  if (scopeMatch) return scopeMatch;
+  const { lines, commands } = scan(command, 0);
+  const policyMatch = firstMatch(lines.join("\n"), policy.rules);
+  if (policyMatch?.decision === "deny") return policyMatch;
+  const floorMatch = argvMatch(commands, FLOOR_ARGV_RULES, "floor");
+  if (floorMatch) return floorMatch;
+  if (policyMatch) return policyMatch;
   if (policy.mode === "allowlist") {
     return { decision: "deny", reason: "not in allowlist" };
   }
-  const layerMatch = firstMatch(scannable, layerRules);
-  if (layerMatch) return layerMatch;
-  return { decision: "allow" };
+  return argvMatch(commands, layerRules, "layer") ?? { decision: "allow" };
 }
