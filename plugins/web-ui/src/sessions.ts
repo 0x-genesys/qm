@@ -329,21 +329,25 @@ export function renderList(): void {
   const keptThreads = new Set(
     visible.filter((session) => !session.id || keptIds.has(session.id)).map((session) => session.threadRef),
   );
-  const shownItems = activeItems.filter(
-    (item, i) =>
-      i < recentLimit ||
-      (item.kind === "project" &&
-        (keptIds.has(projectMenuKey(item.scopeId)) ||
-          item.sessions.some((session) => keptThreads.has(session.threadRef)))),
+  const pageable = activeItems.filter((item) => item.kind === "session" || item.sessions.length);
+  const shownItems = new Set(
+    pageable.filter(
+      (item, i) =>
+        i < recentLimit ||
+        (item.kind === "session"
+          ? keptThreads.has(item.session.threadRef)
+          : keptIds.has(projectMenuKey(item.scopeId)) ||
+            item.sessions.some((session) => keptThreads.has(session.threadRef))),
+    ),
   );
   const shownThreads = new Set([
     ...archived.slice(0, archivedLimit).map((session) => session.threadRef),
     ...keptThreads,
-    ...shownItems
+    ...[...shownItems]
       .flatMap((item) => (item.kind === "session" ? [item.session] : item.sessions.slice(0, groupLimit(item))))
       .map((session) => session.threadRef),
   ]);
-  const moreBelow = activeItems.slice(recentLimit).some((item) => item.kind === "session" || item.sessions.length);
+  const moreBelow = pageable.some((item) => !shownItems.has(item));
   const archivedItems: RecentItem[] = archived.map((session) => ({
     kind: "session",
     session,

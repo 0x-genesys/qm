@@ -241,3 +241,22 @@ test("a group past the window that holds the open chat still pages", async () =>
     await h.close();
   }
 });
+
+test("the bottom Show more hides when the only row past the window is already open", async () => {
+  const list = sessions(51);
+  for (const item of list) item.scopeId = `personal:other-${item.id}`;
+  const opened = list[50]!;
+  const h = await harness({ path: `/s/${opened.id}`, session: opened, listSessions: list });
+  try {
+    await h.boot();
+    h.releaseSessions();
+    await h.sessionsReady();
+    const sidebar = document.querySelector("#sidebar-body")!;
+    assert.equal(sidebar.querySelectorAll(".session-row").length, 51);
+    assert.ok(
+      ![...sidebar.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Show more conversations"),
+    );
+  } finally {
+    await h.close();
+  }
+});
