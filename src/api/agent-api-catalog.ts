@@ -691,12 +691,14 @@ const FAMILIES: AgentApiFamily[] = [
       {
         method: "POST",
         path: "/v1/environments",
-        summary: "promote this conversation's computer to a NAMED environment owned by this user",
+        summary:
+          "name YOUR OWN computer (from your DM) as a NAMED environment; a shared room's computer cannot be named",
       },
       {
         method: "POST",
         path: "/v1/environments/attach",
-        summary: "point this conversation at a named environment (owner attaches freely; others go through the owner)",
+        summary:
+          "point this conversation at a named environment (owner attaches rooms they are in; others go through the owner; a room's attachment lapses when the owner leaves it)",
       },
     ],
   },

@@ -3820,6 +3820,50 @@ test("environments: an unattached scope provisions through its own scope (today'
   assert.equal(rwScope, env.id, "the attachment redirects the rw layer (machine/volume/backup) to the environment id");
 });
 
+test("environments: a room attached to the owner's computer falls back to its own once the owner leaves the room", async () => {
+  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "ap-")) }));
+  const { app, sandbox, directory } = built;
+  const realProvision = sandbox.provision.bind(sandbox);
+  let rwScope: string | undefined;
+  sandbox.provision = (layers, opts) => {
+    rwScope = layers.find((l) => l.mode === "rw")?.scopeId;
+    return realProvision(layers, opts);
+  };
+  await directory.replace([
+    { principalId: "U1", displayName: "One", type: "internal" },
+    { principalId: "U-owner", displayName: "Owner", type: "internal" },
+  ]);
+  const roster = (members: string[]) =>
+    directory.replaceChannels(
+      [{ channelId: "C1", name: "team" }],
+      members.map((principalId) => ({ channelId: "C1", principalId })),
+    );
+  await roster(["U1", "U-owner"]);
+
+  await selectComputer(built, "U-owner", scopeId("personal", "U-owner"));
+  const env = await app.createEnvironment({
+    scopeId: scopeId("personal", "U-owner"),
+    name: "prod",
+    actorId: "U-owner",
+  });
+  await app.attachScope({ scopeId: scopeId("channel", "C1"), environmentId: env.id, actorId: "U-owner" });
+
+  const attached = await app.turn(channel("!run echo go", { surface: "test" }));
+  assert.equal(attached.status, "ok");
+  assert.equal(rwScope, env.id, "while the owner is in the room, the room runs on the owner's computer");
+
+  await roster(["U1"]);
+  rwScope = undefined;
+  const lapsed = await app.turn(
+    channel("!run echo go2", {
+      surface: "test",
+      conversation: { kind: "channel", threadRef: "ch:C1:t2", channelRef: "C1", audience: [internalActor] },
+    }),
+  );
+  assert.equal(lapsed.status, "ok");
+  assert.equal(rwScope, scopeId("channel", "C1"), "once the owner left, the room is back on its own computer");
+});
+
 test("EAGER_PROVISION warms the box on a tool-using session's next turn and still reclaims it", async () => {
   const built = freshApp({ eagerProvisionEnabled: true });
   const boxes = spyProvisioning(built.sandbox);

@@ -1,6 +1,7 @@
 import { orgId as configOrgId } from "../config.ts";
 import { createPgPool } from "../persistence/pg-pool.ts";
-import type { ScopeId } from "../types.ts";
+import type { IsCurrentSharedScopeMember } from "../resolution/scope-membership.ts";
+import { parseScopeId, type ScopeId } from "../types.ts";
 
 export interface Environment {
   id: string;
@@ -33,10 +34,18 @@ export interface EnvironmentStore {
   attachmentsFor(environmentId: string): Promise<EnvironmentAttachment[]>;
 }
 
-export async function resolveEnvironmentId(store: EnvironmentStore | undefined, scopeId: ScopeId): Promise<string> {
+export async function resolveEnvironmentId(
+  store: EnvironmentStore | undefined,
+  scopeId: ScopeId,
+  isCurrentSharedScopeMember: IsCurrentSharedScopeMember,
+): Promise<string> {
   if (!store) return scopeId;
   const attachment = await store.getAttachment(scopeId);
-  return attachment ? attachment.environmentId : scopeId;
+  if (!attachment) return scopeId;
+  const { kind } = parseScopeId(scopeId);
+  const shared = kind === "channel" || kind === "group";
+  if (shared && !(await isCurrentSharedScopeMember(attachment.attachedBy, scopeId))) return scopeId;
+  return attachment.environmentId;
 }
 
 function rowToEnvironment(r: Record<string, unknown>): Environment {

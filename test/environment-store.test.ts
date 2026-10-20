@@ -8,21 +8,22 @@ describe("environments (the computer a conversation points at)", () => {
   let t = 1_000;
   const now = (): number => ++t;
   const store = (): ReturnType<typeof createMemoryEnvironmentStore> => createMemoryEnvironmentStore({ now });
+  const present = async (): Promise<boolean> => true;
 
   it("an unattached scope resolves to its own default environment (id == scopeId)", async () => {
     const s = store();
     const scope = scopeId("channel", "C-eng");
-    assert.equal(await resolveEnvironmentId(s, scope), scope);
+    assert.equal(await resolveEnvironmentId(s, scope, present), scope);
   });
 
   it("resolveEnvironmentId is the identity when no store is wired (zero-migration default)", async () => {
     const scope = scopeId("personal", "U1");
-    assert.equal(await resolveEnvironmentId(undefined, scope), scope);
+    assert.equal(await resolveEnvironmentId(undefined, scope, present), scope);
   });
 
   it("the default environment's machine/volume names are exactly today's scope-keyed names", async () => {
     const scope = scopeId("channel", "C-eng");
-    const envId = await resolveEnvironmentId(store(), scope);
+    const envId = await resolveEnvironmentId(store(), scope, present);
     assert.equal(sandboxScopeName("qm", envId), sandboxScopeName("qm", scope));
   });
 
@@ -33,7 +34,7 @@ describe("environments (the computer a conversation points at)", () => {
     await s.create({ id: owner, name: "prod", ownerActorId: "U-owner" });
     await s.attach(scope, owner, "U-owner");
 
-    const resolved = await resolveEnvironmentId(s, scope);
+    const resolved = await resolveEnvironmentId(s, scope, present);
     assert.equal(resolved, owner, "the attached scope provisions through the environment id");
     assert.equal(sandboxScopeName("qm", resolved), sandboxScopeName("qm", owner));
     assert.notEqual(sandboxScopeName("qm", resolved), sandboxScopeName("qm", scope));
@@ -48,10 +49,34 @@ describe("environments (the computer a conversation points at)", () => {
     await s.attach(a, env, "U-owner");
     await s.attach(b, env, "U-owner");
 
-    const ra = await resolveEnvironmentId(s, a);
-    const rb = await resolveEnvironmentId(s, b);
+    const ra = await resolveEnvironmentId(s, a, present);
+    const rb = await resolveEnvironmentId(s, b, present);
     assert.equal(ra, rb);
     assert.equal(sandboxScopeName("qm", ra), sandboxScopeName("qm", rb));
+  });
+
+  it("a room's attachment lapses once the owner who attached it is no longer a member of the room", async () => {
+    const s = store();
+    const room = scopeId("channel", "C-eng");
+    const owner = scopeId("personal", "U-owner");
+    await s.create({ id: owner, name: "prod", ownerActorId: "U-owner" });
+    await s.attach(room, owner, "U-owner");
+    const members = new Set(["U-owner", "U-other"]);
+    const isMember = async (person: string, scope: string): Promise<boolean> => scope === room && members.has(person);
+
+    assert.equal(await resolveEnvironmentId(s, room, isMember), owner);
+    members.delete("U-owner");
+    assert.equal(await resolveEnvironmentId(s, room, isMember), room, "the room falls back to its own computer");
+    assert.ok(await s.getAttachment(room), "the attachment row stays; it is honoured only while the owner is present");
+  });
+
+  it("a personal scope's attachment does not depend on room membership", async () => {
+    const s = store();
+    const owner = scopeId("personal", "U-owner");
+    await s.create({ id: owner, name: "prod", ownerActorId: "U-owner" });
+    await s.attach(scopeId("personal", "U-owner-alias"), owner, "U-owner");
+    const never = async (): Promise<boolean> => false;
+    assert.equal(await resolveEnvironmentId(s, scopeId("personal", "U-owner-alias"), never), owner);
   });
 
   it("create is idempotent on id (re-naming the same default env returns the first record)", async () => {

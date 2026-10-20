@@ -76,6 +76,22 @@ describe("environment verbs (list / create / attach, owner-gated)", async () => 
     assert.deepEqual(prod.attachedScopes, [scopeId("channel", "C-eng")]);
   });
 
+  it("a shared room's computer cannot be named as an environment by one of its members", async () => {
+    const roomCap = await mintCapabilityToken(
+      { actorId: "U-owner", scopeId: scopeId("channel", "C-eng"), exp: Date.now() + CAPABILITY_TTL_MS },
+      SECRET,
+    );
+    const res = await post("/v1/environments", { name: "eng-box" }, { "x-agent-capability": roomCap });
+    assert.equal(res.status, 403);
+    assert.equal(((await res.json()) as any).error, "personal_computer_required");
+    const list = (await (await get("/v1/environments", { "x-agent-capability": await cap("U-owner") })).json()) as any;
+    assert.equal(
+      list.environments.some((e: any) => e.id === scopeId("channel", "C-eng")),
+      false,
+      "no environment was created for the room",
+    );
+  });
+
   it("a non-owner is refused and told to ask the owner (owner mediation)", async () => {
     const res = await post(
       "/v1/environments/attach",
