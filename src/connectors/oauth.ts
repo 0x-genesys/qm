@@ -187,6 +187,8 @@ const github = makeTokenAdapters({ acceptJson: true, rejectErrorBody: true, labe
 
 const x = makeTokenAdapters({ acceptJson: true, rejectErrorBody: true, label: "x", clientAuth: "basic" });
 
+const zoom = makeTokenAdapters({ acceptJson: true, rejectErrorBody: true, label: "zoom", clientAuth: "basic" });
+
 const slackExchange: OAuthExchangeAdapter = async ({ provider, client, code, redirectUri, fetchImpl }) => {
   const res = await fetchImpl(provider.tokenUrl, {
     method: "POST",
@@ -455,6 +457,33 @@ export const PROVIDERS: Record<string, OAuthProviderConfig> = {
       ],
       scopesRationale:
         "tweet.read/users.read back reads; tweet.write lets the connecting user post as themselves; offline.access issues a refresh token so the 2-hour access token renews.",
+    },
+  },
+
+  zoom: {
+    label: "Zoom",
+    hosts: ["api.zoom.us"],
+    authUrl: "https://zoom.us/oauth/authorize",
+    tokenUrl: "https://zoom.us/oauth/token",
+    scopes: [],
+    clientIdEnv: "ZOOM_OAUTH_CLIENT_ID",
+    clientSecretEnv: "ZOOM_OAUTH_CLIENT_SECRET",
+    redirectPath: "zoom/callback",
+    consentMode: "standard",
+    egressRule: ["api.zoom.us"],
+    exchange: zoom.exchange,
+    refresh: zoom.refresh,
+    setupGuide: {
+      console: "Zoom App Marketplace → Develop → Build App → General app",
+      url: "https://marketplace.zoom.us/",
+      steps: [
+        "Create a General app and choose User-managed. Until it is published, only users in your Zoom account can connect it.",
+        "Add the redirect URI shown below as the OAuth redirect URL and to the OAuth allow list, with strict mode on.",
+        "Under Scopes, add meeting:read:meeting, meeting:read:list_meetings, meeting:write:meeting, meeting:update:meeting, meeting:delete:meeting, and user:read:user.",
+        "Paste the Client ID + Client secret below — the Development credentials unless the app is published.",
+      ],
+      scopesRationale:
+        "Zoom grants the scopes configured on the app rather than a requested list; the meeting scopes let the agent find, create, reschedule, and cancel meetings the connecting user hosts or schedules, and user:read:user reads their Zoom profile and timezone.",
     },
   },
 };
