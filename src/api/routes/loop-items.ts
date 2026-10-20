@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Cron, Loop, LoopItem, LoopSourcePayload } from "../../types.ts";
-import { isAccountType } from "../../connectors/oauth.ts";
+import { parseAccountName } from "../../connectors/oauth.ts";
 import { canonicalJson } from "../../../cli/src/canonical-json.ts";
 import { errMessage } from "../../util/errors.ts";
 import { sendJson } from "../http.ts";
@@ -538,10 +538,10 @@ export async function ensureSentChat(ctx: ApiCtx): Promise<void> {
   if (!threadId || threadId.length > 200 || jsonSize(body) > MAX_SOURCE_PAYLOAD_BYTES)
     return sendJson(ctx.res, 400, { error: "bad_request" });
   const text = (key: string, max: number): string => (typeof body[key] === "string" ? body[key].slice(0, max) : "");
-  const accountType = body.accountType === undefined ? "default" : body.accountType;
+  const accountType = body.accountType === undefined ? "default" : parseAccountName(body.accountType);
   const to = addressList(body.to === undefined ? [] : [body.to]);
   const cc = addressList(body.cc === undefined ? [] : [body.cc]);
-  if (!isAccountType(accountType) || to === null || cc === null)
+  if (!accountType || to === null || cc === null)
     return sendJson(ctx.res, 400, { error: "bad_request", message: "invalid account or recipient headers" });
   const payload = {
     title: text("subject", 300),

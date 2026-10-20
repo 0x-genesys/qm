@@ -15,9 +15,10 @@ import {
   type OAuthClientResolver,
   type AccountType,
   type OAuthState,
-  ACCOUNT_TYPES,
-  isAccountType,
+  accountNameRule,
+  parseAccountName,
 } from "../../connectors/oauth.ts";
+import { connectorAccountNames } from "../../credentials/connector-accounts.ts";
 import { providerTokenStatuses } from "../../credentials/connector-status.ts";
 import type { ConnectorTokenStore, DerivedOAuthAuth, OAuthTokenStatus } from "../../credentials/keychain.ts";
 import { createEnvSecretSource } from "../../credentials/secret-source.ts";
@@ -56,8 +57,10 @@ export function resolverFor(deps: ServerDeps): OAuthClientResolver {
   );
 }
 
-function parseAccountType(v: string | null | undefined): AccountType {
-  return isAccountType(v) ? v : "default";
+/** An omitted or blank account means the `default` slot; anything else must be a valid account name (null if not). */
+function parseAccountType(v: unknown): AccountType | null {
+  if (v === undefined || v === null || (typeof v === "string" && !v.trim())) return "default";
+  return parseAccountName(v);
 }
 
 async function providerConfigured(deps: ServerDeps, provider: string): Promise<boolean> {
@@ -190,7 +193,7 @@ async function principalHasProvider(deps: ServerDeps, provider: string, principa
   const p = oauthProvider(provider);
   if (!p || !deps.connectorTokens) return false;
   for (const host of p.hosts) {
-    for (const at of ACCOUNT_TYPES) {
+    for (const at of await connectorAccountNames(deps.connectorTokens, host, principalId)) {
       const st = await deps.connectorTokens
         .connectorTokenStatus(host, principalId, at)
         .catch(swallowAs("connectors: token status", { connected: false } as OAuthTokenStatus));
@@ -283,7 +286,8 @@ async function consentMint(ctx: ApiCtx): Promise<void> {
   const provider = typeof b.provider === "string" ? b.provider : "";
   if (!oauthProvider(provider))
     return sendJson(res, 404, { error: "not_found", message: `unknown OAuth provider: ${provider}` });
-  const accountType = parseAccountType(typeof b.accountType === "string" ? b.accountType : null);
+  const accountType = parseAccountType(b.accountType);
+  if (!accountType) return sendJson(res, 400, { error: "bad_request", message: accountNameRule() });
   const base = deps.publicUrl ? deps.publicUrl.replace(/\/$/, "") : "";
   const intendedPrincipalId = personKey(typeof b.intendedPrincipalId === "string" ? b.intendedPrincipalId : "");
   if (intendedPrincipalId && !samePerson(intendedPrincipalId, capability.actorId)) {
@@ -360,6 +364,7 @@ async function oauthStart(ctx: ApiCtx): Promise<void> {
   if (!principalId || !redirectUri)
     return sendJson(res, 400, { error: "bad_request", message: "principalId and redirectUri required" });
   const accountType = parseAccountType(url.searchParams.get("accountType"));
+  if (!accountType) return sendJson(res, 400, { error: "bad_request", message: accountNameRule() });
   try {
     const client = await resolverFor(deps)(oauthRoute.provider, { accountType });
     if (client.redirectAllowlist && !client.redirectAllowlist.includes(redirectUri)) {
@@ -442,18 +447,26 @@ export async function oauthRevoke(ctx: ApiCtx): Promise<void> {
   if (!principalId || (!providerName && !host)) {
     return sendJson(res, 400, { error: "bad_request", message: "principalId and provider or host required" });
   }
+  // One named account when accountType is given; otherwise every account slot on the host.
+  const onlyAccount = b.accountType === undefined ? undefined : parseAccountName(b.accountType);
+  if (onlyAccount === null) return sendJson(res, 400, { error: "bad_request", message: accountNameRule() });
+  const tokens = deps.connectorTokens;
+  const revokeHost = async (h: string): Promise<void> => {
+    const accounts = onlyAccount ? [onlyAccount] : await connectorAccountNames(tokens, h, principalId);
+    for (const at of accounts) await tokens.deleteConnectorToken(h, principalId, at);
+  };
+  const account = onlyAccount ? { accountType: onlyAccount } : {};
   if (providerName) {
     const provider = oauthProvider(providerName);
     if (!provider)
       return sendJson(res, 404, { error: "not_found", message: `unknown OAuth provider: ${providerName}` });
-    for (const h of provider.hosts)
-      for (const at of ACCOUNT_TYPES) await deps.connectorTokens.deleteConnectorToken(h, principalId, at);
+    for (const h of provider.hosts) await revokeHost(h);
     audit(deps, { principalId, action: "connector.oauth.revoked", resource: providerName, scopeLabel: principalId });
-    return sendJson(res, 200, { ok: true, principalId, provider: providerName, hosts: provider.hosts });
+    return sendJson(res, 200, { ok: true, principalId, provider: providerName, hosts: provider.hosts, ...account });
   }
-  for (const at of ACCOUNT_TYPES) await deps.connectorTokens.deleteConnectorToken(host, principalId, at);
+  await revokeHost(host);
   audit(deps, { principalId, action: "connector.oauth.revoked", resource: host, scopeLabel: principalId });
-  return sendJson(res, 200, { ok: true, principalId, host });
+  return sendJson(res, 200, { ok: true, principalId, host, ...account });
 }
 
 async function setToken(ctx: ApiCtx): Promise<void> {
@@ -502,18 +515,22 @@ export async function gmailSent(ctx: ApiCtx): Promise<void> {
   const principal = ctx.actor?.p;
   ctx.res.setHeader("Cache-Control", "no-store");
   if (!principal) return sendJson(ctx.res, 403, { error: "forbidden", message: "Sign in to read sent mail." });
-  const requestedAccountType = ctx.url.searchParams.get("accountType");
-  if (requestedAccountType !== null && !isAccountType(requestedAccountType))
-    return sendJson(ctx.res, 400, { error: "bad_request" });
+  const requestedParam = ctx.url.searchParams.get("accountType");
+  const requestedAccountType = requestedParam === null ? null : parseAccountName(requestedParam);
+  if (requestedParam !== null && !requestedAccountType) return sendJson(ctx.res, 400, { error: "bad_request" });
   const pageToken = ctx.url.searchParams.get("pageToken") ?? undefined;
   if (pageToken && pageToken.length > 2048) return sendJson(ctx.res, 400, { error: "bad_request" });
   try {
     let accountType: AccountType | undefined;
     let auth: DerivedOAuthAuth | null | undefined;
     let authError: unknown;
-    for (const candidate of requestedAccountType ? [requestedAccountType] : ACCOUNT_TYPES) {
+    const tokens = ctx.deps.connectorTokens;
+    let candidates: AccountType[] = [];
+    if (requestedAccountType) candidates = [requestedAccountType];
+    else if (tokens) candidates = await connectorAccountNames(tokens, "gmail.googleapis.com", principal);
+    for (const candidate of candidates) {
       try {
-        auth = await ctx.deps.connectorTokens?.connectorDerivedAuth("gmail.googleapis.com", principal, candidate);
+        auth = await tokens?.connectorDerivedAuth("gmail.googleapis.com", principal, candidate);
         if (auth) {
           accountType = candidate;
           break;

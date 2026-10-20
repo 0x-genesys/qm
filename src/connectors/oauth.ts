@@ -5,10 +5,39 @@ import { decodeJwt } from "jose";
 import { mintSignedPayload, verifySignedPayload } from "../auth/signed-token.ts";
 import { swallow } from "../util/errors.ts";
 
-export const ACCOUNT_TYPES = ["default", "personal", "company"] as const;
-export type AccountType = (typeof ACCOUNT_TYPES)[number];
+/**
+ * A named connection slot for one OAuth app. `default` is the fallback slot; `personal` and
+ * `company` are the original fixed slots (`company` keeps its Google Workspace domain check).
+ * Any other name is a free-form account label: Slack accounts by workspace, Google accounts by email.
+ */
+export type AccountType = string;
+export const BUILTIN_ACCOUNT_TYPES = ["default", "personal", "company"] as const;
+const ACCOUNT_NAME_MAX_LENGTH = 64;
+const ACCOUNT_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9._@+-]*[a-z0-9])?$/;
+export const accountNameRule = (field = "accountType"): string =>
+  `${field} must be 1-${ACCOUNT_NAME_MAX_LENGTH} characters of lowercase letters, digits, and . _ @ + -, starting and ending with a letter or digit`;
+
 export const isAccountType = (value: unknown): value is AccountType =>
-  typeof value === "string" && (ACCOUNT_TYPES as readonly string[]).includes(value);
+  typeof value === "string" && value.length <= ACCOUNT_NAME_MAX_LENGTH && ACCOUNT_NAME_PATTERN.test(value);
+
+/** Trims and lowercases a requested account name; null when it is not a valid name. */
+export function parseAccountName(value: unknown): AccountType | null {
+  if (typeof value !== "string") return null;
+  const name = value.trim().toLowerCase();
+  return isAccountType(name) ? name : null;
+}
+
+/** `preferred` slots first (in order), then every other valid name from `names`, alphabetically and deduplicated. */
+export function orderAccountNames(
+  names: Iterable<string>,
+  preferred: readonly string[] = BUILTIN_ACCOUNT_TYPES,
+): AccountType[] {
+  const extra = [...new Set(names)].filter((name) => isAccountType(name) && !preferred.includes(name)).sort();
+  return [...preferred, ...extra];
+}
+
+const isEmailAccount = (accountType: string | undefined): accountType is string =>
+  !!accountType && accountType.includes("@");
 
 export function generateCodeVerifier(): string {
   return randomBytes(32).toString("base64url");
@@ -162,19 +191,32 @@ function makeTokenAdapters(opts: {
 
 const { exchange: defaultExchange, refresh: defaultRefresh } = makeTokenAdapters({});
 
+function idTokenClaims(raw: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  const idToken = typeof raw?.id_token === "string" ? raw.id_token : "";
+  try {
+    return idToken ? decodeJwt(idToken) : undefined;
+  } catch (e) {
+    swallow("google id_token decode", e);
+    return undefined;
+  }
+}
+
 const googleExchange: OAuthExchangeAdapter = async (args) => {
   const { client, accountType } = args;
   const { hosts, token, raw } = await defaultExchange(args);
-  if (accountType === "company" && client.hostedDomain) {
-    const idToken = typeof raw?.id_token === "string" ? raw.id_token : "";
-    let claims: Record<string, unknown> | undefined;
-    try {
-      if (idToken) claims = decodeJwt(idToken);
-    } catch (e) {
-      swallow("google id_token decode", e);
+  const checkDomain = accountType === "company" && !!client.hostedDomain;
+  if (!checkDomain && !isEmailAccount(accountType)) return { hosts, token };
+  const claims = idTokenClaims(raw);
+  if (isEmailAccount(accountType)) {
+    // An email-named slot must hold that mailbox; skip only when Google returned no email claim.
+    const email = typeof claims?.email === "string" ? claims.email.toLowerCase() : "";
+    if (email && email !== accountType) {
+      throw new Error(`connected Google account is ${email}, not ${accountType} — sign in as ${accountType}`);
     }
+  }
+  if (checkDomain) {
     const hd = typeof claims?.hd === "string" ? claims.hd : "";
-    if (hd.toLowerCase() !== client.hostedDomain.toLowerCase()) {
+    if (hd.toLowerCase() !== client.hostedDomain!.toLowerCase()) {
       throw new Error(
         `connected account is not in the ${client.hostedDomain} workspace — pick your company Google account`,
       );
@@ -631,6 +673,7 @@ export function authorizeUrl(
   q.set(p.scopeParam ?? "scope", scopes.join(" "));
   for (const [k, v] of Object.entries(p.authParams ?? {})) q.set(k, v);
   if (accountType === "company" && opts.client.hostedDomain) q.set("hd", opts.client.hostedDomain);
+  if (provider === "google" && isEmailAccount(accountType)) q.set("login_hint", accountType);
   return `${p.authUrl}?${q.toString()}`;
 }
 

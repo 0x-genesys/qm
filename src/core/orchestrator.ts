@@ -77,7 +77,7 @@ import {
   renderConnectedAppsBlock,
   renderSandboxProfiles,
 } from "./environment-facts.ts";
-import { PROVIDERS } from "../connectors/oauth.ts";
+import { orderAccountNames, PROVIDERS } from "../connectors/oauth.ts";
 import { estimateCostUsd } from "../ratelimit/budget.ts";
 import {
   mintCapabilityToken,
@@ -1513,11 +1513,14 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ? ((await tokens.listConnectorsByOwners([actor.id])).get(actor.id) ?? [])
             : undefined;
           for (const host of CONNECTOR_HOSTS) {
-            for (const accountType of ["personal", undefined, "company"]) {
+            const named = (inventory ?? [])
+              .filter((credential) => credential.host === host)
+              .map((credential) => credential.accountType ?? "default");
+            for (const account of orderAccountNames(named, ["personal", "default", "company"])) {
+              const accountType = account === "default" ? undefined : account;
               const status = inventory
                 ? inventory.find(
-                    (credential) =>
-                      credential.host === host && (credential.accountType ?? "default") === (accountType ?? "default"),
+                    (credential) => credential.host === host && (credential.accountType ?? "default") === account,
                   )
                 : await tokens.connectorTokenStatus(host, actor.id, accountType);
               const healthy = status?.connected && !status.needsReconnect;
