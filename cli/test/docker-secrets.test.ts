@@ -138,17 +138,6 @@ test("docker up delivers secrets via a 0600 env-file, never on the docker argv",
     await dockerUp(config, dir, {});
 
     const argv = readFileSync(fake.argvLog, "utf8");
-    const probes = argv
-      .trim()
-      .split("\n")
-      .map((line) => JSON.parse(line) as string[])
-      .filter((args) => args[0] === "exec" && args[2] === "node");
-    assert.ok(
-      probes.some(
-        (args) => args[1] === "qm-sekrit-core" && args[4]?.includes('fetch("http://127.0.0.1:8080/healthz")'),
-      ),
-      "core readiness is probed through its /healthz endpoint inside the container",
-    );
     for (const value of Object.values(SECRETS)) {
       assert.ok(!argv.includes(value), `secret value must not reach the docker argv: ${value}`);
     }

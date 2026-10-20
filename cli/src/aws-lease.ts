@@ -13,8 +13,21 @@ export interface AwsLease {
   renewTimer?: ReturnType<typeof setInterval>;
 }
 
+const AWS_CLI_REJECTED =
+  "the AWS CLI rejected the command line; qm needs AWS CLI v2.35.10 or newer for `--cli-error-format` and the `lambda-microvms` commands";
+
 export function awsCapture(args: string[]): string {
-  return capture(process.env.AWS_BIN ?? "aws", [...args, "--cli-error-format", "json"]);
+  try {
+    return capture(process.env.AWS_BIN ?? "aws", [...args, "--cli-error-format", "json"]);
+  } catch (error) {
+    throw explainAwsUsageError(error);
+  }
+}
+
+export function explainAwsUsageError(error: unknown): Error {
+  if (awsUsageError(error) && !(error instanceof CliError))
+    return new CliError(`${AWS_CLI_REJECTED}: ${errMessage(error)}`, { cause: (error as Error).cause });
+  return error instanceof Error ? error : new Error(errMessage(error));
 }
 
 export function awsText(aws: AwsConfig, args: string[]): string {

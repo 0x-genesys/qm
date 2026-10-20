@@ -453,14 +453,16 @@ function writeDerived(ctx: FlyCtx, service: ServiceName): string {
 function flyJson(raw: string, command: string): unknown {
   try {
     return JSON.parse(raw);
-  } catch {
-    throw new CliError(`${command} returned invalid JSON`);
+  } catch (error) {
+    throw new CliError(`${command} returned invalid JSON (${errMessage(error)}):\n${raw.slice(0, 500)}`, {
+      cause: error,
+    });
   }
 }
 
 function flyJsonList(raw: string, command: string): Record<string, unknown>[] {
   const parsed = flyJson(raw, command);
-  if (!Array.isArray(parsed)) throw new CliError(`${command} returned a non-array`);
+  if (!Array.isArray(parsed)) throw new CliError(`${command} returned a non-array:\n${raw.slice(0, 500)}`);
   return parsed.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object");
 }
 
@@ -595,9 +597,20 @@ function ensurePostgres(ctx: FlyCtx): void {
   let id = mpgClusterId(ctx.flyOrg, pgName);
   if (!id) {
     note(`postgres: creating cluster ${pgName} (basic plan)…`);
-    fly(["mpg", "create", "--org", ctx.flyOrg, "--region", ctx.region, "--name", pgName, "--plan", "basic"]);
+    const created = fly([
+      "mpg",
+      "create",
+      "--org",
+      ctx.flyOrg,
+      "--region",
+      ctx.region,
+      "--name",
+      pgName,
+      "--plan",
+      "basic",
+    ]);
     id = mpgClusterId(ctx.flyOrg, pgName);
-    if (!id) throw new CliError(`fly mpg create did not list a cluster named ${pgName} in ${ctx.flyOrg}`);
+    if (!id) throw new CliError(`fly mpg list has no cluster named ${pgName} after mpg create:\n${created}`);
   }
   const status = flySensitive(["mpg", "status", id, "--json"], "failed to read Managed Postgres connection details");
   stageSecret(app, "DATABASE_URL", mpgDirectUrl(status, id));

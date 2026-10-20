@@ -421,7 +421,7 @@ test("slackCheck fails naming each manifest scope the token lacks", async () => 
               .filter((scope) => scope !== "chat:write" && scope !== "users:read")
               .join(", ")};`,
           ),
-        "the CLI's rendered manifest scopes are required even when the deployment's manifest file lists fewer",
+        "a deployment manifest listing fewer scopes does not lower what doctor requires",
       ),
     );
   } finally {

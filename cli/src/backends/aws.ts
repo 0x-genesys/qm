@@ -22,6 +22,7 @@ import {
   awsErrorCode,
   awsText,
   awsUsageError,
+  explainAwsUsageError,
   deployLocksTable,
   deploymentStateKey,
   releaseAwsLease as releaseLease,
@@ -179,7 +180,7 @@ export const awsDeploymentLayerTransport: DeploymentLayerTransport = httpDeploym
   request: awsCoreRequest,
   secretFallback: (config) =>
     config.aws
-      ? capture(process.env.AWS_BIN ?? "aws", [
+      ? awsCapture([
           "secretsmanager",
           "get-secret-value",
           "--secret-id",
@@ -320,12 +321,8 @@ function deployImageCoordinates(config: QmConfig): { name: string; version: stri
   return { name, version };
 }
 
-const AWS_CLI_TOO_OLD =
-  "the AWS CLI rejected the command line; qm needs AWS CLI v2.35.10 or newer for the `lambda-microvms` commands and `--cli-error-format`";
-
 export function guardLambdaMicrovms(e: unknown): never {
-  if (awsUsageError(e)) throw new CliError(`${AWS_CLI_TOO_OLD}: ${errMessage(e)}`);
-  throw e instanceof Error ? e : new Error(errMessage(e));
+  throw explainAwsUsageError(e);
 }
 
 function assertAwsDeployImage(config: QmConfig): void {
@@ -343,7 +340,7 @@ function assertAwsDeployImage(config: QmConfig): void {
     ]);
   } catch (e) {
     if (!awsUsageError(e)) guardLambdaMicrovms(e);
-    warn(`skipping the AWS deploy image check — ${AWS_CLI_TOO_OLD}`);
+    warn(`skipping the AWS deploy image check — ${errMessage(e)}`);
     return;
   }
   const detail = (image.image && typeof image.image === "object" ? image.image : image) as Record<string, unknown>;

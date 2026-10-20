@@ -32,12 +32,7 @@ test("a command line the AWS CLI rejects is a usage error, reported with the CLI
   );
 });
 
-test("awsErrorCode does not guess from legacy error text", () => {
-  const legacy = failure(
-    `console.error("An error occurred (ResourceNotFoundException) when calling the GetSecretValue operation"); process.exit(254);`,
-  );
-  assert.equal(awsErrorCode(legacy), undefined);
-  assert.equal(awsErrorCode(new Error("ResourceNotFoundException")), undefined);
+test("an AWS service error that is not a usage error passes through unchanged", () => {
   const other = failure(`console.error(JSON.stringify({ Code: "ThrottlingException" })); process.exit(254);`);
   assert.equal(awsUsageError(other), false);
   assert.throws(

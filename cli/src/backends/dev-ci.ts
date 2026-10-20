@@ -86,10 +86,11 @@ export async function devCiUp(): Promise<void> {
 
   if (!process.env.PUBLIC_API_URL && process.env.SPRITES_TOKEN) {
     const url = await startTunnel(port, dir);
-    if (!url) {
-      await devCiDown();
-      die("cloudflared tunnel didn't come up (sandbox self-API scenarios would silently fail)");
-    }
+    if (!url)
+      return dieWithTail(
+        join(dir, "tunnel.log"),
+        "cloudflared tunnel didn't come up (sandbox self-API scenarios would silently fail)",
+      );
     overlay.PUBLIC_API_URL = url;
     note(`agent self-API tunnel: ${url} → :${port}`);
   }

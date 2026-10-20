@@ -523,12 +523,15 @@ function noteLogTail(name: string, logs: string): void {
 
 async function waitReady(ctx: DockerCtx, service: ServiceName): Promise<void> {
   const name = cname(ctx, service);
-  const probe = `fetch("http://127.0.0.1:${serviceDef(service).docker.internalPort}/healthz").then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))`;
+  const probe = `fetch("http://127.0.0.1:${serviceDef(service).docker.internalPort}/healthz", { signal: AbortSignal.timeout(2000) }).then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); }).catch((e) => { console.error(String(e)); process.exit(1); })`;
+  let lastProbe = "";
   for (let i = 0; i < 90; i++) {
-    if (spawnSync("docker", ["exec", name, "node", "-e", probe], { stdio: "ignore" }).status === 0) {
+    const result = spawnSync("docker", ["exec", name, "node", "-e", probe], { encoding: "utf8", timeout: 5000 });
+    if (result.status === 0) {
       persistRestart(name);
       return;
     }
+    lastProbe = (result.stderr || result.error?.message || `exit ${result.status}`).trim();
     if (!containerRunning(name)) {
       noteLogTail(name, captureBoth("docker", ["logs", name]));
       throw new CliError(`${service} exited before becoming ready (see logs above)`);
@@ -536,7 +539,7 @@ async function waitReady(ctx: DockerCtx, service: ServiceName): Promise<void> {
     await sleep(1000);
   }
   noteLogTail(name, captureBoth("docker", ["logs", name]));
-  throw new CliError(`${service} did not become ready in 90s (see logs above)`);
+  throw new CliError(`${service} did not become ready in 90s; last /healthz probe: ${lastProbe} (see logs above)`);
 }
 
 async function waitPluginUp(name: string): Promise<void> {
