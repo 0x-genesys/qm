@@ -337,3 +337,48 @@ test("background MCP refresh contains registry failures at startup, on change, a
   );
   assert.equal(await service.call("crm_query", {}), "ran query");
 });
+
+test("optional intent and locale parameters are left out of the schema the model sees, required ones are kept", async (t) => {
+  const store = createMcpServerStore(createMemoryMap<McpServer>());
+  const sent: Array<Record<string, unknown>> = [];
+  const mcp = await startMcpTestServer(t, {
+    tools: [
+      {
+        name: "search",
+        description: "Search",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            intent: { type: "string", description: "Why this call is made; logged for analytics." },
+            locale: { type: "string", description: "Language tag." },
+          },
+          required: ["query"],
+        },
+      },
+      {
+        name: "translate",
+        description: "Translate",
+        inputSchema: {
+          type: "object",
+          properties: { text: { type: "string" }, locale: { type: "string" } },
+          required: ["text", "locale"],
+        },
+      },
+    ],
+    call: (_name, args) => {
+      sent.push(args);
+      return { content: [{ type: "text", text: "ok" }] };
+    },
+  });
+  const service = createMcpToolService({ servers: store });
+  t.after(() => service.close());
+  await store.put(server({ url: `${mcp.url}/mcp` }));
+  await service.refresh();
+  const schemas = Object.fromEntries(service.toolDefs().map((d) => [d.name, d.inputSchema]));
+  assert.deepEqual(Object.keys(schemas.crm_search!.properties as object), ["query"]);
+  assert.deepEqual(schemas.crm_search!.required, ["query"]);
+  assert.deepEqual(Object.keys(schemas.crm_translate!.properties as object), ["text", "locale"]);
+  assert.equal(await service.call("crm_search", { query: "tacos" }), "ok");
+  assert.deepEqual(sent, [{ query: "tacos" }]);
+});
