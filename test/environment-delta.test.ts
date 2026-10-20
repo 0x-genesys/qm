@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { environmentDelta, renderSandboxProfiles, type ListSection } from "../src/core/environment-facts.ts";
+import { environmentDelta, renderSandboxProfiles } from "../src/core/environment-facts.ts";
+import type { ListSection } from "../src/types.ts";
 import { currentTimeBlock, renderStandingObligations } from "../src/core/orchestrator/prompt-blocks.ts";
 import { forModelContext } from "../src/harness/context-compaction.ts";
 import { reconstructMessagesFromHistory } from "../src/harness/replay.ts";

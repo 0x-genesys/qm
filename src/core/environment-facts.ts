@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { retainedSnapshot } from "../harness/context-snapshot.ts";
 import type { SandboxResources } from "../sandbox/sandbox-resources.ts";
-import type { SessionEntry } from "../types.ts";
+import type { ListSection, SessionEntry } from "../types.ts";
 import type { AgentComputerSpec } from "../sandbox/sandbox.ts";
 import { connectorLabel, type ConnectorStatusRecord } from "../credentials/connector-status.ts";
 
@@ -87,13 +87,7 @@ interface EnvironmentSnapshot {
   anchorSeq?: number;
 }
 
-export interface ListSection {
-  head: string;
-  entries: ReadonlyMap<string, string>;
-}
-
-export const renderListSection = (section: ListSection, lines = [...section.entries.values()]) =>
-  [section.head, ...lines].join("\n");
+export const renderListSection = (section: ListSection) => [section.head, ...section.entries.values()].join("\n");
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
 
