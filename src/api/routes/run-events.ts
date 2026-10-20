@@ -1,4 +1,7 @@
 import { sendJson } from "../http.ts";
+import { LRUCache } from "lru-cache";
+import { reasoningKey } from "../../runs/run-stream-events.ts";
+import { REASONING_MAX_BLOCKS } from "../../runs/turn-stream.ts";
 import type { SessionEntry } from "../../types.ts";
 import type { ApiCtx, Route } from "./route.ts";
 
@@ -43,6 +46,7 @@ async function streamRun(ctx: ApiCtx): Promise<void> {
   let refreshing = false;
   let refreshAgain = false;
   const sentToolEvents = new Set<string>();
+  const sentReasoning = new LRUCache<string, number>({ max: REASONING_MAX_BLOCKS });
   let toolCursor: number | undefined;
   const cleanup = (): void => {
     closed = true;
@@ -71,7 +75,7 @@ async function streamRun(ctx: ApiCtx): Promise<void> {
     if (syncing || closed) return;
     syncing = true;
     queueMicrotask(() => {
-      if (!closed) app.syncRunStream(runId, offset);
+      if (!closed) app.syncRunStream(runId, offset, Object.fromEntries(sentReasoning.entries()));
     });
   };
   const sendDrained = async (data: unknown, id?: string): Promise<void> => {
@@ -82,6 +86,10 @@ async function streamRun(ctx: ApiCtx): Promise<void> {
     const toolEntries = await app.getRunToolEntries(runId, actor?.p, toolCursor);
     if (closed) return;
     offset = Math.max(offset, (run.partialStartOffset ?? 0) + (run.partial?.length ?? 0));
+    for (const block of run.reasoning ?? []) {
+      const key = reasoningKey(block);
+      sentReasoning.set(key, Math.max(sentReasoning.get(key) ?? 0, block.text.length));
+    }
     for (const entry of toolEntries) {
       const event = toolEvent(entry);
       if (event && !sentToolEvents.has(event.id)) {
@@ -133,6 +141,25 @@ async function streamRun(ctx: ApiCtx): Promise<void> {
       if (closed) return;
       if (event.kind === "refresh") {
         void refresh();
+        return;
+      }
+      if (event.kind === "reasoning") {
+        if (refreshing) return;
+        const key = reasoningKey(event);
+        const sent = sentReasoning.get(key) ?? 0;
+        if (event.offset > sent) {
+          sync();
+          return;
+        }
+        const delta = event.text.slice(sent - event.offset);
+        if (!delta) return;
+        syncing = false;
+        send({
+          type: "CUSTOM",
+          name: "reasoning",
+          value: { step: event.step, index: event.index, offset: sent, delta },
+        });
+        sentReasoning.set(key, sent + delta.length);
         return;
       }
       if (event.kind !== "delta" || refreshing) return;

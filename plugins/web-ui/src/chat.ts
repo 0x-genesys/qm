@@ -126,6 +126,7 @@ import {
 } from "./core-bridge";
 import {
   buildTimeline,
+  thinkingStepKey,
   messageWorkTimeline,
   workTimelineSegments,
   streamedAnswer,
@@ -436,6 +437,7 @@ export function createChatSurface(
   let ctaText = CHAT_CTAS[0]!;
   let workTicker: ReturnType<typeof setInterval> | null = null;
   let liveWorkExpanded = false;
+  const openThinking = new Set<string>();
 
   function notePendingSessionOnSend(): void {
     if (!chatState.threadRef || chatState.sessionId !== null) return;
@@ -588,6 +590,7 @@ export function createChatSurface(
     clearLiveWork();
     resetBackgroundPanel();
     chatState.resolvingApprovals.clear();
+    openThinking.clear();
     const onWork = observeLiveWork(agent);
     const onSendIssues = (issues: string[], retryable: Attachment[]): void => {
       if (agent !== chatState.agent || !issues.length) return;
@@ -2965,6 +2968,8 @@ export function createChatSurface(
   function timelineKey(item: TimelineItem): string {
     if (item.kind === "tool") return `tool:${item.row.call?.seq ?? item.row.result?.seq ?? item.row.approval?.seq}`;
     if (item.kind === "approval") return `approval:${item.approval.requestId}`;
+    const step = item.kind === "thinking" ? thinkingStepKey(item.activity.payload) : null;
+    if (step) return `thinking:${step}`;
     return `${item.kind}:${item.activity.seq}`;
   }
 
@@ -3018,6 +3023,7 @@ export function createChatSurface(
                   [
                     work,
                     work.activity,
+                    work.reasoning,
                     work.status,
                     work.stale,
                     work.pendingApprovals,
@@ -3130,7 +3136,15 @@ export function createChatSurface(
     }
     if (item.kind === "thinking") {
       const thought = thinkingPresentation((item.activity.payload as { thinking?: string }).thinking ?? "");
-      return html`<details class="thinking-row">
+      const key = timelineKey(item);
+      return html`<details
+        class="thinking-row"
+        ?open=${openThinking.has(key)}
+        @toggle=${(event: Event) => {
+          if ((event.currentTarget as HTMLDetailsElement).open) openThinking.add(key);
+          else openThinking.delete(key);
+        }}
+      >
         <summary class="thinking-summary">
           <span class="tool-icon">${icon(Brain, 15)}</span><span class="thinking-title">${thought.title}</span>
           <span class="activity-chevron">${icon(ChevronRight, 14)}</span>
