@@ -161,7 +161,7 @@ const a = process.argv.slice(2);
 fs.appendFileSync(${JSON.stringify(log)}, a.join(" ") + "\\n");
 if (a[0] === "apps" && a[1] === "create") console.log("already been taken");
 else if (a[0] === "apps" && a[1] === "list") console.log(JSON.stringify([{ Name: "acme-core" }, { Name: "acme-egress-proxy" }]));
-else if (a[0] === "secrets" && a[1] === "list") console.log("QM_OWNER_CD83933C6C53374D digest\\nCAPABILITY_SECRET digest\\nCORE_SIGNING_SECRET digest");
+else if (a[0] === "secrets" && a[1] === "list") console.log(JSON.stringify([{ name: "QM_OWNER_CD83933C6C53374D" }, { name: "CAPABILITY_SECRET" }, { name: "CORE_SIGNING_SECRET" }]));
 else if (a[0] === "ips" && a[1] === "list") console.log(fs.existsSync(${JSON.stringify(ipsFile)}) ? fs.readFileSync(${JSON.stringify(ipsFile)}, "utf8") : "[]");
 else console.log("ok");
 `,

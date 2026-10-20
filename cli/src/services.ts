@@ -319,7 +319,6 @@ const CATALOG: Record<ServiceName, ServiceDef> = {
   },
   "egress-proxy": {
     name: "egress-proxy",
-    readiness: /starting main dispatch loop/,
     order: 50,
     docker: { image: "egress-proxy", internalPort: 48080, portEnv: "PORT", hostPortOffset: 4 },
     fly: {
@@ -340,6 +339,17 @@ const CATALOG: Record<ServiceName, ServiceDef> = {
 };
 
 export const serviceDef = (name: ServiceName): ServiceDef => CATALOG[name];
+
+export function serviceHealthCheck(def: ServiceDef, port: number): string[] {
+  return (
+    def.tcpIngress?.healthCheck ?? [
+      "CMD",
+      "node",
+      "-e",
+      `fetch('http://127.0.0.1:${port}/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`,
+    ]
+  );
+}
 
 export function ordered(names: ServiceName[]): ServiceDef[] {
   return names.map(serviceDef).sort((a, b) => a.order - b.order);

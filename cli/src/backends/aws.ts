@@ -54,6 +54,7 @@ import {
   hostedServiceEnv,
   serviceHost,
   serviceDef,
+  serviceHealthCheck,
   isServiceName,
   virtualServiceEnv,
   type LogOpts,
@@ -520,12 +521,7 @@ export function renderTaskDefinition(
     .sort((a, b) => a.name.localeCompare(b.name));
   const healthCheck = def
     ? {
-        command: def.tcpIngress?.healthCheck ?? [
-          "CMD",
-          "node",
-          "-e",
-          `fetch('http://127.0.0.1:${internalPort}/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))`,
-        ],
+        command: serviceHealthCheck(def, internalPort),
         interval: 10,
         timeout: 5,
         retries: 3,

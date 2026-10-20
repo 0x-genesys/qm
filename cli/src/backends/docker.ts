@@ -29,6 +29,7 @@ import {
   hostedServiceEnv,
   serviceHost,
   serviceDef,
+  serviceHealthCheck,
   teardownOrdered,
   virtualServiceEnv,
   type LogOpts,
@@ -523,10 +524,11 @@ function noteLogTail(name: string, logs: string): void {
 
 async function waitReady(ctx: DockerCtx, service: ServiceName): Promise<void> {
   const name = cname(ctx, service);
-  const probe = `fetch("http://127.0.0.1:${serviceDef(service).docker.internalPort}/healthz", { signal: AbortSignal.timeout(2000) }).then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); }).catch((e) => { console.error(String(e)); process.exit(1); })`;
+  const def = serviceDef(service);
+  const [, ...probe] = serviceHealthCheck(def, def.docker.internalPort);
   let lastProbe = "";
   for (let i = 0; i < 90; i++) {
-    const result = spawnSync("docker", ["exec", name, "node", "-e", probe], { encoding: "utf8", timeout: 5000 });
+    const result = spawnSync("docker", ["exec", name, ...probe], { encoding: "utf8", timeout: 5000 });
     if (result.status === 0) {
       persistRestart(name);
       return;
@@ -539,7 +541,7 @@ async function waitReady(ctx: DockerCtx, service: ServiceName): Promise<void> {
     await sleep(1000);
   }
   noteLogTail(name, captureBoth("docker", ["logs", name]));
-  throw new CliError(`${service} did not become ready in 90s; last /healthz probe: ${lastProbe} (see logs above)`);
+  throw new CliError(`${service} did not become ready in 90s; last health check: ${lastProbe} (see logs above)`);
 }
 
 async function waitPluginUp(name: string): Promise<void> {
