@@ -586,3 +586,22 @@ test("live reasoning renders as a trailing thinking row until its persisted entr
   assert.equal(buildTimeline(otherBlock).length, 3, "a different block of the same step does not hide this one");
   assert.equal(buildTimeline({ ...work, status: "complete" }).length, 1, "finished work shows only durable rows");
 });
+
+test("NULL legacy call IDs preserve the existing adjacent-result fallback", () => {
+  for (const callId of [null, "known-call"]) {
+    const work: WorkBlock = {
+      status: "complete",
+      activity: [
+        act(10, "tool_call", { tool: "execute", command: "echo hello", callId }),
+        act(11, "tool_result", { tool: "execute", result: "hello", code: 0, callId: null }),
+      ],
+    };
+    const timeline = buildTimeline(work);
+    assert.equal(timeline.length, 1);
+    assert.equal(timeline[0].kind, "tool");
+    if (timeline[0].kind !== "tool") throw new Error("expected paired tool row");
+    assert.equal(timeline[0].row.call?.seq, 10);
+    assert.equal(timeline[0].row.result?.seq, 11);
+    assert.equal(toolRowKind(timeline[0].row, work.status), "ok");
+  }
+});
