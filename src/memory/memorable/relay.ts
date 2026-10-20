@@ -1,9 +1,6 @@
 import { worthOffering, type MemorableCapture } from "./capture.ts";
+import { DEFAULT_RECORD_TIMEOUT_MS } from "./config.ts";
 import { runMemorable } from "./run.ts";
-
-const RELAY_TIMEOUT_MS = 120_000;
-const MAX_RELAY_STDOUT = 8_192;
-const MAX_RELAY_STDERR = 2_048;
 
 function refusalReason(stdout: string): string | null {
   for (const line of stdout.split("\n")) {
@@ -26,7 +23,7 @@ export type RelayOutcome = { ok: true } | { ok: false; reason: string };
 export async function relayRecord(
   argv: readonly string[],
   capture: MemorableCapture,
-  timeoutMs: number = RELAY_TIMEOUT_MS,
+  timeoutMs: number = DEFAULT_RECORD_TIMEOUT_MS,
   opts?: { env: NodeJS.ProcessEnv; apiKey?: string },
 ): Promise<RelayOutcome> {
   const workflows = capture.workflows.filter(worthOffering).map((workflow) => ({
@@ -44,7 +41,7 @@ export async function relayRecord(
     argv,
     ["record", "--scope", capture.scope_id, "-"],
     JSON.stringify({ ...capture, workflows }),
-    { timeoutMs, maxStdoutBytes: MAX_RELAY_STDOUT, stdoutOverflow: "truncate", maxStderrBytes: MAX_RELAY_STDERR },
+    timeoutMs,
     opts,
   );
   if (run.status === "error") return { ok: false, reason: run.message.slice(0, 200) };

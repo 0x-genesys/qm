@@ -6,7 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildApp } from "../src/wiring.ts";
-import { jsonbStringify } from "../src/persistence/durable-map.ts";
+import { jsonbSafeStringify } from "../src/util/text.ts";
 import type { TurnRequest } from "../src/types.ts";
 import { testConfig } from "./support/test-config.ts";
 import type { SecurityScreener } from "../src/security/security-screener.ts";
@@ -765,7 +765,7 @@ test("signalRun: a steer already terminal at send is refused up front", async ()
 function completeOnSend(built: ReturnType<typeof freshApp>, sanitize = false): void {
   const origSend = built.signals.send.bind(built.signals);
   built.signals.send = async (runId, signal) => {
-    const sent = await origSend(runId, sanitize ? JSON.parse(jsonbStringify(signal)) : signal);
+    const sent = await origSend(runId, sanitize ? JSON.parse(jsonbSafeStringify(signal)) : signal);
     const claimed = await built.runs.claim("w1", 30_000);
     if (claimed) await built.runs.complete(claimed.id, claimed.leaseToken!, { status: "silent" });
     return sent;

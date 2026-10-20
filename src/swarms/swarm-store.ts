@@ -4,7 +4,8 @@ import { withPgTransaction, type PgPool } from "../persistence/pg-pool.ts";
 import type { RunStore, Run } from "../runs/run-store.ts";
 import type { SessionStore } from "../sessions/session-store.ts";
 import { assertSwarmRun, type SwarmRunFence } from "./swarm-fence.ts";
-import { jsonbStringify, type DurableMap } from "../persistence/durable-map.ts";
+import type { DurableMap } from "../persistence/durable-map.ts";
+import { jsonbSafeStringify } from "../util/text.ts";
 
 import type { SwarmSettings } from "./swarm-settings.ts";
 import type { SandboxBackendName } from "../sandbox/sandbox-routing.ts";
@@ -145,7 +146,7 @@ export function createSwarmStore(
         const next = mutate(current.rows[0]?.json ?? null);
         await client.query(
           "INSERT INTO swarms (id,json) VALUES ($1,$2) ON CONFLICT (id) DO UPDATE SET json=EXCLUDED.json",
-          [id, jsonbStringify(next)],
+          [id, jsonbSafeStringify(next)],
         );
         assertSwarmRun(fence, run);
         return next;

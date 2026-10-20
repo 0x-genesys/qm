@@ -1,22 +1,18 @@
 import { spawn } from "node:child_process";
 
+const MAX_STDOUT_BYTES = 256 * 1024;
+const MAX_STDERR_BYTES = 2_048;
+
 type MemorableRun =
   | { status: "exit"; code: number | null; stdout: string; stderr: string }
   | { status: "timeout" | "overflow" }
   | { status: "error"; message: string };
 
-interface MemorableRunLimits {
-  timeoutMs: number;
-  maxStdoutBytes: number;
-  stdoutOverflow: "kill" | "truncate";
-  maxStderrBytes?: number;
-}
-
 export function runMemorable(
   argv: readonly string[],
   args: readonly string[],
   input: string,
-  limits: MemorableRunLimits,
+  timeoutMs: number,
   opts?: { env: NodeJS.ProcessEnv; apiKey?: string },
 ): Promise<MemorableRun> {
   return new Promise((resolve) => {
@@ -42,22 +38,21 @@ export function runMemorable(
     const timer = setTimeout(() => {
       child.kill();
       finish({ status: "timeout" });
-    }, limits.timeoutMs);
-    timer.unref();
+    }, timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => {
-      const keep = stdoutBytes < limits.maxStdoutBytes;
       stdoutBytes += chunk.length;
-      if (stdoutBytes > limits.maxStdoutBytes && limits.stdoutOverflow === "kill") {
+      if (stdoutBytes <= MAX_STDOUT_BYTES) stdout.push(chunk);
+      else {
         child.kill();
         finish({ status: "overflow" });
-      } else if (keep) stdout.push(chunk);
+      }
     });
     child.stderr.on("data", (chunk: Buffer) => {
-      if (stderrBytes < (limits.maxStderrBytes ?? 0)) stderr.push(chunk);
+      if (stderrBytes < MAX_STDERR_BYTES) stderr.push(chunk);
       stderrBytes += chunk.length;
     });
     child.on("error", (error) => finish({ status: "error", message: error.message }));
-    child.on("exit", (code) =>
+    child.on("close", (code) =>
       finish({
         status: "exit",
         code,

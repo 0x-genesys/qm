@@ -1,6 +1,5 @@
 import { DIRECTORY_MIGRATIONS } from "../directory/postgres-directory-store.ts";
 import { randomUUID } from "node:crypto";
-import { jsonbStringify } from "../persistence/durable-map.ts";
 import { createPgPool, type PoolClient, withPgTransaction } from "../persistence/pg-pool.ts";
 import { jsonbSafeStringify, pgTextSafe } from "../util/text.ts";
 import { reportFailure } from "../util/errors.ts";
@@ -994,7 +993,7 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
        SELECT ${TENANT}, $1, i.seq, ${ITEM_COLUMNS.map(([column, key]) => (column === "blob_sha" ? `decode(i."${key}", 'hex')` : `i."${key}"`)).join(",")}, ${tsOf("$3::bigint")}
        FROM jsonb_to_recordset($2::jsonb) AS i(seq bigint, ${ITEM_COLUMNS.map(([, key, type]) => `"${key}" ${type}`).join(",")})
        ORDER BY i.seq`,
-        [sessionId, jsonbStringify(items), createdAt],
+        [sessionId, jsonbSafeStringify(items), createdAt],
       )
       .catch((err: unknown) => {
         const e = err as { code?: unknown; constraint?: unknown };

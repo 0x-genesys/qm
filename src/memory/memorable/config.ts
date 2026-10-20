@@ -37,8 +37,8 @@ const BASE_ENV_ALLOWLIST = [
 ] as const;
 
 const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
-const DEFAULT_INJECT_TIMEOUT_MS = 15_000;
-const DEFAULT_RECORD_TIMEOUT_MS = 120_000;
+export const DEFAULT_INJECT_TIMEOUT_MS = 15_000;
+export const DEFAULT_RECORD_TIMEOUT_MS = 120_000;
 
 function childEnv(env: NodeJS.ProcessEnv, passEnv: readonly string[]): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};

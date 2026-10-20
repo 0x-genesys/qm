@@ -219,3 +219,10 @@ test("relayRecord lets a chatty child finish and reads its refusal and stderr fr
   );
   assert.deepEqual(await relayRecord(quiet.bin, capture), { ok: false, reason: "exit 4: disk full" });
 });
+
+test("relayRecord reads a refusal printed after a large burst of output by a child", async () => {
+  const { bin } = stub(
+    `import { readFileSync } from "node:fs";\nreadFileSync(0, "utf8");\nprocess.stdout.write("x".repeat(150_000) + "\\n" + JSON.stringify({ error: "memorable_write_denied", mode: "deny" }) + "\\n");\nprocess.exitCode = 3;\n`,
+  );
+  assert.deepEqual(await relayRecord(bin, capture), { ok: false, reason: "memorable_write_denied (consent deny)" });
+});

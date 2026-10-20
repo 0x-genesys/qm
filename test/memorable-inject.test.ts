@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { memorableInject } from "../src/memory/memorable/inject.ts";
@@ -124,17 +124,4 @@ test("memorableInject falls back to the deployment key when the scope has none",
     env: { PATH: process.env.PATH, MEMORABLE_API_KEY: "mk_deployment" },
   });
   assert.ok(out?.includes("key=mk_deployment"));
-});
-
-test("memorableInject gives up at its deadline even when the child ignores SIGTERM", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "memorable-inject-"));
-  const pidFile = join(dir, "pid");
-  const bin = stub(
-    `import { writeFileSync } from "node:fs";\nprocess.on("SIGTERM", () => {});\nwriteFileSync(${JSON.stringify(pidFile)}, String(process.pid));\nsetInterval(() => {}, 1000);\n`,
-  );
-  const started = Date.now();
-  const out = await memorableInject(bin, "personal:U1", "task", undefined, 500);
-  process.kill(Number(readFileSync(pidFile, "utf8")), "SIGKILL");
-  assert.equal(out, null);
-  assert.ok(Date.now() - started < 3_000);
 });

@@ -2,7 +2,8 @@ import { wireRunResultDeliveries, runResultDelivery } from "../src/delivery/run-
 import { createDeliveryStore } from "../src/delivery/delivery-store.ts";
 import { createControlService } from "../src/api/control-service.ts";
 import { deliveryCandidatesFor } from "../src/core/orchestrator/turn-helpers.ts";
-import { createMemoryMap, jsonbStringify } from "../src/persistence/durable-map.ts";
+import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { jsonbSafeStringify } from "../src/util/text.ts";
 import { createSessionMailbox, type SessionMailbox, type SessionMessage } from "../src/sessions/session-mailbox.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -823,7 +824,7 @@ test("follow-up retries recover the accepted run before checking full capacity",
   const enqueue = r.runs.enqueue.bind(r.runs);
   let first = true;
   t.mock.method(r.runs, "enqueue", async (input: Parameters<RunStore["enqueue"]>[0]) => {
-    const receipt = await enqueue({ ...input, request: JSON.parse(jsonbStringify(input.request)) });
+    const receipt = await enqueue({ ...input, request: JSON.parse(jsonbSafeStringify(input.request)) });
     if (first) {
       first = false;
       throw new Error("lost receipt");

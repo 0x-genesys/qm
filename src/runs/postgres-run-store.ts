@@ -2,7 +2,7 @@ import { createPostgresNotifyBus } from "../persistence/postgres-notify-bus.ts";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createPgPool } from "../persistence/pg-pool.ts";
-import { jsonbStringify } from "../persistence/durable-map.ts";
+import { jsonbSafeStringify } from "../util/text.ts";
 import { pgTextSafe } from "../util/text.ts";
 import { isObj } from "../util/objects.ts";
 import type { TurnResult } from "../types.ts";
@@ -338,7 +338,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
           [
             id,
             sessionId,
-            jsonbStringify(withTraceCarrier(request)),
+            jsonbSafeStringify(withTraceCarrier(request)),
             dedupKey ?? null,
             maxAttempts,
             Date.now(),
@@ -555,7 +555,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
           targetRunId,
           signal.kind,
           signal.text === undefined ? null : pgTextSafe(signal.text),
-          jsonbStringify(signal),
+          jsonbSafeStringify(signal),
           Date.now(),
           signal.dedupeKey ?? null,
         ],
