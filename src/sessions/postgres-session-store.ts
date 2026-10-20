@@ -3,7 +3,6 @@ import { randomUUID } from "node:crypto";
 import { jsonbStringify } from "../persistence/durable-map.ts";
 import {
   createPgPool,
-  type PgPool,
   type PoolClient,
   type PgQueryOptions,
   type Rows,
@@ -78,16 +77,30 @@ import { SECURITY_SCREEN_STEP, screenPayloadFromEnvelope } from "../security/sec
 const threadRefOriginExpr = (threadRef: string): string =>
   `COALESCE(substring(${threadRef} FROM '${stableOriginPattern(ORIGIN_ALTERNATION)}'), substring(${threadRef} FROM '${legacyOriginPattern(ORIGIN_ALTERNATION)}'), 'conversation')`;
 
-export async function backfillSessionOriginBatch(q: PgPool["q"], limit: number): Promise<number> {
-  const updated = await q(
-    `UPDATE sessions
-        SET origin = ${threadRefOriginExpr("thread_ref")}, origin_id = ${threadRefCronIdExpr("thread_ref")}
-      WHERE id IN (SELECT id FROM sessions WHERE origin IS NULL LIMIT $1)
-      RETURNING 1`,
-    [limit],
-  );
-  return updated.length;
-}
+const LOOP_OR_SWARM_REF = legacyOriginPattern("(loop|swarm)");
+
+const sessionOriginBackfillLoop = (candidates: string, keepSpendMarkers: boolean): string => `
+  after := '';
+  LOOP
+    SELECT array_agg(id ORDER BY id) INTO batch
+      FROM (SELECT id FROM sessions WHERE id > after AND ${candidates} ORDER BY id LIMIT 5000) candidates;
+    EXIT WHEN batch IS NULL;
+    UPDATE sessions SET origin = ${threadRefOriginExpr("thread_ref")}, origin_id = ${threadRefCronIdExpr("thread_ref")}
+     WHERE id = ANY(batch);${keepSpendMarkers ? "" : "\n    DELETE FROM session_spend_dirty WHERE writer = pg_current_xact_id();"}
+    after := batch[cardinality(batch)];
+    COMMIT;
+    PERFORM pg_sleep(0.25);
+  END LOOP;`;
+
+const SESSION_ORIGIN_BACKFILL_SQL = `DO $session_origin_backfill$
+DECLARE
+  batch text[];
+  after text;
+BEGIN${sessionOriginBackfillLoop(`origin IS NULL AND thread_ref !~ '${LOOP_OR_SWARM_REF}'`, false)}${sessionOriginBackfillLoop(
+  `(origin IS NULL OR origin = 'conversation') AND thread_ref ~ '${LOOP_OR_SWARM_REF}'`,
+  true,
+)}
+END $session_origin_backfill$`;
 
 function rowToGoal(r: Record<string, unknown>): GoalRecord {
   return {
@@ -207,6 +220,7 @@ function rowToSpendRow(r: Record<string, unknown>): SpendRow {
     model: (r.model as string | null) ?? null,
     scopeId: r.scope_id as ScopeId,
     origin: r.origin as SessionOrigin,
+    cronId: (r.cron_id as string | null) ?? null,
     calls: Number(r.calls),
     costUsd: Number(r.cost_usd),
     input: Number(r.input),
@@ -300,31 +314,29 @@ export function createPostgresSessionStore(
     const rows = await q(participantSessionsSql(" AND s.id = $2"), [principalId, sessionId]);
     return rows[0] ? rowToParticipantSession(rows[0]) : null;
   };
-  const originExpr = (alias: string): string =>
-    `COALESCE(${alias}.origin, ${threadRefOriginExpr(`${alias}.thread_ref`)})`;
-  const cronIdExpr = (alias: string): string =>
-    `COALESCE(${alias}.origin_id, ${threadRefCronIdExpr(`${alias}.thread_ref`)})`;
-  const isBackground = (alias: string): string => `${originExpr(alias)} <> 'conversation'`;
-  const hasOrigin = (alias: string, origin: SessionOrigin): string => `${originExpr(alias)} = '${origin}'`;
+  const isBackground = (alias: string): string => `${alias}.origin <> 'conversation'`;
+  const hasOrigin = (alias: string, origin: SessionOrigin): string => `${alias}.origin = '${origin}'`;
   const originFilterClause = (alias: string, origin: SessionOriginFilter): string =>
-    origin === "other_background" ? `${originExpr(alias)} NOT IN ('conversation', 'cron')` : hasOrigin(alias, origin);
+    origin === "other_background" ? `${alias}.origin NOT IN ('conversation', 'cron')` : hasOrigin(alias, origin);
   const spendSql = `WITH RECURSIVE ancestry AS (
-           SELECT s.id AS session_id, s.parent_session_id, ${originExpr("s")} AS origin, ARRAY[s.id] AS path
+           SELECT s.id AS session_id, s.parent_session_id, s.origin AS origin, s.origin_id AS cron_id,
+                  ARRAY[s.id] AS path
              FROM sessions s
-            WHERE s.parent_session_id IS NOT NULL AND ${originExpr("s")} = 'conversation'
+            WHERE s.parent_session_id IS NOT NULL AND s.origin = 'conversation'
               AND EXISTS (SELECT 1 FROM session_llm_requests r
                            WHERE r.session_id = s.id AND r.created_at >= $1 AND r.created_at < $2
                              AND r.usage_json IS NOT NULL)
            UNION ALL
-           SELECT a.session_id, p.parent_session_id, ${originExpr("p")}, a.path || p.id
+           SELECT a.session_id, p.parent_session_id, p.origin, p.origin_id, a.path || p.id
              FROM ancestry a JOIN sessions p ON p.id = a.parent_session_id
             WHERE a.origin = 'conversation' AND NOT p.id = ANY(a.path) AND cardinality(a.path) < 64
          ), origins AS (
-           SELECT DISTINCT ON (session_id) session_id, origin
+           SELECT DISTINCT ON (session_id) session_id, origin, cron_id
              FROM ancestry ORDER BY session_id, cardinality(path) DESC
          ), rollup AS MATERIALIZED (
            SELECT (r.created_at / 86400000)::bigint AS day, s.scope_id,
-                COALESCE(o.origin, ${originExpr("s")}) AS origin, r.model,
+                COALESCE(o.origin, s.origin) AS origin,
+                COALESCE(o.cron_id, s.origin_id) AS cron_id, r.model,
                 COUNT(*) AS calls,
                 COALESCE(SUM(cost_usd), 0)::text AS cost_usd,
                 COALESCE(SUM(input), 0) AS input,
@@ -354,9 +366,9 @@ export function createPostgresSessionStore(
                  OFFSET 0) r
            JOIN sessions s ON s.id = r.session_id
            LEFT JOIN origins o ON o.session_id = s.id
-          GROUP BY day, s.scope_id, COALESCE(o.origin, ${originExpr("s")}), r.model
+          GROUP BY day, s.scope_id, COALESCE(o.origin, s.origin), COALESCE(o.cron_id, s.origin_id), r.model
          )
-         SELECT * FROM rollup ORDER BY day, scope_id, origin, model`;
+         SELECT * FROM rollup ORDER BY day, scope_id, origin, cron_id, model`;
 
   const { pool, q } = createPgPool(
     connectionString,
@@ -896,6 +908,11 @@ export function createPostgresSessionStore(
       {
         id: "sessions/store/0033-client-tools",
         statements: [`ALTER TABLE sessions ADD COLUMN IF NOT EXISTS client_tools JSONB`],
+      },
+      {
+        id: "sessions/store/0034-session-origin-backfill",
+        prepare: [SESSION_ORIGIN_BACKFILL_SQL],
+        statements: [],
       },
       ...(opts.stageItemsCutover
         ? []
@@ -1788,7 +1805,7 @@ export function createPostgresSessionStore(
       let cronClause = "";
       if (page.cronId) {
         params.push(page.cronId);
-        cronClause = ` AND ${cronIdExpr("s")} = $${params.length}`;
+        cronClause = ` AND s.origin_id = $${params.length}`;
       }
       let keysetClause = "";
       if (page.before) {
@@ -1797,7 +1814,7 @@ export function createPostgresSessionStore(
       }
       params.push(page.limit);
       const rows = await q(
-        `SELECT s.id, s.type, s.scope_id, s.thread_ref, s.created_at, s.messages, s.turns,
+        `SELECT s.id, s.type, s.scope_id, s.thread_ref, s.origin, s.created_at, s.messages, s.turns,
                 ${lastActivityExpr("s")} AS last_activity, s.first_user_preview, s.last_user_preview
            FROM sessions s
           WHERE ($1::boolean OR s.scope_id = $2)${categoryClause}${originClause}${cronClause}${keysetClause}
@@ -1810,7 +1827,7 @@ export function createPostgresSessionStore(
       return rows.map((r) => ({
         id: r.id as string,
         type: r.type as Session["type"],
-        origin: sessionOrigin(r.thread_ref as string | null),
+        origin: r.origin as SessionOrigin,
         scopeId: r.scope_id as Session["scopeId"],
         threadRef: r.thread_ref as Session["threadRef"],
         turns: Number(r.turns ?? 0),
@@ -1845,7 +1862,7 @@ export function createPostgresSessionStore(
                 COALESCE(SUM(t.turns), 0) AS turns,
                 MAX(t.activity) AS last_activity,
                 MIN(t.created_at) AS created_at
-           FROM (SELECT ${cronIdExpr("s")} AS cron_id, s.scope_id, s.messages, s.turns, s.created_at,
+           FROM (SELECT s.origin_id AS cron_id, s.scope_id, s.messages, s.turns, s.created_at,
                         ${lastActivityExpr("s")} AS activity
                    FROM sessions s
                   WHERE ($1::boolean OR s.scope_id = $2)) t
@@ -1906,14 +1923,14 @@ export function createPostgresSessionStore(
       if (originFilter) matchedClauses.push(originFilterClause("s", originFilter));
       if (cronId) {
         params.push(cronId);
-        matchedClauses.push(`${cronIdExpr("s")} = $${params.length}`);
+        matchedClauses.push(`s.origin_id = $${params.length}`);
       }
       const rows = await q(
         `SELECT origin, CASE WHEN origin = 'conversation' THEN type ELSE origin END AS bucket,
                 matched, COUNT(*) AS sessions, COALESCE(SUM(turns), 0) AS turns,
                 COUNT(DISTINCT cron_id) AS crons
-           FROM (SELECT s.type, ${originExpr("s")} AS origin,
-                        ${cronIdExpr("s")} AS cron_id,
+           FROM (SELECT s.type, s.origin AS origin,
+                        s.origin_id AS cron_id,
                         (${matchedClauses.join(" AND ") || "TRUE"}) AS matched,
                         COALESCE(s.turns, 0) AS turns
                    FROM sessions s
@@ -2014,9 +2031,10 @@ export function createPostgresSessionStore(
       });
       const days = await q(
         `SELECT d.day FROM (SELECT DISTINCT day FROM session_spend_dirty WHERE day IS NOT NULL) d
-         LEFT JOIN session_spend_days c ON c.day = d.day ORDER BY c.updated_at NULLS FIRST, d.day DESC`,
+         LEFT JOIN session_spend_days c ON c.day = d.day
+         ORDER BY d.day = max(d.day) OVER () DESC, c.updated_at NULLS FIRST, d.day DESC`,
       );
-      for (const { day } of days) {
+      for (const [index, { day }] of days.entries()) {
         try {
           await withPgTransaction(await pool(), async (client) => {
             const pending = await client.query("DELETE FROM session_spend_dirty WHERE day = $1 RETURNING day", [day]);
@@ -2033,7 +2051,7 @@ export function createPostgresSessionStore(
           reportFailure("spend: refresh daily totals", error);
           continue;
         }
-        if (Date.now() - started >= 5_000) break;
+        if (index > 0 && Date.now() - started >= 5_000) break;
       }
     },
 

@@ -9389,9 +9389,13 @@
           fmtPct,
           fmtTokens,
           shortName,
+          shortSchedule,
+          cronName,
           plural,
           window: governanceUI.spend.spendWindow(urlToState()),
           openUser: (principal) => go({ view: "user", scope, session: null, principal }),
+          openCronRuns: (cron, cronScope) =>
+            go({ view: "history", scope: cronScope, session: null, historyKind: "cron", cron }),
           setRange: (range) => go({ ...urlToState(), view: "spend", range, from: null, to: null }),
           setCustomRange: (from, to) => go({ ...urlToState(), view: "spend", range: null, from, to }),
           downloadCsv: (breakdown = "entity") => {

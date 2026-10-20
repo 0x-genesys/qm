@@ -4,11 +4,7 @@ import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import { applyPgMigrations, migrateRegisteredPgSchemas, registeredPgMigrations } from "../src/persistence/pg-pool.ts";
 import { PARALLEL_EXCEPTION_QUERY } from "../src/deployment/postdeploy-smoke.ts";
-import {
-  backfillSessionOriginBatch,
-  createPostgresSessionStore,
-  rowToSession,
-} from "../src/sessions/postgres-session-store.ts";
+import { createPostgresSessionStore, rowToSession } from "../src/sessions/postgres-session-store.ts";
 import { SECURITY_SCREEN_STEP } from "../src/security/security-posture.ts";
 import { createPostgresRunStore } from "../src/runs/postgres-run-store.ts";
 import { createPostgresRunSignalStore } from "../src/runs/postgres-run-signal-store.ts";
@@ -327,6 +323,81 @@ test("pg spend refresh keeps concurrent writes pending and failures preserve the
     await raw.end();
   }
 });
+
+test(
+  "pg spend refresh takes the newest dirty day, then the stalest days, at least two per pass",
+  { skip },
+  async (t) => {
+    const pg = (await import("pg")).default;
+    const admin = new pg.Pool({ connectionString: URL });
+    const schema = `spend_order_${randomUUID().replaceAll("-", "")}`;
+    await admin.query(`CREATE SCHEMA ${schema}`);
+    const url = new globalThis.URL(URL!);
+    url.searchParams.set("options", `-c search_path=${schema}`);
+    const day = 86_400_000;
+    const base = Date.UTC(2025, 5, 1);
+    let clock = base + 3 * day;
+    let at = base;
+    let elapsed = 0;
+    let slow = false;
+    const store = createPostgresSessionStore(url.toString(), {
+      now: () => {
+        if (slow) elapsed += 10_000;
+        return at;
+      },
+    });
+    const raw = new pg.Pool({ connectionString: url.toString() });
+    const scope = scopeId("personal", "spend-order");
+    const session = await store.getOrCreateByThread("spend-order", "dm", scope);
+    const bill = async (offset: number) => {
+      at = base + offset * day;
+      await store.recordLlmRequest(session.id, {
+        turnSeq: null,
+        step: 0,
+        model: "order",
+        scopeLabel: scope,
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, costUsd: 1 },
+      });
+      at = clock;
+    };
+    const slowPass = async () => {
+      clock += 60_000;
+      at = clock;
+      slow = true;
+      await store.refreshSpendRollup!();
+      slow = false;
+    };
+    const pending = async () =>
+      (await raw.query("SELECT DISTINCT day FROM session_spend_dirty WHERE day IS NOT NULL ORDER BY day")).rows.map(
+        (r) => Number(r.day) - base / day,
+      );
+    try {
+      for (const offset of [0, 1, 2, 3]) {
+        await bill(offset);
+        at = base + offset * day;
+        await store.refreshSpendRollup!();
+      }
+      for (const offset of [0, 1, 2, 3]) await bill(offset);
+      t.mock.method(Date, "now", () => elapsed);
+      await slowPass();
+      assert.deepEqual(await pending(), [1, 2]);
+      await bill(2);
+      await bill(3);
+      await slowPass();
+      assert.deepEqual(await pending(), [2]);
+      await slowPass();
+      assert.deepEqual(await pending(), []);
+      clock = base + 10 * day;
+      for (const offset of [0, 1, 2]) await bill(offset);
+      await slowPass();
+      assert.deepEqual(await pending(), [1]);
+    } finally {
+      await raw.end();
+      await admin.query(`DROP SCHEMA ${schema} CASCADE`);
+      await admin.end();
+    }
+  },
+);
 
 test(
   "pg saved spend resolves session changes after commit and preserves non-finite legacy costs",
@@ -1111,7 +1182,7 @@ test(
 );
 
 test(
-  "pg session origin columns: written at insert, regex fallback while NULL, backfill restores them",
+  "pg session origin columns: written at insert, and the store migration fills rows that predate them",
   { skip },
   async () => {
     const s = createPostgresSessionStore(URL!);
@@ -1121,6 +1192,8 @@ test(
       "cron:oc2:slot": { origin: "cron", cronId: "oc2" },
       "agent:main:webhook:ocw": { origin: "webhook", cronId: null },
       "monitor:ocm:extra": { origin: "monitor", cronId: null },
+      "loop:ocl:fire:aaa": { origin: "loop", cronId: null },
+      "swarm:ocs:member": { origin: "swarm", cronId: null },
       "ch:C1:oc-thread": { origin: "conversation", cronId: null },
     };
     const ids: string[] = [];
@@ -1160,7 +1233,12 @@ test(
       assert.deepEqual(await columns(), shapes, "insert derives origin and origin_id from the thread ref");
       const stored = await classify();
       assert.deepEqual(stored.groups, ["oc1", "oc2"]);
-      assert.deepEqual(stored.other, ["agent:main:webhook:ocw", "monitor:ocm:extra"]);
+      assert.deepEqual(stored.other, [
+        "agent:main:webhook:ocw",
+        "loop:ocl:fire:aaa",
+        "monitor:ocm:extra",
+        "swarm:ocs:member",
+      ]);
       assert.deepEqual(stored.conversation, ["ch:C1:oc-thread"]);
       assert.deepEqual(stored.cron, ["agent:main:cron:oc1", "cron:oc2:slot"]);
       assert.deepEqual(stored.oc2, ["cron:oc2:slot"]);
@@ -1168,22 +1246,42 @@ test(
       assert.equal(stored.cronStats.total, 1);
 
       await q("UPDATE sessions SET origin = NULL, origin_id = NULL WHERE id = ANY($1)", [ids]);
+      await q("UPDATE sessions SET origin = 'conversation' WHERE id = ANY($1) AND thread_ref ~ '^(loop|swarm):'", [
+        ids,
+      ]);
+      await q("DELETE FROM session_spend_dirty WHERE session_id = ANY($1)", [ids]);
+      const unrelated = randomUUID();
+      await q("INSERT INTO session_spend_dirty(session_id) VALUES ($1)", [unrelated]);
+      await q("DELETE FROM qm_schema_migrations WHERE id = 'sessions/store/0034-session-origin-backfill'");
+      await applyPgMigrations(raw, registeredPgMigrations(URL!));
+      assert.deepEqual(await columns(), shapes, "the migration derives the same values the insert path wrote");
+      assert.deepEqual(await classify(), stored, "migrated rows classify identically");
       assert.deepEqual(
-        await classify(),
-        stored,
-        "NULL columns fall back to the thread-ref regex and classify identically",
+        (
+          await q(
+            "SELECT s.thread_ref FROM session_spend_dirty d JOIN sessions s ON s.id = d.session_id WHERE d.session_id = ANY($1)",
+            [ids],
+          )
+        )
+          .map((r) => r.thread_ref)
+          .sort(),
+        ["loop:ocl:fire:aaa", "swarm:ocs:member"],
+        "filling in the columns leaves no spend to recompute, but reclassified loops and swarms recompute theirs",
       );
-
-      let batches = 0;
-      let updated = 0;
-      for (let n = await backfillSessionOriginBatch(q, 2); n > 0; n = await backfillSessionOriginBatch(q, 2)) {
-        batches++;
-        updated += n;
-      }
-      assert.ok(updated >= ids.length, "the backfill reaches every NULL row");
-      assert.ok(batches >= 3, "the backfill works in bounded batches until nothing is left");
-      assert.deepEqual(await columns(), shapes, "the backfill derives the same values the insert path wrote");
-      assert.deepEqual(await classify(), stored, "backfilled rows classify identically");
+      await q("DELETE FROM session_spend_dirty WHERE session_id = ANY($1)", [ids]);
+      assert.deepEqual(
+        await q("DELETE FROM session_spend_dirty WHERE session_id = $1 RETURNING session_id", [unrelated]),
+        [{ session_id: unrelated }],
+        "another transaction's pending spend survives the backfill",
+      );
+      await q("UPDATE sessions SET origin = 'cron' WHERE id = ANY($1) AND thread_ref = 'ch:C1:oc-thread'", [ids]);
+      assert.deepEqual(
+        (await s.scopeSessionSummaries(team, false, { limit: 10, origin: "cron" }))
+          .filter((r) => r.threadRef === "ch:C1:oc-thread")
+          .map((r) => r.origin),
+        ["cron"],
+        "a listed session reports the stored origin its filter matched",
+      );
     } finally {
       await raw.end();
     }
