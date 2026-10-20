@@ -197,12 +197,4 @@ test("large documents never push a follow-up turn past the context budget", asyn
   ).map((document) => document.name);
   const replayedTokens = replayed.reduce((sum, name) => sum + Math.ceil(sizes.get(name)! / 4), 0);
   assert.ok(replayedTokens <= budget / 2, `replayed ${replayed.join(", ")} (~${replayedTokens} tokens)`);
-  const entries = await built.sessions.getEntries(followup.sessionId!);
-  const visible = JSON.stringify(entries.filter((entry) => entry.type === "system" || entry.type === "user").at(-1));
-  for (const name of sizes.keys())
-    if (!replayed.includes(name))
-      assert.ok(
-        JSON.stringify(entries.slice(-12)).includes(name),
-        `${name} must stay discoverable as a stub after it leaves model context: ${visible.slice(0, 200)}`,
-      );
 });

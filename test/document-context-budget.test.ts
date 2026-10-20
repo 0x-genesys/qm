@@ -4,11 +4,9 @@ import {
   estimateEntryTokens,
   overBudgetFraction,
   planCompaction,
-  summarizedDocuments,
-  withSummarizedDocuments,
+  compactTranscript,
 } from "../src/harness/context-compaction.ts";
 import { estimateDocumentTokens } from "../src/core/document-kinds.ts";
-import { createContextSummaryPayload } from "../src/sessions/session-store.ts";
 import type { ScopeId, SessionEntry } from "../src/types.ts";
 
 let seq = 0;
@@ -58,33 +56,15 @@ test("history that is small in words but carries large PDFs compacts them out of
   assert.ok(overBudgetFraction(history, budget, 0.9), "five 1MB PDFs no longer look like a few hundred tokens");
   const plan = planCompaction(history, budget, 0.6);
   assert.ok(plan);
-  const keptDocuments = summarizedDocuments(plan.kept).length;
-  assert.ok(keptDocuments * 250_000 <= budget * 0.6, `kept ${keptDocuments} documents`);
-  assert.deepEqual(
-    summarizedDocuments(plan.toSummarize).map((document) => document.name),
-    ["a.pdf", "b.pdf", "c.pdf", "d.pdf", "e.pdf"].slice(0, 5 - keptDocuments),
-  );
+  const kept = plan.kept.reduce((sum, item) => sum + estimateEntryTokens(item), 0);
+  assert.ok(kept <= budget * 0.6, `kept ~${kept} tokens`);
+  assert.match(compactTranscript(plan.toSummarize), /a\.pdf \[file fa\]/);
 });
 
-test("summaries list compacted documents once and carry them forward", () => {
-  const first = summarizedDocuments([
-    entry("user", { text: "x", attachments: [pdf("a.pdf", "fa"), pdf("b.pdf", "fb")] }),
+test("compaction input names each compacted document and its saved file", () => {
+  const transcript = compactTranscript([
+    entry("user", { text: "review these", attachments: [pdf("a.pdf", "fa"), pdf("b.pdf", "fb")] }),
+    entry("assistant", { text: "Done." }),
   ]);
-  const text = withSummarizedDocuments("Earlier: reviewed two agreements.", first);
-  assert.match(text, /"a\.pdf" \(file fa\)/);
-  assert.match(text, /GET \$AGENT_API_URL\/v1\/files\/<file id>\/content/);
-  assert.equal(withSummarizedDocuments(text, first), text);
-  const prior = entry("system", createContextSummaryPayload(1, text, first));
-  const carried = summarizedDocuments([
-    prior,
-    entry("user", { text: "y", attachments: [pdf("c.pdf", "fc"), pdf("a.pdf", "fa")] }),
-  ]);
-  assert.deepEqual(
-    carried.map((document) => document.artifactId),
-    ["fb", "fc", "fa"],
-  );
-  const next = withSummarizedDocuments(`New summary.\n\n${text}`, carried);
-  assert.equal(next.match(/no longer included inline/g)?.length, 1);
-  assert.match(next, /"c\.pdf" \(file fc\)/);
-  assert.equal(withSummarizedDocuments(next, []), "New summary.\n\nEarlier: reviewed two agreements.");
+  assert.match(transcript, /review these \(files: a\.pdf \[file fa\], b\.pdf \[file fb\]\)/);
 });

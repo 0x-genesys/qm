@@ -17,17 +17,10 @@ export function promptEnvelopeBody(envelope: unknown): { hash: string; body: str
 
 const CONTEXT_SUMMARY_KIND = "context_summary";
 
-export interface SummarizedDocument {
-  name: string;
-  artifactId: string;
-}
-
 export interface ContextSummaryPayload {
   kind: typeof CONTEXT_SUMMARY_KIND;
   throughSeq: number;
   text: string;
-  /** Documents attached in the summarized turns; they are no longer replayed into model input. */
-  documents?: SummarizedDocument[];
 }
 
 export function contextSummaryPayload(entry: SessionEntry): ContextSummaryPayload | null {
@@ -38,28 +31,13 @@ export function contextSummaryPayload(entry: SessionEntry): ContextSummaryPayloa
     typeof payload.throughSeq === "number" &&
     typeof payload.text === "string"
   ) {
-    const documents = Array.isArray(payload.documents)
-      ? payload.documents.filter(
-          (document): document is SummarizedDocument =>
-            typeof document?.name === "string" && typeof document.artifactId === "string",
-        )
-      : [];
-    return {
-      kind: CONTEXT_SUMMARY_KIND,
-      throughSeq: payload.throughSeq,
-      text: payload.text,
-      ...(documents.length ? { documents } : {}),
-    };
+    return { kind: CONTEXT_SUMMARY_KIND, throughSeq: payload.throughSeq, text: payload.text };
   }
   return null;
 }
 
-export function createContextSummaryPayload(
-  throughSeq: number,
-  text: string,
-  documents: readonly SummarizedDocument[] = [],
-): ContextSummaryPayload {
-  return { kind: CONTEXT_SUMMARY_KIND, throughSeq, text, ...(documents.length ? { documents: [...documents] } : {}) };
+export function createContextSummaryPayload(throughSeq: number, text: string): ContextSummaryPayload {
+  return { kind: CONTEXT_SUMMARY_KIND, throughSeq, text };
 }
 
 export interface ContextWindow {

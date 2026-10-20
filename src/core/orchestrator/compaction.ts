@@ -17,10 +17,7 @@ import {
   overBudgetFraction,
   planCompaction,
   recentEntryCountWithinBudget,
-  summarizedDocuments,
-  withSummarizedDocuments,
 } from "../../harness/context-compaction.ts";
-import type { SummarizedDocument } from "../../sessions/session-store.ts";
 import { estimateCostUsd } from "../../ratelimit/budget.ts";
 import { errMessage } from "../../util/errors.ts";
 import { createKeyedQueue } from "../../util/async.ts";
@@ -35,7 +32,6 @@ interface Summarized {
   summaryLabel: ScopeId;
   throughSeq: number;
   mode?: "recent";
-  documents?: SummarizedDocument[];
 }
 
 export interface CompactionContext {
@@ -48,7 +44,6 @@ export interface CompactionContext {
     actorId: string;
     model?: string;
     cancel?: AbortSignal;
-    /** Tokens this turn's inline documents will add on top of the history. */
     reservedTokens?: number;
   }): Promise<SessionEntry[]>;
   compactRecent(input: {
@@ -69,7 +64,6 @@ export interface CompactionContext {
     actorId: string;
     model?: string;
   }): void;
-  /** Most of the context budget that inline documents may take in one model request. */
   documentTokenBudget(scopeId: string, model?: string): number;
 }
 
@@ -153,7 +147,6 @@ export function createCompaction(deps: OrchestratorDeps): CompactionContext {
       text,
       summaryLabel,
       throughSeq: compactionThroughSeq(plan.toSummarize),
-      documents: summarizedDocuments(plan.toSummarize),
     };
   }
 
@@ -162,11 +155,11 @@ export function createCompaction(deps: OrchestratorDeps): CompactionContext {
     lease: Lease;
     summarized: Summarized;
   }): Promise<SessionEntry> {
-    const { text, summaryLabel, throughSeq, mode, documents = [] } = input.summarized;
+    const { text, summaryLabel, throughSeq, mode } = input.summarized;
     const summary = await deps.sessions.append(input.lease, {
       type: "system",
       payload: {
-        ...createContextSummaryPayload(throughSeq, withSummarizedDocuments(text, documents), documents),
+        ...createContextSummaryPayload(throughSeq, text),
         ...(mode ? { mode } : {}),
       },
       scopeLabel: summaryLabel,
@@ -274,7 +267,6 @@ export function createCompaction(deps: OrchestratorDeps): CompactionContext {
         summaryLabel: (includedPrior?.scopeLabel ?? input.scopeId) as ScopeId,
         throughSeq,
         mode: "recent",
-        documents: summarizedDocuments([...(prior ? [prior] : []), ...rest.slice(0, start)]),
       },
     });
     return [summary, ...recent];

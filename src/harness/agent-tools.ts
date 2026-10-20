@@ -72,7 +72,6 @@ function describePublishAudience(a: PublishAudienceDescriptor | undefined): stri
 
 export interface ToolContextRef {
   documents?: DocumentInput[];
-  /** Set once a provider rejects a request carrying `documents`; later requests send stubs instead. */
   documentsStubbed?: boolean;
   runtimeHandoff?: HarnessHandoff;
   runtimeRunId?: string;

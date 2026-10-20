@@ -932,7 +932,6 @@ function piAssistantFailure(session: AssistantTextSession): ProviderTurnError | 
 
 /** Codes that retry the turn on the configured fallback model. */
 const FALLBACK_CODES = new Set(["refusal", "model_unavailable"]);
-/** Codes that retry a request once without its inline documents (oversized or unreadable attachments). */
 const DOCUMENT_REJECTION_CODES = new Set(["context_too_long", "bad_request"]);
 
 function documentsDroppedNote(documents: readonly DocumentInput[]): string {
@@ -2183,7 +2182,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             documentRejection = failure;
             entry.ref.documentsStubbed = true;
             console.error(
-              `[pi] request with ${entry.ref.documents.length} inline document(s) rejected (${failure.code}) — replacing them with stubs session=${turn.session.id}`,
+              `[pi] request with ${entry.ref.documents.length} inline document(s) rejected (${failure.code}: ${failure.raw || failure.message}) — replacing them with stubs session=${turn.session.id}`,
             );
           };
           const retryWithoutDocuments = async (): Promise<boolean> => {

@@ -50,9 +50,6 @@ export function isTextDocument(file: { name: string; mimeType?: string; mimetype
   return TEXT_EXTENSIONS.has(ext) || ["csv", "tsv", "iif"].includes(ext);
 }
 
-// Conservative per-byte estimate of what an attachment costs once expanded into a model request:
-// native PDFs are billed per page (text plus a page image), which tracks file size far better than
-// the few words a session entry stores for the attachment itself.
 const DOCUMENT_BYTES_PER_TOKEN = 4;
 
 export function estimateDocumentTokens(file: {
@@ -82,7 +79,6 @@ export function documentAttachmentTokens(payload: unknown): number {
   return replayableDocumentMetas(payload).reduce((sum, file) => sum + estimateDocumentTokens(file), 0);
 }
 
-/** How the agent fetches a saved file's bytes through its self-API. */
 export function fileContentRequest(artifactId: string): string {
   return `GET $AGENT_API_URL/v1/files/${artifactId}/content (header x-agent-capability: $AGENT_API_TOKEN)`;
 }

@@ -129,7 +129,6 @@ export async function withDocumentInputs(
   model: DocumentModel,
   documents: readonly DocumentInput[],
   signal?: AbortSignal,
-  /** When set, send this text in place of the documents' content. */
   stubText?: string,
 ): Promise<unknown> {
   if (!documents.length || !payload || typeof payload !== "object") return payload;
