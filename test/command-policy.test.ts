@@ -588,6 +588,7 @@ test("layer rules match their words in order after the tool's own binary", () =>
     "find . -exec acmectl purge ;",
     "setsid acmectl purge",
     `${"nohup ".repeat(10)}acmectl purge`,
+    "echo acmectl purge",
     "acmectl purge undefined=1",
     "acmectl purge --url x extra",
   ]) {
