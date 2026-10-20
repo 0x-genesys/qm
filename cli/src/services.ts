@@ -105,7 +105,7 @@ export interface ServiceDef {
     hostPortOffset?: number;
   };
   fly?: FlyServiceSpec;
-  tcpIngress?: { healthCheck: string[] };
+  tcpIngress?: { healthCheck: ["CMD", ...string[]] };
 }
 
 export interface BrandEnv {
@@ -340,7 +340,7 @@ const CATALOG: Record<ServiceName, ServiceDef> = {
 
 export const serviceDef = (name: ServiceName): ServiceDef => CATALOG[name];
 
-export function serviceHealthCheck(def: ServiceDef, port: number): string[] {
+export function serviceHealthCheck(def: ServiceDef, port: number): ["CMD", ...string[]] {
   return (
     def.tcpIngress?.healthCheck ?? [
       "CMD",
