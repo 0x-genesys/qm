@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 
 const MAX_STDOUT_BYTES = 256 * 1024;
 const MAX_STDERR_BYTES = 2_048;
+const DRAIN_AFTER_EXIT_MS = 250;
 
 type MemorableRun =
   | { status: "exit"; code: number | null; stdout: string; stderr: string }
@@ -27,14 +28,23 @@ export function runMemorable(
     let stdoutBytes = 0;
     let stderrBytes = 0;
     let settled = false;
+    let drain: NodeJS.Timeout | undefined;
     const finish = (run: MemorableRun) => {
       if (settled) return;
       settled = true;
       stdout = [];
       stderr = [];
       clearTimeout(timer);
+      clearTimeout(drain);
       resolve(run);
     };
+    const exited = (code: number | null) =>
+      finish({
+        status: "exit",
+        code,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+      });
     const timer = setTimeout(() => {
       child.kill();
       finish({ status: "timeout" });
@@ -52,14 +62,10 @@ export function runMemorable(
       stderrBytes += chunk.length;
     });
     child.on("error", (error) => finish({ status: "error", message: error.message }));
-    child.on("close", (code) =>
-      finish({
-        status: "exit",
-        code,
-        stdout: Buffer.concat(stdout).toString("utf8"),
-        stderr: Buffer.concat(stderr).toString("utf8"),
-      }),
-    );
+    child.on("exit", (code) => {
+      drain = setTimeout(() => exited(code), DRAIN_AFTER_EXIT_MS);
+    });
+    child.on("close", exited);
     child.stdin.on("error", () => {});
     child.stdin.end(input);
   });

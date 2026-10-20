@@ -209,15 +209,11 @@ test("relayRecord settles at its deadline even when the child ignores SIGTERM", 
   assert.ok(Date.now() - started < 3_000);
 });
 
-test("relayRecord lets a chatty child finish and reads its refusal and stderr from the kept head", async () => {
+test("relayRecord reports the head of a long stderr", async () => {
   const { bin } = stub(
-    `import { readFileSync } from "node:fs";\nreadFileSync(0, "utf8");\nprocess.stdout.write(JSON.stringify({ error: "memorable_write_denied" }) + "\\n" + "x".repeat(200_000));\nprocess.stderr.write("  disk\\n  full " + "y".repeat(200_000));\nprocess.exitCode = 3;\n`,
+    `import { readFileSync } from "node:fs";\nreadFileSync(0, "utf8");\nprocess.stderr.write("  disk\\n  full " + "y".repeat(200_000));\nprocess.exitCode = 4;\n`,
   );
-  assert.deepEqual(await relayRecord(bin, capture), { ok: false, reason: "memorable_write_denied" });
-  const quiet = stub(
-    `import { readFileSync } from "node:fs";\nreadFileSync(0, "utf8");\nprocess.stdout.write("z".repeat(200_000));\nprocess.stderr.write("  disk\\n  full ");\nprocess.exitCode = 4;\n`,
-  );
-  assert.deepEqual(await relayRecord(quiet.bin, capture), { ok: false, reason: "exit 4: disk full" });
+  assert.deepEqual(await relayRecord(bin, capture), { ok: false, reason: `exit 4: disk full ${"y".repeat(290)}` });
 });
 
 test("relayRecord reads a refusal printed after a large burst of output by a child", async () => {
@@ -225,4 +221,13 @@ test("relayRecord reads a refusal printed after a large burst of output by a chi
     `import { readFileSync } from "node:fs";\nreadFileSync(0, "utf8");\nprocess.stdout.write("x".repeat(150_000) + "\\n" + JSON.stringify({ error: "memorable_write_denied", mode: "deny" }) + "\\n");\nprocess.exitCode = 3;\n`,
   );
   assert.deepEqual(await relayRecord(bin, capture), { ok: false, reason: "memorable_write_denied (consent deny)" });
+});
+
+test("relayRecord reports a clean exit promptly even when a grandchild keeps its output open", async () => {
+  const { bin } = stub(
+    `import { spawn } from "node:child_process";\nimport { readFileSync } from "node:fs";\nreadFileSync(0, "utf8");\nspawn(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], { stdio: "inherit" }).unref();\n`,
+  );
+  const started = Date.now();
+  assert.deepEqual(await relayRecord(bin, capture, 3_000), { ok: true });
+  assert.ok(Date.now() - started < 2_000);
 });
