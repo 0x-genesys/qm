@@ -1288,6 +1288,8 @@ export async function buildModelRuntime(
     const routed = {
       ...retained(options),
       apiKey: request.apiKey,
+      // A gateway redirect would carry the gateway key to another host, so the SDK must not follow one.
+      fetchOptions: { redirect: "error" },
       transformHeaders: async (headers: ProviderHeaders) => ({
         ...(options?.transformHeaders ? await options.transformHeaders(headers) : headers),
         ...request.headers,
