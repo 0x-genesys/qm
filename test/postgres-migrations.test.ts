@@ -7,6 +7,7 @@ import {
   createPgPool,
   definePgMigration,
   migrateRegisteredPgSchemas,
+  pgMigration,
   PG_MIGRATIONS_TABLE,
 } from "../src/persistence/pg-pool.ts";
 
@@ -23,7 +24,12 @@ test("concurrent index migrations adopt prebuilt indexes and serialize retries",
   const b = new pg.Pool({ connectionString: databaseUrl });
   const { id, table } = names();
   const index = `${table}_idx`;
-  const migration = definePgMigration(id, [`CREATE INDEX CONCURRENTLY IF NOT EXISTS ${index} ON ${table}(value)`]);
+  const migration = pgMigration({
+    id,
+    concurrentIndexes: [
+      { name: index, table, statement: `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${index} ON ${table}(value)` },
+    ],
+  });
   try {
     await a.query(`CREATE TABLE ${table}(value INT NOT NULL)`);
     await a.query(`CREATE INDEX CONCURRENTLY ${index} ON ${table}(value)`);
@@ -44,9 +50,12 @@ test("failed concurrent index builds are unrecorded and rebuild invalid indexes 
   const pool = new pg.Pool({ connectionString: databaseUrl });
   const { id, table } = names();
   const index = `${table}_idx`;
-  const migration = definePgMigration(id, [
-    `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ${index} ON ${table}(value)`,
-  ]);
+  const migration = pgMigration({
+    id,
+    concurrentIndexes: [
+      { name: index, table, statement: `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ${index} ON ${table}(value)` },
+    ],
+  });
   try {
     await pool.query(`CREATE TABLE ${table}(value INT NOT NULL)`);
     await pool.query(`INSERT INTO ${table} VALUES (1), (1)`);
@@ -67,21 +76,103 @@ test("failed concurrent index builds are unrecorded and rebuild invalid indexes 
   }
 });
 
-test("concurrent index migrations reject mixed transactional statements before execution", { skip }, async () => {
+test(
+  "a concurrent index left in a transactional migration is refused by Postgres and rolled back",
+  { skip },
+  async () => {
+    const pool = new pg.Pool({ connectionString: databaseUrl });
+    const { id, table } = names();
+    try {
+      await assert.rejects(
+        applyPgMigrations(pool, [
+          definePgMigration(id, [
+            `CREATE TABLE ${table}(value INT)`,
+            `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${table}_idx ON ${table}(value)`,
+          ]),
+        ]),
+        { code: "25001" },
+      );
+      assert.equal((await pool.query("SELECT to_regclass($1) AS name", [table])).rows[0].name, null);
+      assert.equal((await pool.query(`SELECT 1 FROM ${PG_MIGRATIONS_TABLE} WHERE id=$1`, [id])).rowCount, 0);
+    } finally {
+      await pool.end();
+    }
+  },
+);
+
+test("a concurrent index declared under the wrong name is not recorded", { skip }, async () => {
+  const pool = new pg.Pool({ connectionString: databaseUrl });
+  const { id, table } = names();
+  try {
+    await pool.query(`CREATE TABLE ${table}(value INT)`);
+    await assert.rejects(
+      applyPgMigrations(pool, [
+        pgMigration({
+          id,
+          concurrentIndexes: [
+            {
+              name: `${table}_declared`,
+              table,
+              statement: `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${table}_built ON ${table}(value)`,
+            },
+          ],
+        }),
+      ]),
+      /is not ready and valid/,
+    );
+    assert.equal((await pool.query(`SELECT 1 FROM ${PG_MIGRATIONS_TABLE} WHERE id=$1`, [id])).rowCount, 0);
+  } finally {
+    await pool.query(`DROP TABLE IF EXISTS ${table}`);
+    await pool.end();
+  }
+});
+
+test("Postgres refuses a migration element holding two statements and nothing is applied", { skip }, async () => {
   const pool = new pg.Pool({ connectionString: databaseUrl });
   const { id, table } = names();
   try {
     await assert.rejects(
       applyPgMigrations(pool, [
-        definePgMigration(id, [
-          `CREATE TABLE ${table}(value INT)`,
-          `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${table}_idx ON ${table}(value)`,
-        ]),
+        definePgMigration(id, [`CREATE TABLE ${table}(a INT); ALTER TABLE ${table} ADD COLUMN b INT`]),
       ]),
-      /must contain only concurrent indexes/,
+      { code: "42601" },
     );
     assert.equal((await pool.query("SELECT to_regclass($1) AS name", [table])).rows[0].name, null);
+    assert.equal((await pool.query(`SELECT 1 FROM ${PG_MIGRATIONS_TABLE} WHERE id=$1`, [id])).rowCount, 0);
   } finally {
+    await pool.query(`DROP TABLE IF EXISTS ${table}`);
+    await pool.end();
+  }
+});
+
+test("semicolons inside dollar quotes, literals and comments stay within one statement", { skip }, async () => {
+  const pool = new pg.Pool({ connectionString: databaseUrl });
+  const { id, table } = names();
+  try {
+    await applyPgMigrations(pool, [
+      definePgMigration(id, [
+        `CREATE TABLE ${table}(value TEXT)`,
+        `DO $$
+        BEGIN
+          ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS a INT;
+          ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS b INT;
+        END $$`,
+        `INSERT INTO ${table}(value) VALUES ('x;y') -- don't; split\n`,
+        `SELECT 1;`,
+      ]),
+    ]);
+    const columns = await pool.query(
+      "SELECT column_name FROM information_schema.columns WHERE table_name = $1 ORDER BY ordinal_position",
+      [table],
+    );
+    assert.deepEqual(
+      columns.rows.map((row) => row.column_name),
+      ["value", "a", "b"],
+    );
+    assert.deepEqual((await pool.query(`SELECT value FROM ${table}`)).rows, [{ value: "x;y" }]);
+  } finally {
+    await pool.query(`DROP TABLE IF EXISTS ${table}`);
+    await pool.query(`DELETE FROM ${PG_MIGRATIONS_TABLE} WHERE id = $1`, [id]);
     await pool.end();
   }
 });
@@ -91,9 +182,16 @@ test("concurrent index retry resolves indexes in the target table schema", { ski
   const { id, table } = names();
   const schema = `s_${table}`;
   const index = `${table}_idx`;
-  const migration = definePgMigration(id, [
-    `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ${index} ON ${schema}.events(value)`,
-  ]);
+  const migration = pgMigration({
+    id,
+    concurrentIndexes: [
+      {
+        name: index,
+        table: `${schema}.events`,
+        statement: `CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ${index} ON ${schema}.events(value)`,
+      },
+    ],
+  });
   try {
     await pool.query(`CREATE SCHEMA ${schema}`);
     await pool.query(`CREATE TABLE ${schema}.events(value INT)`);
