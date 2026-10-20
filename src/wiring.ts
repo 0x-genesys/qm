@@ -323,8 +323,7 @@ import { createCustomProviderStore, type CustomProviderStore } from "./model/cus
 import { createMemorySessionStore } from "./sessions/memory-session-store.ts";
 import { createPostgresSessionStore } from "./sessions/postgres-session-store.ts";
 import { createMemoryToolOutputStore, createPostgresToolOutputStore } from "./sessions/tool-output.ts";
-import type { SessionStore } from "./sessions/session-store.ts";
-import { createMockHarness } from "./harness/mock-harness.ts";
+import { LLM_CAPTURE_RETENTION_MS, type SessionStore } from "./sessions/session-store.ts";
 import {
   fileCompanyChatGPTAuth,
   keychainCompanyChatGPTAuth,
@@ -588,6 +587,7 @@ export function buildApp(
     credentialBrokers?: Record<string, AwsRoleBroker>;
     modelCredentialFetch?: typeof fetch;
     modelVerificationProbe?: typeof probeModel;
+    harnesses?: Partial<Record<HarnessId, Harness>>;
   } = {},
 ): BuiltApp {
   let backgroundAdmission = () => !config.backgroundDeploymentId;
@@ -1093,9 +1093,7 @@ export function buildApp(
       .digest("hex")
       .slice(0, 32);
     return createSuperserveSandbox(workspace, {
-      configEpoch:
-        ss.configGeneration ??
-        (pgArtifactMap ? createConfigEpochResolver(superserveEpochs, generationKey, advisoryLock) : 0),
+      configEpoch: ss.configGeneration ?? createConfigEpochResolver(superserveEpochs, generationKey, advisoryLock),
       client: createSdkSuperserveClient({
         apiKey: ss.apiKey,
         ...(ss.baseUrl ? { baseUrl: ss.baseUrl } : {}),
@@ -1340,7 +1338,6 @@ export function buildApp(
         }
       : {}),
   });
-  const mcpTools = () => mcpToolService.toolDefs();
   const browserSessionStore: BrowserSessionStore | undefined = keychainKeyMaterial
     ? createBrowserSessionStore({ sessions: artifactMap<StoredBrowserSession>("browser_sessions"), key: credentialKey })
     : undefined;
@@ -1481,34 +1478,33 @@ export function buildApp(
   const adapters = new Map<HarnessId, Harness>([
     [
       "pi",
-      createPiHarness({
-        ...piHarnessConfigOptions(config),
-        modelGateway: gatewayTransport,
-        resolveBaseModelId: () => orgBaseModelId() ?? defaultForHarness("pi"),
-        resolveFallbackRuntime: () => configStore.getPurposeRuntime("fallback"),
-        resolveProviderKeys: resolvePiProviderKeys,
-        ...(directProviderAvailability.codexOAuth ? { companyModelId } : {}),
-        signals: runSignals,
-        mcpTools,
-      }),
+      overrides.harnesses?.pi ??
+        createPiHarness({
+          ...piHarnessConfigOptions(config),
+          modelGateway: gatewayTransport,
+          resolveBaseModelId: () => orgBaseModelId() ?? defaultForHarness("pi"),
+          resolveFallbackRuntime: () => configStore.getPurposeRuntime("fallback"),
+          resolveProviderKeys: resolvePiProviderKeys,
+          ...(directProviderAvailability.codexOAuth ? { companyModelId } : {}),
+          signals: runSignals,
+        }),
     ],
     [
       "claude",
-      createClaudeHarness({
-        ...claudeHarnessConfigOptions(config),
-        ...(config.claudeAuthCredential && keychain
-          ? {
-              authEnv: keychainHarnessAuthEnv(keychain, config.claudeAuthCredential, [
-                "CLAUDE_CODE_OAUTH_TOKEN",
-                "ANTHROPIC_AUTH_TOKEN",
-              ]),
-            }
-          : {}),
-        signals: runSignals,
-        mcpTools,
-      }),
+      overrides.harnesses?.claude ??
+        createClaudeHarness({
+          ...claudeHarnessConfigOptions(config),
+          ...(config.claudeAuthCredential && keychain
+            ? {
+                authEnv: keychainHarnessAuthEnv(keychain, config.claudeAuthCredential, [
+                  "CLAUDE_CODE_OAUTH_TOKEN",
+                  "ANTHROPIC_AUTH_TOKEN",
+                ]),
+              }
+            : {}),
+          signals: runSignals,
+        }),
     ],
-    ["mock", createMockHarness()],
   ]);
   const fallbackHarness = config.harness as HarnessId;
   const fallback = {
@@ -2640,7 +2636,7 @@ export function buildApp(
     skipFire: async (cron) => (await memoryTidy.skipFire(cron)) ?? suggestedActivities.skipFire(cron),
     deleteCron: (id) => app.deleteCron(id),
     requireQueueStart: Boolean(config.backgroundDeploymentId),
-    lock: advisoryLock,
+    advisoryLock,
     crons,
     deliveries,
     idempotency,
@@ -2787,11 +2783,29 @@ export function buildApp(
       })
     : null;
   const MONITOR_RETENTION_SWEEP_MS = 24 * 60 * 60_000;
+  const LLM_CAPTURE_SWEEP_MS = 5 * 60_000;
+  const LLM_CAPTURE_SWEEP_BUDGET_MS = 30_000;
   const spendSweeper = sessions.refreshSpendRollup
     ? createSweeper(() => leaderLease.hold("spend:refresh", () => sessions.refreshSpendRollup!()), 60_000, {
         label: "spend-refresh",
         immediate: true,
       })
+    : null;
+  const llmCaptureSweeper = sessions.purgeLlmCaptures
+    ? createSweeper(
+        () =>
+          leaderLease.hold("llm-capture:retention", async (lost) => {
+            let leaseLost = false;
+            void lost.then(() => (leaseLost = true));
+            const purged = await sessions.purgeLlmCaptures!(Date.now() - LLM_CAPTURE_RETENTION_MS, {
+              deadline: Date.now() + LLM_CAPTURE_SWEEP_BUDGET_MS,
+              stop: () => leaseLost,
+            });
+            if (purged) console.log(`[llm-capture] purged ${purged} prompt envelope(s) past retention`);
+          }),
+        LLM_CAPTURE_SWEEP_MS,
+        { label: "llm-capture-retention" },
+      )
     : null;
   const monitorRetentionSweeper = createSweeper(
     () => leaderLease.hold("monitor:retention:sweep", () => monitors.deleteDefunct(Date.now())),
@@ -2869,6 +2883,7 @@ export function buildApp(
         .catch(swallowAs("wiring: monitor resume failed", undefined));
       monitorRetentionSweeper.start();
       spendSweeper?.start();
+      llmCaptureSweeper?.start();
       semanticMemory.start();
       if (config.skillSyncPollMs > 0) skillSyncEngine.start(config.skillSyncPollMs);
       blobSweeper.start();
@@ -2900,6 +2915,7 @@ export function buildApp(
       processReaper?.stop(),
       monitorRetentionSweeper.stop(),
       spendSweeper?.stop(),
+      llmCaptureSweeper?.stop(),
       semanticMemory.stop(),
       skillSyncEngine.stop(),
       idleSweeper?.stop(),

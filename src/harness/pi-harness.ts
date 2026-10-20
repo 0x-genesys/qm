@@ -7,6 +7,8 @@ import {
   type SteerIntake,
 } from "./harness-shared.ts";
 import { withDocumentInputs, type DocumentModel } from "./document-inputs.ts";
+import type { DocumentInput } from "../core/document-inputs.ts";
+import { documentStub } from "../core/document-kinds.ts";
 import { gatewayModelsJson, gatewayModelsVersion } from "../model/gateway-models.ts";
 import { Type } from "typebox";
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -94,7 +96,6 @@ import {
   type GapWork,
 } from "./harness.ts";
 import { coreToolOptions, createAgentTools, pauseStampAfterToolCall, type ToolContextRef } from "./agent-tools.ts";
-import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import { startSignalPoll, type RunSignalStore } from "../runs/run-signal-store.ts";
 import {
   planColdStartSeed,
@@ -153,7 +154,6 @@ export interface PiHarnessOptions {
   scratchExec?: boolean;
   ownerAuthExec?: boolean;
   reachExec?: boolean;
-  mcpTools?: () => McpToolDescriptor[];
   controlTools?: boolean;
   sandboxResources?: boolean;
   turnWallClockMs?: number;
@@ -931,6 +931,30 @@ function piAssistantFailure(session: AssistantTextSession): ProviderTurnError | 
 
 /** Codes that retry the turn on the configured fallback model. */
 const FALLBACK_CODES = new Set(["refusal", "model_unavailable"]);
+const DOCUMENT_REJECTION_CODES = new Set(["context_too_long", "bad_request"]);
+
+function documentsDroppedNote(documents: readonly DocumentInput[]): string {
+  return (
+    `The model provider rejected an earlier request in this task while it carried these attachments inline ` +
+    `(most likely they exceed the model's context), so they were removed from model input. ` +
+    documents.map((document) => documentStub(document)).join(" ") +
+    ` If the file matters to the request, tell the person it could not be read in full here and read only the parts you need.`
+  );
+}
+
+const DOCUMENTS_DROPPED_RETRY_NOTE =
+  "[system] The previous request failed while it carried inline attachments; they have been replaced with notes on how to read them from saved files. Continue with the request.";
+
+function dropFailedAssistant(session: AgentSession, messagesBefore: number): void {
+  const state = session.agent.state;
+  for (let i = state.messages.length - 1; i >= messagesBefore; i--) {
+    const m = state.messages[i] as { role?: string; stopReason?: string } | undefined;
+    if (m?.role === "assistant" && m.stopReason === "error") {
+      state.messages = [...state.messages.slice(0, i), ...state.messages.slice(i + 1)];
+      break;
+    }
+  }
+}
 
 export function piLastAssistantTextOrThrow(session: AssistantTextSession): string | undefined {
   const err = piAssistantFailure(session);
@@ -1578,7 +1602,6 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
   const scratchExec = opts?.scratchExec ?? false;
   const ownerAuthExec = opts?.ownerAuthExec ?? false;
   const reachExec = opts?.reachExec ?? false;
-  const mcpTools = opts?.mcpTools;
   const controlTools = opts?.controlTools ?? false;
   const defaultTurnWallClockMs = opts?.turnWallClockMs ?? CONFIG_DEFAULTS.turnWallClockSec * 1000;
   const signals = opts?.signals;
@@ -1589,7 +1612,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       scratchExec,
       ownerAuthExec,
       reachExec,
-      ...(mcpTools ? { mcpTools } : {}),
+      ...(turn.mcpTools?.length ? { mcpTools: turn.mcpTools } : {}),
       controlTools,
       ...(turn.commandCredentialHandles?.length ? { commandCredentialHandles: turn.commandCredentialHandles } : {}),
       ...(turn.surfaceTools ? { surfaceTools: true } : {}),
@@ -1689,6 +1712,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             model as DocumentModel,
             ref.documents ?? [],
             ref.abortSignal,
+            ref.documentsStubbed ? documentsDroppedNote(ref.documents ?? []) : undefined,
           );
           const guarded = guardOutputBudget(finalPayload, model);
           if (guarded.kind === "raised") {
@@ -1941,6 +1965,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           ).agent?.subscribe?.((event) => {
             const e = event as { type?: string; message?: unknown };
             if (e.type === "agent_start" && toolAbort.signal.aborted) entry.agentSession.agent.abort();
+            if (e.type === "message_end") noteDocumentRejection(e.message);
             return e.type === "message_end" ? onMessageEnd(e.message) : undefined;
           });
           const unsubscribe = entry.agentSession.subscribe((event) => {
@@ -2161,14 +2186,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             entry.ref.effortLevel =
               custom?.effortLevel ?? turn.runtime?.effortLevel ?? defaultInteractiveThinkingLevel(fallback);
             applyTurnEffort(entry.agentSession, entry.ref.effortLevel);
-            const state = entry.agentSession.agent.state;
-            for (let i = state.messages.length - 1; i >= messagesBefore; i--) {
-              const m = state.messages[i] as { role?: string; stopReason?: string } | undefined;
-              if (m?.role === "assistant" && m.stopReason === "error") {
-                state.messages = [...state.messages.slice(0, i), ...state.messages.slice(i + 1)];
-                break;
-              }
-            }
+            dropFailedAssistant(entry.agentSession, messagesBefore);
             const outcome = await raceTurnWallClock(
               entry.agentSession.prompt(
                 refusalFallbackNote(modelDisplayName(fromId!), modelDisplayName(fallbackId), refusal),
@@ -2179,8 +2197,45 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             if (outcome !== "ok") throw new NonRetryableTurnError(refusal);
             return true;
           };
-          const recoverRefusedRound = async (): Promise<void> => {
+          let documentRejection: ProviderTurnError | undefined;
+          let documentRetried = false;
+          const noteDocumentRejection = (message: unknown): void => {
+            if (documentRejection || !entry.ref.documents?.length) return;
+            const failed = message as AssistantMessage | undefined;
+            if (failed?.role !== "assistant" || failed.stopReason !== "error") return;
+            const failure = piAssistantFailure({ messages: [failed] } as unknown as AssistantTextSession);
+            if (!failure || !DOCUMENT_REJECTION_CODES.has(failure.code)) return;
+            documentRejection = failure;
+            entry.ref.documentsStubbed = true;
+            console.error(
+              `[pi] request with ${entry.ref.documents.length} inline document(s) rejected (${failure.code}: ${failure.raw || failure.message}) — replacing them with stubs session=${turn.session.id}`,
+            );
+          };
+          const retryWithoutDocuments = async (): Promise<boolean> => {
+            if (!documentRejection || documentRetried || userAborted || turn.cancel?.aborted) return false;
+            const lastAssistant = entry.agentSession.messages
+              .slice(messagesBefore)
+              .findLast((m) => (m as { role?: string }).role === "assistant") as AssistantMessage | undefined;
+            if (lastAssistant && lastAssistant.stopReason !== "error") return false;
+            const capMs = raceCapMs();
+            if (turnWallClockMs > 0 && capMs < EMPTY_ENDING_MIN_BUDGET_MS) return false;
+            documentRetried = true;
+            dropFailedAssistant(entry.agentSession, messagesBefore);
+            const outcome = await raceTurnWallClock(entry.agentSession.prompt(DOCUMENTS_DROPPED_RETRY_NOTE), {
+              capMs,
+              extendMs: extendCapMs,
+              abort: () => entry.agentSession.abort(),
+            });
+            if (userAborted) return false;
+            if (outcome !== "ok")
+              throw new NonRetryableTurnError(
+                `${documentRejection.message} (retry without inline documents was ${outcome})`,
+              );
+            return true;
+          };
+          const recoverFailedRound = async (): Promise<void> => {
             if (entry.ref.runtimeHandoff || userAborted || turn.cancel?.aborted) return;
+            await retryWithoutDocuments();
             const refusal = providerRefusalError(entry.agentSession, messagesBefore);
             if (!refusal) return;
             try {
@@ -2204,7 +2259,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
                 abort: () => entry.agentSession.abort(),
               },
             );
-            if (wallClock === "ok") await recoverRefusedRound();
+            if (wallClock === "ok") await recoverFailedRound();
             const goalAfterPrompt = entry.ref.goal;
             if (
               wallClock === "ok" &&
@@ -2252,7 +2307,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
                     extendMs: extendCapMs,
                     abort: () => entry.agentSession.abort(),
                   });
-                  if (outcome === "ok") await recoverRefusedRound();
+                  if (outcome === "ok") await recoverFailedRound();
                   return outcome;
                 },
               });
@@ -2307,7 +2362,12 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             if (!userAborted && !cancelAbortRejection) {
               const turnErr = piTurnError(entry.agentSession, err, messagesBefore);
               let recovered = false;
-              if (turnErr instanceof ProviderTurnError && FALLBACK_CODES.has(turnErr.code)) {
+              try {
+                recovered = await retryWithoutDocuments();
+              } catch (e) {
+                swallow("pi: document-free retry", e);
+              }
+              if (!recovered && turnErr instanceof ProviderTurnError && FALLBACK_CODES.has(turnErr.code)) {
                 try {
                   recovered = await attemptRefusalFallback(turnErr.message);
                 } catch (e) {

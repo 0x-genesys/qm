@@ -4,6 +4,7 @@ import { contextSummaryPayload } from "../sessions/session-store.ts";
 import { headSlice, tailSlice } from "../util/text.ts";
 import { countTokens } from "../util/tokens.ts";
 import { isObj } from "../util/objects.ts";
+import { documentAttachmentTokens, replayableDocumentMetas } from "../core/document-kinds.ts";
 
 const MAX_COMPACT_ENTRY_CHARS = 16_000;
 const COMPACT_ENTRY_TAIL_CHARS = 2_000;
@@ -78,6 +79,10 @@ const entryTokenCache = new Map<string, number>();
 const ENTRY_TOKEN_CACHE_MAX = 50_000;
 
 export function estimateEntryTokens(entry: SessionEntry): number {
+  return estimateEntryTextTokens(entry) + (entry.type === "user" ? documentAttachmentTokens(entry.payload) : 0);
+}
+
+function estimateEntryTextTokens(entry: SessionEntry): number {
   const payload = entry.payload as { text?: string; environment?: string; thinking?: string } | null;
   const prose = entry.type === "thinking" ? [payload?.thinking] : [payload?.text, payload?.environment];
   const text =
@@ -146,11 +151,15 @@ export function compactTranscript(history: SessionEntry[]): string {
     const ov = entry.type === "user" && op?.overheard === true;
     const text = String(op?.text ?? "").trim();
     const ovFiles = ov && Array.isArray(op?.files) ? (op!.files as unknown[]).map(String).filter(Boolean) : [];
+    const files =
+      entry.type === "user" && !ov
+        ? replayableDocumentMetas(entry.payload).map((meta) => `${meta.name} [file ${meta.artifactId}]`)
+        : ovFiles;
     const author = entry.type === "user" && typeof op?.name === "string" && op.name ? op.name : null;
     const label = ov
       ? `overheard#${entry.seq}${stamp} (${op?.sourceRole === "agent" ? "agent" : (author ?? "someone")})`
       : `${entry.type}#${entry.seq}${stamp}${author ? ` (${author})` : ""}`;
-    if (text) push(`${label}: ${text}${ovFiles.length ? ` (files: ${ovFiles.join(", ")})` : ""}`);
+    if (text) push(`${label}: ${text}${files.length ? ` (files: ${files.join(", ")})` : ""}`);
     else if (ov && ovFiles.length) push(`${label}: (shared file) (files: ${ovFiles.join(", ")})`);
     else if (!ov) {
       const payload =

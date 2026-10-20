@@ -18,6 +18,7 @@ export type { GapWork } from "../sessions/session-store.ts";
 import type { OverheardEntryPayload } from "./replay.ts";
 import type { GoalRecord } from "./goal.ts";
 import type { GrindMeter } from "./grind.ts";
+import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import type { ProviderKeys } from "./pi-harness.ts";
 import type { ToolContext } from "../tools/primitives.ts";
 import type { SecurityScreenVerdict, ToolResultScreen, ToolResultScreenInput } from "../security/security-posture.ts";
@@ -129,6 +130,7 @@ export interface HarnessTurnInput {
   goalMeter?: GrindMeter;
   saveGoal?(goal: GoalRecord): Promise<void>;
   tools: ToolContext;
+  mcpTools?: McpToolDescriptor[];
   commandCredentialHandles?: readonly string[];
   toolApprovalGate?(tool: string): boolean;
   emit(entry: NewEntry): Promise<SessionEntry>;
@@ -213,8 +215,8 @@ export interface HarnessModelUtilities {
   summarizeApproval?(command: string, reason: string, purpose?: string): Promise<string | undefined>;
 }
 
-type HarnessControlTransport = "mock" | "in-process" | "sdk" | "http" | "json-rpc" | "api";
-type HarnessToolTransport = "mock" | "in-process" | "plugin" | "dynamic" | "in-process-mcp" | "mcp";
+type HarnessControlTransport = "in-process" | "sdk" | "http" | "json-rpc" | "api";
+type HarnessToolTransport = "in-process" | "plugin" | "dynamic" | "in-process-mcp" | "mcp";
 type HarnessCapability =
   "abort" | "steer" | "images" | "thinking-level" | "fast-mode" | "provider-sessions" | "goal-enforcement";
 

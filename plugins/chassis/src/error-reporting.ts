@@ -37,7 +37,10 @@ const SQL_VERBS = new Set(
     " ",
   ),
 );
-const POOL_SPANS = new Set(["pg.connect", "pg-pool.connect"]);
+const POOL_CHECKOUT = "pg-pool.connect";
+const POOL_SPANS = new Set(["pg.connect", POOL_CHECKOUT]);
+const MAX_SENT_SPANS = 500;
+const IDLE_CHECKOUT_SECONDS = 0.001;
 const HTTP_METHODS = new Set("GET HEAD POST PUT PATCH DELETE OPTIONS CONNECT TRACE".split(" "));
 let client: typeof Sentry | undefined;
 let tracing = false;
@@ -49,6 +52,7 @@ export interface TraceCarrier {
 type TransactionEvent = Parameters<NonNullable<Sentry.NodeOptions["beforeSendTransaction"]>>[0];
 type ErrorEvent = Parameters<NonNullable<Sentry.NodeOptions["beforeSend"]>>[0];
 type SpanData = Record<string, unknown>;
+type SpanJSON = NonNullable<TransactionEvent["spans"]>[number];
 
 function scrubData(data: SpanData | undefined): { statement?: unknown } {
   if (!data) return {};
@@ -105,6 +109,20 @@ function scrubTraceContext<T extends TransactionEvent | ErrorEvent>(event: T): T
   return event;
 }
 
+function idleCheckout(span: SpanJSON, parents: Set<string | undefined>): boolean {
+  return (
+    span.description === POOL_CHECKOUT &&
+    span.status === "ok" &&
+    (span.timestamp ?? Infinity) - span.start_timestamp < IDLE_CHECKOUT_SECONDS &&
+    !parents.has(span.span_id)
+  );
+}
+
+function orderedSpans(spans: SpanJSON[]): SpanJSON[] {
+  const parents = new Set(spans.map((span) => span.parent_span_id));
+  return spans.filter((span) => !idleCheckout(span, parents)).sort((a, b) => a.start_timestamp - b.start_timestamp);
+}
+
 function scrubTransaction(event: TransactionEvent): TransactionEvent | null {
   const trace = event.contexts?.trace;
   if (!SENT_ROOTS.has(trace?.op ?? "") || trace?.data?.["sentry.parent_span_already_sent"]) return null;
@@ -112,6 +130,12 @@ function scrubTransaction(event: TransactionEvent): TransactionEvent | null {
   delete event.user;
   delete event.breadcrumbs;
   scrubData(trace?.data as SpanData | undefined);
+  if (event.spans) {
+    const spans = orderedSpans(event.spans);
+    if (spans.length > MAX_SENT_SPANS)
+      trace!.data = { ...trace!.data, "qm.truncated_spans": spans.length - MAX_SENT_SPANS };
+    event.spans = spans.slice(0, MAX_SENT_SPANS);
+  }
   for (const span of event.spans ?? []) {
     const { statement } = scrubData(span.data);
     span.description = scrubDescription(span.op, span.description, statement);

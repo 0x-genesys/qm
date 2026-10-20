@@ -12,13 +12,12 @@ import { UNTRACKED_PROVENANCE } from "../memory/facts.ts";
 import { memoryRecallQuery } from "../memory/semantic-recall.ts";
 import { requiresDelegation, delegatedAuthorizationOrigin } from "../sessions/session-syscalls.ts";
 import {
-  MAX_DOCUMENT_BYTES,
   documentText,
   type ExtractedDocumentText,
   historicalDocumentMetas,
-  isTextDocument,
   loadDocumentInputs,
 } from "./document-inputs.ts";
+import { MAX_DOCUMENT_BYTES, estimateDocumentTokens, isDocumentAttachment, isTextDocument } from "./document-kinds.ts";
 import { recoveredRuntime } from "../harness/runtime-recovery.ts";
 import { createCanWriteScope, rosterAdmits, withLiveTurnMembership } from "../resolution/scope-membership.ts";
 import { goalView } from "../runs/turn-stream.ts";
@@ -114,8 +113,7 @@ import {
 import { commandApprovalId, inputApprovalId } from "./approval-id.ts";
 import { createPerTurnStrategy } from "../memory/strategies/per-turn.ts";
 import { DEFAULT_MEMORY_POLICY } from "../memory/policy.ts";
-import { createMemoryMap } from "../persistence/durable-map.ts";
-import { collectBlob, createMemoryBlobTransferStore } from "../persistence/blob-transfer.ts";
+import { collectBlob } from "../persistence/blob-transfer.ts";
 import { skillsIndex } from "../skills/materialize.ts";
 import { isIdeasConversation, PROACTIVE_OPENER_PROMPT } from "../onboarding/onboarding.ts";
 import { createToolContext, NeedsApproval, CommandDenied, type CommandCredential } from "../tools/primitives.ts";
@@ -255,13 +253,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     );
   }
   const leaseKeepaliveMs = Math.floor(deps.sessions.leaseTtlMs / 3);
-  const pending = deps.approvals ?? createMemoryMap<PendingApprovalRecord>();
+  const pending = deps.approvals;
   const transcripts = createTranscriptSource(deps.sessions);
-  const approvalGrants = deps.approvalGrants ?? createMemoryMap<CommandApprovalGrant>();
+  const approvalGrants = deps.approvalGrants;
   const memoryPolicy = deps.memoryPolicy ?? DEFAULT_MEMORY_POLICY;
   const memoryStrategy =
     deps.memoryStrategy ?? createPerTurnStrategy({ harness: deps.harness.models, memory: deps.memory });
-  const blobTransfer = deps.blobTransfer ?? createMemoryBlobTransferStore();
+  const blobTransfer = deps.blobTransfer;
 
   const pendingCaptures = new Map<ScopeId, Promise<void>>();
 
@@ -293,7 +291,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
   }
 
   const securitySteersInFlight = new Set<string>();
-  const { compactContextIfNeeded, compactRecent, scheduleBackgroundCompaction } = createCompaction(deps);
+  const { compactContextIfNeeded, compactRecent, scheduleBackgroundCompaction, documentTokenBudget } =
+    createCompaction(deps);
 
   async function approvalSummary(
     scopeId: ScopeId,
@@ -1020,6 +1019,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       }
       const childFloor = delegatedSession?.spawnMeta?.readOnly === true;
       const strictReadOnly = input.readOnly === true || input.privateSessionMessage === true || childFloor;
+      const mcpToolsReady = !external && deps.mcp ? deps.mcp.toolDefsFor(actor.id) : undefined;
       const useMemory = !external && input.skipMemory !== true;
       const environmentId = external ? scopeId : await resolveEnvironmentId(deps.environments, scopeId);
       const rwLayer = resolution.layers.find((l) => l.mode === "rw");
@@ -2844,6 +2844,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           resumePlan = resumeStrategy(visibleHistory, partial);
         }
         const resume = resumePlan && resumePlan.kind !== "restart" ? partial : null;
+        const documentBudget = documentTokenBudget(scopeId, input.model);
         const history = await withManagedRosterVersion(() =>
           compactContextIfNeeded({
             cancel: turnAbort.signal,
@@ -2854,19 +2855,28 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             orgScopeId: resolution.orgScopeId,
             actorId: actor.id,
             ...(input.model ? { model: input.model } : {}),
+            reservedTokens: strictReadOnly
+              ? 0
+              : inbound.metas.reduce(
+                  (sum, meta) => sum + (isDocumentAttachment(meta) ? estimateDocumentTokens(meta) : 0),
+                  0,
+                ),
           }),
         );
         contextRecovered =
           history !== visibleHistory &&
           history.some((entry) => isObj(entry.payload) && entry.payload.mode === "recent");
         const documentInputs = strictReadOnly
-          ? { documents: [], notices: [] }
+          ? { documents: [], notices: [], tokens: 0 }
           : await loadDocumentInputs(
               deps.files,
               [...historicalDocumentMetas(history), ...inbound.metas],
               mayReadArtifact,
               undefined,
               turnAbort.signal,
+              undefined,
+              undefined,
+              documentBudget,
             );
         const screenDocuments = async (
           documentInputs: Awaited<ReturnType<typeof loadDocumentInputs>>,
@@ -2929,6 +2939,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           MAX_DOCUMENT_BYTES -
           documentInputs.documents.reduce((sum, document) => sum + Buffer.byteLength(document.dataBase64, "base64"), 0);
         let remainingDocumentCount = 10 - documentInputs.documents.length;
+        let remainingDocumentTokens = documentBudget - documentInputs.tokens;
         const principalDelivered = await recentPrincipalDeliveryNote(
           deps.deliveries,
           session.threadRef,
@@ -3360,6 +3371,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 turnAbort.signal,
                 remainingDocumentCount,
                 initialDocuments,
+                remainingDocumentTokens,
               );
               let steeredUnscreened = false;
               if (enforceScreen) steeredUnscreened = await screenDocuments(steeredDocuments, text);
@@ -3369,6 +3381,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 0,
               );
               remainingDocumentCount -= steeredDocuments.documents.length;
+              remainingDocumentTokens -= steeredDocuments.tokens;
               documentInputs.documents.push(...steeredDocuments.documents);
               const issues = inboundIssueList({
                 ...received,
@@ -3598,6 +3611,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             systemPrompt,
             history: continuation?.history ?? history,
             tools,
+            ...(mcpToolsReady ? { mcpTools: await mcpToolsReady } : {}),
             ...(tools.commandCredentialHandles ? { commandCredentialHandles: tools.commandCredentialHandles } : {}),
             ...(resumePlan?.kind === "retry" && !continuation ? { resumeToolCall: resumePlan.call } : {}),
             emit,
