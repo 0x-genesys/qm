@@ -1,3 +1,4 @@
+import { traceStartupQueries } from "../util/startup-trace.ts";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Pool, PoolClient } from "pg";
@@ -63,7 +64,7 @@ async function retainPool(connectionString: string, kind: "query" | "session" | 
 function guardedPool(pool: Pool): Pool {
   pool.on("error", () => {});
   pool.on("connect", (client) => client.on("error", (error) => console.error("[pg] client error:", errMessage(error))));
-  return pool;
+  return traceStartupQueries(pool);
 }
 
 async function releasePool(

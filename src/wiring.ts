@@ -1,3 +1,4 @@
+import { startupMark } from "./util/startup-trace.ts";
 import type { MemoryEmbedder } from "./model/embeddings.ts";
 import { nonDeploymentCredential, withDeploymentCredentials } from "./credentials/deployment-credentials.ts";
 import { resolveEmbeddingModel } from "./model/pi-models.ts";
@@ -1579,6 +1580,7 @@ export function buildApp(
       return resolve(input.runtime);
     });
     if (routed.routedBy) routedBy(routed.routedBy);
+    startupMark("runtime");
     return routed.choice;
   });
 
@@ -2789,6 +2791,7 @@ export function buildApp(
       leaseTtlMs,
       heartbeatIntervalMs: config.heartbeatIntervalMs,
       errors,
+      audit: auditLog,
       pollMs: 250,
       canClaim: canClaimRuns,
     }),

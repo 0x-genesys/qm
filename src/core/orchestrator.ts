@@ -1,3 +1,4 @@
+import { detachStartup, startupMark } from "../util/startup-trace.ts";
 import { DEFAULT_CRON_TIMEZONE } from "../cron/schedule.ts";
 import { createAdminCall } from "../tools/admin.ts";
 import { scopeTeamsToTurn } from "../teams/teams.ts";
@@ -535,6 +536,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       const swarmBinding = await deps.swarms?.binding(input);
       const swarmEntryProvenance = input.swarm ? { origin: "automation", swarm: input.swarm } : {};
       await deps.refreshModels?.();
+      startupMark("models");
       input = await scopeTeamsToTurn(input, deps, external);
       const { actor, conversation } = input;
       const automatedTurn = input.origin.kind === "automation";
@@ -566,6 +568,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           ? input.origin.entryTs
           : undefined;
       const coreReceivedAt = Date.now();
+      startupMark("received");
       let detectMs: number | undefined;
       let compactMs: number | undefined;
       const turnTimezone = isValidCapabilityTimezone(input.timezone) ? input.timezone : undefined;
@@ -851,18 +854,20 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       let flaggedScreenedInput: { reason: string; sources: string[] } | undefined;
       let inputUnscreened = false;
       if (screenInbound && !enforceScreen) {
-        void buildInboundScreen()
-          .then(({ screenPayload }) =>
-            screenPayload && !screenPayload.truncated
-              ? classifySecurityData(screenPayload.content, actor.id, scopeId, undefined, {
-                  ...screenTrace,
-                  hook: "user_input",
-                  surface: input.surface,
-                  origin: input.origin.kind,
-                })
-              : undefined,
-          )
-          .catch(swallowAs("orchestrator: observed inbound screen", undefined));
+        void detachStartup(() =>
+          buildInboundScreen()
+            .then(({ screenPayload }) =>
+              screenPayload && !screenPayload.truncated
+                ? classifySecurityData(screenPayload.content, actor.id, scopeId, undefined, {
+                    ...screenTrace,
+                    hook: "user_input",
+                    surface: input.surface,
+                    origin: input.origin.kind,
+                  })
+                : undefined,
+            )
+            .catch(swallowAs("orchestrator: observed inbound screen", undefined)),
+        );
       } else if (screenInbound) {
         const { hasUnscreenableAttachment, externalPromptData, screenPayload } = await buildInboundScreen();
         if (screenPayload || hasUnscreenableAttachment) {
@@ -1189,7 +1194,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           };
           if (!enforceScreen) {
             allowed.push(entry);
-            void screenSkill().catch(swallowAs("orchestrator: observed skill screen", undefined));
+            void detachStartup(() => screenSkill().catch(swallowAs("orchestrator: observed skill screen", undefined)));
             continue;
           }
           const { passed, bundles } = await screenSkill();
@@ -1276,6 +1281,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       );
       screenSession.id = session.id;
       leaseMs += Date.now() - sessionStart;
+      startupMark("session");
       if (!input.sessionParticipantIds?.length && !automatedTurn)
         await deps.sessions.addParticipant(session.id, actor.id);
 
@@ -1544,6 +1550,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       };
       await registerConnectorCredentials(addCredentialToCatalog);
       perf.credsMs += Date.now() - credsStart;
+      startupMark("credentials");
       // Service credentials: one read of the org's credential list and one grant scan feed both
       // the env-delivery gate (below) and the broker token mint (further down). Same grants gate both.
       const aclGrantedServiceCredSlugs = async (): Promise<Set<string>> =>
@@ -1947,6 +1954,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       leaseMs += Date.now() - leaseStart - acquired.waitedMs;
       if (!acquired.lease) return acquired.refusal;
       const lease = acquired.lease;
+      startupMark("lease");
       if (!ambientTurn) assignSessionTitle();
       const trackRevisions = input.surface === "slack" && Boolean(deps.surfaceCache);
       const revisionAnchor = trackRevisions ? await revisionAnchorAt(deps.sessions, session.id) : undefined;
@@ -1981,6 +1989,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           return true;
         });
         const memoryWindow = await deps.sessions.getContextWindow(session.id);
+        startupMark("context");
 
         memoryView = await context.memorySnapshot();
         const captureDependencies = () => [
@@ -2831,6 +2840,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const recallStart = Date.now();
         const recalled = await context.recallMemory(memoryRecallQuery(input.text, visibleHistory));
         const recallMs = Date.now() - recallStart;
+        startupMark("recall");
         const partial = isRetry ? (recordedTurn ?? findTrailingPartialTurn(visibleHistory, input.runId)) : null;
         let resumePlan = partial ? resumeStrategy(visibleHistory, partial) : null;
         if (partial && resumePlan?.kind === "settle") {
@@ -2921,7 +2931,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           return enforceScreen && documentsUnscreened;
         };
         const observeDocuments = (inputs: Awaited<ReturnType<typeof loadDocumentInputs>>, requestText: string) =>
-          void screenDocuments(inputs, requestText).catch(swallowAs("orchestrator: observed document screen", false));
+          void detachStartup(() =>
+            screenDocuments(inputs, requestText).catch(swallowAs("orchestrator: observed document screen", false)),
+          );
         let documentsUnscreened = false;
         if (enforceScreen) documentsUnscreened = await screenDocuments(documentInputs, input.text);
         else observeDocuments(documentInputs, input.text);
@@ -3027,9 +3039,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           !isPollFire &&
           (swarmBinding?.sandboxId || (await deps.sandboxResources?.resolve(memoryScopeId)) !== null)
         ) {
-          void provision(true).catch(swallowAs("orchestrator: eager provision", undefined));
+          void detachStartup(() => provision(true).catch(swallowAs("orchestrator: eager provision", undefined)));
         }
         const turnStart = Date.now();
+        startupMark("turn");
         let firstChunkAt: number | undefined;
         let lastChunkAt: number | undefined;
         const emittedEntries: SessionEntry[] = [];

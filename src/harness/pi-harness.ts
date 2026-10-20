@@ -1,3 +1,4 @@
+import { startupMark, startupStop } from "../util/startup-trace.ts";
 import {
   recordSteerIntake,
   recordStoppedTurn,
@@ -1644,6 +1645,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
       if (agent) {
         const prior = agent.onPayload;
         agent.onPayload = async (payload, model) => {
+          startupMark("pi_payload");
           ref.modelCalls = (ref.modelCalls ?? 0) + 1;
           (ref.modelDispatch ??= []).push({
             start: Date.now(),
@@ -1681,6 +1683,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
               swallow("pi: llm request capture", e);
             }
           }
+          startupStop("pi_payload_ready");
           return finalPayload;
         };
         const priorResponse = agent.onResponse;
@@ -1774,6 +1777,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
         const tools = recordingTools(createTurnTools(ref, dispatched), () => activeSteps);
         const resumed = await resumeInterruptedToolCall(dispatched, ref, tools as unknown as BridgedTool[]);
         const turn = resumed ? { ...dispatched, history: resumed.history } : dispatched;
+        startupMark("harness");
         const { entry, compileMs } = await createTurnSession(
           withRequestHeaders(baseModel, !turnModelGateway?.models[desiredModelId], wantFast),
           turn.session.id,
@@ -1785,6 +1789,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
           tools,
           turn.loadImage,
         );
+        startupMark("compiled");
         try {
           const turnWallClockMs = turn.turnWallClockMs ?? defaultTurnWallClockMs;
 

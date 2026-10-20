@@ -220,7 +220,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
       if (claimed) {
         try {
           const result = await processRun(
-            { runs: deps.runs, orchestrator: deps.orchestrator, leaseTtlMs: deps.leaseTtlMs },
+            { runs: deps.runs, orchestrator: deps.orchestrator, leaseTtlMs: deps.leaseTtlMs, audit: deps.auditLog },
             claimed,
             { shutdown },
           );

@@ -1,6 +1,8 @@
 import type { AdmittedWork } from "../util/admitted-work.ts";
 import { randomUUID } from "node:crypto";
 import type { ErrorLog } from "../admin/error-log.ts";
+import type { AuditLog } from "../audit/audit-log.ts";
+import { traceStartup, type StartupRecord } from "../util/startup-trace.ts";
 import { conversationScope } from "../resolution/resolution-service.ts";
 import type { TurnResult } from "../types.ts";
 import type { Orchestrator } from "../core/orchestrator.ts";
@@ -27,6 +29,24 @@ export interface ProcessDeps {
   leaseTtlMs: number;
   heartbeatIntervalMs?: number;
   errors?: ErrorLog;
+  audit?: AuditLog;
+}
+
+function startupRecorder(audit: AuditLog | undefined, run: Run): (record: StartupRecord) => void {
+  if (!audit) return () => {};
+  const principalId = run.request.actor.id;
+  const resource = `run:${run.id}#${run.attempts}`;
+  const scopeLabel = conversationScope(run.request.conversation, principalId);
+  return (record) =>
+    audit.record({
+      at: Date.now(),
+      principalId,
+      action: "turn.startup",
+      resource,
+      scopeLabel,
+      status: record.outcome,
+      detail: JSON.stringify(record),
+    });
 }
 
 export const LEASE_LOST_CONSECUTIVE = 3;
@@ -87,20 +107,25 @@ export async function processRun(
     if (run.request.swarm && countedClaims(run) > 3) throw new NonRetryableTurnError("swarm claim budget exhausted");
     const queueMs = run.startedAt !== null ? Math.max(0, run.startedAt - run.createdAt) : undefined;
     started = true;
-    const result = await deps.orchestrator.handleTurn({
-      ...run.request,
-      origin: resolveTurnOrigin(run.request),
-      runId: run.id,
-      attempt: run.attempts,
-      ...(run.lastStop ? { resumeCause: run.lastStop } : {}),
-      runLeaseToken: token,
-      finalAttempt: errorParks(run, deps.runs.maxClaims),
-      background: opts?.background ?? false,
-      cancel: cancel.signal,
-      ...(opts?.shutdown ? { shutdown: opts.shutdown } : {}),
-      ...(queueMs !== undefined ? { queueMs } : {}),
-      ...(run.startedAt !== null ? { runStartedAt: run.startedAt } : {}),
-    });
+    const result = await traceStartup(
+      startupRecorder(deps.audit, run),
+      () =>
+        deps.orchestrator.handleTurn({
+          ...run.request,
+          origin: resolveTurnOrigin(run.request),
+          runId: run.id,
+          attempt: run.attempts,
+          ...(run.lastStop ? { resumeCause: run.lastStop } : {}),
+          runLeaseToken: token,
+          finalAttempt: errorParks(run, deps.runs.maxClaims),
+          background: opts?.background ?? false,
+          cancel: cancel.signal,
+          ...(opts?.shutdown ? { shutdown: opts.shutdown } : {}),
+          ...(queueMs !== undefined ? { queueMs } : {}),
+          ...(run.startedAt !== null ? { runStartedAt: run.startedAt } : {}),
+        }),
+      () => (cancel.signal.aborted ? "cancelled" : "error"),
+    );
     stopBeat();
     if (opts?.shutdown?.aborted) return result;
     if (!(await deps.runs.complete(run.id, token, result))) {

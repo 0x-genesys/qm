@@ -1,3 +1,4 @@
+import { startupMark, startupStop } from "../util/startup-trace.ts";
 import { documentBlocks } from "./document-inputs.ts";
 import { randomBytes, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -424,6 +425,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
     let initialUserEchoSkipped = false;
     const seenUserMessages = new Set<string>();
     const authEnv = opts.authEnv ? await opts.authEnv() : undefined;
+    startupMark("claude_auth");
     const sdkQuery = query({
       prompt: queue,
       options: {
@@ -609,7 +611,9 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
     };
     try {
       await sdkQuery.initializationResult();
+      startupMark("claude_init");
       queue.push(initial);
+      startupStop("claude_handoff");
       const consume = (async () => {
         for await (const message of sdkQuery) {
           if (settled || interrupted) break;
