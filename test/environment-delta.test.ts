@@ -6,8 +6,13 @@ import { forModelContext } from "../src/harness/context-compaction.ts";
 import { reconstructMessagesFromHistory } from "../src/harness/replay.ts";
 import type { Cron, SessionEntry } from "../src/types.ts";
 
-function entry(seq: number, blocks: Record<string, string>, history: SessionEntry[]): SessionEntry {
-  const snapshot = environmentDelta(blocks, history, "s");
+function entry(
+  seq: number,
+  blocks: Record<string, string>,
+  history: SessionEntry[],
+  additive: ReadonlySet<string> = new Set(),
+): SessionEntry {
+  const snapshot = environmentDelta(blocks, history, "s", additive);
   return {
     sessionId: "s",
     seq,
@@ -129,4 +134,91 @@ test("forked entries cannot mistake a resequenced row for the original snapshot 
   assert.ok(
     !JSON.stringify((delta.payload as { environmentSnapshot: unknown }).environmentSnapshot).includes("browse"),
   );
+});
+
+const environmentOf = (e: SessionEntry) => (e.payload as { environment: string }).environment;
+
+function credentials(expiry: string, extra: string[] = []): string {
+  return [
+    "## Credentials",
+    "### Organization",
+    ...Array.from(
+      { length: 12 },
+      (_, i) => `- \`shared-${i}\` — shared service ${i}; proxy api${i}.example.com; GET/POST; any path`,
+    ),
+    "### Ada (ada@example.com)",
+    `- \`calendar:1\` — connected app calendar.example.com, token expires at ${expiry}; own; no grant needed`,
+    ...Array.from({ length: 8 }, (_, i) => `- \`personal-${i}\` — personal key ${i}; standing grant g${i}`),
+    ...extra,
+  ].join("\n");
+}
+
+test("a section with a few changed lines sends only those lines under their heading", () => {
+  const first = entry(1, { Credentials: credentials("09:00"), Where: "## Where you are\nweb" }, []);
+  const second = entry(2, { Credentials: credentials("10:00"), Where: "## Where you are\nweb" }, [first]);
+  const text = environmentOf(second);
+  assert.match(text, /## Credentials \(changed lines only/);
+  assert.match(text, /^ {2}### Ada \(ada@example\.com\)$/m);
+  assert.match(text, /^- - `calendar:1` .*09:00/m);
+  assert.match(text, /^\+ - `calendar:1` .*10:00/m);
+  assert.doesNotMatch(text, /shared-3|personal-2|Where you are|### Organization/);
+  assert.ok(text.length < credentials("10:00").length / 2);
+  assert.equal(
+    environmentDelta({ Credentials: credentials("10:00"), Where: "## Where you are\nweb" }, [first, second], "s").text,
+    "",
+  );
+  assert.match(JSON.stringify(reconstructMessagesFromHistory([first, second])), /changed lines only/);
+});
+
+test("a line first sent as a change can later be named as removed", () => {
+  const first = entry(1, { Credentials: credentials("09:00") }, []);
+  const second = entry(2, { Credentials: credentials("09:00", ["- `new-key` — added later"]) }, [first]);
+  assert.match(environmentOf(second), /^\+ - `new-key` — added later$/m);
+  const third = entry(3, { Credentials: credentials("09:00") }, JSON.parse(JSON.stringify([first, second])));
+  assert.match(environmentOf(third), /^- - `new-key` — added later$/m);
+  assert.doesNotMatch(environmentOf(third), /^\+ /m);
+});
+
+test("a removed line whose text is no longer in context resends the whole section", () => {
+  const first = entry(1, { Credentials: credentials("09:00") }, []);
+  const withoutText = { ...first, payload: { ...(first.payload as object), environment: "" } };
+  const second = entry(2, { Credentials: credentials("10:00") }, [withoutText]);
+  assert.equal(environmentOf(second).split("\n\n")[1], credentials("10:00"));
+});
+
+test("a rewritten section and a snapshot without line hashes are sent whole", () => {
+  const first = entry(1, { Credentials: credentials("09:00") }, []);
+  const rewritten = "## Credentials\n- `only` — one key";
+  assert.match(environmentOf(entry(2, { Credentials: rewritten }, [first])), /\n\n## Credentials\n- `only` — one key$/);
+  const legacy = {
+    ...first,
+    payload: {
+      ...(first.payload as object),
+      environmentSnapshot: {
+        ...(first.payload as { environmentSnapshot: object }).environmentSnapshot,
+        lines: undefined,
+      },
+    },
+  };
+  assert.equal(
+    environmentOf(entry(2, { Credentials: credentials("10:00") }, [legacy])).split("\n\n")[1],
+    credentials("10:00"),
+  );
+});
+
+test("an additive shortlist sends only entries the model has not seen since the baseline", () => {
+  const additive = new Set(["Skills"]);
+  const skills = (names: string[]) =>
+    ["## Skills", "Showing 3 of 9 available skills.", ...names.map((n) => `- **${n}** — does ${n}`)].join("\n");
+  const first = entry(1, { Skills: skills(["browse", "publish", "memory"]) }, [], additive);
+  const second = entry(2, { Skills: skills(["browse", "trace", "memory"]) }, [first], additive);
+  assert.equal(
+    environmentOf(second).split("\n\n")[1],
+    "## Skills (additions only; earlier entries still apply)\n- **trace** — does trace",
+  );
+  assert.doesNotMatch(environmentOf(second), /publish/);
+  const third = entry(3, { Skills: skills(["publish", "trace", "browse"]) }, [first, second], additive);
+  assert.equal(environmentOf(third), "");
+  const reset = environmentDelta({ Skills: skills(["publish"]) }, forModelContext([third]), "s", additive);
+  assert.match(reset.text, /^## Skills\nShowing/);
 });

@@ -82,33 +82,139 @@ export function renderConnectedAppsBlock(
 
 interface EnvironmentSnapshot {
   hashes: Record<string, string>;
+  lines?: Record<string, string[]>;
   sessionId: string;
   anchorSeq?: number;
+}
+
+const ENVIRONMENT_CHANGES =
+  "Environment changes: sections below replace their earlier versions unless their heading says they list only changed lines or additions; unlisted sections are unchanged. Inventories are not permission grants; access is checked live.";
+
+const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+const lineHash = (line: string) => sha(line).slice(0, 12);
+
+function heldLineTexts(history: readonly SessionEntry[], sinceSeq: number): Map<string, string> {
+  const texts = new Map<string, string>();
+  for (const entry of history) {
+    if (entry.type !== "user" || entry.seq < sinceSeq) continue;
+    const environment = (entry.payload as { environment?: unknown } | null)?.environment;
+    if (typeof environment !== "string") continue;
+    for (const line of environment.split("\n")) {
+      texts.set(lineHash(line), line);
+      texts.set(lineHash(line.slice(2)), line.slice(2));
+    }
+  }
+  return texts;
+}
+
+function commonLines(before: readonly string[], after: readonly string[]): [boolean[], boolean[]] {
+  const lengths = Array.from({ length: before.length + 1 }, () => Array.from({ length: after.length + 1 }, () => 0));
+  for (let i = before.length - 1; i >= 0; i--)
+    for (let j = after.length - 1; j >= 0; j--)
+      lengths[i]![j] =
+        before[i] === after[j] ? lengths[i + 1]![j + 1]! + 1 : Math.max(lengths[i + 1]![j]!, lengths[i]![j + 1]!);
+  const keptBefore = before.map(() => false);
+  const keptAfter = after.map(() => false);
+  for (let i = 0, j = 0; i < before.length && j < after.length;) {
+    if (before[i] === after[j]) {
+      keptBefore[i++] = true;
+      keptAfter[j++] = true;
+    } else if (lengths[i + 1]![j]! >= lengths[i]![j + 1]!) i++;
+    else j++;
+  }
+  return [keptBefore, keptAfter];
+}
+
+function changedLines(
+  text: string,
+  lines: readonly string[],
+  previous: readonly string[],
+  held: () => Map<string, string>,
+): string | null {
+  const current = text.split("\n");
+  if (previous[0] !== lines[0]) return null;
+  const [keptBefore, keptAfter] = commonLines(previous, lines);
+  const texts = held();
+  const out = [`${current[0]} (changed lines only: + added, - removed; all other lines are unchanged)`];
+  let context: string | undefined;
+  const note = (heading: string | undefined) => {
+    if (heading !== undefined && heading !== context) out.push(`  ${heading}`);
+    context = heading;
+  };
+  const headingBefore = (from: number, read: (index: number) => string | undefined) => {
+    for (let index = from; index > 0; index--) {
+      const line = read(index);
+      if (line?.startsWith("#")) return line;
+    }
+    return undefined;
+  };
+  let i = 0;
+  let j = 0;
+  while (i < previous.length || j < lines.length) {
+    if (i < previous.length && !keptBefore[i]) {
+      const removed = texts.get(previous[i]!);
+      if (removed === undefined) return null;
+      note(headingBefore(i - 1, (index) => texts.get(previous[index]!)));
+      out.push(`- ${removed}`);
+      i++;
+    } else if (j < lines.length && !keptAfter[j]) {
+      note(headingBefore(j - 1, (index) => current[index]));
+      out.push(`+ ${current[j]}`);
+      j++;
+    } else {
+      i++;
+      j++;
+    }
+  }
+  const delta = out.join("\n");
+  return delta.length * 2 <= text.length ? delta : null;
+}
+
+function addedLines(text: string, lines: readonly string[], previous: readonly string[]): string {
+  const seen = new Set(previous);
+  const current = text.split("\n");
+  const added = current.filter((_, index) => !seen.has(lines[index]!));
+  return added.length ? [`${current[0]} (additions only; earlier entries still apply)`, ...added].join("\n") : "";
 }
 
 export function environmentDelta(
   blocks: Record<string, string>,
   history: readonly SessionEntry[],
   sessionId: string,
+  additive: ReadonlySet<string> = new Set(),
 ): { text: string; record: EnvironmentSnapshot } {
   const { previous, anchorSeq } = retainedSnapshot(
     history,
     (entry) => (entry.payload as { environmentSnapshot?: EnvironmentSnapshot } | null)?.environmentSnapshot,
   );
   const current = Object.fromEntries(Object.entries(blocks).filter(([, text]) => text.trim()));
-  const hashes = Object.fromEntries(
-    Object.entries(current).map(([key, text]) => [key, createHash("sha256").update(text).digest("hex")]),
-  );
-  const record = { hashes, sessionId, ...(anchorSeq !== undefined ? { anchorSeq } : {}) };
+  const hashes = Object.fromEntries(Object.entries(current).map(([key, text]) => [key, sha(text)]));
+  const lines = Object.fromEntries(Object.entries(current).map(([key, text]) => [key, text.split("\n").map(lineHash)]));
+  const record: EnvironmentSnapshot = {
+    hashes,
+    lines: { ...lines },
+    sessionId,
+    ...(anchorSeq !== undefined ? { anchorSeq } : {}),
+  };
   if (!previous) return { text: Object.values(current).join("\n\n"), record };
-  const changed = Object.entries(current).filter(([key]) => previous.hashes[key] !== hashes[key]);
+  let held: Map<string, string> | undefined;
+  const heldTexts = () => (held ??= heldLineTexts(history, anchorSeq ?? 0));
+  const changed = Object.entries(current).flatMap(([key, text]) => {
+    const before = previous.lines?.[key];
+    if (before && additive.has(key)) {
+      record.lines![key] = [...new Set([...before, ...lines[key]!])];
+      return previous.hashes[key] === hashes[key] ? [] : [addedLines(text, lines[key]!, before)].filter(Boolean);
+    }
+    if (previous.hashes[key] === hashes[key]) return [];
+    return [(before && changedLines(text, lines[key]!, before, heldTexts)) || text];
+  });
   const removed = Object.keys(previous.hashes).filter((key) => !(key in current));
   return {
     text:
       changed.length || removed.length
         ? [
-            "Environment changes: sections below replace their earlier versions; unlisted sections are unchanged. Inventories are not permission grants; access is checked live.",
-            ...changed.map(([, text]) => text),
+            ENVIRONMENT_CHANGES,
+            ...changed,
             ...removed.map((key) => `No longer included: ${key}. Do not rely on its earlier inventory.`),
           ].join("\n\n")
         : "",
