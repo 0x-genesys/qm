@@ -158,6 +158,7 @@ import { createBudgetTracker, estimateCostUsd } from "./ratelimit/budget.ts";
 import type { SecurityScreenProbe } from "./security/security-screener.ts";
 import { createPostgresBudgetTracker } from "./ratelimit/postgres-budget.ts";
 import { createCronStore, DROP_RUN_AS_MIGRATION, type CronStore } from "./cron/cron-store.ts";
+import { DROP_RECIPIENT_CONSENT_MIGRATION } from "./triggers/trigger-store.ts";
 import { LEGACY_HARNESS_MIGRATION } from "./model/legacy-harness-migration.ts";
 import { createMemoryCronFireStore, createPostgresCronFireStore } from "./cron/fire-store.ts";
 import { createLoopStore } from "./loops/loop-store.ts";
@@ -1955,6 +1956,7 @@ export function buildApp(
     },
   };
   pgArtifactMap?.pool.registerMigration(DROP_RUN_AS_MIGRATION);
+  pgArtifactMap?.pool.registerMigration(DROP_RECIPIENT_CONSENT_MIGRATION);
   pgArtifactMap?.pool.registerMigration({
     id: "durable-map/turn_wall_clock_configs/0002-drop",
     statements: [
@@ -2547,6 +2549,7 @@ export function buildApp(
   orchestratorDeps.channelPolicy = channelPolicy;
   orchestratorDeps.surfaceCache = surfaceCache;
   orchestratorDeps.slackContextSource = config.slackContextSource ?? "live";
+  const resolveRecipient = (query: string) => app.resolveRecipient(query);
   const askResolution = keychain
     ? (ask: KeychainAsk, grant?: KeychainGrant) =>
         fireAskResolution(
@@ -2558,6 +2561,7 @@ export function buildApp(
             directory,
             currentScopeMembers,
             sessions,
+            resolveRecipient,
             getCron: (id) => crons.get(id),
             getAsk: (id) => keychain.getAsk(id),
             getGrant: (id) => keychain.getGrant(id),
@@ -2568,7 +2572,10 @@ export function buildApp(
     : undefined;
   const dropResolution = keychain
     ? (drop: DropResolution) =>
-        fireDropResolution({ deliveries, idempotency, identity, run: (req) => app.turn(req), directory }, drop)
+        fireDropResolution(
+          { deliveries, idempotency, identity, run: (req) => app.turn(req), directory, resolveRecipient },
+          drop,
+        )
     : undefined;
   const loopFire: LoopFireService = createLoopFireService({
     admittedWork,
@@ -2588,6 +2595,7 @@ export function buildApp(
       directory,
       currentScopeMembers,
       sessions,
+      resolveRecipient,
     },
   });
   const loopIngress = createLoopIngress({
@@ -2639,6 +2647,7 @@ export function buildApp(
     directory,
     currentScopeMembers,
     sessions,
+    resolveRecipient,
     fireLoop: (loopId, fireKey, cronId) => loopFire.fire(loopId, fireKey, cronId),
     ...(config.databaseUrl
       ? { jobQueue: createPgBossCronQueue(config.databaseUrl, undefined, config.cronFireConcurrency) }
@@ -2711,6 +2720,7 @@ export function buildApp(
           directory,
           currentScopeMembers,
           sessions,
+          resolveRecipient,
           leaderLease,
           onProcessExit: finishCredentials,
           heartbeatMs: config.monitorHeartbeatMs,
@@ -2730,6 +2740,7 @@ export function buildApp(
     run: (req) => app.turn(req),
     directory,
     currentScopeMembers,
+    resolveRecipient,
   });
   const backgroundOwnership: BackgroundOwnershipControl | undefined = config.backgroundDeploymentId
     ? {

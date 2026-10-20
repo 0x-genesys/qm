@@ -10,6 +10,7 @@ import { createControlService, type ControlService } from "../src/api/control-se
 import { scopeId, type ScopeId } from "../src/types.ts";
 import { CAPABILITY_TTL_MS, type CapabilityClaims } from "../src/auth/capability-token.ts";
 import { testConfig } from "./support/test-config.ts";
+import { runNowSettled } from "./support/settle.ts";
 
 const SECRET = "control-service-test";
 
@@ -288,7 +289,7 @@ test("cron create with `recipient` resolves a teammate by name and runs at the s
   assert.equal(r.cron.message, "standup in 5");
 });
 
-test("a RECURRING cron addressed to a teammate starts pending their consent and sends one notice", async () => {
+test("a recurring cron addressed to a teammate targets them directly and sends nothing at creation", async () => {
   const { built, control } = setup();
   await built.app.upsertDirectory([
     { principalId: "U1", displayName: "Alice", type: "internal" },
@@ -298,33 +299,39 @@ test("a RECURRING cron addressed to a teammate starts pending their consent and 
     {
       title: "daily ping",
       schedule: { cron: "0 9 * * *", timezone: "America/Los_Angeles" },
-      action: "summarize",
+      text: "standup notes are due",
       recipient: "Bob",
     },
     claims("U1"),
   );
   assert.ok(r.ok, JSON.stringify(r));
-  assert.equal(r.cron.recipientConsent?.recipientId, "U2");
-  assert.equal(r.cron.recipientConsent?.status, "pending");
-  const notices = await built.deliveries.pending("principal");
-  assert.equal(notices.length, 1);
-  assert.equal(notices[0]!.destination.target, "U2");
-  assert.match(notices[0]!.text, /set up .* to be delivered to you/);
+  assert.equal(r.cron.destination?.target, "U2");
+  assert.equal((await built.deliveries.pending("principal")).length, 0);
 });
 
-test("a one-shot (firstFireAt) teammate DM needs no consent — a single scheduled message, like reach", async () => {
+test("a recurring teammate cron stops delivering once the recipient is no longer an addressable teammate", async () => {
   const { built, control } = setup();
   await built.app.upsertDirectory([
     { principalId: "U1", displayName: "Alice", type: "internal" },
     { principalId: "U2", displayName: "Bob", type: "internal" },
   ]);
   const r = await control.createCron(
-    { schedule: { firstFireAt: Date.now() + 1000 }, text: "ping", recipient: "Bob" },
+    { schedule: { everyMs: 3_600_000 }, text: "standup notes are due", recipient: "Bob" },
     claims("U1"),
   );
   assert.ok(r.ok, JSON.stringify(r));
-  assert.equal(r.cron.recipientConsent, undefined);
-  assert.equal((await built.deliveries.pending("principal")).length, 0, "no consent notice for a one-shot send");
+  await runNowSettled(built.scheduler, r.cron.id);
+  assert.deepEqual(
+    (await built.deliveries.pending("principal")).map((d) => [d.destination.target, d.text]),
+    [["U2", "standup notes are due"]],
+  );
+  await built.app.upsertDirectory([
+    { principalId: "U1", displayName: "Alice", type: "internal" },
+    { principalId: "U2", displayName: "Bob", type: "guest" },
+  ]);
+  await runNowSettled(built.scheduler, r.cron.id);
+  assert.equal((await built.deliveries.pending("principal")).length, 1);
+  assert.equal((await built.crons.listFires(r.cron.id)).runs.at(-1)?.status, "refused");
 });
 
 test("a teammate-addressed cron runs in the OWNER's scope; the recipient is delivery-only (run scope ⊆ owner-accessible)", async () => {
@@ -345,7 +352,6 @@ test("a teammate-addressed cron runs in the OWNER's scope; the recipient is deli
     claims("U1", scopeId("channel", "C9")),
   );
   assert.ok(personal.ok, JSON.stringify(personal));
-  assert.equal(personal.cron.recipientConsent, undefined);
 });
 
 test("an ambiguous recipient name returns candidates, not a created cron", async () => {
