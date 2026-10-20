@@ -1685,20 +1685,18 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
     },
 
     async inheritedOrigin(session): Promise<SessionOrigin> {
-      const own = sessionOrigin(session.threadRef);
-      if (own !== "conversation" || !session.parentSessionId) return own;
       const rows = await q(
         `WITH RECURSIVE up(id, parent_session_id, origin, depth) AS (
            SELECT id, parent_session_id, origin, 1 FROM sessions WHERE id = $1
            UNION ALL
            SELECT p.id, p.parent_session_id, p.origin, up.depth + 1
              FROM up JOIN sessions p ON p.id = up.parent_session_id
-            WHERE up.origin = 'conversation' AND up.depth < 63
+            WHERE up.origin = 'conversation' AND up.depth < 64
          )
          SELECT origin FROM up ORDER BY depth DESC LIMIT 1`,
-        [session.parentSessionId],
+        [session.id],
       );
-      return (rows[0]?.origin as SessionOrigin | undefined) ?? own;
+      return (rows[0]?.origin as SessionOrigin | undefined) ?? "conversation";
     },
 
     async listDescendantsForParticipant(rootId, principalId, limit): Promise<Session[]> {
