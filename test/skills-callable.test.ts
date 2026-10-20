@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildApp } from "../src/wiring.ts";
+import { buildApp } from "./support/build-app.ts";
 import type { TurnRequest } from "../src/types.ts";
 import { scopeId } from "../src/types.ts";
 import { testConfig } from "./support/test-config.ts";
@@ -205,7 +205,7 @@ test("shortlist uses visible history, resets with compaction, and leaves the sys
   assert.ok(lease);
   await built.sessions.append(lease, {
     type: "tool_call",
-    payload: { tool: "skills", action: "read", name: "helper-19" },
+    payload: { tool: "skills", callId: "skills-1", action: "read", name: "helper-19" },
     scopeLabel: "personal:U1",
   });
   await built.sessions.releaseLease(lease);

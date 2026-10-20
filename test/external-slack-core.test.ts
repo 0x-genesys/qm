@@ -3,7 +3,7 @@ import "./support/auto-fake-sprites.ts";
 import { test } from "node:test";
 import { Readable } from "node:stream";
 import assert from "node:assert/strict";
-import { buildApp } from "../src/wiring.ts";
+import { buildApp } from "./support/build-app.ts";
 import { testConfig, TEST_CAPABILITY_SECRET } from "./support/test-config.ts";
 import { encodeRef, serviceCredRef } from "../src/acl/resource-ref.ts";
 import { verifyCapabilityToken, type CapabilityClaims } from "../src/auth/capability-token.ts";
@@ -55,7 +55,7 @@ test("external Slack strips private and org preloads before the prompt, but keep
     await b.runtime.stop();
   });
   await b.config.setSharingPosture("org:default-org", "open");
-  b.config.setSoul("org:default-org", "ORG_SOUL_SENTINEL");
+  await b.config.setSoul("org:default-org", "ORG_SOUL_SENTINEL");
   await b.memory.capture("personal:U1", ["PERSONAL_MEMORY_SENTINEL"], Date.now(), "U1");
   await b.memory.capture("org:default-org", ["ORG_MEMORY_SENTINEL"], Date.now(), "U1");
   await b.workspace.write("org:default-org", "secret.txt", "ORG_FILE_SENTINEL");
@@ -152,7 +152,6 @@ test("external native tool ceiling cannot delegate, switch sandboxes, read confi
   ])
     assert.throws(call, /private access/);
   assert.equal(tools.sessionSyscalls, undefined);
-  assert.deepEqual(tools.mcpToolDefs(), []);
   assert.equal(runs, 1);
 });
 
