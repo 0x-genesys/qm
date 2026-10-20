@@ -6,10 +6,9 @@ import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
 import { join } from "node:path";
 import { DeleteObjectCommand, GetObjectCommand, type S3Client } from "@aws-sdk/client-s3";
-import { Upload } from "@aws-sdk/lib-storage";
 import { swallowAs } from "../util/errors.ts";
 import { asChunks, collectBytes, type ByteSource } from "../util/bytes.ts";
-import { bodyToReadable, isNoSuchKey, s3Client } from "../persistence/s3.ts";
+import { bodyToReadable, isNoSuchKey, s3Client, uploadObject } from "../persistence/s3.ts";
 
 export type { ByteSource } from "../util/bytes.ts";
 
@@ -134,12 +133,12 @@ export function createS3DurableByteStore(options: S3DurableByteOptions): Durable
         const blobKey = keyFor(sha256);
         const body = createReadStream(path);
         try {
-          await new Upload({
+          await uploadObject(
             client,
-            params: { Bucket: bucket, Key: s3Key(blobKey), Body: body },
-            partSize: Math.max(16 * 1024 * 1024, Math.ceil(sizeBytes / 10000)),
-            queueSize: 1,
-          }).done();
+            { Bucket: bucket, Key: s3Key(blobKey) },
+            body,
+            Math.max(16 * 1024 * 1024, Math.ceil(sizeBytes / 10000)),
+          );
         } finally {
           body.destroy();
         }

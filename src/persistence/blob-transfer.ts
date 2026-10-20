@@ -13,10 +13,9 @@ import {
   type LifecycleRule,
   type S3Client,
 } from "@aws-sdk/client-s3";
-import { Upload } from "@aws-sdk/lib-storage";
 import { swallow, swallowAs } from "../util/errors.ts";
 import { asChunks, collectBytes, type ByteSource } from "../util/bytes.ts";
-import { bodyToReadable, isNoSuchKey, isNoSuchLifecycleConfiguration, s3Client } from "./s3.ts";
+import { bodyToReadable, isNoSuchKey, isNoSuchLifecycleConfiguration, s3Client, uploadObject } from "./s3.ts";
 
 export const MAX_BLOB_BYTES = 1_000_000_000;
 export const MAX_STAGE_BLOB_BYTES = 12_000_000_000;
@@ -187,12 +186,7 @@ export function createS3BlobTransferStore(options: S3BlobTransferOptions): BlobT
           yield buf;
         }
       }
-      await new Upload({
-        client,
-        params: { Bucket: bucket, Key, Body: Readable.from(checked()) },
-        partSize: S3_PART_BYTES,
-        queueSize: 1,
-      }).done();
+      await uploadObject(client, { Bucket: bucket, Key }, Readable.from(checked()), S3_PART_BYTES);
 
       const sha256 = hash.digest("hex");
       if (opts?.expectedSha256 && opts.expectedSha256 !== sha256) {

@@ -1,11 +1,10 @@
 import { basename } from "node:path/posix";
 import { Readable } from "node:stream";
 import { GetObjectCommand, type S3Client } from "@aws-sdk/client-s3";
-import { Upload } from "@aws-sdk/lib-storage";
 import { shq } from "../util/shell.ts";
 import { swallowAs } from "../util/errors.ts";
 import { sleep, withTimeout } from "../util/async.ts";
-import { bodyToReadable, isNoSuchKey, s3Client } from "../persistence/s3.ts";
+import { bodyToReadable, isNoSuchKey, s3Client, uploadObject } from "../persistence/s3.ts";
 import { displacedPruneGlobs } from "../credentials/resident-paths.ts";
 import type { TeardownOptions } from "./sandbox.ts";
 
@@ -48,7 +47,7 @@ interface StoredSnapshot {
 
 export interface HomeSnapshotStore {
   open(scope: string): Promise<StoredSnapshot | null>;
-  put(scope: string, parts: AsyncIterable<Uint8Array>): Promise<void>;
+  put(scope: string, parts: AsyncIterable<Uint8Array>, signal?: AbortSignal): Promise<void>;
 }
 
 export class SnapshotTooLargeError extends Error {
@@ -101,13 +100,8 @@ export function createS3SnapshotStore(opts: S3SnapshotStoreOptions): HomeSnapsho
       if (!got.Body) return null;
       return { size: got.ContentLength ?? -1, parts: bodyToReadable(got.Body) };
     },
-    async put(scope, parts): Promise<void> {
-      await new Upload({
-        client: s3,
-        params: { Bucket, Key: keyFor(scope), Body: Readable.from(parts) },
-        partSize: SNAPSHOT_PART_BYTES,
-        queueSize: 1,
-      }).done();
+    async put(scope, parts, signal): Promise<void> {
+      await uploadObject(s3, { Bucket, Key: keyFor(scope) }, Readable.from(parts), SNAPSHOT_PART_BYTES, signal);
     },
   };
 }
@@ -254,7 +248,13 @@ export function createHomeSnapshotOps<S>(opts: HomeSnapshotOpsOptions<S>): HomeS
           for (let i = 0, offset = 0; offset < size; i++, offset += partBytes)
             yield await readPart(session, i, Math.min(partBytes, size - offset), left);
         }
-        await withTimeout(() => store.put(scope, parts()), left(), `${label} snapshot upload`);
+        const cancel = new AbortController();
+        try {
+          await withTimeout(() => store.put(scope, parts(), cancel.signal), left(), `${label} snapshot upload`);
+        } catch (e) {
+          cancel.abort();
+          throw e;
+        }
       } finally {
         await removeScratch(session, "snapshot cleanup");
       }

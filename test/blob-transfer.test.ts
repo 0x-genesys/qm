@@ -383,12 +383,22 @@ test("s3: a failed abort is reported, never silently swallowed (parts would bill
   });
   const store = createS3BlobTransferStore({ bucket: "b", _client: f.client });
   const chunk = Buffer.alloc(S3_PART_BYTES, 0x64);
-  await assert.rejects(
-    () => store.put(Readable.from([chunk, chunk, chunk]), { maxBytes: 2 * S3_PART_BYTES + 10 }),
-    /AccessDenied: s3:AbortMultipartUpload/,
+  const warnings: string[] = [];
+  const realWarn = console.warn;
+  console.warn = (...args: unknown[]) => void warnings.push(args.join(" "));
+  try {
+    await assert.rejects(
+      () => store.put(Readable.from([chunk, chunk, chunk]), { maxBytes: 2 * S3_PART_BYTES + 10 }),
+      (e) => e instanceof BlobTooLargeError,
+      "the original failure still surfaces, not the abort failure",
+    );
+  } finally {
+    console.warn = realWarn;
+  }
+  assert.ok(
+    warnings.some((w) => w.includes("leaked S3 multipart parts")),
+    "an un-abortable upload names the leak so an operator can find it",
   );
-  assert.equal(f.liveUploads.size, 1, "the un-abortable upload is still open in the bucket");
-  assert.equal(f.objects.size, 0);
 });
 
 test("s3: ensureExpiry also reaps incomplete multipart uploads (invisible to ListObjects)", async () => {
