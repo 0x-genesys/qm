@@ -19,22 +19,10 @@ export function instrumentedSnapshotStore(): InstrumentedSnapshotStore {
         if (readsFail) throw outage();
         return inner.open(scope);
       },
-      put: async (scope, data) => {
+      put: async (scope, parts) => {
         if (writesFail) throw outage();
+        await inner.put(scope, parts);
         puts++;
-        await inner.put(scope, data);
-      },
-      createUpload: async (scope) => {
-        if (writesFail) throw outage();
-        const upload = await inner.createUpload(scope);
-        return {
-          ...upload,
-          complete: async () => {
-            if (writesFail) throw outage();
-            puts++;
-            await upload.complete();
-          },
-        };
       },
     },
     puts: () => puts,

@@ -1,12 +1,8 @@
 import { S3Client } from "@aws-sdk/client-s3";
 import { Readable } from "node:stream";
 
-export interface S3Send {
-  send(command: unknown): Promise<unknown>;
-}
-
-export function s3Client(region?: string): S3Send {
-  return new S3Client(region ? { region } : {}) as S3Send;
+export function s3Client(region?: string): S3Client {
+  return new S3Client(region ? { region } : {});
 }
 
 export function bodyToReadable(body: unknown): Readable {

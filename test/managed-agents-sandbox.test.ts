@@ -216,8 +216,7 @@ test("a failed home snapshot retries without recapturing the checkpoint", async 
   const uploads: number[] = [];
   const snapshots: HomeSnapshotStore = {
     open: async () => null,
-    put: async () => undefined,
-    createUpload: async () => {
+    put: async () => {
       uploads.push(1);
       throw new Error("snapshot upload failed");
     },

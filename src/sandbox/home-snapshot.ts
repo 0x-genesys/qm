@@ -1,16 +1,11 @@
 import { basename } from "node:path/posix";
-import {
-  AbortMultipartUploadCommand,
-  CompleteMultipartUploadCommand,
-  CreateMultipartUploadCommand,
-  GetObjectCommand,
-  PutObjectCommand,
-  UploadPartCommand,
-} from "@aws-sdk/client-s3";
+import { Readable } from "node:stream";
+import { GetObjectCommand, type S3Client } from "@aws-sdk/client-s3";
+import { Upload } from "@aws-sdk/lib-storage";
 import { shq } from "../util/shell.ts";
 import { swallowAs } from "../util/errors.ts";
 import { sleep, withTimeout } from "../util/async.ts";
-import { bodyToReadable, isNoSuchKey, s3Client, type S3Send } from "../persistence/s3.ts";
+import { bodyToReadable, isNoSuchKey, s3Client } from "../persistence/s3.ts";
 import { displacedPruneGlobs } from "../credentials/resident-paths.ts";
 import type { TeardownOptions } from "./sandbox.ts";
 
@@ -46,12 +41,6 @@ export function snapshotDue(
   return !tdOpts?.homeUnchanged || stored?.homeDirty !== false;
 }
 
-export interface SnapshotUpload {
-  addPart(bytes: Uint8Array): Promise<void>;
-  complete(): Promise<void>;
-  abort(): Promise<void>;
-}
-
 interface StoredSnapshot {
   size: number;
   parts: AsyncIterable<Uint8Array>;
@@ -59,8 +48,7 @@ interface StoredSnapshot {
 
 export interface HomeSnapshotStore {
   open(scope: string): Promise<StoredSnapshot | null>;
-  put(scope: string, data: Uint8Array): Promise<void>;
-  createUpload(scope: string): Promise<SnapshotUpload>;
+  put(scope: string, parts: AsyncIterable<Uint8Array>): Promise<void>;
 }
 
 export class SnapshotTooLargeError extends Error {
@@ -81,20 +69,10 @@ export function createMemorySnapshotStore(): HomeSnapshotStore {
       const data = map.get(scope);
       return data ? { size: data.length, parts: singlePart(data) } : null;
     },
-    put: async (scope, data) => {
-      map.set(scope, data);
-    },
-    createUpload: async (scope) => {
-      const parts: Uint8Array[] = [];
-      return {
-        addPart: async (bytes) => {
-          parts.push(bytes);
-        },
-        complete: async () => {
-          map.set(scope, Buffer.concat(parts));
-        },
-        abort: async () => {},
-      };
+    put: async (scope, parts) => {
+      const chunks: Uint8Array[] = [];
+      for await (const part of parts) chunks.push(part);
+      map.set(scope, Buffer.concat(chunks));
     },
   };
 }
@@ -103,7 +81,7 @@ export interface S3SnapshotStoreOptions {
   bucket: string;
   prefix: string;
   region?: string;
-  s3?: S3Send;
+  s3?: S3Client;
   keyFor?: (scope: string) => string;
 }
 
@@ -123,37 +101,13 @@ export function createS3SnapshotStore(opts: S3SnapshotStoreOptions): HomeSnapsho
       if (!got.Body) return null;
       return { size: got.ContentLength ?? -1, parts: bodyToReadable(got.Body) };
     },
-    async put(scope, data): Promise<void> {
-      await s3.send(new PutObjectCommand({ Bucket, Key: keyFor(scope), Body: data }));
-    },
-    async createUpload(scope): Promise<SnapshotUpload> {
-      const Key = keyFor(scope);
-      const started = (await s3.send(new CreateMultipartUploadCommand({ Bucket, Key }))) as { UploadId?: string };
-      const UploadId = started.UploadId!;
-      const parts: Array<{ ETag: string; PartNumber: number }> = [];
-      const abort = async (): Promise<void> => {
-        await s3.send(new AbortMultipartUploadCommand({ Bucket, Key, UploadId })).catch(() => {});
-      };
-      return {
-        async addPart(bytes) {
-          const PartNumber = parts.length + 1;
-          const uploaded = (await s3.send(
-            new UploadPartCommand({ Bucket, Key, UploadId, PartNumber, Body: bytes, ContentLength: bytes.length }),
-          )) as { ETag?: string };
-          parts.push({ ETag: uploaded.ETag!, PartNumber });
-        },
-        async complete() {
-          if (!parts.length) {
-            await abort();
-            await s3.send(new PutObjectCommand({ Bucket, Key, Body: new Uint8Array(0) }));
-            return;
-          }
-          await s3.send(
-            new CompleteMultipartUploadCommand({ Bucket, Key, UploadId, MultipartUpload: { Parts: parts } }),
-          );
-        },
-        abort,
-      };
+    async put(scope, parts): Promise<void> {
+      await new Upload({
+        client: s3,
+        params: { Bucket, Key: keyFor(scope), Body: Readable.from(parts) },
+        partSize: SNAPSHOT_PART_BYTES,
+        queueSize: 1,
+      }).done();
     },
   };
 }
@@ -296,17 +250,11 @@ export function createHomeSnapshotOps<S>(opts: HomeSnapshotOpsOptions<S>): HomeS
         if (made.exitCode !== 0) throw new Error(`${label} snapshot tar failed: ${made.stderr.slice(0, 200)}`);
         const size = await tarSize(session, left);
         if (size > maxBytes) throw new SnapshotTooLargeError(label, size, maxBytes);
-        const upload = await withTimeout(() => store.createUpload(scope), left(), `${label} snapshot upload start`);
-        try {
-          for (let i = 0, offset = 0; offset < size; i++, offset += partBytes) {
-            const bytes = await readPart(session, i, Math.min(partBytes, size - offset), left);
-            await withTimeout(() => upload.addPart(bytes), left(), `${label} snapshot part ${i} upload`);
-          }
-          await withTimeout(() => upload.complete(), left(), `${label} snapshot upload completion`);
-        } catch (e) {
-          await upload.abort().catch(swallowAs(`${label}-sandbox: snapshot upload abort`, undefined));
-          throw e;
+        async function* parts(): AsyncGenerator<Uint8Array> {
+          for (let i = 0, offset = 0; offset < size; i++, offset += partBytes)
+            yield await readPart(session, i, Math.min(partBytes, size - offset), left);
         }
+        await withTimeout(() => store.put(scope, parts()), left(), `${label} snapshot upload`);
       } finally {
         await removeScratch(session, "snapshot cleanup");
       }

@@ -11,7 +11,7 @@ import {
   type Part,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { isNoSuchKey, type S3Send } from "../persistence/s3.ts";
+import { isNoSuchKey } from "../persistence/s3.ts";
 import {
   FileArtifactDeletedError,
   artifactPath,
@@ -55,7 +55,7 @@ export function createDirectFileUploads(options: {
   region?: string;
   store: FileUploadStore;
   files: FileArtifactStore;
-  client?: S3Send;
+  client?: S3Client;
   presign?: (command: UploadPartCommand, expiresIn: number) => Promise<string>;
   now?: () => number;
 }): DirectFileUploads {

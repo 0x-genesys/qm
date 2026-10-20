@@ -27,6 +27,7 @@ import {
   S3_PART_BYTES,
   type BlobTransferStore,
 } from "../src/persistence/blob-transfer.ts";
+import { fakeS3Client } from "./support/fake-s3-client.ts";
 
 function fakeS3(now: () => number = () => Date.now(), hooks: { onAbort?: () => void } = {}) {
   const objects = new Map<string, { body: Buffer; lastModified: Date }>();
@@ -35,7 +36,7 @@ function fakeS3(now: () => number = () => Date.now(), hooks: { onAbort?: () => v
   const aborted: string[] = [];
   let lifecycle: { Rules: Array<Record<string, unknown>> } | null = null;
   let nextUploadId = 1;
-  const client = {
+  const client = fakeS3Client({
     async send(command: unknown): Promise<unknown> {
       if (command instanceof CreateMultipartUploadCommand) {
         const UploadId = `up-${nextUploadId++}`;
@@ -104,7 +105,7 @@ function fakeS3(now: () => number = () => Date.now(), hooks: { onAbort?: () => v
       }
       throw new Error("unexpected command");
     },
-  };
+  });
   return {
     objects,
     client,
@@ -222,7 +223,10 @@ test("s3: open returns null for a missing object (NoSuchKey is not an error)", a
 test("s3: open THROWS on a transient error (does NOT masquerade a 5xx/throttle as absent)", async () => {
   const boom = new Error("ServiceUnavailable") as Error & { $metadata: { httpStatusCode: number } };
   boom.$metadata = { httpStatusCode: 503 };
-  const store = createS3BlobTransferStore({ bucket: "b", _client: { send: async () => Promise.reject(boom) } });
+  const store = createS3BlobTransferStore({
+    bucket: "b",
+    _client: fakeS3Client({ send: async () => Promise.reject(boom) }),
+  });
   await assert.rejects(() => store.open("ffffffffffffffffffffffffffffffff"), /ServiceUnavailable/);
 });
 
@@ -242,7 +246,7 @@ test("local-fs: open THROWS on a non-ENOENT stat error (ENOTDIR), not a false 40
 test("s3: a malformed blobId never touches S3 (anti-traversal guard)", async () => {
   let sends = 0;
   const { client } = fakeS3();
-  const guarded = { send: (c: unknown) => (sends++, client.send(c)) };
+  const guarded = fakeS3Client({ send: (c: never) => (sends++, client.send(c)) });
   const store = createS3BlobTransferStore({ bucket: "b", _client: guarded });
   assert.equal(await store.open("../etc/passwd"), null);
   await store.delete("../etc/passwd");
@@ -379,22 +383,12 @@ test("s3: a failed abort is reported, never silently swallowed (parts would bill
   });
   const store = createS3BlobTransferStore({ bucket: "b", _client: f.client });
   const chunk = Buffer.alloc(S3_PART_BYTES, 0x64);
-  const warnings: string[] = [];
-  const realWarn = console.warn;
-  console.warn = (...args: unknown[]) => void warnings.push(args.join(" "));
-  try {
-    await assert.rejects(
-      () => store.put(Readable.from([chunk, chunk, chunk]), { maxBytes: 2 * S3_PART_BYTES + 10 }),
-      (e) => e instanceof BlobTooLargeError,
-      "the original failure still surfaces, not the abort failure",
-    );
-  } finally {
-    console.warn = realWarn;
-  }
-  assert.ok(
-    warnings.some((w) => w.includes("leaked S3 multipart parts")),
-    "an un-abortable upload names the leak so an operator can find it",
+  await assert.rejects(
+    () => store.put(Readable.from([chunk, chunk, chunk]), { maxBytes: 2 * S3_PART_BYTES + 10 }),
+    /AccessDenied: s3:AbortMultipartUpload/,
   );
+  assert.equal(f.liveUploads.size, 1, "the un-abortable upload is still open in the bucket");
+  assert.equal(f.objects.size, 0);
 });
 
 test("s3: ensureExpiry also reaps incomplete multipart uploads (invisible to ListObjects)", async () => {

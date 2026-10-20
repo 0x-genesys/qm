@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { CompleteMultipartUploadCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -305,13 +306,13 @@ for (const writer of ["teardown", "reaper"] as const) {
     const uploading = Promise.withResolvers<void>();
     const release = Promise.withResolvers<void>();
     const send = fake.s3.send;
-    fake.s3.send = async (command: unknown) => {
-      if (command?.constructor.name === "CompleteMultipartUploadCommand") {
+    fake.s3.send = (async (command: object) => {
+      if (command instanceof PutObjectCommand || command instanceof CompleteMultipartUploadCommand) {
         uploading.resolve();
         await release.promise;
       }
-      return send(command);
-    };
+      return send(command as never);
+    }) as typeof send;
     const snapshot = writer === "reaper" ? sb.reapDeepIdle!(1) : sb.teardown(handle);
     await uploading.promise;
     let retired = false;

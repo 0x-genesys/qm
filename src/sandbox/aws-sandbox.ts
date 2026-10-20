@@ -89,7 +89,7 @@ export interface AwsSandboxOptions extends BlobStagingOptions {
   credentialPaths?: CredentialPathSpec[];
   onError?: (e: { category: string; code: string; message: string; scopeLabel?: string }) => void;
   api?: AwsMicrovmApi;
-  s3?: Pick<S3Client, "send">;
+  s3?: S3Client;
   fetchImpl?: typeof fetch;
 }
 
@@ -107,8 +107,7 @@ export function createAwsSandbox(workspace: WorkspaceStore, opts: AwsSandboxOpti
       ...(opts.profile ? { profile: opts.profile } : {}),
       ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
     });
-  const s3: Pick<S3Client, "send"> =
-    opts.s3 ?? new S3Client({ region, ...(opts.profile ? { profile: opts.profile } : {}) });
+  const s3 = opts.s3 ?? new S3Client({ region, ...(opts.profile ? { profile: opts.profile } : {}) });
   const store = opts.store ?? createMemoryMap<StoredMicrovm>();
   const advisoryLock = opts.advisoryLock ?? createNoopAdvisoryLock();
   const provisionQueue = createKeyedQueue<string>();

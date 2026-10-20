@@ -6,6 +6,7 @@ import { FileUploadError, type FileUpload, type FileUploadStore } from "../src/f
 import { createMemoryFileArtifactStore } from "../src/files/file-artifact-store.ts";
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
 import { scopeId } from "../src/types.ts";
+import { fakeS3Client } from "./support/fake-s3-client.ts";
 
 const checksum = (text: string) => createHash("sha256").update(text).digest("base64");
 function fixture() {
@@ -37,7 +38,7 @@ function fixture() {
   let parts: Array<Record<string, unknown>> = [];
   let time = 1_000;
   let loseCompleteResponse = false;
-  const client = {
+  const client = fakeS3Client({
     async send(command: any) {
       calls.push({ name: command.constructor.name, input: command.input });
       switch (command.constructor.name) {
@@ -66,7 +67,7 @@ function fixture() {
           throw new Error(command.constructor.name);
       }
     },
-  };
+  });
   const options = {
     bucket: "test-bucket",
     store,

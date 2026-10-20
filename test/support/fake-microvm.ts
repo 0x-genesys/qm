@@ -6,6 +6,8 @@ import type {
   MicrovmLifecycleState,
 } from "../../src/sandbox/aws-microvm-api.ts";
 import { AwsApiError } from "../../src/sandbox/aws-microvm-api.ts";
+import type { S3Client } from "@aws-sdk/client-s3";
+import { fakeS3Client } from "./fake-s3-client.ts";
 
 interface FakeBody {
   id: string;
@@ -19,7 +21,7 @@ const enc = (s: string) => Buffer.from(s, "utf8");
 
 export interface FakeMicrovm {
   api: AwsMicrovmApi;
-  s3: { send(cmd: unknown): Promise<unknown> };
+  s3: S3Client;
   fetchImpl: typeof fetch;
   bodies: Map<string, FakeBody>;
   s3store: Map<string, Uint8Array>;
@@ -179,7 +181,7 @@ export function installFakeMicrovm(): FakeMicrovm {
   }) as unknown as typeof fetch;
 
   const uploads = new Map<string, Map<number, Uint8Array>>();
-  const s3 = {
+  const s3 = fakeS3Client({
     async send(cmd: unknown): Promise<unknown> {
       const c = cmd as {
         constructor: { name: string };
@@ -222,7 +224,7 @@ export function installFakeMicrovm(): FakeMicrovm {
       }
       throw new Error(`fake s3: unsupported command ${name}`);
     },
-  };
+  });
 
   self.api = api;
   self.s3 = s3;

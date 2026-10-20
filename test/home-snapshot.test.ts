@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { Readable } from "node:stream";
 import {
   mkdtempSync,
   readFileSync,
@@ -22,7 +23,6 @@ import {
   SnapshotTooLargeError,
   type HomeSnapshotSessionIo,
   type HomeSnapshotStore,
-  type SnapshotUpload,
 } from "../src/sandbox/home-snapshot.ts";
 
 interface Box {
@@ -70,28 +70,40 @@ function ops(b: ReturnType<typeof box>, store: HomeSnapshotStore, extra: Record<
   });
 }
 
-function recordingStore(): { store: HomeSnapshotStore; parts: number[]; completed: number; aborted: number } {
+function recordingStore(): {
+  store: HomeSnapshotStore;
+  parts: number[];
+  completed: number;
+  failed: number;
+  settled: () => Promise<unknown>;
+} {
   const inner = createMemorySnapshotStore();
-  const rec = { store: inner, parts: [] as number[], completed: 0, aborted: 0 };
+  let pending: Promise<unknown> = Promise.resolve();
+  const rec = {
+    store: inner,
+    parts: [] as number[],
+    completed: 0,
+    failed: 0,
+    settled: () => pending,
+  };
   rec.store = {
     open: (s) => inner.open(s),
-    put: (s, d) => inner.put(s, d),
-    createUpload: async (s): Promise<SnapshotUpload> => {
-      const upload = await inner.createUpload(s);
-      return {
-        addPart: async (bytes) => {
+    put: (s, parts) => {
+      async function* counted(): AsyncGenerator<Uint8Array> {
+        for await (const bytes of parts) {
           rec.parts.push(bytes.length);
-          await upload.addPart(bytes);
+          yield bytes;
+        }
+      }
+      const put = inner.put(s, counted()).then(
+        () => void rec.completed++,
+        (error: unknown) => {
+          rec.failed++;
+          throw error;
         },
-        complete: async () => {
-          rec.completed++;
-          await upload.complete();
-        },
-        abort: async () => {
-          rec.aborted++;
-          await upload.abort();
-        },
-      };
+      );
+      pending = put.catch(() => undefined);
+      return put;
     },
   };
   return rec;
@@ -105,7 +117,7 @@ test("snapshot streams the home tar as fixed-size parts and hydrates it back byt
   await ops(a, rec.store).snapshotHome("scope", a);
 
   assert.equal(rec.completed, 1);
-  assert.equal(rec.aborted, 0);
+  assert.equal(rec.failed, 0);
   assert.ok(rec.parts.length >= 6, `the tar travelled in ${rec.parts.length} parts, never as one buffer`);
   assert.ok(
     rec.parts.slice(0, -1).every((n) => n === 4096),
@@ -134,7 +146,7 @@ test("a home over the size cap is refused before a single byte is read", async (
   assert.equal(await createMemorySnapshotStore().open("scope"), null);
 });
 
-test("a part that comes back the wrong size fails the snapshot and aborts the upload", async () => {
+test("a part that comes back the wrong size fails the snapshot and its upload", async () => {
   const a = box();
   fill(a.home, "data.bin", 4096 * 3);
   const rec = recordingStore();
@@ -155,7 +167,7 @@ test("a part that comes back the wrong size fails the snapshot and aborts the up
     partBytes: 4096,
   });
   await assert.rejects(() => snap.snapshotHome("scope", a), /part 1: got 4095 bytes, expected 4096/);
-  assert.equal(rec.aborted, 1);
+  assert.equal(rec.failed, 1);
   assert.equal(rec.completed, 0);
   assert.equal(await rec.store.open("scope"), null, "a failed upload never replaces the stored snapshot");
 });
@@ -224,8 +236,10 @@ test("the whole snapshot is bounded by one deadline", async () => {
     timeoutMs: 60,
   });
   await assert.rejects(() => snap.snapshotHome("scope", a), /timed out|exceeded 60ms/);
+  await rec.settled();
   assert.equal(rec.completed, 0);
-  assert.equal(rec.aborted, 1);
+  assert.equal(rec.failed, 1);
+  assert.equal(await rec.store.open("scope"), null);
 });
 
 test("a missing snapshot hydrates nothing", async () => {
@@ -338,7 +352,7 @@ test("hydrate detects truncated guest writes before extraction", async () => {
 
 test("hydrate validates archive structure before extraction", async () => {
   const store = createMemorySnapshotStore();
-  await store.put("scope", Buffer.from("not a tar archive"));
+  await store.put("scope", Readable.from([Buffer.from("not a tar archive")]));
   const b = box();
   writeFileSync(join(b.home, "existing"), "keep me");
   await assert.rejects(ops(b, store).hydrateHome("scope", b), /archive invalid/);

@@ -849,11 +849,10 @@ test("warm commands and process controls do not wait for a checkpoint", { timeou
   const s = make({
     snapshots: {
       ...counting.store,
-      createUpload: async (id: string) => {
-        const upload = await counting.store.createUpload!(id);
+      put: async (id: string, parts: AsyncIterable<Uint8Array>) => {
         entered.resolve();
         await release.promise;
-        return upload;
+        await counting.store.put(id, parts);
       },
     },
   });
@@ -896,21 +895,15 @@ test("checkpoint writers from separate cores share the durable lifecycle lock", 
   let maximum = 0;
   const snapshots = {
     ...counting.store,
-    createUpload: async (id: string) => {
+    put: async (id: string, parts: AsyncIterable<Uint8Array>) => {
       writers++;
       maximum = Math.max(maximum, writers);
-      const upload = await counting.store.createUpload!(id);
       if (counting.puts() === 0) {
         entered.resolve();
         await release.promise;
       }
-      return {
-        ...upload,
-        complete: async () => {
-          await upload.complete();
-          writers--;
-        },
-      };
+      await counting.store.put(id, parts);
+      writers--;
     },
   };
   const first = make({ store, snapshots, advisoryLock });
