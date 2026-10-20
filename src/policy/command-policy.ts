@@ -671,8 +671,10 @@ export function evaluateCommandWithLayer(
   const policyMatch = firstMatch(lines.join("\n"), policy.rules);
   if (policyMatch?.decision === "deny") return policyMatch;
   if (policy.mode === "allowlist" && !policyMatch) return { decision: "deny", reason: "not in allowlist" };
+  const layerMatch = policyMatch ? null : argvMatch(commands, layerRules);
+  if (layerMatch?.decision === "deny") return layerMatch;
   const floorMatch = feedsShell ? argvMatch(commands, PIPE_TO_SHELL_RULES) : null;
   if (floorMatch) return floorMatch;
   if (uninspectable) return { decision: "require_approval", reason: uninspectable };
-  return policyMatch ?? argvMatch(commands, layerRules) ?? { decision: "allow" };
+  return policyMatch ?? layerMatch ?? { decision: "allow" };
 }
