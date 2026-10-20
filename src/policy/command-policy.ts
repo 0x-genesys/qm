@@ -595,7 +595,10 @@ function firstMatch(scannable: string, rules: readonly CommandRule[]): CommandEv
 
 function containsInOrder(args: readonly string[], words: readonly string[]): boolean {
   let next = 0;
-  for (const arg of args) if (arg === words[next] || arg.startsWith(`${words[next]}=`)) next++;
+  for (const arg of args) {
+    if (next === words.length) break;
+    if (arg === words[next] || arg.startsWith(`${words[next]}=`)) next++;
+  }
   return next === words.length;
 }
 

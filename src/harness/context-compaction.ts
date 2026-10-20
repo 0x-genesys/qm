@@ -42,7 +42,7 @@ export const CONTEXT_SUMMARY_HEADER =
   "[Earlier conversation summary — an index of turns compacted out of your context. Conversation turns and tool calls can be reopened with the history tool (seq parameter; a very long entry returns as head and tail), or searched (query). Tool results are excluded.]";
 
 export function withoutWire(payload: unknown): Record<string, unknown> {
-  return { ...(payload as Record<string, unknown> | null), step: undefined, wire: undefined };
+  return { ...(payload as Record<string, unknown> | null), step: undefined, wire: undefined, activity: undefined };
 }
 
 function modelReplayable(entries: SessionEntry[]): SessionEntry[] {
@@ -155,7 +155,7 @@ export function compactTranscript(history: SessionEntry[]): string {
     else if (!ov) {
       const payload =
         entry.payload && typeof entry.payload === "object"
-          ? { ...withoutWire(entry.payload), memoryRecall: undefined, activity: undefined }
+          ? { ...withoutWire(entry.payload), memoryRecall: undefined }
           : entry.payload;
       push(`${label}:${op?.isError === true ? " [isError]" : ""} ${JSON.stringify(payload ?? {})}`);
     }
