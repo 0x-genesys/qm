@@ -1638,7 +1638,6 @@ export interface InboxItemEvent {
 }
 
 export function subscribeDeliveries(
-  onThread: (threadRef: string) => void,
   onSessionState?: (event: SessionStateEvent) => void,
   onResync?: () => void,
   onInboxItem?: (event: InboxItemEvent) => void,
@@ -1670,14 +1669,6 @@ export function subscribeDeliveries(
       if (typeof ev.loopId === "string" && typeof ev.itemId === "string") onInboxItem?.(ev);
     } catch (err) {
       swallow("web-ui: handle inbox-item frame", err);
-    }
-  });
-  es.addEventListener("delivery", (e: MessageEvent) => {
-    try {
-      const d = JSON.parse(e.data) as { threadRef?: string };
-      if (typeof d.threadRef === "string" && d.threadRef) onThread(d.threadRef);
-    } catch (err) {
-      swallow("web-ui: handle delivery nudge", err);
     }
   });
   return () => es.close();

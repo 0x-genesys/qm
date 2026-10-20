@@ -27,6 +27,8 @@ export interface ReapEvent {
 export interface RunDeliveryState {
   replying?: boolean;
   editRef?: string;
+  /** When the run's reply (or failure notice) reached its surface. */
+  postedAt?: number;
 }
 
 export type RunStop =
