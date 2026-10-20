@@ -10,9 +10,9 @@ import { createPostgresRunStore } from "../src/runs/postgres-run-store.ts";
 import { createPostgresRunSignalStore } from "../src/runs/postgres-run-signal-store.ts";
 import { scopeId, type Principal, type TurnRequest, type TurnResult } from "../src/types.ts";
 import type { OrchestratorInput } from "../src/core/orchestrator.ts";
+import { assertLateJoinerScopes, assertLeanListing } from "./support/participant-scopes.ts";
 import { assertParticipantSessionParity } from "./support/participant-session-parity.ts";
 import { assertSpendRollupParity } from "./support/spend-rollup-parity.ts";
-import { byScopeId, rollupsFromSummaries } from "./support/scope-rollup-oracle.ts";
 
 const URL = process.env.DATABASE_URL;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the Postgres store tests";
@@ -767,7 +767,7 @@ test("pg session store: one-per-thread, TTL/fenced lease, monotonic log, visibil
   const metaOnly = await s.listLlmRequests(a.id, { omitRequest: true });
   assert.equal(metaOnly.length, 2, "every row still listed");
   assert.ok(
-    metaOnly.every((r) => r.request === null),
+    metaOnly.every((r) => r.promptEnvelope === undefined),
     "bodies omitted from the projection",
   );
   assert.equal(metaOnly[1]!.ttftMs, 1200, "metadata (timing) still selected");
@@ -937,8 +937,7 @@ test("pg deleteSession: hard-removes the session and its rows, leaves others", {
   await s.addParticipant(a.id, "DEL1");
   await s.addParticipant(keep.id, "DEL1");
   const { lease } = await s.acquireLease(a.id);
-  const hi = await s.append(lease!, { type: "user", payload: { text: "hi" }, scopeLabel: scope });
-  await s.appendSearchEntries(lease!, [{ seq: hi.seq, type: "user", text: "hi", createdAt: hi.createdAt }]);
+  await s.append(lease!, { type: "user", payload: { text: "hi" }, scopeLabel: scope });
   await s.recordLlmRequest(a.id, {
     turnSeq: 0,
     step: 0,
@@ -952,7 +951,6 @@ test("pg deleteSession: hard-removes the session and its rows, leaves others", {
   assert.equal(await s.get(a.id), null, "session row gone");
   assert.equal(await s.getByThread("del-t1"), null, "thread index gone");
   assert.equal((await s.getEntries(a.id)).length, 0, "entries gone");
-  assert.equal(await s.searchIndexCoverage(a.id), -1, "search index rows gone");
   assert.equal((await s.listLlmRequests(a.id)).length, 0, "llm requests gone");
   assert.equal(
     (await s.listByParticipant("DEL1")).some((x) => x.id === a.id),
@@ -1014,11 +1012,6 @@ test("pg scopeSessionSummaries: counts via aggregate, not per-transcript reads",
     "orgWide includes every scope",
   );
 
-  const previews = await s.lastUserMessages([a.id, b.id]);
-  assert.equal(previews.get(a.id), "2", "lastUserMessages returns the newest user turn");
-  assert.equal(previews.has(b.id), false, "entry-less session absent from the preview map");
-  assert.equal((await s.lastUserMessages([])).size, 0, "empty id set → empty map");
-
   const conversations = await s.scopeSessionSummaries(team, false, { limit: 10, category: "conversation" });
   assert.deepEqual(
     conversations.map((r) => r.id).sort(),
@@ -1051,42 +1044,16 @@ test("pg scopeSessionSummaries: counts via aggregate, not per-transcript reads",
     [webhook.id],
     "other background page filters before pagination",
   );
-
-  const backgroundStats = await s.scopeSessionStats(team, false, "background", "cron");
-  assert.equal(backgroundStats.total, 1);
-  assert.equal(backgroundStats.byType.cron, 1);
-  assert.deepEqual(backgroundStats.totalByCategory, { conversation: 2, background: 2, all: 4 });
 });
 
-test("pg scopeCronGroups: one aggregated row per cron; cronId page filters one cron's fires", { skip }, async () => {
+test("pg scopeSessionSummaries: cronId page filters one cron's fires", { skip }, async () => {
   const s = createPostgresSessionStore(URL!);
   const team = scopeId("channel", "cron-groups");
   const c1a = await s.getOrCreateByThread("cron:g1:slot1", "channel", team);
   const c1b = await s.getOrCreateByThread("cron:g1:slot2", "channel", team);
-  const c2 = await s.getOrCreateByThread("agent:main:cron:g2", "channel", team);
+  await s.getOrCreateByThread("agent:main:cron:g2", "channel", team);
   await s.getOrCreateByThread("agent:main:webhook:gwh", "channel", team);
-  const { lease } = await s.acquireLease(c1a.id);
-  await s.append(lease!, { type: "user", payload: { text: "fire" }, scopeLabel: team });
-  await s.append(lease!, { type: "assistant", payload: { text: "done" }, scopeLabel: team });
-
-  const groups = await s.scopeCronGroups(team, false);
-  assert.deepEqual(groups.map((g) => g.cronId).sort(), ["g1", "g2"], "one row per cron; webhook excluded");
-  const g1 = groups.find((g) => g.cronId === "g1")!;
-  assert.deepEqual([g1.sessions, g1.turns, g1.messages], [2, 1, 2]);
-  const g2 = groups.find((g) => g.cronId === "g2")!;
-  assert.deepEqual([g2.sessions, g2.turns, g2.messages], [1, 0, 0], "entry-less fire still counted");
-  assert.equal(g2.lastActivity, c2.createdAt);
-
   const fresh = await s.getOrCreateByThread("cron:g1:slot3", "channel", team);
-  const regrouped = await s.scopeCronGroups(team, false);
-  assert.equal(
-    regrouped.find((g) => g.cronId === "g1")!.lastActivity,
-    fresh.createdAt,
-    "a fresh entry-less fire advances the group's last activity past older fires' entries",
-  );
-
-  const cronStats = await s.scopeSessionStats(team, false, "background", "cron", "g1");
-  assert.equal(cronStats.total, 3, "stats cronId filter counts one cron's fires");
 
   const fires = await s.scopeSessionSummaries(team, false, { limit: 10, cronId: "g1" });
   assert.deepEqual(
@@ -1100,86 +1067,31 @@ test("pg scopeCronGroups: one aggregated row per cron; cronId page filters one c
     before: { lastActivity: fires[0]!.lastActivity, id: fires[0]!.id },
   });
   assert.equal(page.length, 1, "cronId filter applies before pagination");
-
-  const stats = await s.scopeSessionStats(team, false);
-  assert.equal(stats.crons, 2, "distinct crons, not fires");
-  assert.equal(stats.crons, regrouped.length, "tab count == listable cron rows (one classifier)");
-  assert.equal(stats.byType.cron, 4, "byType still counts cron sessions (fires)");
-  assert.equal(
-    regrouped.reduce((n, g) => n + g.sessions, 0),
-    stats.byType.cron,
-    "every counted cron session is listed under some cron",
-  );
-  assert.equal((await s.scopeSessionStats(team, false, "conversation")).crons, 2, "crons ignores the active filter");
 });
 
-test(
-  "pg scopeSessionRollups: one aggregate row per scope matches the row-by-row summaries pass",
-  { skip },
-  async () => {
-    const nowRef = { v: 40_000_000_000 };
-    const t0 = nowRef.v;
-    const s = createPostgresSessionStore(URL!, { now: () => nowRef.v });
-    const a = scopeId("channel", "rollup-a");
-    const b = scopeId("channel", "rollup-b");
-    const c = scopeId("personal", "rollup-u9");
-    const say = async (id: string, text: string) => {
-      const { lease } = await s.acquireLease(id);
-      await s.append(lease!, { type: "user", payload: { text }, scopeLabel: a });
-      await s.releaseLease(lease!);
-    };
-    const conv1 = await s.getOrCreateByThread("rollup:t1", "channel", a);
-    await s.getOrCreateByThread("agent:main:webhook:rollup-w1", "channel", a);
-    nowRef.v = t0 + 50_000;
-    await s.getOrCreateByThread("agent:main:monitor:rollup-m1", "channel", b);
-    nowRef.v = t0 + 100_000;
-    await say(conv1.id, "one");
-    const conv3 = await s.getOrCreateByThread("rollup:t3", "channel", a);
-    await say(conv3.id, "three");
-    nowRef.v = t0 + 200_000;
-    await s.getOrCreateByThread("rollup:t2", "channel", a);
-    await s.getOrCreateByThread("rollup:dm9", "dm", c);
-    nowRef.v = t0 + 300_000;
-    const fire = await s.getOrCreateByThread("cron:rollup-c1:fire:abc", "channel", a);
-    await say(fire.id, "fired");
+test("pg scopeActivity: one row per scope with conversation, cron and other background counts", { skip }, async () => {
+  const nowRef = { v: 40_000_000_000 };
+  const t0 = nowRef.v;
+  const s = createPostgresSessionStore(URL!, { now: () => nowRef.v });
+  const a = scopeId("channel", "activity-a");
+  const b = scopeId("channel", "activity-b");
+  await s.getOrCreateByThread("activity:t1", "channel", a);
+  await s.getOrCreateByThread("agent:main:webhook:activity-w1", "channel", a);
+  nowRef.v = t0 + 50_000;
+  await s.getOrCreateByThread("agent:main:monitor:activity-m1", "channel", b);
+  nowRef.v = t0 + 300_000;
+  await s.getOrCreateByThread("cron:activity-c1:fire:abc", "channel", a);
+  await s.getOrCreateByThread("activity:t2", "channel", a);
 
-    const orgWide = byScopeId(await s.scopeSessionRollups(a, true));
-    assert.deepEqual(
-      orgWide,
-      rollupsFromSummaries(await s.scopeSessionSummaries(a, true, { limit: 500 })),
-      "org-wide aggregate matches a row-by-row pass over every scope's summaries",
-    );
-    const mine = orgWide.filter((r) => [a, b, c].includes(r.scopeId));
-    assert.deepEqual(mine, [
-      {
-        scopeId: a,
-        sessions: 3,
-        backgroundSessions: 2,
-        lastActivity: t0 + 300_000,
-        lastConversationActivity: t0 + 200_000,
-        previewSessionId: [conv1.id, conv3.id].sort().at(-1)!,
-      },
-      {
-        scopeId: b,
-        sessions: 0,
-        backgroundSessions: 1,
-        lastActivity: t0 + 50_000,
-        lastConversationActivity: 0,
-        previewSessionId: null,
-      },
-      {
-        scopeId: c,
-        sessions: 1,
-        backgroundSessions: 0,
-        lastActivity: t0 + 200_000,
-        lastConversationActivity: t0 + 200_000,
-        previewSessionId: null,
-      },
-    ]);
-    assert.deepEqual(await s.scopeSessionRollups(a, false), mine.slice(0, 1), "scope filter applies");
-    assert.deepEqual(await s.scopeSessionRollups(scopeId("channel", "rollup-none"), false), []);
-  },
-);
+  const rows = (await s.scopeActivity()).filter((r) => [a, b].includes(r.scopeId));
+  assert.deepEqual(
+    rows.sort((x, y) => x.scopeId.localeCompare(y.scopeId)),
+    [
+      { scopeId: a, conversations: 2, crons: 1, background: 1, lastActivity: t0 + 300_000 },
+      { scopeId: b, conversations: 0, crons: 0, background: 1, lastActivity: t0 + 50_000 },
+    ],
+  );
+});
 
 test(
   "pg session origin columns: written at insert, and the store migration fills rows that predate them",
@@ -1225,14 +1137,10 @@ test(
         .map((r) => r.threadRef)
         .sort(),
       oc2: (await s.scopeSessionSummaries(team, false, { limit: 10, cronId: "oc2" })).map((r) => r.threadRef),
-      groups: (await s.scopeCronGroups(team, false)).map((g) => g.cronId).sort(),
-      stats: await s.scopeSessionStats(team, false),
-      cronStats: await s.scopeSessionStats(team, false, "background", "cron", "oc1"),
     });
     try {
       assert.deepEqual(await columns(), shapes, "insert derives origin and origin_id from the thread ref");
       const stored = await classify();
-      assert.deepEqual(stored.groups, ["oc1", "oc2"]);
       assert.deepEqual(stored.other, [
         "agent:main:webhook:ocw",
         "loop:ocl:fire:aaa",
@@ -1242,8 +1150,6 @@ test(
       assert.deepEqual(stored.conversation, ["ch:C1:oc-thread"]);
       assert.deepEqual(stored.cron, ["agent:main:cron:oc1", "cron:oc2:slot"]);
       assert.deepEqual(stored.oc2, ["cron:oc2:slot"]);
-      assert.equal(stored.stats.crons, 2);
-      assert.equal(stored.cronStats.total, 1);
 
       await q("UPDATE sessions SET origin = NULL, origin_id = NULL WHERE id = ANY($1)", [ids]);
       await q("UPDATE sessions SET origin = 'conversation' WHERE id = ANY($1) AND thread_ref ~ '^(loop|swarm):'", [
@@ -1426,90 +1332,34 @@ test("pg appendMany maintains first/last user previews across batches", { skip }
 });
 
 test(
-  "pg scopeSessionSummaries: legacy rows derive previews read-only, only for the requested page",
+  "pg scopeSessionSummaries: rows without stored previews fall back to the title and never read items",
   { skip },
   async () => {
     let clock = Date.now() + 5_000_000;
     const s = createPostgresSessionStore(URL!, { now: () => (clock += 120_000) });
     const scope = scopeId("channel", "pvw-legacy");
-    const ids: string[] = [];
-    for (let i = 0; i < 4; i++) {
-      const session = await s.getOrCreateByThread(`pvwLegacy${i}`, "channel", scope);
+    const titled = await s.getOrCreateByThread("pvwLegacyTitled", "channel", scope);
+    const bare = await s.getOrCreateByThread("pvwLegacyBare", "channel", scope);
+    for (const session of [titled, bare]) {
       const { lease } = await s.acquireLease(session.id);
-      await s.append(lease!, { type: "user", payload: { text: `open ${i}` }, scopeLabel: scope });
-      await s.append(lease!, { type: "user", payload: { text: `close ${i}` }, scopeLabel: scope });
+      await s.append(lease!, { type: "user", payload: { text: "open" }, scopeLabel: scope });
       await s.releaseLease(lease!);
-      ids.push(session.id);
     }
-    const empty = await s.getOrCreateByThread("pvwLegacyEmpty", "channel", scope);
-    const junk = await s.getOrCreateByThread("pvwLegacyJunk", "channel", scope);
     const pg = (await import("pg")).default;
     const raw = new pg.Pool({ connectionString: URL });
-    const columns = async (sessionIds: string[]) =>
-      (
-        await raw.query(
-          "SELECT id, first_user_preview AS f, last_user_preview AS l, turns FROM sessions WHERE id = ANY($1)",
-          [sessionIds],
-        )
-      ).rows.reduce((m, r) => m.set(r.id, [r.f, r.l, r.turns]), new Map<string, unknown[]>());
     try {
-      for (const [seq, body] of [
-        [0, { text: "poisonedtail" }],
-        [1, {}],
-      ] as const) {
-        await raw.query(
-          "INSERT INTO items(tenant_id, session_id, seq, kind, text, body, created_at) VALUES (qm_tenant_id(),$1,$2,'UserMessage',$3,'{}',to_timestamp(0.001))",
-          [junk.id, seq, "text" in body ? body.text : null],
-        );
-      }
-      await raw.query(
-        "UPDATE sessions SET first_user_preview = NULL, last_user_preview = NULL, turns = NULL WHERE id = ANY($1)",
-        [[...ids, empty.id, junk.id]],
-      );
-      await raw.query("UPDATE sessions SET last_activity = 1 WHERE id = ANY($1)", [[empty.id, junk.id]]);
-
-      const page = await s.scopeSessionSummaries(scope, false, { limit: 2 });
+      await raw.query("UPDATE sessions SET first_user_preview = NULL, last_user_preview = NULL WHERE id = ANY($1)", [
+        [titled.id, bare.id],
+      ]);
+      await raw.query("UPDATE sessions SET title = 'Quarterly plan' WHERE id = $1", [titled.id]);
+      const rows = await s.scopeSessionSummaries(scope, false, { limit: 10 });
       assert.deepEqual(
-        page.map((r) => [r.firstMessage, r.lastMessage]),
+        rows.map((r) => [r.id, r.firstMessage, r.lastMessage]),
         [
-          ["open 3", "close 3"],
-          ["open 2", "close 2"],
+          [bare.id, "", ""],
+          [titled.id, "Quarterly plan", ""],
         ],
-        "a page of legacy rows reads back the same previews the append path would store",
-      );
-      const xmin = async () =>
-        (await raw.query("SELECT id, xmin::text AS v FROM sessions WHERE id = ANY($1) ORDER BY id", [ids])).rows;
-      const versions = await xmin();
-      await s.scopeSessionSummaries(scope, false, { limit: 2 });
-      assert.deepEqual(await xmin(), versions, "a listing read never writes session rows");
-      assert.deepEqual(
-        [...(await columns(ids)).values()].map((v) => v.slice(0, 2)),
-        ids.map(() => [null, null]),
-        "legacy previews are derived per read, not persisted from a GET",
-      );
-
-      const all = await s.scopeSessionSummaries(scope, false, { limit: 50 });
-      assert.deepEqual(
-        all.filter((r) => ids.includes(r.id)).map((r) => r.lastMessage),
-        ["close 3", "close 2", "close 1", "close 0"],
-      );
-      const junkRow = all.find((r) => r.id === junk.id)!;
-      assert.deepEqual(
-        [junkRow.firstMessage, junkRow.lastMessage],
-        ["poisonedtail", ""],
-        "a body without text previews as empty",
-      );
-      const emptyRow = all.find((r) => r.id === empty.id)!;
-      assert.deepEqual([emptyRow.firstMessage, emptyRow.lastMessage], ["", ""], "an entry-less legacy row is blank");
-
-      const { lease } = await s.acquireLease(ids[0]!);
-      await s.append(lease!, { type: "user", payload: { text: "fresh" }, scopeLabel: scope });
-      await s.releaseLease(lease!);
-      const resumed = (await s.scopeSessionSummaries(scope, false, { limit: 50 })).find((r) => r.id === ids[0])!;
-      assert.deepEqual(
-        [resumed.firstMessage, resumed.lastMessage],
-        ["open 0", "fresh"],
-        "a legacy row's first preview stays its opener after new appends",
+        "previews come only from stored session columns",
       );
     } finally {
       await raw.end();
@@ -1584,17 +1434,26 @@ test("pg scopeSessionSummaries: the listing plan is an index walk with no per-ro
   const before = { lastActivity: Date.now() + 1e9, id: "~" };
   await s.scopeSessionSummaries(scope, false, { limit: 50, before, category: "conversation" });
   await s.scopeSessionSummaries(scope, true, { limit: 50, before, category: "conversation" });
+  await s.scopeSessionSummaries(scope, false, {
+    limit: 50,
+    before,
+    category: "background",
+    origin: "other_background",
+  });
   t.mock.restoreAll();
-  assert.equal(captured.length, 2);
+  assert.equal(captured.length, 3);
   const raw = await new pg.Pool({ connectionString: URL }).connect();
   try {
     await raw.query("BEGIN");
     await raw.query("SET LOCAL enable_seqscan = off");
     await raw.query("SET LOCAL enable_bitmapscan = off");
     await raw.query("SET LOCAL enable_sort = off");
-    for (const [query, index] of captured.map(
-      (c, i) => [c, i ? "sessions_by_activity" : "sessions_by_scope_activity"] as const,
-    )) {
+    const indexes = [
+      "sessions_conversations_by_scope_activity",
+      "sessions_by_activity",
+      "sessions_other_background_by_scope_activity",
+    ];
+    for (const [query, index] of captured.map((c, i) => [c, indexes[i]!] as const)) {
       const explained = await raw.query(`EXPLAIN (FORMAT JSON) ${query.text}`, query.values);
       const plan = JSON.stringify(explained.rows[0]["QUERY PLAN"]);
       assert.doesNotMatch(plan, /SubPlan|"Relation Name":"items"/, "no correlated subquery over items");
@@ -1741,9 +1600,7 @@ test("pg safe JSON functions are marked parallel-unsafe", { skip }, async () => 
     await raw.query(`CREATE OR REPLACE FUNCTION safe_jsonb(t text) RETURNS jsonb
       LANGUAGE plpgsql IMMUTABLE PARALLEL SAFE AS $safe_jsonb$
       BEGIN RETURN t::jsonb; EXCEPTION WHEN others THEN RETURN NULL; END $safe_jsonb$`);
-    await raw.query(
-      "CREATE INDEX safe_jsonb_parallel_repair_test ON legacy_session_entries ((safe_jsonb(payload) ->> 'ts'))",
-    );
+    await raw.query("CREATE INDEX safe_jsonb_parallel_repair_test ON sessions ((safe_jsonb(title) ->> 'ts'))");
 
     const s = createPostgresSessionStore(URL!);
     await s.scanAll();
@@ -1753,14 +1610,12 @@ test("pg safe JSON functions are marked parallel-unsafe", { skip }, async () => 
          FROM pg_proc
         WHERE oid IN (
           'safe_json(text)'::regprocedure,
-          'safe_jsonb(text)'::regprocedure,
-          'entry_search_text(text)'::regprocedure
+          'safe_jsonb(text)'::regprocedure
         )`,
     );
     assert.deepEqual(
       new Map(result.rows.map((row) => [row.proname as string, row.proparallel as string])),
       new Map([
-        ["entry_search_text", "u"],
         ["safe_json", "u"],
         ["safe_jsonb", "u"],
       ]),
@@ -1887,9 +1742,6 @@ test(
     assert.equal(row.messages, 4, "messages still counts every durable entry");
     assert.equal(row.firstMessage, "the real question", "overheard is not the first message");
     assert.equal(row.lastMessage, "the real question", "overheard is not the last message");
-
-    const stats = await s.scopeSessionStats(scope, false);
-    assert.equal(stats.turns, 1, "stats turns excludes overheard");
 
     const attributed = (await s.attributedTurns()).filter((t) => t.sessionId === a.id);
     assert.equal(
@@ -2025,9 +1877,11 @@ test(
     } finally {
       await raw.end();
     }
-    const stats = await s.scopeSessionStats(scope, false);
-    assert.equal(stats.total, 2, "stats count sessions in scope");
-    assert.equal(stats.turns, 3 + 7, "stats sum the stored turns counters, never the entries");
+    assert.equal(
+      (await s.scopeSessionSummaries(scope, false, { limit: 500 })).find((r) => r.id === b.id)!.turns,
+      7,
+      "listings read the stored turns counter, never the entries",
+    );
   },
 );
 
@@ -2875,7 +2729,7 @@ test("pg search: message writes populate the index and tool results stay unfinda
   const sess = await s.getOrCreateByThread("srch-idx-1", "dm", scope);
   await s.addParticipant(sess.id, "UIDX", undefined, { includeHistory: true });
   const lease = (await s.acquireLease(sess.id)).lease!;
-  const user = await s.append(lease, {
+  await s.append(lease, {
     type: "user",
     payload: { text: "please rotate the deploy key", name: "alex" },
     scopeLabel: scope,
@@ -2885,75 +2739,35 @@ test("pg search: message writes populate the index and tool results stay unfinda
     payload: { tool: "execute", callId: "c1", isError: false, result: "secret broker value QQ17" },
     scopeLabel: scope,
   });
-  const reply = await s.append(lease, {
+  await s.append(lease, {
     type: "assistant",
     payload: { text: "Rotated the deploy key." },
     scopeLabel: scope,
   });
 
   const before = await s.searchEntries("UIDX", "deploy key");
-  assert.equal(before.length, 2, "message writes serve an indexed session");
-
-  await s.appendSearchEntries(lease, [
-    { seq: user.seq, type: "user", author: "alex", text: "please rotate the deploy key", createdAt: user.createdAt },
-    { seq: reply.seq, type: "assistant", text: "Rotated the deploy key.", createdAt: reply.createdAt },
-  ]);
-  assert.equal(await s.searchIndexCoverage(sess.id), reply.seq);
-  assert.deepEqual(
-    await s.searchEntries("UIDX", "deploy key"),
-    before,
-    "re-appending indexed rows leaves search hits unchanged",
-  );
+  assert.equal(before.length, 2, "message writes are searchable immediately");
+  assert.equal(before.find((hit) => hit.type === "user")?.author, "alex");
 
   await s.append(lease, { type: "user", payload: { text: "also rotate the staging deploy key" }, scopeLabel: scope });
   assert.equal((await s.searchEntries("UIDX", "deploy key")).length, 3, "a new message is indexed immediately");
 
   assert.deepEqual(await s.searchEntries("UIDX", "secret broker"), [], "tool results are unfindable");
 
-  await s.appendSearchEntries(lease, [
-    { seq: user.seq, type: "user", text: "replacement text is ignored", createdAt: user.createdAt },
-  ]);
-  assert.equal((await s.searchEntries("UIDX", "deploy key")).length, 3, "re-appending an indexed seq is a no-op");
-
   await s.addParticipant(sess.id, "ULATE2");
-  const post = await s.append(lease, { type: "user", payload: { text: "deploy key postscript" }, scopeLabel: scope });
-  await s.appendSearchEntries(lease, [
-    { seq: post.seq, type: "user", text: "deploy key postscript", createdAt: post.createdAt },
-  ]);
+  await s.append(lease, { type: "user", payload: { text: "deploy key postscript" }, scopeLabel: scope });
   const late = await s.searchEntries("ULATE2", "deploy key");
-  assert.equal(late.length, 1, "a latecomer only searches index rows inside their window");
+  assert.equal(late.length, 1, "a latecomer only searches messages inside their window");
   assert.equal(late[0]!.text, "deploy key postscript");
 
-  const nul = await s.append(lease, {
+  await s.append(lease, {
     type: "user",
     payload: { text: "nul\u0000riddled deploy key", name: "e\u0000ve" },
     scopeLabel: scope,
   });
-  await s.appendSearchEntries(lease, [
-    {
-      seq: nul.seq,
-      type: "user",
-      author: "e\u0000ve",
-      text: "nul\u0000riddled deploy key",
-      createdAt: nul.createdAt,
-    },
-  ]);
   const nulHits = await s.searchEntries("UIDX", "nulriddled");
   assert.equal(nulHits.length, 1, "a NUL byte in the text never wedges the index write");
   assert.equal(nulHits[0]!.author, "eve");
-
-  await s.append(lease, {
-    type: "tool_result",
-    payload: { tool: "execute", callId: "c2", isError: false, result: "trailing tool output" },
-    scopeLabel: scope,
-  });
-  const emptyReply = await s.append(lease, { type: "assistant", payload: { text: "  " }, scopeLabel: scope });
-  assert.equal(
-    await s.lastSearchableEntrySeq(sess.id),
-    nul.seq,
-    "convergence tracks the last searchable entry, not trailing tool output or blank replies",
-  );
-  assert.ok(emptyReply.seq > nul.seq);
   await s.releaseLease(lease);
 });
 
@@ -3070,11 +2884,6 @@ test("pg search: globally limits indexed hits across sessions", { skip }, async 
     for (let j = 0; j < 4; j++) {
       const entry = await store.append(lease, { type: "user", payload: { text: "document limit" }, scopeLabel: scope });
       expected.push({ sessionId: session.id, seq: entry.seq });
-      if (j % 2 === 0) {
-        await store.appendSearchEntries(lease, [
-          { seq: entry.seq, type: "user", text: "document limit", createdAt: entry.createdAt },
-        ]);
-      }
     }
     await store.releaseLease(lease);
   }
@@ -3088,61 +2897,43 @@ test("pg search: globally limits indexed hits across sessions", { skip }, async 
   }
 });
 
-test("pg search: writes are atomic, items are append-only, and deletes keep the index current", { skip }, async () => {
-  const store = createPostgresSessionStore(URL!);
-  const session = await store.getOrCreateByThread("search-atomic", "dm", scopeId("personal", "UATOMIC"));
-  await store.addParticipant(session.id, "UATOMIC", undefined, { includeHistory: true });
-  const pg = (await import("pg")).default;
-  const pool = new pg.Pool({ connectionString: URL });
-  const lease = (await store.acquireLease(session.id)).lease!;
-  try {
-    await pool.query(
-      "ALTER TABLE session_entry_search ADD CONSTRAINT search_test_failure CHECK (text <> 'rejectindex')",
-    );
-    await assert.rejects(
-      store.append(lease, { type: "user", payload: { text: "rejectindex" }, scopeLabel: session.scopeId }),
-    );
-    assert.equal(await store.latestEntrySeq(session.id), -1);
-    assert.equal(await store.missingSearchEntries(session.id), 0);
-    await pool.query("ALTER TABLE session_entry_search DROP CONSTRAINT search_test_failure");
-    const entry = await store.append(lease, {
-      type: "user",
-      payload: { text: "original document" },
-      scopeLabel: session.scopeId,
-    });
-    await assert.rejects(
-      pool.query("UPDATE items SET body=$3 WHERE session_id=$1 AND seq=$2", [
-        session.id,
-        entry.seq,
-        { text: "edited document", name: "Editor" },
-      ]),
-      /UPDATE on items is forbidden/,
-    );
-    assert.equal((await store.searchEntries("UATOMIC", "original")).length, 1);
-    await pool.query("DELETE FROM session_entry_search WHERE session_id=$1", [session.id]);
-    assert.equal(await store.missingSearchEntries(session.id), 1);
-    assert.deepEqual(await store.searchEntries("UATOMIC", "original"), [], "search reads only the index");
-    await pool.query(
-      "INSERT INTO session_entry_search(session_id,seq,type,text,created_at) VALUES($1,$2,'user',$3,$4)",
-      [session.id, entry.seq, "original document", entry.createdAt],
-    );
-    assert.equal((await store.searchEntries("UATOMIC", "original")).length, 1);
-    await assert.rejects(
-      pool.query("DELETE FROM items WHERE session_id=$1", [session.id]),
-      /only allowed through its session/,
-    );
-    await pool.query("DELETE FROM sessions WHERE id=$1", [session.id]);
-    assert.equal(
-      (await pool.query("SELECT count(*)::int AS n FROM session_entry_search WHERE session_id=$1", [session.id]))
-        .rows[0].n,
-      0,
-    );
-  } finally {
-    await pool.query("ALTER TABLE session_entry_search DROP CONSTRAINT IF EXISTS search_test_failure");
-    await store.releaseLease(lease);
-    await pool.end();
-  }
-});
+test(
+  "pg search: reads items directly, items are append-only, and deleting the session removes its hits",
+  { skip },
+  async () => {
+    const store = createPostgresSessionStore(URL!);
+    const session = await store.getOrCreateByThread("search-atomic", "dm", scopeId("personal", "UATOMIC"));
+    await store.addParticipant(session.id, "UATOMIC", undefined, { includeHistory: true });
+    const pg = (await import("pg")).default;
+    const pool = new pg.Pool({ connectionString: URL });
+    const lease = (await store.acquireLease(session.id)).lease!;
+    try {
+      const entry = await store.append(lease, {
+        type: "user",
+        payload: { text: "original document" },
+        scopeLabel: session.scopeId,
+      });
+      await assert.rejects(
+        pool.query("UPDATE items SET body=$3 WHERE session_id=$1 AND seq=$2", [
+          session.id,
+          entry.seq,
+          { text: "edited document", name: "Editor" },
+        ]),
+        /UPDATE on items is forbidden/,
+      );
+      assert.equal((await store.searchEntries("UATOMIC", "original")).length, 1);
+      await assert.rejects(
+        pool.query("DELETE FROM items WHERE session_id=$1", [session.id]),
+        /only allowed through its session/,
+      );
+    } finally {
+      await store.releaseLease(lease);
+      await store.deleteSession(session.id);
+      await pool.end();
+    }
+    assert.deepEqual(await store.searchEntries("UATOMIC", "original"), []);
+  },
+);
 
 test("pg session store: bounded participant listing is recent and optional", { skip }, async () => {
   let at = 1000;
@@ -3330,3 +3121,152 @@ test("desktop tool definitions survive a store restart without changing on later
   ]);
   assert.deepEqual(changed.clientTools, [desktopComputerTool]);
 });
+
+test("pg session lists leave out spawn metadata and group scopes per participant", { skip }, async () => {
+  await assertLeanListing(createPostgresSessionStore(URL!), "pg-lean");
+});
+
+test("pg participantScopes leaves out sessions whose content predates the participant", { skip }, async () => {
+  await assertLateJoinerScopes(createPostgresSessionStore(URL!), "pg-late");
+});
+
+test("pg late joiners start after any stored sequence gap", { skip }, async () => {
+  const store = createPostgresSessionStore(URL!);
+  const scope = scopeId("channel", "gap-C1");
+  const session = await store.getOrCreateByThread("slack:gap-C1:1", "channel", scope, "eng");
+  await store.addParticipant(session.id, "gap-early");
+  const { lease } = await store.acquireLease(session.id);
+  assert.ok(lease);
+  await store.append(lease, { type: "user", payload: { text: "before" }, scopeLabel: scope });
+  await store.releaseLease(lease);
+  const pg = (await import("pg")).default;
+  const pool = new pg.Pool({ connectionString: URL });
+  await pool.query("UPDATE sessions SET messages = messages + 3 WHERE id = $1", [session.id]);
+  await pool.end();
+  await store.addParticipant(session.id, "gap-late");
+  assert.equal((await store.getForParticipant(session.id, "gap-late"))?.hasEntries, false);
+  assert.deepEqual(await store.participantScopes("gap-late"), [
+    { scopeId: scope, channelName: "eng", sessionCount: 0, lastActivityAt: null },
+  ]);
+});
+
+test("pg LLM capture retention drops old prompt envelopes and keeps request rows", { skip }, async () => {
+  const day = 86_400_000;
+  let at = Date.UTC(2025, 0, 1);
+  const store = createPostgresSessionStore(URL!, { now: () => at });
+  const pg = (await import("pg")).default;
+  const raw = new pg.Pool({ connectionString: URL });
+  const tag = randomUUID();
+  const scope = scopeId("personal", `retention-${tag}`);
+  const session = await store.getOrCreateByThread(`retention-${tag}`, "dm", scope);
+  const record = (text: string) =>
+    store.recordLlmRequest(session.id, {
+      turnSeq: 1,
+      step: 0,
+      model: "retention",
+      scopeLabel: scope,
+      promptEnvelope: { messages: [{ role: "user", content: `${tag} ${text}` }] },
+      usage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10, costUsd: 0.5 },
+    });
+  try {
+    const old = await record("old");
+    const reused = await record("reused");
+    for (let i = 0; i < 250; i++) await record(`bulk ${i}`);
+    at += 40 * day;
+    const kept = await record("recent");
+    await record("reused");
+    const range = { from: Date.UTC(2025, 0, 1), to: Date.UTC(2025, 0, 1) + 41 * day };
+    await store.refreshSpendRollup!();
+    const spendBefore = (await store.spendReport!(range)).rows;
+    const dirtyBefore = Number((await raw.query("SELECT count(*) AS n FROM session_spend_dirty")).rows[0].n);
+
+    assert.equal(await store.purgeLlmCaptures!(at - 30 * day, { stop: () => true }), 0);
+    assert.equal(await store.purgeLlmCaptures!(at - 30 * day), 251);
+    assert.equal(await store.purgeLlmCaptures!(at - 30 * day), 0);
+
+    const rows = new Map((await store.listLlmRequests(session.id)).map((r) => [r.id, r]));
+    assert.equal(rows.size, 254);
+    assert.equal(rows.get(old.id)!.promptEnvelope, undefined);
+    assert.ok(rows.get(old.id)!.usage, "usage survives the purge");
+    assert.ok(rows.get(reused.id)!.promptEnvelope, "an envelope reused within retention survives");
+    assert.ok(rows.get(kept.id)!.promptEnvelope);
+    assert.equal(
+      Number((await raw.query("SELECT count(*) AS n FROM session_spend_dirty")).rows[0].n),
+      dirtyBefore,
+      "purging prompts does not dirty spend days",
+    );
+    assert.deepEqual((await store.spendReport!(range)).rows, spendBefore);
+    assert.deepEqual(await store.spendRollup(range), spendBefore);
+    assert.equal(
+      (
+        await raw.query(
+          "SELECT count(*) AS n FROM information_schema.columns WHERE table_name = 'session_llm_requests' AND column_name = 'request'",
+        )
+      ).rows[0].n,
+      "0",
+    );
+  } finally {
+    await raw.end();
+  }
+});
+
+test(
+  "pg session pages sort by the person's last message, which appends keep and the migration backfills",
+  { skip },
+  async () => {
+    const s = createPostgresSessionStore(URL!);
+    const me = `paging-${randomUUID()}`;
+    const personal = scopeId("personal", me);
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const session = await s.getOrCreateByThread(`web:${me}:${i}`, "dm", personal, undefined, "web");
+      await s.addParticipant(session.id, me, `Chat ${i}`);
+      ids.push(session.id);
+    }
+    const say = async (sessionId: string, type: "user" | "assistant") => {
+      const { lease } = await s.acquireLease(sessionId);
+      assert.ok(lease);
+      await s.append(lease, { type, payload: { text: type }, scopeLabel: personal });
+      await s.releaseLease(lease);
+    };
+    await say(ids[0]!, "user");
+    await say(ids[2]!, "assistant");
+    const order = async () => {
+      const first = await s.listParticipantPage(me, { limit: 2 });
+      const rest = first.next ? await s.listParticipantPage(me, { limit: 2, before: first.next }) : null;
+      assert.equal(rest?.next, null);
+      return [...first.sessions, ...(rest?.sessions ?? [])].map((row) => row.id);
+    };
+    assert.deepEqual(await order(), [ids[0], ids[2], ids[1]], "a reply doesn't move a chat; the person's message does");
+
+    const pg = (await import("pg")).default;
+    const raw = new pg.Pool({ connectionString: URL });
+    try {
+      const stored = await raw.query("SELECT id, last_user_activity FROM sessions WHERE id = ANY($1) ORDER BY id", [
+        ids,
+      ]);
+      await raw.query("UPDATE sessions SET last_user_activity = NULL WHERE id = ANY($1)", [ids]);
+      await raw.query("DELETE FROM qm_schema_migrations WHERE id = 'sessions/store/0044-last-user-activity-backfill'");
+      await applyPgMigrations(raw, registeredPgMigrations(URL!));
+      assert.deepEqual(
+        (await raw.query("SELECT id, last_user_activity FROM sessions WHERE id = ANY($1) ORDER BY id", [ids])).rows,
+        stored.rows,
+        "the backfill derives what appends wrote",
+      );
+    } finally {
+      await raw.end();
+    }
+
+    const child = await s.getOrCreateByThread(`subagent:${me}:1`, "dm", personal, undefined, "web");
+    await s.setParentSession(child.id, ids[0]!);
+    const grandchild = await s.getOrCreateByThread(`subagent:${me}:2`, "dm", personal, undefined, "web");
+    await s.setParentSession(grandchild.id, child.id);
+    assert.deepEqual(
+      (await s.descendantsOf([ids[0]!])).map((d) => [d.id, d.rootId]).sort(),
+      [
+        [child.id, ids[0]],
+        [grandchild.id, ids[0]],
+      ].sort(),
+    );
+  },
+);

@@ -22,7 +22,7 @@ import { MemoryFactsMissing } from "../memory/facts.ts";
 import { MemoryDisclosureDenied } from "../memory/disclosure.ts";
 import { computerVerdict } from "../sandbox/sandbox.ts";
 import { redactCommand } from "../sandbox/exec-process-session.ts";
-import { redactSecrets } from "./redact-secrets.ts";
+import { redactSecrets } from "../../plugins/chassis/src/redact-secrets.ts";
 import { isObj } from "../util/objects.ts";
 import { BOT_MODES } from "../surface-cache/channel-policy-store.ts";
 import { WEBHOOK_SCHEMES } from "../webhooks/verifiers.ts";
@@ -72,6 +72,7 @@ function describePublishAudience(a: PublishAudienceDescriptor | undefined): stri
 
 export interface ToolContextRef {
   documents?: DocumentInput[];
+  documentsStubbed?: boolean;
   runtimeHandoff?: HarnessHandoff;
   runtimeRunId?: string;
   runtimeActorId?: string;
@@ -121,6 +122,7 @@ export interface ToolContextRef {
   goalRound?: number;
 
   goalMeter?: import("./grind.ts").GrindMeter;
+  modelHasPrices?: () => boolean;
   governGoal?: GoalGovernor;
   /** The agent's recent work for the governor, newest last. */
   goalRecentWork?: () => string;
@@ -316,7 +318,7 @@ export interface AgentToolsOptions {
   backgroundJobTtlMs?: number;
   backgroundJobTtlMaxMs?: number;
   sandboxCapabilityTtlMs?: number;
-  mcpTools?: () => McpToolDescriptor[];
+  mcpTools?: McpToolDescriptor[];
   controlTools?: boolean;
   sandboxResources?: boolean;
   readOnly?: boolean;
@@ -2475,9 +2477,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           [
             Type.Null(),
             Type.Object({
-              harnessId: Type.Union(
-                HARNESS_IDS.filter((harnessId) => harnessId !== "mock").map((harnessId) => Type.Literal(harnessId)),
-              ),
+              harnessId: Type.Union(HARNESS_IDS.map((harnessId) => Type.Literal(harnessId))),
               modelId: Type.String(),
               effortLevel: Type.Optional(Type.String()),
               fastMode: Type.Optional(Type.Boolean()),
@@ -3908,6 +3908,16 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           true,
         );
       }
+      if (p.floor?.minUsd !== undefined && ref.modelHasPrices?.() === false) {
+        return recordCoreAuthoredResult(
+          callId,
+          { tool: "goal", action: "create", error: "spend_unmeasurable" },
+          text(
+            "The current model has no price data, so a spend floor (minUsd) cannot be measured. Use a time (minMs), token (minTokens) or turn (minTurns) floor instead.",
+          ),
+          true,
+        );
+      }
       let record: GoalRecord;
       try {
         record = goalFromParams(p);
@@ -3944,7 +3954,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       return recordCoreAuthoredResult(
         callId,
         { tool: "goal", action: "get", goal },
-        text(goal ? goalReport(goal) : "No goal registered in this session."),
+        text(goal ? goalReport(goal, ref.goalMeter ?? createGrindMeter()) : "No goal registered in this session."),
       );
     },
   });
@@ -4125,7 +4135,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     },
   });
 
-  const mcpDefs = opts?.mcpTools?.() ?? [];
+  const mcpDefs = opts?.mcpTools ?? [];
   const mcpTools = mcpDefs
     .filter((d) => !opts?.readOnly || d.readOnly)
     .map((d) =>
@@ -4422,7 +4432,7 @@ const RETRY_SAFE_FIELD = "retrySafe";
 const RETRY_SAFE_SCHEMA = Type.Optional(
   Type.Boolean({
     description:
-      "true if re-running this exact call is harmless (reads, searches, idempotent writes) so the platform may re-run it after an interruption; false if it would duplicate a side effect (sending a message, charging, creating a record).",
+      "true if re-running this call is harmless (read or idempotent); false if it repeats a side effect like sending, charging or creating.",
   }),
 );
 const RERUN_INPUT_MAX_CHARS = 4_000;

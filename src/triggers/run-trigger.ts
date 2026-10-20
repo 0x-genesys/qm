@@ -11,7 +11,7 @@ import type { DirectoryMember, DirectoryStore, RecipientResolution } from "../di
 import { samePerson } from "../directory/person.ts";
 import type { CurrentScopeMembers } from "../resolution/scope-membership.ts";
 import { isProjectGroupRef } from "../projects/project-store.ts";
-import { reportFailureAs } from "../util/errors.ts";
+import { reportFailureAs, swallowAs } from "../util/errors.ts";
 
 const MEMBERSHIP_SKIP_NOTE = "the acting person is no longer a member of this trigger's home scope — run skipped";
 const UNKNOWN_HOME_SKIP_NOTE =
@@ -29,7 +29,7 @@ export interface TriggerDeps {
     groupMembership?(groupId: string, principalId: string): Promise<boolean | undefined>;
     conversationMembers?: DirectoryStore["conversationMembers"];
   };
-  sessions?: { listByParticipant(principalId: string): Promise<readonly { scopeId: ScopeId }[]> };
+  sessions?: { participantScopes(principalId: string): Promise<readonly { scopeId: ScopeId }[]> };
   resolveRecipient?: (query: string) => Promise<RecipientResolution>;
 }
 
@@ -77,21 +77,8 @@ function isTriggerFailure(outcome: TriggerOutcome): boolean {
   return outcome.ran && outcome.status !== undefined && outcome.status !== "ok" && outcome.status !== "silent";
 }
 
-const NO_UPDATE_SENTINEL = "[no-update]";
-const SILENT_POLL_MARKERS = new Set([NO_UPDATE_SENTINEL, "no_reply", "[silent]"]);
-
 const POLL_SURFACES = new Set(["cron", "webhook", "monitor"]);
 export const isPollSurface = (surface: string): boolean => POLL_SURFACES.has(surface);
-
-export function isSilentPollReply(reply: string): boolean {
-  const finalLine = reply
-    .trimEnd()
-    .split(/\r?\n/)
-    .findLast((line) => line.trim() !== "")
-    ?.trim()
-    .toLowerCase();
-  return finalLine === undefined || SILENT_POLL_MARKERS.has(finalLine);
-}
 
 function deliveryProvenance(spec: TriggerSpec, threadRef: string, res?: TurnResult): DeliveryProvenance {
   return {
@@ -114,8 +101,8 @@ async function relayAttribution(deps: TriggerDeps, spec: TriggerSpec): Promise<s
 }
 
 async function participatesInScope(deps: TriggerDeps, actorId: string, scope: ScopeId): Promise<boolean> {
-  const sessions = await deps.sessions?.listByParticipant(actorId).catch(() => []);
-  return sessions?.some((s) => s.scopeId === scope) === true;
+  const scopes = await deps.sessions?.participantScopes(actorId).catch(swallowAs("trigger: participant scopes", []));
+  return scopes?.some((s) => s.scopeId === scope) === true;
 }
 
 async function actorMayReadScope(

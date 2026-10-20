@@ -92,10 +92,40 @@ import {
 import {
   awaitBackgroundWork,
   readBackgroundWork,
+  readProductionOwner,
   setBackgroundOwner,
   type BackgroundWorkStatus,
   type BackgroundWorkTransport,
 } from "../background-work.ts";
+
+async function fetchCore(
+  url: URL,
+  init: RequestInit,
+  maxResponseBytes?: number,
+): Promise<{ status: number; body: string }> {
+  const response = await fetch(url, init);
+  if (maxResponseBytes === undefined) return { status: response.status, body: await response.text() };
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  const reader = response.body?.getReader();
+  if (reader) {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > maxResponseBytes) throw new CliError("AWS core response exceeded its size limit");
+        chunks.push(value);
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => {});
+      throw error;
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  return { status: response.status, body: Buffer.concat(chunks).toString("utf8") };
+}
 
 export async function awsCoreRequest(
   config: QmConfig,
@@ -107,28 +137,7 @@ export async function awsCoreRequest(
   if (!validAlbHostname(target)) throw new CliError("AWS deployment-layer ALB hostname is invalid");
   if (awsPublicOrigin(config).protocol === "http:") {
     assertCloudFrontLayerTarget(config, url, target);
-    const response = await fetch(url, init);
-    if (maxResponseBytes === undefined) return { status: response.status, body: await response.text() };
-    const chunks: Uint8Array[] = [];
-    let size = 0;
-    const reader = response.body?.getReader();
-    if (reader) {
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          size += value.byteLength;
-          if (size > maxResponseBytes) throw new CliError("AWS core response exceeded its size limit");
-          chunks.push(value);
-        }
-      } catch (error) {
-        await reader.cancel().catch(() => {});
-        throw error;
-      } finally {
-        reader.releaseLock();
-      }
-    }
-    return { status: response.status, body: Buffer.concat(chunks).toString("utf8") };
+    return fetchCore(url, init, maxResponseBytes);
   }
   return new Promise((resolve, reject) => {
     const request = https.request(
@@ -907,21 +916,7 @@ async function runAwsCandidateMigration(
       throw new CliError(`AWS could not start the migration task${failures ? ` (${failures})` : ""}`);
     }
     step(`migration task: ${taskArn}`);
-    awsText(aws, ["ecs", "wait", "tasks-stopped", "--cluster", aws.cluster, "--tasks", taskArn]);
-    const stopped = awsJson<{
-      tasks?: Array<{
-        stoppedReason?: string;
-        containers?: Array<{ name?: string; exitCode?: number; reason?: string }>;
-      }>;
-      failures?: Array<{ arn?: string; reason?: string }>;
-    }>(aws, ["ecs", "describe-tasks", "--cluster", aws.cluster, "--tasks", taskArn]);
-    const task = stopped.tasks?.[0];
-    const core = task?.containers?.find((container) => container.name === "core");
-    if (stopped.failures?.length || core?.exitCode !== 0) {
-      throw new CliError(
-        `AWS migration task failed (${core?.reason ?? task?.stoppedReason ?? `exit ${core?.exitCode ?? "unknown"}`})`,
-      );
-    }
+    await awaitEcsTaskExit(aws, taskArn, "migration");
     ok(`candidate ${label} migrations applied`);
   } finally {
     if (taskDefinition && !existingTaskDefinition) {
@@ -1171,7 +1166,7 @@ interface EcsServiceRevision {
   taskDefinition?: string;
 }
 
-function awsLiveSession(config: QmConfig, core: EcsServiceState): void {
+async function awsLiveSession(config: QmConfig, core: EcsServiceState): Promise<void> {
   const aws = requireAws(config);
   if (!core.taskDefinition) throw new Error("core service has no live task definition");
   if (!core.networkConfiguration?.awsvpcConfiguration) throw new Error("core service has no VPC network configuration");
@@ -1244,19 +1239,41 @@ function awsLiveSession(config: QmConfig, core: EcsServiceState): void {
       `could not start canary task: ${failure?.reason ?? failure?.detail ?? failure?.arn ?? "no task returned"}`,
     );
   }
-  awsText(aws, ["ecs", "wait", "tasks-stopped", "--cluster", aws.cluster, "--tasks", taskArn]);
-  const stopped = awsJson<{
-    tasks?: Array<{
-      stoppedReason?: string;
-      containers?: Array<{ name?: string; exitCode?: number; reason?: string }>;
-    }>;
-  }>(aws, ["ecs", "describe-tasks", "--cluster", aws.cluster, "--tasks", taskArn]);
-  const task = stopped.tasks?.[0];
-  const coreContainer = task?.containers?.find((container) => container.name === "core");
-  if (coreContainer?.exitCode !== 0) {
-    throw new Error(
-      `canary task exited ${coreContainer?.exitCode ?? "without a code"}: ${coreContainer?.reason ?? task?.stoppedReason ?? "unknown reason"}`,
-    );
+  await awaitEcsTaskExit(aws, taskArn, "canary");
+}
+
+async function awaitEcsTaskExit(aws: AwsConfig, taskArn: string, kind: string): Promise<void> {
+  const pollMs = envNum("QM_AWS_ROLLOUT_POLL_MS", 5_000);
+  const deadline = Date.now() + envNum("QM_AWS_ROLLOUT_DEADLINE_MS", 30 * 60_000);
+  for (;;) {
+    const described = awsJson<{
+      tasks?: Array<{
+        lastStatus?: string;
+        stoppedReason?: string;
+        containers?: Array<{ name?: string; exitCode?: number; reason?: string }>;
+      }>;
+      failures?: Array<{ arn?: string; reason?: string }>;
+    }>(aws, ["ecs", "describe-tasks", "--cluster", aws.cluster, "--tasks", taskArn]);
+    const task = described.tasks?.[0];
+    const failures = (described.failures ?? []).map((failure) => failure.reason ?? "unknown");
+    if (failures.some((reason) => reason !== "MISSING")) {
+      throw new CliError(`AWS ${kind} task ${taskArn} failed (${failures.join(", ")})`);
+    }
+    if (task?.lastStatus === "STOPPED") {
+      const core = task.containers?.find((container) => container.name === "core");
+      if (core?.exitCode === 0) return;
+      throw new CliError(
+        `AWS ${kind} task ${taskArn} exited ${core?.exitCode ?? "without a code"}: ${[core?.reason, task.stoppedReason].filter(Boolean).join("; ") || "unknown reason"}`,
+      );
+    }
+    if (Date.now() > deadline) {
+      throw new CliError(
+        task
+          ? `timed out waiting for the AWS ${kind} task; ${taskArn} is still ${task.lastStatus ?? "unknown"} and was left running`
+          : `timed out waiting for the AWS ${kind} task; ECS still does not list ${taskArn}`,
+      );
+    }
+    await sleep(pollMs);
   }
 }
 
@@ -2942,6 +2959,7 @@ function awsBackgroundWorkTransport(
   path = "/v1/background-work",
   timeoutMs = 30_000,
   maxResponseBytes?: number,
+  productionRoute = false,
 ): BackgroundWorkTransport {
   const aws = requireAws(config);
   const secret = (name: string): string =>
@@ -2957,31 +2975,32 @@ function awsBackgroundWorkTransport(
   const control = secret("DEPLOYMENT_CONTROL_SECRET");
   if (isInvalidSecret("CORE_SIGNING_SECRET", signing) || control.trim().length < 32 || control === signing)
     throw new CliError("deployment control requires a distinct secret of at least 32 characters");
-  const url = new URL(config.publicUrl);
+  const url = new URL(productionRoute ? (config.apiUrl ?? config.publicUrl) : config.publicUrl);
+  if (productionRoute && (url.protocol !== "https:" || url.username || url.password))
+    throw new CliError("the production background ownership route must be HTTPS without credentials");
   url.pathname = `${url.pathname.replace(/\/+$/, "")}${path}`;
   url.search = "";
+  url.hash = "";
   return (method, body = "") => {
     const timestamp = Math.floor(Date.now() / 1000);
     const signature = createHmac("sha256", signing)
       .update(`v0:${timestamp}:${method}\n${url.pathname}\n${body}`)
       .digest("hex");
-    return awsCoreRequest(
-      config,
-      url,
-      {
-        method,
-        headers: {
-          "content-type": "application/json",
-          "x-timestamp": String(timestamp),
-          "x-signature": `v0=${signature}`,
-          authorization: `Bearer ${control}`,
-        },
-        ...(method === "POST" ? { body } : {}),
-        redirect: "error",
-        signal: AbortSignal.timeout(timeoutMs),
+    const init: RequestInit = {
+      method,
+      headers: {
+        "content-type": "application/json",
+        "x-timestamp": String(timestamp),
+        "x-signature": `v0=${signature}`,
+        authorization: `Bearer ${control}`,
       },
-      maxResponseBytes,
-    );
+      ...(method === "POST" ? { body } : {}),
+      redirect: "error",
+      signal: AbortSignal.timeout(timeoutMs),
+    };
+    return productionRoute
+      ? fetchCore(url, init, maxResponseBytes ?? 65_536)
+      : awsCoreRequest(config, url, init, maxResponseBytes);
   };
 }
 
@@ -3126,26 +3145,6 @@ export async function awsBackgroundWorkStatus(
   return { status, deploymentId: cohort.deploymentId, taskArns: cohort.taskArns, manifestId: cohort.manifest.id };
 }
 
-export async function awsItemsPromotion(
-  config: QmConfig,
-  configDir: string,
-  options: { writersStopped?: boolean; candidate?: string } = {},
-): Promise<{ deploymentId: string; ready: boolean }> {
-  assertAwsCallerAccount(requireAws(config));
-  const cohort = await awsBackgroundCohort(config, configDir, options.candidate);
-  const transport = awsBackgroundWorkTransport(config, "/v1/items-promotion", 120_000);
-  const response = await transport(
-    options.writersStopped ? "POST" : "GET",
-    options.writersStopped ? JSON.stringify({ deploymentId: cohort.deploymentId, writersStopped: true }) : "",
-  );
-  if (response.status !== 200) throw new CliError(`items promotion failed with HTTP ${response.status}`);
-  const result = JSON.parse(response.body) as { deploymentId?: string; ready?: boolean };
-  if (result.deploymentId !== cohort.deploymentId || typeof result.ready !== "boolean")
-    throw new CliError("items promotion returned an unexpected deployment");
-  if (options.writersStopped && !result.ready) throw new CliError("items promotion has not completed");
-  return { deploymentId: cohort.deploymentId, ready: result.ready };
-}
-
 export interface AwsBackgroundWorkCapacity {
   manifestId: string;
   deploymentId: string;
@@ -3277,8 +3276,19 @@ export async function awsBackgroundWorkCapacity(
   return proof;
 }
 
+export async function awsStoppedCoreOwner(
+  config: QmConfig,
+  deploymentId: string,
+): Promise<BackgroundWorkStatus | undefined> {
+  const state = describedServices(config, ["core"]).get("core");
+  if (!state || state.desiredCount !== 0) return undefined;
+  stableWorkloadCapacity(config, "core", state, state.taskDefinition ?? "", 0);
+  return readProductionOwner(awsBackgroundWorkTransport(config, undefined, undefined, undefined, true), deploymentId);
+}
+
 async function assertNotBackgroundOwner(config: QmConfig, current: DeploymentManifest | undefined): Promise<void> {
   if (!current?.backgroundDeploymentId) return;
+  if (await awsStoppedCoreOwner(config, current.backgroundDeploymentId)) return;
   const status = await readBackgroundWork(awsBackgroundWorkTransport(config), current.backgroundDeploymentId);
   if (status.ownerDeploymentId === current.backgroundDeploymentId)
     throw new CliError("hand background ownership to another deployment before replacing the current core tasks");
@@ -4846,7 +4856,7 @@ async function checkLive(
           request: (body) => transport("POST", body),
         });
       } else {
-        awsLiveSession(config, states.get("core")!);
+        await awsLiveSession(config, states.get("core")!);
       }
       if (opts.report ?? true) step("core: private live session smoke passed");
     } catch (error) {

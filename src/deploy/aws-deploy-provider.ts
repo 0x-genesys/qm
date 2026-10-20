@@ -6,10 +6,10 @@ import type { DeployEndpoint, DeployProvider, DeployReconcileInput } from "./dep
 import { bytes, normalizeRelPath, posixJoin, readTree } from "./deploy-fs.ts";
 import { AwsApiError, createMicrovmApi, createMicrovmClient, type AwsMicrovmApi } from "../sandbox/aws-microvm-api.ts";
 import { createMemoryMap, type DurableMap } from "../persistence/durable-map.ts";
-import { createNoopAdvisoryLock, type AdvisoryLock } from "../persistence/advisory-lock.ts";
+import type { AdvisoryLock } from "../persistence/advisory-lock.ts";
 import { createKeyedQueue, sleep } from "../util/async.ts";
 import { shq } from "../util/shell.ts";
-import { execFailure, swallow } from "../util/errors.ts";
+import { execFailure, swallow, swallowAs } from "../util/errors.ts";
 import {
   appEnv,
   appGone,
@@ -89,7 +89,7 @@ export interface AwsDeployProviderOptions {
   snapshotIntervalMs?: number;
   dataRoleArn?: string;
   store?: DurableMap<StoredDeployBody>;
-  advisoryLock?: AdvisoryLock;
+  advisoryLock: AdvisoryLock;
   api?: AwsMicrovmApi;
   fetchImpl?: typeof fetch;
   s3?: Pick<S3Client, "send">;
@@ -108,7 +108,7 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
     });
   const store = opts.store ?? createMemoryMap<StoredDeployBody>();
   const launchQueue = createKeyedQueue<string>();
-  const advisoryLock = opts.advisoryLock ?? createNoopAdvisoryLock();
+  const advisoryLock = opts.advisoryLock;
   const resolveCache = new Map<string, { endpoint: DeployEndpoint; checkedMs: number; usedMs: number }>();
   const inflightResolves = new Map<string, Promise<DeployEndpoint | null>>();
   const resolveGens = new Map<string, number>();
@@ -288,7 +288,9 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
     }
     if (made.code !== 0) throw new Error(`data snapshot tar failed (code ${made.code}): ${made.stderr.slice(0, 200)}`);
     const tar = await readAbsBytes(id, endpoint, tarPath);
-    await execRaw(id, endpoint, `rm -f ${shq(tarPath)}`, 30).catch(() => {});
+    await execRaw(id, endpoint, `rm -f ${shq(tarPath)}`, 30).catch(
+      swallowAs("aws-deploy: remove data snapshot tar", undefined),
+    );
     if (!tar?.length) throw new Error("data snapshot read-back empty");
     await s3.send(new PutObjectCommand({ Bucket: dataBucket, Key: dataKeyFor(deploymentId), Body: tar }));
     return true;
@@ -380,7 +382,9 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
           next = await launchBody(d.id, d.alwaysOn);
           const replacement = next;
           await store.put(d.id, { ...stored, replacementMicrovmId: replacement.id });
-          await ensureRunning(stored.microvmId, stored.endpoint, desc).catch(() => {});
+          await ensureRunning(stored.microvmId, stored.endpoint, desc).catch(
+            swallowAs("aws-deploy: keep old body running during replacement", undefined),
+          );
           const defer = async (
             label: string,
             e: unknown,
@@ -613,7 +617,9 @@ export function createAwsDeployProvider(opts: AwsDeployProviderOptions): DeployP
           await refreshLitestream(d.id, cur.microvmId, cur.endpoint);
           await store.put(d.id, { ...cur, dataCredsAtMs: Date.now() });
         } catch (e) {
-          await store.put(d.id, { ...cur, dataCredsAtMs: failureBackoffStamp() }).catch(() => {});
+          await store
+            .put(d.id, { ...cur, dataCredsAtMs: failureBackoffStamp() })
+            .catch(swallowAs("aws-deploy: stamp litestream creds backoff", undefined));
           throw e;
         }
       }).catch((e) => swallow("aws-deploy: litestream creds refresh", e));

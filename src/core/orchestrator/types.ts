@@ -1,3 +1,4 @@
+import type { TraceCarrier } from "../../../plugins/chassis/src/error-reporting.ts";
 import type { GoalCreateInput } from "../../harness/goal.ts";
 import type { RunStop } from "../../runs/run-store.ts";
 import type { ExternalSlackPolicies } from "../../resolution/external-slack.ts";
@@ -47,7 +48,6 @@ import type { ControlService } from "../../api/control-service.ts";
 import type { Harness } from "../../harness/harness.ts";
 import type { AdminService } from "../../admin/admin-service.ts";
 import type { ErrorLog } from "../../admin/error-log.ts";
-import type { MetricsSink } from "../../admin/metrics-sink.ts";
 import type { ToolLedger } from "../../runs/tool-ledger.ts";
 import type { RunSignalStore } from "../../runs/run-signal-store.ts";
 import type { TurnStream } from "../../runs/turn-stream.ts";
@@ -107,11 +107,11 @@ export interface OrchestratorInput extends Omit<
   background?: boolean;
   cancel?: AbortSignal;
   shutdown?: AbortSignal;
-  queueMs?: number;
   sessionParticipantIds?: readonly string[];
   scopeVersion?: string;
   swarm?: SwarmTurn;
   swarmGoal?: GoalCreateInput & { assignedAt: number };
+  trace?: TraceCarrier;
 }
 
 export interface OrchestratorDeps {
@@ -169,16 +169,15 @@ export interface OrchestratorDeps {
   skillBundles?: SkillBundleStore;
   skillsReady?: Promise<void>;
   advisoryLock?: AdvisoryLock;
-  approvals?: DurableMap<PendingApprovalRecord>;
-  approvalGrants?: DurableMap<CommandApprovalGrant>;
+  approvals: DurableMap<PendingApprovalRecord>;
+  approvalGrants: DurableMap<CommandApprovalGrant>;
   errors?: ErrorLog;
-  metrics?: MetricsSink;
   ledger?: ToolLedger;
   signals?: RunSignalStore;
   turnStream?: TurnStream;
   runActivity?: RunActivityStore;
   runs?: RunStore;
-  blobTransfer?: BlobTransferStore;
+  blobTransfer: BlobTransferStore;
   processes?: ProcessRegistry;
   monitors?: MonitorStore;
   crons?: CronStore;

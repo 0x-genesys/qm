@@ -8,8 +8,8 @@ import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { createInsecureTestServer } from "../src/api/server.ts";
 import { createMemorySessionStore } from "../src/sessions/memory-session-store.ts";
-import { cacheHitRatio } from "../src/admin/metrics-sink.ts";
-import { buildApp } from "../src/wiring.ts";
+import { cacheHitRatio } from "../src/api/routes/admin/spend.ts";
+import { buildApp } from "./support/build-app.ts";
 import { scopeId, type TurnRequest } from "../src/types.ts";
 import type { SessionStore } from "../src/sessions/session-store.ts";
 import { bill } from "./support/spend-usage.ts";
@@ -26,7 +26,6 @@ function start(sessions?: SessionStore) {
     admin: built.admin,
     sessions: sessions ?? built.sessions,
     auditLog: built.auditLog,
-    metrics: built.metrics,
     runs: built.runs,
   });
   server.listen(0);

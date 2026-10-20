@@ -3,6 +3,8 @@ import type { EntryType, ScopeId, Session, SessionEntry, SessionType, SpawnMeta 
 import { sleep } from "../util/async.ts";
 import type { GoalRecord } from "../harness/goal.ts";
 
+export const LLM_CAPTURE_RETENTION_MS = 30 * 24 * 60 * 60_000;
+
 export function promptEnvelopeBody(envelope: unknown): { hash: string; body: string } | null {
   if (envelope == null) return null;
   let body: string;
@@ -168,32 +170,12 @@ export interface SessionPage {
   signal?: AbortSignal;
 }
 
-export interface CronGroupSummary {
-  cronId: string;
+export interface ScopeActivity {
   scopeId: ScopeId;
-  sessions: number;
-  turns: number;
-  messages: number;
-  lastActivity: number;
-  createdAt: number;
-}
-
-export interface ScopeSessionRollup {
-  scopeId: ScopeId;
-  sessions: number;
-  backgroundSessions: number;
-  lastActivity: number;
-  lastConversationActivity: number;
-  previewSessionId: string | null;
-}
-
-export interface ScopeSessionStats {
-  total: number;
-  turns: number;
-  byType: Record<string, number>;
-  byTypeAll: Record<string, number>;
-  totalByCategory: Record<SessionCategory | "all", number>;
+  conversations: number;
   crons: number;
+  background: number;
+  lastActivity: number;
 }
 
 export interface SpendRow {
@@ -269,7 +251,6 @@ export interface LlmRequestRecord {
   model: string;
   scopeLabel: ScopeId;
   createdAt: number;
-  request: unknown;
   promptHash: string | null;
   promptEnvelope?: unknown;
   truncated: boolean;
@@ -370,10 +351,6 @@ export function cronIdOf(threadRef: string | null | undefined): string | null {
   return m ? m[1]! : null;
 }
 
-export function sessionBucket(origin: SessionOrigin, type: SessionType): string {
-  return origin === "conversation" ? type : origin;
-}
-
 export interface SessionRef {
   id: string;
   threadRef: string;
@@ -385,6 +362,35 @@ export interface SessionRef {
 export interface DistinctScope {
   scopeId: ScopeId;
   channelName?: string;
+}
+
+export interface ParticipantPageQuery {
+  limit: number;
+  before?: { activity: number; id: string };
+  archived?: boolean;
+  pinned?: boolean;
+  surface?: string;
+  scopeId?: ScopeId;
+  titleQuery?: string;
+  sessionIds?: readonly string[];
+}
+
+export interface ParticipantPage {
+  sessions: Session[];
+  next: { activity: number; id: string } | null;
+}
+
+export interface SessionDescendant {
+  id: string;
+  rootId: string;
+  threadRef: string;
+}
+
+export interface ParticipantScope {
+  scopeId: ScopeId;
+  channelName?: string;
+  sessionCount: number;
+  lastActivityAt: number | null;
 }
 
 export interface EntrySearchHit extends Pick<Session, "scopeId" | "title" | "channelName" | "surface" | "archived"> {
@@ -597,10 +603,15 @@ export interface SessionStore {
   listLlmRequests(sessionId: string, opts?: ListLlmRequestsOptions): Promise<LlmRequestRecord[]>;
   /** The most recent security screenings across every scope, newest first. */
   listScreenSamples(limit: number): Promise<ScreenSample[]>;
+  purgeLlmCaptures?(cutoff: number, opts?: { deadline?: number; stop?: () => boolean }): Promise<number>;
 
   addParticipant(sessionId: string, principalId: string, title?: string, opts?: AddParticipantOptions): Promise<void>;
   removeParticipant(sessionId: string, principalId: string): Promise<void>;
   listByParticipant(principalId: string, opts?: { limit: number }): Promise<Session[]>;
+  participantScopes(principalId: string): Promise<ParticipantScope[]>;
+  listParticipantPage(principalId: string, query: ParticipantPageQuery): Promise<ParticipantPage>;
+  descendantsOf(rootIds: readonly string[]): Promise<SessionDescendant[]>;
+  listDescendantsForParticipant(rootId: string, principalId: string, limit: number): Promise<Session[]>;
   getForParticipant(sessionId: string, principalId: string): Promise<Session | null>;
 
   deleteSession(sessionId: string): Promise<void>;
@@ -619,11 +630,6 @@ export interface SessionStore {
   /** Sessions whose (participant or session) title contains the query — newest activity first. */
   searchSessionTitles(principalId: string, query: string, limit?: number): Promise<Session[]>;
 
-  appendSearchEntries(lease: Lease, rows: readonly NewSearchEntry[]): Promise<void>;
-  searchIndexCoverage(sessionId: string): Promise<number>;
-  missingSearchEntries(sessionId: string): Promise<number>;
-  lastSearchableEntrySeq(sessionId: string): Promise<number>;
-
   scanAll(): Promise<Session[]>;
 
   countSessions(): Promise<number>;
@@ -638,19 +644,9 @@ export interface SessionStore {
 
   scopeSessionSummaries(scope: ScopeId, orgWide: boolean, page: SessionPage): Promise<SessionSummary[]>;
 
-  lastUserMessages(sessionIds: string[]): Promise<Map<string, string>>;
+  scopeActivity(): Promise<ScopeActivity[]>;
 
-  scopeCronGroups(scope: ScopeId, orgWide: boolean): Promise<CronGroupSummary[]>;
-
-  scopeSessionRollups(scope: ScopeId, orgWide: boolean): Promise<ScopeSessionRollup[]>;
-
-  scopeSessionStats(
-    scope: ScopeId,
-    orgWide: boolean,
-    category?: SessionCategory,
-    origin?: SessionOriginFilter,
-    cronId?: string,
-  ): Promise<ScopeSessionStats>;
+  scopeConversationCount(scope: ScopeId): Promise<number>;
 
   attributedTurns(): Promise<AttributedTurn[]>;
 

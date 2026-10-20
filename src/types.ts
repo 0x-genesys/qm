@@ -127,6 +127,7 @@ export interface Session {
   crons?: number;
   /** Set while a working session pursues a goal: banked active time, the running turn's start, and the floor. */
   goal?: { objective: string; activeMs: number; runningSince?: number; floor?: Record<string, number> };
+  subagents?: { running: number; waiting: number };
 }
 
 export type EntryType =
@@ -720,8 +721,6 @@ export interface TurnRequest {
   displayText?: string;
   turnWallClockMs?: number;
   timezone?: string;
-  intakePreambleMs?: number;
-  clientSentAt?: number;
   approval?: { requestId: string; approved: boolean; scope?: ApprovalScope };
   proactiveOpener?: boolean;
   analyticsSuppressed?: boolean;

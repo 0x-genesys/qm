@@ -20,7 +20,7 @@ import { createErrorLog } from "../src/admin/error-log.ts";
 import { createAuditLog } from "../src/audit/audit-log.ts";
 import { createRateLimiter } from "../src/ratelimit/rate-limiter.ts";
 import { createRuntimeService } from "../src/harness/runtime-control.ts";
-import { createMockHarness } from "../src/harness/mock-harness.ts";
+import { createMockHarness } from "./support/mock-harness.ts";
 import { createDeployStore } from "../src/deploy/deploy-store.ts";
 import { createDockerDeployProvider } from "../src/deploy/docker-deploy-provider.ts";
 import { createDeployService } from "../src/deploy/deploy-service.ts";
@@ -41,6 +41,7 @@ import type { SessionStore } from "../src/sessions/session-store.ts";
 import { contextSummaryPayload, createContextSummaryPayload } from "../src/sessions/session-store.ts";
 import type { Sandbox } from "../src/sandbox/sandbox.ts";
 import { scopeId, type Conversation, type Principal, type SessionEntry } from "../src/types.ts";
+import { singleProcessDeps } from "./support/single-process.ts";
 
 const ORG = "default-org";
 const tokensOf = (...texts: string[]): number => texts.reduce((n, t) => n + countTokens(t), 0);
@@ -115,6 +116,7 @@ function buildOrchestrator(
   const sessions = swarm?.sessions ?? createMemorySessionStore();
   const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "cc-")));
   const deploy = createDeployService({
+    ...singleProcessDeps(),
     deployStore: createDeployStore(),
     provider: createDockerDeployProvider(),
     deployDir: join(tmpdir(), "cc-deploy"),
@@ -122,6 +124,7 @@ function buildOrchestrator(
     acl,
   });
   const orch = createOrchestrator({
+    ...singleProcessDeps(),
     config,
     identity: createIdentityService(),
     resolution: createResolutionService(ORG, config, acl),

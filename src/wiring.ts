@@ -10,10 +10,8 @@ import type { SlackSessionStatusState } from "./slack/session-status.ts";
 import { availableRuntimeError } from "./api/runtime-config.ts";
 import { createApprovalStore } from "./core/approval-store.ts";
 import { createKeychainApprovals, type KeychainApprovals } from "./credentials/keychain-approval.ts";
-import { flushErrorReporting, startTiming } from "../plugins/chassis/src/error-reporting.ts";
-import type { TimingStatus } from "../plugins/chassis/src/timing.ts";
+import { flushErrorReporting } from "../plugins/chassis/src/error-reporting.ts";
 import { createProductAnalytics } from "./util/product-analytics.ts";
-import { resolveTurnOrigin } from "./core/turn-origin.ts";
 import { createAdmittedWork } from "./util/admitted-work.ts";
 import { runSessionSmoke } from "./deployment/postdeploy-smoke.ts";
 import {
@@ -88,7 +86,7 @@ import {
 import type { SlackAccountLink, ComposioReturn } from "./api/routes/composio.ts";
 import { installPrincipalLinks } from "./directory/person.ts";
 import type { ExternalMember } from "./identity/external-members.ts";
-import { createResendMailer } from "./admin/invite-email.ts";
+import { resendMailer } from "../plugins/chassis/src/resend.ts";
 import {
   createMemoryConfigStore,
   type ScopedConfigStore,
@@ -325,8 +323,7 @@ import { createCustomProviderStore, type CustomProviderStore } from "./model/cus
 import { createMemorySessionStore } from "./sessions/memory-session-store.ts";
 import { createPostgresSessionStore } from "./sessions/postgres-session-store.ts";
 import { createMemoryToolOutputStore, createPostgresToolOutputStore } from "./sessions/tool-output.ts";
-import type { SessionStore } from "./sessions/session-store.ts";
-import { createMockHarness } from "./harness/mock-harness.ts";
+import { LLM_CAPTURE_RETENTION_MS, type SessionStore } from "./sessions/session-store.ts";
 import {
   fileCompanyChatGPTAuth,
   keychainCompanyChatGPTAuth,
@@ -440,8 +437,6 @@ import {
   type StoredDeploymentLayer,
 } from "./deployment/deployment-layer-store.ts";
 import { createPostgresErrorLog } from "./admin/postgres-error-log.ts";
-import { createMetricsSink, type MetricsSink } from "./admin/metrics-sink.ts";
-import { createPostgresMetricsSink } from "./admin/postgres-metrics-sink.ts";
 import { errMessage, reportFailureAs, swallowAs } from "./util/errors.ts";
 import { sleep, withTimeout } from "./util/async.ts";
 import { createSlackInstallationStore, type SlackInstallationStore } from "./surfaces/slack-installation.ts";
@@ -538,7 +533,6 @@ export interface BuiltApp {
   admin: AdminService;
   rateLimiter: RateLimiter;
   errors: ErrorLog;
-  metrics: MetricsSink;
   crons: CronStore;
   credentialUsage: CredentialUsageSink;
   egressAudit: EgressAuditSink;
@@ -593,6 +587,7 @@ export function buildApp(
     credentialBrokers?: Record<string, AwsRoleBroker>;
     modelCredentialFetch?: typeof fetch;
     modelVerificationProbe?: typeof probeModel;
+    harnesses?: Partial<Record<HarnessId, Harness>>;
   } = {},
 ): BuiltApp {
   let backgroundAdmission = () => !config.backgroundDeploymentId;
@@ -1098,9 +1093,7 @@ export function buildApp(
       .digest("hex")
       .slice(0, 32);
     return createSuperserveSandbox(workspace, {
-      configEpoch:
-        ss.configGeneration ??
-        (pgArtifactMap ? createConfigEpochResolver(superserveEpochs, generationKey, advisoryLock) : 0),
+      configEpoch: ss.configGeneration ?? createConfigEpochResolver(superserveEpochs, generationKey, advisoryLock),
       client: createSdkSuperserveClient({
         apiKey: ss.apiKey,
         ...(ss.baseUrl ? { baseUrl: ss.baseUrl } : {}),
@@ -1345,7 +1338,6 @@ export function buildApp(
         }
       : {}),
   });
-  const mcpTools = () => mcpToolService.toolDefs();
   const browserSessionStore: BrowserSessionStore | undefined = keychainKeyMaterial
     ? createBrowserSessionStore({ sessions: artifactMap<StoredBrowserSession>("browser_sessions"), key: credentialKey })
     : undefined;
@@ -1361,7 +1353,7 @@ export function buildApp(
   };
   const sessions: SessionStore =
     config.sessionStore === "postgres"
-      ? createPostgresSessionStore(requireDbUrl("SESSION_STORE"), { stageItemsCutover: config.stageItemsCutover })
+      ? createPostgresSessionStore(requireDbUrl("SESSION_STORE"))
       : createMemorySessionStore();
   memorySessions.store = sessions;
   const toolOutput =
@@ -1486,34 +1478,33 @@ export function buildApp(
   const adapters = new Map<HarnessId, Harness>([
     [
       "pi",
-      createPiHarness({
-        ...piHarnessConfigOptions(config),
-        modelGateway: gatewayTransport,
-        resolveBaseModelId: () => orgBaseModelId() ?? defaultForHarness("pi"),
-        resolveFallbackRuntime: () => configStore.getPurposeRuntime("fallback"),
-        resolveProviderKeys: resolvePiProviderKeys,
-        ...(directProviderAvailability.codexOAuth ? { companyModelId } : {}),
-        signals: runSignals,
-        mcpTools,
-      }),
+      overrides.harnesses?.pi ??
+        createPiHarness({
+          ...piHarnessConfigOptions(config),
+          modelGateway: gatewayTransport,
+          resolveBaseModelId: () => orgBaseModelId() ?? defaultForHarness("pi"),
+          resolveFallbackRuntime: () => configStore.getPurposeRuntime("fallback"),
+          resolveProviderKeys: resolvePiProviderKeys,
+          ...(directProviderAvailability.codexOAuth ? { companyModelId } : {}),
+          signals: runSignals,
+        }),
     ],
     [
       "claude",
-      createClaudeHarness({
-        ...claudeHarnessConfigOptions(config),
-        ...(config.claudeAuthCredential && keychain
-          ? {
-              authEnv: keychainHarnessAuthEnv(keychain, config.claudeAuthCredential, [
-                "CLAUDE_CODE_OAUTH_TOKEN",
-                "ANTHROPIC_AUTH_TOKEN",
-              ]),
-            }
-          : {}),
-        signals: runSignals,
-        mcpTools,
-      }),
+      overrides.harnesses?.claude ??
+        createClaudeHarness({
+          ...claudeHarnessConfigOptions(config),
+          ...(config.claudeAuthCredential && keychain
+            ? {
+                authEnv: keychainHarnessAuthEnv(keychain, config.claudeAuthCredential, [
+                  "CLAUDE_CODE_OAUTH_TOKEN",
+                  "ANTHROPIC_AUTH_TOKEN",
+                ]),
+              }
+            : {}),
+          signals: runSignals,
+        }),
     ],
-    ["mock", createMockHarness()],
   ]);
   const fallbackHarness = config.harness as HarnessId;
   const fallback = {
@@ -1679,20 +1670,7 @@ export function buildApp(
         })
       : undefined;
   const productAnalytics = createProductAnalytics(config.orgId, config.productAnalytics);
-  runs.onTerminal((run) => {
-    void productAnalytics.responseFinished(run);
-    const startedAt = run.startedAt ?? run.finishedAt ?? Date.now();
-    const finishTiming = startTiming("queue.task", "run", startedAt);
-    let status: TimingStatus = "internal_error";
-    if (run.result?.stopped) status = "cancelled";
-    else if (run.status === "done") status = "ok";
-    finishTiming?.({
-      status,
-      endMs: run.finishedAt ?? Date.now(),
-      data: { surface: run.request.surface, origin: resolveTurnOrigin(run.request).kind },
-      measurements: { queue_wait: startedAt - run.createdAt },
-    });
-  });
+  runs.onTerminal((run) => void productAnalytics.responseFinished(run));
   const ledger = runStore.ledger;
 
   let processes: ProcessRegistry | undefined;
@@ -1704,7 +1682,6 @@ export function buildApp(
     config.databaseUrl && config.awsDeploy.appsDomain ? createPostgresAppPageViewLog(config.databaseUrl) : undefined;
   const brokerSessions = config.databaseUrl ? createPostgresBrokerSessions(config.databaseUrl) : undefined;
   const replayDedupe = config.databaseUrl ? createPostgresReplayDedupe(config.databaseUrl) : createMemoryReplayDedupe();
-  const metrics = config.databaseUrl ? createPostgresMetricsSink(config.databaseUrl) : createMetricsSink();
   const credentialUsage = config.databaseUrl
     ? createPostgresCredentialUsageSink(config.databaseUrl)
     : createCredentialUsageSink();
@@ -2149,7 +2126,7 @@ export function buildApp(
     ...(config.publicWebUrl ? { publicWebUrl: config.publicWebUrl } : {}),
     ...(config.deployAppsDomain ? { deployAppsDomain: config.deployAppsDomain } : {}),
     ...(config.resendApiKey && config.emailFrom
-      ? { inviteMailer: createResendMailer(config.resendApiKey, config.emailFrom) }
+      ? { inviteMailer: resendMailer(config.resendApiKey, config.emailFrom) }
       : {}),
     ...(config.publicUrl ? { webhookPublicUrl: config.publicUrl } : {}),
     memoryPolicy: { recall: config.memoryRecall, capture: config.memoryCapture },
@@ -2159,7 +2136,6 @@ export function buildApp(
     skillsReady,
     advisoryLock,
     errors,
-    metrics,
     ledger,
     signals: runSignals,
     turnStream,
@@ -2385,7 +2361,10 @@ export function buildApp(
   const inboxRealtime = createInboxRealtime({
     loops: loopStore,
     items: loopItems,
-    requestFire: (loopId) => void loopFire.fire(loopId, `loop:${loopId}:slack-event:${Date.now()}`).catch(() => {}),
+    requestFire: (loopId) =>
+      void loopFire
+        .fire(loopId, `loop:${loopId}:slack-event:${Date.now()}`)
+        .catch(swallowAs("inbox loop: slack event fire", undefined)),
   });
   const keychainApprovals = keychain
     ? createKeychainApprovals({
@@ -2416,7 +2395,6 @@ export function buildApp(
     blobTransfer,
     deliveries,
     errors,
-    metrics,
     runs,
     turnStream,
     ackPicks: ackEmojiPicks,
@@ -2658,7 +2636,7 @@ export function buildApp(
     skipFire: async (cron) => (await memoryTidy.skipFire(cron)) ?? suggestedActivities.skipFire(cron),
     deleteCron: (id) => app.deleteCron(id),
     requireQueueStart: Boolean(config.backgroundDeploymentId),
-    lock: advisoryLock,
+    advisoryLock,
     crons,
     deliveries,
     idempotency,
@@ -2805,11 +2783,29 @@ export function buildApp(
       })
     : null;
   const MONITOR_RETENTION_SWEEP_MS = 24 * 60 * 60_000;
+  const LLM_CAPTURE_SWEEP_MS = 5 * 60_000;
+  const LLM_CAPTURE_SWEEP_BUDGET_MS = 30_000;
   const spendSweeper = sessions.refreshSpendRollup
     ? createSweeper(() => leaderLease.hold("spend:refresh", () => sessions.refreshSpendRollup!()), 60_000, {
         label: "spend-refresh",
         immediate: true,
       })
+    : null;
+  const llmCaptureSweeper = sessions.purgeLlmCaptures
+    ? createSweeper(
+        () =>
+          leaderLease.hold("llm-capture:retention", async (lost) => {
+            let leaseLost = false;
+            void lost.then(() => (leaseLost = true));
+            const purged = await sessions.purgeLlmCaptures!(Date.now() - LLM_CAPTURE_RETENTION_MS, {
+              deadline: Date.now() + LLM_CAPTURE_SWEEP_BUDGET_MS,
+              stop: () => leaseLost,
+            });
+            if (purged) console.log(`[llm-capture] purged ${purged} prompt envelope(s) past retention`);
+          }),
+        LLM_CAPTURE_SWEEP_MS,
+        { label: "llm-capture-retention" },
+      )
     : null;
   const monitorRetentionSweeper = createSweeper(
     () => leaderLease.hold("monitor:retention:sweep", () => monitors.deleteDefunct(Date.now())),
@@ -2887,6 +2883,7 @@ export function buildApp(
         .catch(swallowAs("wiring: monitor resume failed", undefined));
       monitorRetentionSweeper.start();
       spendSweeper?.start();
+      llmCaptureSweeper?.start();
       semanticMemory.start();
       if (config.skillSyncPollMs > 0) skillSyncEngine.start(config.skillSyncPollMs);
       blobSweeper.start();
@@ -2918,6 +2915,7 @@ export function buildApp(
       processReaper?.stop(),
       monitorRetentionSweeper.stop(),
       spendSweeper?.stop(),
+      llmCaptureSweeper?.stop(),
       semanticMemory.stop(),
       skillSyncEngine.stop(),
       idleSweeper?.stop(),
@@ -3052,7 +3050,6 @@ export function buildApp(
     admin,
     rateLimiter,
     errors,
-    metrics,
     crons,
     credentialUsage,
     egressAudit,
@@ -3174,7 +3171,7 @@ export function serverDeps(
     ...(config.emailAuthDomain ? { emailAuthDomain: config.emailAuthDomain } : {}),
     ...(config.slack ? { slackAllowFrom: config.slack.allowFrom ?? [] } : {}),
     ...(config.resendApiKey && config.emailFrom
-      ? { inviteMailer: createResendMailer(config.resendApiKey, config.emailFrom) }
+      ? { inviteMailer: resendMailer(config.resendApiKey, config.emailFrom) }
       : {}),
     rateLimiter: built.rateLimiter,
     acl: built.acl,
@@ -3186,7 +3183,6 @@ export function serverDeps(
     sessions: built.sessions,
     auditLog: built.auditLog,
     errors: built.errors,
-    metrics: built.metrics,
     crons: built.crons,
     loops: built.loops,
     deploymentLayer: built.deploymentLayerStore,

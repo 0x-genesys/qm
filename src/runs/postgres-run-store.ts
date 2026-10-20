@@ -10,7 +10,7 @@ import type { OrchestratorInput } from "../core/orchestrator.ts";
 import { resolveTurnOrigin } from "../core/turn-origin.ts";
 import type { EnqueueInput, EnqueueResult, ReapEvent, Run, RunDeliveryState, RunStop, RunStore } from "./run-store.ts";
 import type { RunPriority } from "./run-store.ts";
-import { countedClaims, isTerminal, releasesDedupKey, runPriority } from "./run-store.ts";
+import { countedClaims, isTerminal, releasesDedupKey, runPriority, withTraceCarrier } from "./run-store.ts";
 import { errMessage, swallow } from "../util/errors.ts";
 import type { LedgerBegin, ToolLedger } from "./tool-ledger.ts";
 
@@ -154,6 +154,10 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
           `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_runs_pending_priority ON runs(claim_priority, created_at, seq) WHERE status='pending'`,
         ],
       },
+      {
+        id: "runs/store/0010-drop-turn-metrics",
+        statements: [`SET LOCAL lock_timeout = '60s'`, `DROP TABLE IF EXISTS turn_metrics`],
+      },
     ],
     [
       {
@@ -193,7 +197,19 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
     ],
   );
 
-  const availabilityListeners = new Map<() => void, number>();
+  const availabilityListeners = new Map<() => boolean | void, number>();
+  let availabilityOff: (() => void) | undefined;
+  let wakeCursor = 0;
+  function wakeOne(): void {
+    const listeners = [...availabilityListeners.keys()];
+    for (let i = 0; i < listeners.length; i++) {
+      const at = (wakeCursor + i) % listeners.length;
+      if (listeners[at]!() === true) {
+        wakeCursor = at + 1;
+        return;
+      }
+    }
+  }
   let availabilityTimer: ReturnType<typeof setTimeout> | undefined;
   let availabilityProbe: Promise<void> | null = null;
   let availabilityClosed = false;
@@ -214,7 +230,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
           [Date.now()],
         )
           .then(({ rows }) => {
-            if (rows[0]?.available) for (const listener of availabilityListeners.keys()) listener();
+            if (rows[0]?.available) wakeOne();
           })
           .catch((error: unknown) => swallow("run availability probe", error))
           .finally(() => {
@@ -283,6 +299,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
       SELECT 1 FROM runs sibling WHERE sibling.session_id=candidate.session_id
         AND (sibling.status='running' OR (sibling.status='pending'
           AND (sibling.retry_after > ${now} OR (sibling.created_at, sibling.seq) < (candidate.created_at, candidate.seq))))
+      OFFSET 0
     )`;
 
   async function claim(workerId: string, ttlMs: number, runId?: string, sessionId?: string): Promise<Run | null> {
@@ -300,7 +317,9 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
          ) RETURNING *`,
         [token, now + ttlMs, workerId, now, runId ?? null, sessionId ?? null],
       );
-      return rows[0] ? rowToRun(rows[0]) : null;
+      if (!rows[0]) return null;
+      if (runId === undefined && sessionId === undefined) wakeOne();
+      return rowToRun(rows[0]);
     } catch (err) {
       if (isUniqueViolation(err)) return null;
       throw err;
@@ -312,12 +331,15 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
       availabilityListeners.set(listener, options?.pollMs ?? 50);
       clearTimeout(availabilityTimer);
       availabilityTimer = undefined;
-      const off = available.subscribe(listener, options);
+      availabilityOff ??= available.subscribe(wakeOne);
+      const off = available.subscribe(() => {}, options);
       watchAvailability();
       return () => {
         off();
         availabilityListeners.delete(listener);
         if (availabilityListeners.size === 0) {
+          availabilityOff?.();
+          availabilityOff = undefined;
           clearTimeout(availabilityTimer);
           availabilityTimer = undefined;
         }
@@ -335,7 +357,15 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
            VALUES ($1,$2,'pending',$3,$4,0,$5,$6,$7)
            ON CONFLICT (idempotency_key) DO NOTHING
            RETURNING *, pg_notify('qm_run_available', 'null')`,
-          [id, sessionId, jsonbStringify(request), dedupKey ?? null, maxAttempts, Date.now(), priority],
+          [
+            id,
+            sessionId,
+            jsonbStringify(withTraceCarrier(request)),
+            dedupKey ?? null,
+            maxAttempts,
+            Date.now(),
+            priority,
+          ],
         );
         if (rows[0]) return { run: rowToRun(rows[0]), deduped: false };
         const existing = await runs.getByDedupKey(dedupKey!);
@@ -652,6 +682,8 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
       availabilityClosed = true;
       clearTimeout(availabilityTimer);
       availabilityListeners.clear();
+      availabilityOff?.();
+      availabilityOff = undefined;
       await availabilityProbe;
       await available.close?.();
       await closePool();

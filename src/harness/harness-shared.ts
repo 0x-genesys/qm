@@ -1,6 +1,5 @@
 import { TURN_STOPPED_KIND, type ReplayImageRef } from "./replay.ts";
 import { randomBytes } from "node:crypto";
-import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import {
   parseSecurityScreenVerdict,
   SECURITY_SCREEN_STEP,
@@ -18,7 +17,6 @@ export interface HarnessToolPlumbing {
   scratchExec?: boolean;
   ownerAuthExec?: boolean;
   reachExec?: boolean;
-  mcpTools?: () => McpToolDescriptor[];
   controlTools?: boolean;
   sandboxResources?: boolean;
   execTimeoutMs?: number;
@@ -112,6 +110,7 @@ export function harnessToolContext(turn: HarnessTurnInput): ToolContextRef {
     silentRequested: false,
     pollFire: Boolean(turn.pollFire),
     goal: turn.goal ?? null,
+    ...(turn.goalMeter ? { goalMeter: turn.goalMeter } : {}),
     ...(turn.goalContinuation || turn.continueTurn ? { goalRound: 1 } : {}),
     saveGoal: turn.saveGoal,
     emit: turn.emit,
@@ -130,7 +129,7 @@ export function harnessToolOptions(opts: HarnessToolPlumbing, turn?: HarnessTurn
     scratchExec: opts.scratchExec,
     ownerAuthExec: opts.ownerAuthExec,
     reachExec: opts.reachExec,
-    ...(opts.mcpTools ? { mcpTools: opts.mcpTools } : {}),
+    ...(turn?.mcpTools?.length ? { mcpTools: turn.mcpTools } : {}),
     controlTools: opts.controlTools,
     sandboxResources: opts.sandboxResources,
     execTimeoutMs: opts.execTimeoutMs,

@@ -5,7 +5,8 @@ import type { Server } from "node:http";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildApp, type BuiltApp } from "../src/wiring.ts";
+import { type BuiltApp } from "../src/wiring.ts";
+import { buildApp } from "./support/build-app.ts";
 import { createServer } from "../src/api/server.ts";
 import { scopeId } from "../src/types.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS, type CapabilityClaims } from "../src/auth/capability-token.ts";
@@ -530,6 +531,8 @@ describe("capability-token control plane (crons + webhooks + SOUL)", () => {
     );
     assert.equal(create.status, 403);
     assert.match(((await create.json()) as { message: string }).message, /direct control-plane mutations/i);
+    const search = await post("/v1/memory/search", { query: "anything" }, { "x-agent-capability": token });
+    assert.doesNotMatch(await search.text(), /direct control-plane mutations/i);
   });
 
   it("a capability cannot cancel another user's cron", async () => {

@@ -1,4 +1,5 @@
-import { GmailReadError, getSentEmail, listSentEmails } from "../../connectors/gmail-sent.ts";
+import { getSentEmail, listSentEmails } from "../../connectors/gmail-sent.ts";
+import { GmailApiError } from "../../connectors/gmail-api.ts";
 import { orgId as configOrgId } from "../../config.ts";
 import {
   authorizeUrl,
@@ -22,7 +23,7 @@ import type { ConnectorTokenStore, DerivedOAuthAuth, OAuthTokenStatus } from "..
 import { createEnvSecretSource } from "../../credentials/secret-source.ts";
 import type { ServerDeps } from "../deps.ts";
 import { personKey, samePerson } from "../../directory/person.ts";
-import { errMessage } from "../../util/errors.ts";
+import { errMessage, swallowAs } from "../../util/errors.ts";
 import { normalizeInboundExpiresAt } from "../expiry.ts";
 import { sendJson, sendRedirect } from "../http.ts";
 import { audit } from "./shared.ts";
@@ -171,7 +172,7 @@ async function oauthCallback(ctx: BaseCtx): Promise<void> {
       scopeLabel: state.principalId,
     });
     if (state.consentLinkId && deps.consentLinks) {
-      await deps.consentLinks.redeem(state.consentLinkId).catch(() => null);
+      await deps.consentLinks.redeem(state.consentLinkId).catch(swallowAs("connectors: redeem consent link", null));
     }
     if (state.returnTo) {
       const dest = new URL(state.returnTo, "http://localhost");
@@ -192,7 +193,7 @@ async function principalHasProvider(deps: ServerDeps, provider: string, principa
     for (const at of ACCOUNT_TYPES) {
       const st = await deps.connectorTokens
         .connectorTokenStatus(host, principalId, at)
-        .catch(() => ({ connected: false }) as OAuthTokenStatus);
+        .catch(swallowAs("connectors: token status", { connected: false } as OAuthTokenStatus));
       if (st.connected && !st.needsReconnect) return true;
     }
   }
@@ -534,14 +535,13 @@ export async function gmailSent(ctx: ApiCtx): Promise<void> {
       accountType,
     });
   } catch (error) {
-    let status = 502;
-    if (error instanceof GmailReadError) {
-      if ([401, 403].includes(error.status)) status = 409;
-      else if (error.status === 404) status = 404;
-    }
+    const upstream = error instanceof GmailApiError ? error.status : 0;
+    const reconnect = upstream === 401 || upstream === 403;
+    let status = upstream === 404 ? 404 : 502;
+    if (reconnect) status = 409;
     return sendJson(ctx.res, status, {
       error: "gmail_unavailable",
-      message: error instanceof GmailReadError ? error.message : "Couldn't load sent mail from Gmail. Try again.",
+      message: reconnect ? "Reconnect Google to read sent mail." : "Couldn't load sent mail from Gmail. Try again.",
     });
   }
 }
