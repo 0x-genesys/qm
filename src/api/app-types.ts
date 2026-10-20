@@ -776,6 +776,20 @@ export function toFileItem(a: FileArtifact): FileListItem {
   };
 }
 
+export class SoulUpdateDeniedError extends Error {
+  constructor() {
+    super("not authorized to update SOUL for this scope");
+    this.name = "SoulUpdateDeniedError";
+  }
+}
+
+export class SoulVersionConflictError extends Error {
+  constructor() {
+    super("Guidance changed; read it and retry the edit.");
+    this.name = "SoulVersionConflictError";
+  }
+}
+
 export const CONTEXT_REQUEST_EXPIRY_MS = 2 * 60_000;
 
 export const STALE_LEASE_GRACE_MS = 30_000;

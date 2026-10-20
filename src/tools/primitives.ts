@@ -323,7 +323,11 @@ export interface ToolContext extends SurfaceToolDeps {
   soulWrite(
     content: string,
     expectedVersion?: number,
-  ): Promise<ControlOk<{ version: number }> | ControlErr<"soul_update_denied"> | ControlUnavailable>;
+  ): Promise<
+    | ControlOk<{ version: number }>
+    | ControlErr<"soul_update_denied" | "soul_version_conflict" | "soul_update_failed">
+    | ControlUnavailable
+  >;
   shareArtifact(req: ShareArtifactRequest): Promise<ShareArtifactResult | ControlUnavailable>;
 }
 
