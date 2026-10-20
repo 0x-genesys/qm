@@ -425,7 +425,7 @@ export function createManagedAgentsSandbox(workspace: WorkspaceStore, opts: Mana
       return prepareExecHandle(execIo, layers, { id: name, coldStart, scratch: !!scratch }, provOpts, sandbox);
     },
 
-    run: createExecRun(execIo),
+    run: createExecRun({ ...execIo, label: "managed-agents" }),
 
     ...createHandleFileOps(execIo),
 

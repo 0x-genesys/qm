@@ -270,7 +270,7 @@ export function createPorterSandbox(workspace: WorkspaceStore, opts: PorterSandb
     homeDir: homeDir,
     defaultTimeoutSec,
     credentialPaths: opts.credentialPaths ?? [],
-    egressProxyUrl: opts.egressProxyUrl,
+    egressProxyUrl: egressProxyHost ? opts.egressProxyUrl : undefined,
     exec: execRaw,
     writeAbsBytes,
     readAbsBytes,
