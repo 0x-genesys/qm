@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import { JUDGE_OUTPUT } from "../src/loops/stage-outputs.ts";
+import { submittedStageOutput } from "../src/harness/stage-output-tool.ts";
 import { createGoalRecord } from "../src/harness/goal.ts";
 import assert from "node:assert/strict";
 import { Check } from "typebox/value";
@@ -15,7 +16,7 @@ import { reconstructMessagesFromHistory } from "../src/harness/replay.ts";
 import { createMemoryRunSignalStore, waitForClientResult } from "../src/runs/run-signal-store.ts";
 import { filterHistoryForAudience } from "../src/resolution/context-filter.ts";
 import { CommandDenied, NeedsApproval, type ToolContext } from "../src/tools/primitives.ts";
-import type { ClientToolDeclaration, EntryType, SessionEntry } from "../src/types.ts";
+import type { ClientToolDeclaration, EntryType, SessionEntry, StageOutputDeclaration } from "../src/types.ts";
 import type { ComputerStatus } from "../src/sandbox/sandbox.ts";
 
 function fakeToolContext(sink?: { lastExecOpts?: Parameters<ToolContext["execute"]>[1] }): ToolContext {
@@ -1518,15 +1519,11 @@ test("readOnly exposes observation and constrained session coordination without 
   }
 });
 
-test("submit_stage_output hands only schema-valid arguments to the turn, read-only and ungated", async () => {
-  const submitted: Array<Record<string, unknown>> = [];
+test("submit_stage_output records only schema-valid submissions, read-only and ungated", async () => {
   const emitted: Emitted[] = [];
-  const stageOutput = {
-    description: "Submit the verdict.",
-    schema: JSON.parse(JSON.stringify(JUDGE_OUTPUT.schema)) as Record<string, unknown>,
-  };
+  const stageOutput = JSON.parse(JSON.stringify(JUDGE_OUTPUT.declaration)) as StageOutputDeclaration;
   const ref: ToolContextRef = {
-    current: { ...fakeToolContext(), stageOutput: { ...stageOutput, submit: (value) => submitted.push(value) } },
+    current: fakeToolContext(),
     emit: (e) => {
       emitted.push(e as Emitted);
     },
@@ -1534,24 +1531,23 @@ test("submit_stage_output hands only schema-valid arguments to the turn, read-on
     toolApprovalGate: () => false,
   };
   assert.ok(!createAgentTools(ref).some((t) => t.name === "submit_stage_output"));
-  const tools = createAgentTools(ref, { readOnly: true, stageOutput });
-  const submit = tools.find((t) => t.name === "submit_stage_output");
-  assert.equal(submit?.description, "Submit the verdict.");
+  const submit = createAgentTools(ref, { readOnly: true, stageOutput }).find((t) => t.name === "submit_stage_output");
+  assert.equal(submit?.description, JUDGE_OUTPUT.declaration.description);
+  const entries = () => emitted.map((e, seq) => ({ ...e, seq }) as unknown as SessionEntry);
 
   const bad = (await call(submit, { outcome: "maybe", reason: "" })) as { content: Array<{ text?: string }> };
   assert.match(bad.content[0]?.text ?? "", /^\[error\] invalid submit_stage_output arguments: \/outcome .*\/reason /);
-  assert.deepEqual(submitted, []);
+  assert.equal(submittedStageOutput(entries()), undefined);
+  assert.deepEqual(emitted.find((e) => e.type === "tool_call")?.payload, {
+    outcome: "maybe",
+    reason: "",
+    tool: "submit_stage_output",
+    callId: emitted[0]!.payload.callId,
+  });
 
   const good = (await call(submit, { outcome: "met", reason: "done" })) as { content: Array<{ text?: string }> };
   assert.equal(good.content[0]?.text, "[submitted]");
-  assert.deepEqual(submitted, [{ outcome: "met", reason: "done" }]);
-  assert.deepEqual(
-    emitted.filter((e) => e.type === "tool_result").map((e) => [e.payload.invalid, e.payload.submitted]),
-    [
-      [true, undefined],
-      [undefined, true],
-    ],
-  );
+  assert.deepEqual(submittedStageOutput(entries()), { outcome: "met", reason: "done" });
 });
 
 test("finish_silently on a poll fire terminates the turn at the tool contract; off one it no-ops", async () => {

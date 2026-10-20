@@ -87,8 +87,9 @@ test("a malformed work submission is refused to the model and records no outputs
     h.results.some(({ stage }) => stage === "judge"),
     false,
   );
-  assert.match(result.summary?.failures.join("\n") ?? "", /ERROR-1: work: no outputs submitted/);
+  assert.match(result.summary?.failures.join("\n") ?? "", /ERROR-1: work: nothing submitted — \[error\] invalid/);
   const [item] = await h.items.byLoop(h.loop.id);
   assert.equal(item?.status, "queued");
+  assert.equal(item?.runIds.length, 1);
   assert.deepEqual(await h.outputs.awaitingReview(h.loop.id), []);
 });

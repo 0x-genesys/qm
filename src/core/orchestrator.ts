@@ -209,6 +209,7 @@ import type { EgressPolicy } from "../types.ts";
 import { isOpenScopeMember } from "../resolution/sharing-access.ts";
 import { createSurfaceToolDeps, type SpineState } from "./orchestrator/surface-tools.ts";
 import { GATED_TOOL_APPROVALS } from "../harness/agent-tools.ts";
+import { submittedStageOutput } from "../harness/stage-output-tool.ts";
 import { createAttachStaging } from "./orchestrator/attach-tool.ts";
 import { reconcileMessageRevisions, revisionAnchorAt } from "./message-revisions.ts";
 
@@ -1293,6 +1294,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           fallbackTitleWrite = titles.titleFromFirstMessage(session, scopeId, titleText);
       };
 
+      const withStageOutput = async (result: TurnResult, userSeq: number): Promise<TurnResult> => {
+        if (!input.stageOutput) return result;
+        const stageOutput = submittedStageOutput(await deps.sessions.getEntries(session.id, { sinceSeq: userSeq }));
+        return stageOutput ? { ...result, stageOutput } : result;
+      };
       const isRetry = (input.attempt ?? 1) > 1;
       const recordedTurnForRun = async (): Promise<RecordedTurn | null> => {
         if (!input.runId || !deps.runs) return null;
@@ -1330,13 +1336,16 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           `[orchestrator] turn.already_answered attempt=${input.attempt} run=${input.runId} thread=${conversation.threadRef} answerSeq=${recordedAnswer.seq}`,
         );
         return recordedAnswer.text.trim()
-          ? {
-              status: "ok",
-              sessionId: session.id,
-              reply: absoluteAppLinks(recordedAnswer.text, deps.publicWebUrl),
-              sourceUserSeq: recordedTurn.userSeq,
-              sourceAssistantEntrySeq: recordedAnswer.seq,
-            }
+          ? withStageOutput(
+              {
+                status: "ok",
+                sessionId: session.id,
+                reply: absoluteAppLinks(recordedAnswer.text, deps.publicWebUrl),
+                sourceUserSeq: recordedTurn.userSeq,
+                sourceAssistantEntrySeq: recordedAnswer.seq,
+              },
+              recordedTurn.userSeq,
+            )
           : { status: "silent", sessionId: session.id };
       }
 
@@ -2642,7 +2651,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           postKeys,
           spine,
         });
-        let stageOutput: Record<string, unknown> | undefined;
         const attachStaging = createAttachStaging({
           sandbox: deps.sandbox,
           provision: provisionOutbound,
@@ -2757,16 +2765,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               }
             : {}),
           ...(strictReadOnly ? {} : { attach: attachStaging.attach }),
-          ...(input.stageOutput
-            ? {
-                stageOutput: {
-                  ...input.stageOutput,
-                  submit: (value: Record<string, unknown>) => {
-                    stageOutput = value;
-                  },
-                },
-              }
-            : {}),
           memory: context.memory,
           memoryCaptureMetadata: () => ({ sessionId: session.id, inheritedFacts: captureDependencies() }),
           memoryScopeId,
@@ -3498,6 +3496,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ...((session.clientTools ?? input.clientTools)?.length
               ? { clientTools: session.clientTools ?? input.clientTools }
               : {}),
+            ...(input.stageOutput ? { stageOutput: input.stageOutput } : {}),
             ...(input.surfaceTools && surfaceToolDeps ? { surfaceTools: true } : {}),
             ...(isPollFire ? { pollFire: true } : {}),
             turnWallClockMs:
@@ -4080,7 +4079,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         }
 
         if (turnRuntime) finalResult = { ...finalResult, runtime: turnRuntime };
-        if (stageOutput) finalResult = { ...finalResult, stageOutput };
+        if (input.stageOutput && finalResult.status === "ok" && turnUserSeq !== undefined)
+          finalResult = await withStageOutput(finalResult, turnUserSeq);
         await fallbackTitleWrite;
 
         if (input.background && finalResult.status !== "pending_approval") {

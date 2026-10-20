@@ -8,7 +8,7 @@ import { createGrindMeter, grindState } from "./grind.ts";
 import type { HarnessHandoff, RuntimeRequest } from "./runtime-types.ts";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
-import { Check, Errors } from "typebox/value";
+import { Check } from "typebox/value";
 import { CONFIG_DEFAULTS, type Config } from "../config.ts";
 import type { ClientToolDeclaration, CronFireLogEntry, EntryType, ScopeId, StageOutputDeclaration } from "../types.ts";
 import type { ToolContext, PublishInput, PublishAudienceDescriptor } from "../tools/primitives.ts";
@@ -24,6 +24,7 @@ import { computerVerdict } from "../sandbox/sandbox.ts";
 import { redactCommand } from "../sandbox/exec-process-session.ts";
 import { redactSecrets } from "./redact-secrets.ts";
 import { isObj } from "../util/objects.ts";
+import { STAGE_OUTPUT_TOOL, stageOutputTool } from "./stage-output-tool.ts";
 import { BOT_MODES } from "../surface-cache/channel-policy-store.ts";
 import { WEBHOOK_SCHEMES } from "../webhooks/verifiers.ts";
 import { HARNESS_IDS } from "../model/pi-models.ts";
@@ -356,7 +357,7 @@ const READ_ONLY_TOOL_NAMES = new Set([
   "runtime",
   "sessions",
   "subagents",
-  "submit_stage_output",
+  STAGE_OUTPUT_TOOL,
 ]);
 
 export function pauseStampAfterToolCall(
@@ -3871,36 +3872,8 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     },
   });
 
-  const stageOutput = opts?.stageOutput;
   const submitStageOutput =
-    stageOutput &&
-    defineTool({
-      name: "submit_stage_output",
-      label: "submit_stage_output",
-      description: stageOutput.description,
-      parameters: stageOutput.schema as never,
-      async execute(callId, params) {
-        await recordCall(callId, { tool: "submit_stage_output" });
-        const sink = ref.current?.stageOutput;
-        if (!sink || !isObj(params) || !Check(stageOutput.schema, params)) {
-          const problems = Errors(stageOutput.schema, params)
-            .slice(0, 5)
-            .map((error) => `${error.instancePath || "/"} ${error.message}`);
-          return recordCoreAuthoredResult(
-            callId,
-            { tool: "submit_stage_output", invalid: true },
-            text(
-              sink
-                ? `[error] invalid submit_stage_output arguments: ${problems.join("; ")}. Fix them and submit again.`
-                : "[error] this turn does not accept a stage output.",
-            ),
-            true,
-          );
-        }
-        sink.submit(params);
-        return recordCoreAuthoredResult(callId, { tool: "submit_stage_output", submitted: true }, text("[submitted]"));
-      },
-    });
+    opts?.stageOutput && stageOutputTool(opts.stageOutput, { call: recordCall, result: recordCoreAuthoredResult });
 
   const GOAL_EVIDENCE_FILES = 5;
   const GOAL_EVIDENCE_FILE_CHARS = 20_000;
@@ -4541,7 +4514,7 @@ function withRetrySafety(tool: ToolDefinition, marks: Map<string, RetryMark>): T
   } as ToolDefinition;
 }
 
-const TOOL_APPROVAL_EXEMPT = new Set(["finish_silently", "submit_stage_output"]);
+const TOOL_APPROVAL_EXEMPT = new Set(["finish_silently", STAGE_OUTPUT_TOOL]);
 export const GATED_TOOL_APPROVALS: Record<
   string,
   { reason: string; summary: (params: Record<string, unknown>) => string }

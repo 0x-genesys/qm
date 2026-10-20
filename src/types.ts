@@ -649,6 +649,7 @@ export interface ClientToolDeclaration {
 export interface StageOutputDeclaration {
   description: string;
   schema: Record<string, unknown>;
+  accept?: Record<string, unknown>;
 }
 
 export interface ClientToolResult {

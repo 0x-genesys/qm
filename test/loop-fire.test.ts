@@ -1229,7 +1229,7 @@ test("stage turns without a submitted output fail intake and leave the judge unj
   const loop = await makeLoop(prose.loops);
   const failed = await prose.fire.fire(loop.id, "no-intake");
   assert.equal(failed.status, "failed");
-  assert.match(failed.note ?? "", /intake: no candidates submitted/);
+  assert.match(failed.note ?? "", /intake: nothing submitted — Found SENTRY-1 in checkout\./);
   assert.deepEqual(await prose.items.byLoop(loop.id), []);
 
   const unjudged = service((req) => (stage(req) === "judge" ? "Looks good to me." : HAPPY(req)));
@@ -1238,18 +1238,24 @@ test("stage turns without a submitted output fail intake and leave the judge unj
   assert.equal(result.summary?.continued.length, 1);
   const [item] = await unjudged.items.byLoop(judged.id);
   assert.equal(item?.status, "queued");
-  assert.equal(item?.guidance, "judge submitted no verdict");
+  assert.equal(item?.guidance, "judge: nothing submitted — Looks good to me.");
   assert.deepEqual(await unjudged.outputs.awaitingReview(judged.id), []);
 });
 
-test("each stage declares its own output tool", async () => {
+test("each stage declares its output tool, and work and judge share one tool definition", async () => {
   const s = service(HAPPY);
   const loop = await makeLoop(s.loops);
   await s.fire.fire(loop.id, "declared");
-  const declared = (name: string) => s.turns.find((turn) => stage(turn) === name)?.stageOutput?.schema;
-  assert.deepEqual(Object.keys((declared("intake")?.properties as object) ?? {}), ["items"]);
-  assert.deepEqual(Object.keys((declared("work")?.properties as object) ?? {}), ["outputs"]);
-  assert.deepEqual(Object.keys((declared("judge")?.properties as object) ?? {}), ["outcome", "reason", "checks"]);
+  const declared = (name: string) => s.turns.find((turn) => stage(turn) === name)?.stageOutput;
+  assert.deepEqual(Object.keys((declared("intake")?.schema.properties as object) ?? {}), ["items"]);
+  const work = declared("work");
+  const judge = declared("judge");
+  assert.deepEqual(
+    { description: work?.description, schema: work?.schema },
+    { description: judge?.description, schema: judge?.schema },
+  );
+  assert.deepEqual(Object.keys((work?.accept?.properties as object) ?? {}), ["outputs"]);
+  assert.deepEqual(Object.keys((judge?.accept?.properties as object) ?? {}), ["outcome", "reason", "checks"]);
 });
 
 test("a follow-up keeps the whole reply as chat and applies only a submitted proposal", async () => {
@@ -1273,6 +1279,6 @@ test("a follow-up keeps the whole reply as chat and applies only a submitted pro
     assert.equal(next?.proposal?.data.body, "Short reply");
     assert.match(next?.thread?.at(-1)?.text ?? "", /^Shortened it\.\n```json/);
     const declared = s.turns.at(-1)?.stageOutput?.schema.properties as Record<string, { properties?: object }>;
-    assert.deepEqual(Object.keys(declared.proposal?.properties ?? {}), source ? ["body", "to", "subject"] : []);
+    assert.deepEqual(Object.keys(declared.proposal?.properties ?? {}), source ? ["body", "to", "cc", "subject"] : []);
   }
 });

@@ -1,101 +1,108 @@
 import { Type, type Static, type TObject } from "typebox";
 import { Check } from "typebox/value";
 import type { StageOutputDeclaration } from "../types.ts";
+import { REPLY_DRAFT_SCHEMA } from "./sources/adapter.ts";
 import { LOOP_ITEM_PRIORITIES } from "./triage.ts";
 
-const text = (description: string) => Type.String({ pattern: "\\S", description });
+const required = (description: string) => Type.String({ pattern: "\\S", description });
 
-const outputsField = Type.Array(
+const optional = (description: string) => Type.Optional(Type.String({ description }));
+
+const outputs = Type.Array(
   Type.Object({
-    shipAction: text("The declared ship action."),
-    title: text("One line."),
-    label: Type.Optional(text("Optional grouping label.")),
-    externalRef: Type.Optional(text("URL or id, if any.")),
-    summary: Type.Optional(text("One line.")),
+    shipAction: required("The declared ship action."),
+    title: required("One line."),
+    label: optional("Optional grouping label."),
+    externalRef: optional("URL or id, if any."),
+    summary: optional("One line."),
   }),
 );
 
-const replyDraft = Type.Object({
-  body: Type.String({ description: "The draft reply." }),
-  to: Type.Optional(Type.Array(Type.String(), { description: "Email recipients, if applicable." })),
-  subject: Type.Optional(Type.String({ description: "Email subject, if applicable." })),
-});
+const outcome = Type.Enum(["met", "continue", "park"]);
 
-interface StageOutput<S extends TObject> extends StageOutputDeclaration {
-  schema: S & Record<string, unknown>;
+const reason = required("One line.");
+
+const checks = Type.Array(
+  Type.Object({
+    command: Type.String({ description: "The exact declared check." }),
+    passed: Type.Boolean(),
+    detail: optional("Short result."),
+  }),
+);
+
+interface StageOutput<S extends TObject> {
+  declaration: StageOutputDeclaration;
+  accepts: S;
 }
 
-const stage = <S extends TObject>(description: string, schema: S): StageOutput<S> => ({
-  description,
-  schema: schema as S & Record<string, unknown>,
+const json = (schema: TObject) => schema as unknown as Record<string, unknown>;
+
+const stage = <S extends TObject>(description: string, schema: TObject, accepts: S): StageOutput<S> => ({
+  declaration: { description, schema: json(schema), ...(schema === accepts ? {} : { accept: json(accepts) }) },
+  accepts,
 });
 
-const closed = <P extends Parameters<typeof Type.Object>[0]>(properties: P) =>
-  Type.Object(properties, { additionalProperties: false });
+const ITEM_DESCRIPTION =
+  "Submit this stage's result. Work stage: outputs, every externally-reviewable artifact you prepared (empty when the item needed none), plus proposal when drafting a reply. Judge stage: outcome, reason and checks.";
+
+const itemSchema = Type.Object({
+  outputs: Type.Optional(outputs),
+  proposal: Type.Optional(REPLY_DRAFT_SCHEMA),
+  outcome: Type.Optional(outcome),
+  reason: Type.Optional(reason),
+  checks: Type.Optional(checks),
+});
+
+const intakeSchema = Type.Object({
+  items: Type.Array(
+    Type.Object({ sourceKey: required("Stable unique id for the candidate."), sourceSummary: optional("One line.") }),
+  ),
+});
 
 export const INTAKE_OUTPUT = stage(
   "Submit the candidate work items this intake stage found. An empty items list is a fine answer.",
-  closed({
-    items: Type.Array(
-      Type.Object({
-        sourceKey: text("Stable unique id for the candidate."),
-        sourceSummary: Type.Optional(text("One line.")),
-      }),
-    ),
-  }),
+  intakeSchema,
+  intakeSchema,
 );
 
-export const TRIAGE_OUTPUT = stage(
-  "Submit a triage decision for every item marked new.",
-  closed({
-    items: Type.Array(
-      Type.Object({
-        id: text("Id of an item marked new."),
-        priority: Type.Optional(Type.Union(LOOP_ITEM_PRIORITIES.map((priority) => Type.Literal(priority)))),
-        reason: Type.Optional(text("One line.")),
-        groupWith: Type.Optional(text("Id of the listed item this one belongs with.")),
-      }),
-    ),
-  }),
-);
+const triageSchema = Type.Object({
+  items: Type.Array(
+    Type.Object({
+      id: required("Id of an item marked new."),
+      priority: Type.Optional(Type.Enum([...LOOP_ITEM_PRIORITIES])),
+      reason: optional("One line."),
+      groupWith: optional("Id of the listed item this one belongs with."),
+    }),
+  ),
+});
 
-export const WORK_OUTPUT = stage(
-  "Submit every externally-reviewable artifact you prepared for this item, once the work is finished. An empty outputs list means the item needed none.",
-  closed({ outputs: outputsField }),
-);
+export const TRIAGE_OUTPUT = stage("Submit a triage decision for every item marked new.", triageSchema, triageSchema);
+
+export const WORK_OUTPUT = stage(ITEM_DESCRIPTION, itemSchema, Type.Object({ outputs }));
 
 export const REPLY_WORK_OUTPUT = stage(
-  "Submit the draft reply as proposal for human review, with an empty outputs list. Leave proposal out when no reply is needed.",
-  closed({ proposal: Type.Optional(replyDraft), outputs: outputsField }),
+  ITEM_DESCRIPTION,
+  itemSchema,
+  Type.Object({ outputs, proposal: Type.Optional(REPLY_DRAFT_SCHEMA) }),
 );
 
 export const JUDGE_OUTPUT = stage(
-  'Submit your verdict. "met" only when the transcript proves the condition and every declared check passed; "park" when more attempts are pointless; otherwise "continue".',
-  closed({
-    outcome: Type.Union([Type.Literal("met"), Type.Literal("continue"), Type.Literal("park")]),
-    reason: text("One line."),
-    checks: Type.Optional(
-      Type.Array(
-        Type.Object({
-          command: Type.String({ description: "The exact declared check." }),
-          passed: Type.Boolean(),
-          detail: Type.Optional(Type.String({ description: "Short result." })),
-        }),
-      ),
-    ),
-  }),
+  ITEM_DESCRIPTION,
+  itemSchema,
+  Type.Object({ outcome, reason, checks: Type.Optional(checks) }),
 );
 
 const FOLLOW_UP_DESCRIPTION =
   "Submit the complete revised proposal when the person asked you to change it without sending. Do not call this when the proposal is unchanged or the reply was sent.";
 
-export const REPLY_PROPOSAL_OUTPUT = stage(FOLLOW_UP_DESCRIPTION, closed({ proposal: replyDraft }));
+const replyProposalSchema = Type.Object({ proposal: REPLY_DRAFT_SCHEMA });
 
-export const PROPOSAL_OUTPUT = stage(
-  FOLLOW_UP_DESCRIPTION,
-  closed({ proposal: Type.Record(Type.String(), Type.Unknown()) }),
-);
+export const REPLY_PROPOSAL_OUTPUT = stage(FOLLOW_UP_DESCRIPTION, replyProposalSchema, replyProposalSchema);
+
+const proposalSchema = Type.Object({ proposal: Type.Record(Type.String(), Type.Unknown()) });
+
+export const PROPOSAL_OUTPUT = stage(FOLLOW_UP_DESCRIPTION, proposalSchema, proposalSchema);
 
 export function submitted<S extends TObject>(output: StageOutput<S>, value: unknown): Static<S> | undefined {
-  return value !== undefined && Check(output.schema, value) ? value : undefined;
+  return value !== undefined && Check(output.accepts, value) ? value : undefined;
 }

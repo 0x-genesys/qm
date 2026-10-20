@@ -396,7 +396,7 @@ export function createMockHarness(): Harness {
         } else if (command0.startsWith("!submit-stage ")) {
           const submit = bridgedTools(harnessToolContext(turn), {
             ...(turn.readOnly ? { readOnly: true } : {}),
-            ...(turn.tools.stageOutput ? { stageOutput: turn.tools.stageOutput } : {}),
+            ...(turn.stageOutput ? { stageOutput: turn.stageOutput } : {}),
           }).find((tool) => tool.name === "submit_stage_output");
           const result = submit
             ? await submit.execute(randomUUID(), JSON.parse(cmd.slice(cmd.indexOf("!submit-stage ") + 14)))
