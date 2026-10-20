@@ -80,10 +80,10 @@ export async function putScopeConfig(ctx: ApiCtx): Promise<void> {
     const orgRuleCount = targetKind === "org" ? effective.rules.length : orgPolicy.rules.length;
     let ruleSource: "organization" | "scope" | null = null;
     let ruleIndex: number | null = null;
-    if (result.rule?.kind === "policy") {
-      ruleSource = result.rule.index < orgRuleCount ? "organization" : "scope";
-      ruleIndex = result.rule.index - (ruleSource === "scope" ? orgRuleCount : 0);
-    } else if (result.rule?.kind === "floor") ruleSource = "organization";
+    if (result.policyRuleIndex !== undefined) {
+      ruleSource = result.policyRuleIndex < orgRuleCount ? "organization" : "scope";
+      ruleIndex = result.policyRuleIndex - (ruleSource === "scope" ? orgRuleCount : 0);
+    }
     audit(deps, {
       principalId: actor.id,
       action: "command-policy.simulate",

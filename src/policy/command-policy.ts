@@ -126,7 +126,7 @@ export interface CommandEvaluation {
   reason?: string;
   matched?: string;
   approvalKey?: string;
-  rule?: { kind: "policy"; index: number } | { kind: "floor" | "layer" };
+  policyRuleIndex?: number;
 }
 
 interface Executed {
@@ -609,7 +609,7 @@ function firstMatch(scannable: string, rules: readonly CommandRule[]): CommandEv
         ...(rule.reason ? { reason: rule.reason } : {}),
         matched: hit[0],
         approvalKey: rule.pattern,
-        rule: { kind: "policy", index },
+        policyRuleIndex: index,
       };
     }
   }
@@ -630,11 +630,7 @@ function invokes(argv: readonly string[], [name, ...words]: readonly string[]): 
   return at >= 0 && containsInOrder(argv.slice(at + 1), words);
 }
 
-function argvMatch(
-  commands: readonly string[][],
-  rules: readonly ArgvRule[],
-  kind: "floor" | "layer",
-): CommandEvaluation | null {
+function argvMatch(commands: readonly string[][], rules: readonly ArgvRule[]): CommandEvaluation | null {
   for (const rule of rules) {
     const hit = commands.find((argv) => invokes(argv, rule.argv));
     if (hit) {
@@ -643,7 +639,6 @@ function argvMatch(
         ...(rule.reason ? { reason: rule.reason } : {}),
         matched: hit.join(" "),
         approvalKey: `argv:${JSON.stringify(rule.argv)}`,
-        rule: { kind },
       };
     }
   }
@@ -663,8 +658,8 @@ export function evaluateCommandWithLayer(
   const policyMatch = firstMatch(lines.join("\n"), policy.rules);
   if (policyMatch?.decision === "deny") return policyMatch;
   if (policy.mode === "allowlist" && !policyMatch) return { decision: "deny", reason: "not in allowlist" };
-  const floorMatch = feedsShell ? argvMatch(commands, PIPE_TO_SHELL_RULES, "floor") : null;
+  const floorMatch = feedsShell ? argvMatch(commands, PIPE_TO_SHELL_RULES) : null;
   if (floorMatch) return floorMatch;
-  if (uninspectable) return { decision: "require_approval", reason: uninspectable, rule: { kind: "floor" } };
-  return policyMatch ?? argvMatch(commands, layerRules, "layer") ?? { decision: "allow" };
+  if (uninspectable) return { decision: "require_approval", reason: uninspectable };
+  return policyMatch ?? argvMatch(commands, layerRules) ?? { decision: "allow" };
 }
