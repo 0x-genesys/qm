@@ -49,7 +49,7 @@ async function main(): Promise<void> {
     });
     assert.equal(result.status, "ok", result.reason ?? result.reply);
     assert.ok(result.sessionId);
-    const entries = await built.sessions.getEntries(result.sessionId);
+    const entries = await built.sessions.getItems(result.sessionId);
     try {
       assertSandboxExecution(entries, sandbox.id, `${left}${right}\n`);
     } catch (error) {
