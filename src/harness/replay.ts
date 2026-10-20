@@ -10,7 +10,15 @@ import type {
   UserMessage,
 } from "@earendil-works/pi-ai";
 import type { ConversationTurn, OverheardMessage } from "../types.ts";
-import { isOverheard, isUserMessage, messageTs, stepMessage, type Item, type NewItem } from "../sessions/items.ts";
+import {
+  isOverheard,
+  isReply,
+  isUserMessage,
+  messageTs,
+  stepMessage,
+  type Item,
+  type NewItem,
+} from "../sessions/items.ts";
 import { deliveryNote } from "../core/attachments.ts";
 import { GOAL_CANCELLED, goalCancelledNote } from "./goal.ts";
 import { messageRevision, renderMessageRevision } from "../core/message-revisions.ts";
@@ -262,7 +270,7 @@ function stepBlocks(e: Item, step: ReplayStep): Positioned[] {
     };
     return [{ index: at, block }];
   }
-  if (e.kind !== "AgentMessage" || e.variant !== null) return [];
+  if (!isReply(e)) return [];
   if (Array.isArray(p.parts))
     return (p.parts as Array<TextContent & { index: number }>).map(({ index, ...block }) => ({ index, block }));
   if (step.index === undefined) return [];
@@ -398,7 +406,7 @@ export function reconstructMessagesFromHistory(
             timestamp: e.createdAt,
           });
       }
-    } else if (e.kind === "AgentMessage" && e.variant === null) {
+    } else if (isReply(e)) {
       const t = itemText(e);
       if (t) raw.push(legacyAssistant([{ type: "text", text: t }], e.createdAt));
     } else if (e.kind === "AgentMessage" && e.variant === "files_delivered") {
@@ -524,7 +532,7 @@ export function replayPreamble(history: Item[]): string {
         );
       }
     } else if (isUserMessage(e) && textOf(e)) lines.push(`User: ${textOf(e)}`);
-    else if (e.kind === "AgentMessage" && e.variant === null && textOf(e)) lines.push(`Assistant: ${textOf(e)}`);
+    else if (isReply(e) && textOf(e)) lines.push(`Assistant: ${textOf(e)}`);
   }
   if (!lines.length) return "";
   return [

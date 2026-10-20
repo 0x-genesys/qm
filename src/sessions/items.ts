@@ -93,6 +93,8 @@ export function storedItem(
   item: NewItem,
   at: { sessionId: string; seq: number; createdAt: number; turnId?: string | null },
 ): Item {
+  if ((item.kind === "ToolCall" || item.kind === "ToolResult") && !nonEmpty(item.callId))
+    throw new Error(`items: ${item.kind} at seq ${at.seq} has no callId`);
   const turnId = item.turnId ?? at.turnId ?? null;
   return {
     sessionId: at.sessionId,

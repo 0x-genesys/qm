@@ -22,6 +22,7 @@ import {
   activityItems,
   isHidden,
   isNarration,
+  isUserMessage,
   messageTs,
   stepMessage,
   type Item,
@@ -538,7 +539,7 @@ export function runIsTerminal(run: Pick<RunPoll, "status" | "result" | "replyCom
 export function hasRecordedRunReply(items: Item[], runId: string): boolean {
   let matchesRun = false;
   for (const item of items) {
-    if (item.kind === "UserMessage" || item.kind === "SteeringMessage") {
+    if (isUserMessage(item)) {
       if (item.kind === "UserMessage" || item.turnId !== null) matchesRun = item.turnId === runId;
     } else if (matchesRun && item.kind === "AgentMessage" && item.variant === null) {
       return true;
@@ -2170,7 +2171,7 @@ export function itemsToMessages(items: Item[], model?: Model<Api>): AgentMessage
       pending.push(e);
       continue;
     }
-    if (e.kind === "UserMessage" || e.kind === "SteeringMessage") {
+    if (isUserMessage(e)) {
       const steered = e.kind === "SteeringMessage";
       if (!steered) {
         stoppedShown = false;

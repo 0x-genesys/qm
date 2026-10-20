@@ -1,6 +1,14 @@
 import { postCallText, postResultOk } from "./surface-post.ts";
 import type { PendingApproval, WorkBlock } from "./core-bridge.ts";
-import { activityItems, isHidden, isNarration, reasoningStepKey, type Item, type WorkActivity } from "./items.ts";
+import {
+  activityItems,
+  isHidden,
+  isNarration,
+  isUserMessage,
+  reasoningStepKey,
+  type Item,
+  type WorkActivity,
+} from "./items.ts";
 
 export interface ToolPayload {
   sessionId?: string;
@@ -201,7 +209,7 @@ function buildTimelineUncached(work: WorkBlock): TimelineItem[] {
   const rowByCallId = new Map<string, ToolRowModel>();
   let open: ToolRowModel | null = null;
   for (const a of activityItems(work.activity)) {
-    if (a.kind === "UserMessage" || a.kind === "SteeringMessage") {
+    if (isUserMessage(a)) {
       if (a.kind === "SteeringMessage" && !isHidden(a)) items.push({ kind: "steer", item: a });
       open = null;
     } else if (a.kind === "Reasoning") {

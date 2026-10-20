@@ -289,7 +289,6 @@ const GOAL_GOVERNOR_SYSTEM_PROMPT = [
   'Reply with ONLY JSON: {"verdict": "continue" | "complete" | "step_back" | "pause", "reasons": "<one short paragraph; for pause, the exact question for the user>"}.',
 ].join("\n");
 
-/** Work lines from persisted session items (messages, tool calls, results). */
 export function goalWorkFromItems(items: ReadonlyArray<Item>): string {
   const lines: string[] = [];
   for (const e of items) {

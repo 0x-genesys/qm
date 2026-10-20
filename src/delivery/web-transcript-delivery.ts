@@ -1,5 +1,5 @@
 import type { Delivery, ScopeId } from "../types.ts";
-import { isReply, type Item, type NewItem } from "../sessions/items.ts";
+import { isReply, isUserMessage, type Item, type NewItem } from "../sessions/items.ts";
 import { turnFailureItem } from "../core/turn-error.ts";
 import type { DeliveryStore } from "./delivery-store.ts";
 import type { SessionStore } from "../sessions/session-store.ts";
@@ -55,9 +55,7 @@ export function withWebTranscriptDeliveries(store: DeliveryStore, sessions: WebT
       const turnId = failure?.runId ?? d.id;
       if (
         !failure &&
-        (await sessions.getItems(session.id, { turnId })).some((item) =>
-          reply ? item.kind === "UserMessage" || item.kind === "SteeringMessage" : isReply(item),
-        )
+        (await sessions.getItems(session.id, { turnId })).some((item) => (reply ? isUserMessage(item) : isReply(item)))
       )
         return true;
       const ownReply = d.provenance?.sourceThreadRef === d.destination.target;

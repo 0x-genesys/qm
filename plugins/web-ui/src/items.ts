@@ -111,5 +111,4 @@ export function activityCreatedAt(entry: WorkActivity): number {
   return "item" in entry ? entry.item.createdAt : entry.createdAt;
 }
 
-export const isHidden = (item: Pick<Item, "hidden" | "body">): boolean =>
-  item.hidden === true || item.body.hidden === true;
+export const isHidden = (item: Pick<Item, "hidden">): boolean => item.hidden === true;
