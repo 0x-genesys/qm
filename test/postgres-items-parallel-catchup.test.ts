@@ -44,7 +44,7 @@ async function fixture(fn: (client: pg.Client, url: string, op: ItemsCopyOperato
   } finally {
     await client.end();
     await pool.end();
-    await admin.query(`DROP DATABASE ${name} WITH (FORCE)`);
+    await admin.query(`DROP DATABASE ${name}`);
     await admin.end();
   }
 }
