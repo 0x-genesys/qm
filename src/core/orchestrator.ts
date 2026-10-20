@@ -14,6 +14,7 @@ import { requiresDelegation, delegatedAuthorizationOrigin } from "../sessions/se
 import {
   MAX_DOCUMENT_BYTES,
   documentText,
+  type ExtractedDocumentText,
   historicalDocumentMetas,
   isTextDocument,
   loadDocumentInputs,
@@ -2370,7 +2371,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             isRetry &&
             (recordedTurn ??
               (!memoryContextChanged &&
-                findTrailingPartialTurn((await transcripts.forRender(session.id)).entries, input.text)))
+                findTrailingPartialTurn((await transcripts.forRender(session.id)).entries, input.runId)))
           )
         ) {
           const detectHistory = filterHistory(
@@ -2878,7 +2879,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const recallStart = Date.now();
         const recalled = await context.recallMemory(memoryRecallQuery(input.text, visibleHistory));
         const recallMs = Date.now() - recallStart;
-        const partial = isRetry ? (recordedTurn ?? findTrailingPartialTurn(visibleHistory, input.text)) : null;
+        const partial = isRetry ? (recordedTurn ?? findTrailingPartialTurn(visibleHistory, input.runId)) : null;
         let resumePlan = partial ? resumeStrategy(visibleHistory, partial) : null;
         if (partial && resumePlan?.kind === "settle") {
           const settle = resumePlan;
@@ -2927,16 +2928,16 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 documentsUnscreened = true;
                 continue;
               }
-              let content: string;
+              let extracted: ExtractedDocumentText;
               try {
-                content = await documentText(document, turnAbort.signal);
+                extracted = await documentText(document, turnAbort.signal);
               } catch {
                 turnAbort.signal.throwIfAborted();
                 documentsUnscreened = true;
                 continue;
               }
               const verdicts: Array<SecurityScreenVerdict | undefined> = [];
-              for (const chunk of securityScreenChunks("tool_result:inbound_document", content)) {
+              for (const chunk of securityScreenChunks("tool_result:inbound_document", extracted.text)) {
                 turnAbort.signal.throwIfAborted();
                 const verdict = await classifySecurityData(chunk, actor.id, scopeId, undefined, {
                   ...screenTrace,
@@ -2960,7 +2961,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 );
               } else if (
                 !verdicts.every((value) => value?.decision === "auto" && !value.unscreened) ||
-                content.includes("[Document text truncated")
+                extracted.truncated
               )
                 documentsUnscreened = true;
             }
