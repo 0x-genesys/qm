@@ -1,9 +1,10 @@
 import type { RunStop } from "../runs/run-store.ts";
 import type { SessionEntry } from "../types.ts";
-import { contextSummaryPayload } from "../sessions/session-store.ts";
+import { contextSummaryPayload, type SummarizedDocument } from "../sessions/session-store.ts";
 import { headSlice, tailSlice } from "../util/text.ts";
 import { countTokens } from "../util/tokens.ts";
 import { isObj } from "../util/objects.ts";
+import { documentAttachmentTokens, fileContentRequest, replayableDocumentMetas } from "../core/document-kinds.ts";
 
 const MAX_COMPACT_ENTRY_CHARS = 16_000;
 const COMPACT_ENTRY_TAIL_CHARS = 2_000;
@@ -78,6 +79,10 @@ const entryTokenCache = new Map<string, number>();
 const ENTRY_TOKEN_CACHE_MAX = 50_000;
 
 export function estimateEntryTokens(entry: SessionEntry): number {
+  return estimateEntryTextTokens(entry) + (entry.type === "user" ? documentAttachmentTokens(entry.payload) : 0);
+}
+
+function estimateEntryTextTokens(entry: SessionEntry): number {
   const payload = entry.payload as { text?: string; environment?: string; thinking?: string } | null;
   const prose = entry.type === "thinking" ? [payload?.thinking] : [payload?.text, payload?.environment];
   const text =
@@ -216,6 +221,39 @@ export function planCompaction(
   const toSummarize = latestSummary ? [latestSummary, ...overflow] : overflow;
   if (!overflow.length) return null;
   return { toSummarize, kept: afterSummary.slice(overflowCount) };
+}
+
+const SUMMARIZED_DOCUMENTS_HEADER = `[Files shared in the summarized turns are no longer included inline. Each is still saved; read one with ${fileContentRequest("<file id>")} when you need its contents.]`;
+const MAX_SUMMARIZED_DOCUMENTS = 20;
+const MAX_SUMMARIZED_DOCUMENT_NAME_CHARS = 200;
+
+/** Documents attached across `entries` (carrying forward any listed by a prior summary), newest last. */
+export function summarizedDocuments(entries: readonly SessionEntry[]): SummarizedDocument[] {
+  const byId = new Map<string, SummarizedDocument>();
+  for (const entry of entries) {
+    const documents =
+      contextSummaryPayload(entry)?.documents ??
+      (entry.type === "user"
+        ? replayableDocumentMetas(entry.payload).map((meta) => ({ name: meta.name, artifactId: meta.artifactId! }))
+        : []);
+    for (const document of documents) {
+      byId.delete(document.artifactId);
+      byId.set(document.artifactId, {
+        name: headSlice(document.name, MAX_SUMMARIZED_DOCUMENT_NAME_CHARS),
+        artifactId: document.artifactId,
+      });
+    }
+  }
+  return [...byId.values()].slice(-MAX_SUMMARIZED_DOCUMENTS);
+}
+
+/** Replaces the summary's trailing file list so documents dropped from model input stay discoverable. */
+export function withSummarizedDocuments(text: string, documents: readonly SummarizedDocument[]): string {
+  const at = text.indexOf(`\n\n${SUMMARIZED_DOCUMENTS_HEADER}`);
+  const base = at >= 0 ? text.slice(0, at) : text;
+  if (!documents.length) return base;
+  const list = documents.map((document) => `- ${JSON.stringify(document.name)} (file ${document.artifactId})`);
+  return `${base}\n\n${SUMMARIZED_DOCUMENTS_HEADER}\n${list.join("\n")}`;
 }
 
 export function compactionThroughSeq(entries: SessionEntry[]): number {

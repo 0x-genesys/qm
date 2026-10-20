@@ -12,13 +12,12 @@ import { UNTRACKED_PROVENANCE } from "../memory/facts.ts";
 import { memoryRecallQuery } from "../memory/semantic-recall.ts";
 import { requiresDelegation, delegatedAuthorizationOrigin } from "../sessions/session-syscalls.ts";
 import {
-  MAX_DOCUMENT_BYTES,
   documentText,
   type ExtractedDocumentText,
   historicalDocumentMetas,
-  isTextDocument,
   loadDocumentInputs,
 } from "./document-inputs.ts";
+import { MAX_DOCUMENT_BYTES, estimateDocumentTokens, isDocumentAttachment, isTextDocument } from "./document-kinds.ts";
 import { recoveredRuntime } from "../harness/runtime-recovery.ts";
 import { createCanWriteScope, rosterAdmits, withLiveTurnMembership } from "../resolution/scope-membership.ts";
 import { goalView } from "../runs/turn-stream.ts";
@@ -292,7 +291,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
   }
 
   const securitySteersInFlight = new Set<string>();
-  const { compactContextIfNeeded, compactRecent, scheduleBackgroundCompaction } = createCompaction(deps);
+  const { compactContextIfNeeded, compactRecent, scheduleBackgroundCompaction, documentTokenBudget } =
+    createCompaction(deps);
 
   async function approvalSummary(
     scopeId: ScopeId,
@@ -2835,6 +2835,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           resumePlan = resumeStrategy(visibleHistory, partial);
         }
         const resume = resumePlan && resumePlan.kind !== "restart" ? partial : null;
+        const documentBudget = documentTokenBudget(scopeId, input.model);
         const history = await withManagedRosterVersion(() =>
           compactContextIfNeeded({
             cancel: turnAbort.signal,
@@ -2845,19 +2846,28 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             orgScopeId: resolution.orgScopeId,
             actorId: actor.id,
             ...(input.model ? { model: input.model } : {}),
+            reservedTokens: strictReadOnly
+              ? 0
+              : inbound.metas.reduce(
+                  (sum, meta) => sum + (isDocumentAttachment(meta) ? estimateDocumentTokens(meta) : 0),
+                  0,
+                ),
           }),
         );
         contextRecovered =
           history !== visibleHistory &&
           history.some((entry) => isObj(entry.payload) && entry.payload.mode === "recent");
         const documentInputs = strictReadOnly
-          ? { documents: [], notices: [] }
+          ? { documents: [], notices: [], tokens: 0 }
           : await loadDocumentInputs(
               deps.files,
               [...historicalDocumentMetas(history), ...inbound.metas],
               mayReadArtifact,
               undefined,
               turnAbort.signal,
+              undefined,
+              undefined,
+              documentBudget,
             );
         const screenDocuments = async (
           documentInputs: Awaited<ReturnType<typeof loadDocumentInputs>>,
@@ -2920,6 +2930,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           MAX_DOCUMENT_BYTES -
           documentInputs.documents.reduce((sum, document) => sum + Buffer.byteLength(document.dataBase64, "base64"), 0);
         let remainingDocumentCount = 10 - documentInputs.documents.length;
+        let remainingDocumentTokens = documentBudget - documentInputs.tokens;
         const principalDelivered = await recentPrincipalDeliveryNote(
           deps.deliveries,
           session.threadRef,
@@ -3351,6 +3362,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 turnAbort.signal,
                 remainingDocumentCount,
                 initialDocuments,
+                remainingDocumentTokens,
               );
               let steeredUnscreened = false;
               if (enforceScreen) steeredUnscreened = await screenDocuments(steeredDocuments, text);
@@ -3360,6 +3372,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 0,
               );
               remainingDocumentCount -= steeredDocuments.documents.length;
+              remainingDocumentTokens -= steeredDocuments.tokens;
               documentInputs.documents.push(...steeredDocuments.documents);
               const issues = inboundIssueList({
                 ...received,
