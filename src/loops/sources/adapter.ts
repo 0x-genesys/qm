@@ -1,4 +1,5 @@
 import type { LoopItem, LoopSourcePayload } from "../../types.ts";
+import { isObj } from "../../util/objects.ts";
 
 export interface ConnectorTokenSource {
   connectorAccessToken(host: string, principalId: string, accountType?: string): Promise<string | null>;
@@ -50,8 +51,6 @@ export interface LoopSourceAdapter {
   parseProposal(raw: unknown): LoopSourcePayload | null;
   act(deps: SourceActionDeps, item: LoopItem, kind: string, args: LoopSourcePayload): Promise<SourceActionResult>;
 }
-
-export const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
 
 export function clip(v: unknown, max: number): string | null {
   if (typeof v !== "string") return null;

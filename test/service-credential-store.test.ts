@@ -285,3 +285,23 @@ test("a service credential is available to published apps by default; the switch
   assert.equal((await cfg.listServiceCredentials(ORG))[0]!.deployments, false);
   assert.equal((await cfg.getServiceCredentialSecret(ORG, "acme-data"))!.deployments, false);
 });
+
+test("the decrypted credential carries the listed projection, the secret, and none of the listing metadata", async () => {
+  const cfg = store();
+  await cfg.setServiceCredential(ORG, {
+    slug: "search",
+    name: "Search",
+    secret: "search-key",
+    host: "api.search.test",
+    delivery: "env",
+    envKey: "SEARCH_KEY",
+    injection: { header: "X-Api-Key" },
+    allowedMethods: ["post"],
+    allowedPathPrefixes: ["/v1/"],
+    deployments: false,
+    updatedBy: "admin-alice",
+  });
+  const { hasSecret, updatedBy, updatedAt, ...listed } = (await cfg.listServiceCredentials(ORG))[0]!;
+  assert.deepEqual([hasSecret, updatedBy, typeof updatedAt], [true, "admin-alice", "number"]);
+  assert.deepEqual(await cfg.getServiceCredentialSecret(ORG, "search"), { ...listed, secret: "search-key" });
+});

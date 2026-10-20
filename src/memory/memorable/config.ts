@@ -55,7 +55,7 @@ function stringValues(env: NodeJS.ProcessEnv): Record<string, string> {
   return out;
 }
 
-function timeout(value: unknown, at: string, fallback: number, max: number): number {
+export function parseTimeoutMs(value: unknown, at: string, fallback: number, max: number): number {
   const ms = value === undefined ? fallback : value;
   if (!Number.isSafeInteger(ms) || Number(ms) <= 0 || Number(ms) > max)
     throw new Error(`${at} must be an integer from 1 to ${max}`);
@@ -92,8 +92,8 @@ export function parseMemorableProvider(
     type: "memorable",
     argv: argv(raw.bin, `${at}.bin`),
     env: childEnv(env, passEnv(raw.passEnv, `${at}.passEnv`)),
-    injectTimeoutMs: timeout(raw.injectTimeoutMs, `${at}.injectTimeoutMs`, DEFAULT_INJECT_TIMEOUT_MS, 60_000),
-    recordTimeoutMs: timeout(raw.recordTimeoutMs, `${at}.recordTimeoutMs`, DEFAULT_RECORD_TIMEOUT_MS, 600_000),
+    injectTimeoutMs: parseTimeoutMs(raw.injectTimeoutMs, `${at}.injectTimeoutMs`, DEFAULT_INJECT_TIMEOUT_MS, 60_000),
+    recordTimeoutMs: parseTimeoutMs(raw.recordTimeoutMs, `${at}.recordTimeoutMs`, DEFAULT_RECORD_TIMEOUT_MS, 600_000),
     redactValues: stringValues(env),
     capturePolicies: new Set<MemoryCapturePolicy>(["off", "automatic"]),
   };

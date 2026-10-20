@@ -417,3 +417,30 @@ test("a background start that fails before launch removes its staging", async (t
   );
   assert.equal((await run("sh", ["-c", "ls -d /tmp/qm-credentials.* 2>/dev/null | wc -l"])).stdout, before);
 });
+
+for (const entry of ["execute", "backgroundStart"] as const) {
+  test(`${entry} refuses to copy credentials onto another scope's selected computer`, async (t) => {
+    const f = await fixture(t);
+    const resource = { id: "theirs", ownerScopeId: scopeId("personal", "someone-else") };
+    let provisioned = false;
+    const ctx = f.context({
+      backgroundBroker: {} as never,
+      sandboxResources: {} as never,
+      accessSandboxResource: async () =>
+        ({ resource, crossScope: true, egress: { mode: "allowlist", hosts: [] }, commandPolicy: null }) as never,
+      provisionResource: async (_access, authorize) => {
+        authorize?.({ resource, crossScope: true, egress: {}, commandPolicy: null } as never);
+        provisioned = true;
+        return { ...f.handle, id: "theirs" };
+      },
+    });
+    const attempt =
+      entry === "execute"
+        ? ctx.execute("true", { credentials: ["aws"], sandboxId: "theirs" })
+        : ctx.backgroundStart("true", { purpose: "Run elsewhere", credentials: ["aws"], sandboxId: "theirs" });
+    await assert.rejects(attempt, /command credentials cannot be copied to another scope's computer/);
+    assert.equal(provisioned, false);
+    assert.equal(f.commands.length, 0);
+    assert.equal(f.resolutions(), 0);
+  });
+}

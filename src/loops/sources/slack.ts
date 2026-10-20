@@ -12,7 +12,6 @@ import {
   clip,
   clipOpt,
   draftOf,
-  isObj,
   parseCommonFields,
   parseReplyDraft,
   tokenFor,
@@ -23,6 +22,7 @@ import {
   type SourceActionDeps,
   type SourceActionResult,
 } from "./adapter.ts";
+import { isObj } from "../../util/objects.ts";
 
 const SLACK_HOST = "slack.com";
 

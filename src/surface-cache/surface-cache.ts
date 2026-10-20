@@ -1,5 +1,6 @@
 import { orgId as configOrgId } from "../config.ts";
 import { createPgPool } from "../persistence/pg-pool.ts";
+import { jsonbSafeStringify } from "../util/text.ts";
 import type {
   ActiveThread,
   CachedFile,
@@ -28,9 +29,7 @@ const DEFAULT_SEARCH_LIMIT = 50;
 const DEFAULT_THREADS_LIMIT = 50;
 
 function normalizeEvent(event: IngestEvent): IngestEvent {
-  return JSON.parse(
-    JSON.stringify(event, (_key, value) => (typeof value === "string" ? value.replace(/\u0000/g, "") : value)),
-  ) as IngestEvent;
+  return JSON.parse(jsonbSafeStringify(event)) as IngestEvent;
 }
 
 function clampLimit(limit: number | undefined, fallback: number): number {

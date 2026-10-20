@@ -9,7 +9,7 @@ import type { LoopFireService } from "./loop-fire.ts";
 import { getVerifier, type VerifierInput } from "../webhooks/verifiers.ts";
 import { hashId } from "../util/crypto.ts";
 import { errMessage, swallow } from "../util/errors.ts";
-import { isObj } from "./sources/adapter.ts";
+import { isObj } from "../util/objects.ts";
 import { slackConversationRef } from "./sources/slack.ts";
 import { isDirectChannelType } from "../slack/payloads.ts";
 import { createGmailPushClient, verifyGmailPush, type GmailCursor, type GmailPushConfig } from "./gmail-push.ts";
@@ -144,12 +144,8 @@ export function createLoopIngress(deps: LoopIngressDeps) {
       }
     };
     const keys = [`loop-ingress:${sourceId}`, `loop-lifecycle:${initial.loopId}`];
-    const acquire = async (held: string[], action: () => Promise<void>) => {
-      if (deps.lock.tryWithLocks) await deps.lock.tryWithLocks(held, action);
-      else await deps.lock.withLock(`loop-ingress:${sourceId}`, action);
-    };
-    await acquire([...keys, `loop-intake:${initial.loopId}`], run);
-    await acquire(keys, async () => {
+    await deps.lock.tryWithLocks([...keys, `loop-intake:${initial.loopId}`], run);
+    await deps.lock.tryWithLocks(keys, async () => {
       const source = await deps.sources.get(sourceId);
       if (
         !source?.enabled ||

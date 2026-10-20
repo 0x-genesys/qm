@@ -8,6 +8,7 @@ import {
   createPostgresAdvisoryLock,
   createNoopAdvisoryLock,
   createMemoryAdvisoryLock,
+  withLocks,
 } from "../src/persistence/advisory-lock.ts";
 
 const URL = process.env.DATABASE_URL;
@@ -364,12 +365,12 @@ test("pg multi-key locks reuse one session for nested held keys and release the 
   const lock = createPostgresAdvisoryLock(pg);
   const contender = createPostgresAdvisoryLock(other);
   try {
-    const result = await lock.tryWithLocks!(["inbox:one", "inbox:two"], async () => {
+    const result = await lock.tryWithLocks(["inbox:one", "inbox:two"], async () => {
       assert.equal(await contender.tryWithLock!("inbox:two", async () => "unexpected"), null);
       return lock.withLock("inbox:one", async () => lock.withLock("inbox:two", async () => 42));
     });
     assert.equal(result, 42);
-    assert.equal(await contender.tryWithLocks!(["inbox:one", "inbox:two"], async () => true), true);
+    assert.equal(await contender.tryWithLocks(["inbox:one", "inbox:two"], async () => true), true);
   } finally {
     await pg.close();
     await other.close();
@@ -380,7 +381,7 @@ test("multi-key locks retain unawaited nested work until it finishes", async () 
   const lock = createMemoryAdvisoryLock();
   const entered = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const outer = lock.tryWithLocks!(["nested"], async () => {
+  const outer = lock.tryWithLocks(["nested"], async () => {
     void lock.withLock("nested", async () => {
       entered.resolve();
       await release.promise;
@@ -391,4 +392,27 @@ test("multi-key locks retain unawaited nested work until it finishes", async () 
   release.resolve();
   await outer;
   assert.equal(await lock.tryWithLock!("nested", async () => true), true);
+});
+
+test("withLocks takes each distinct key once, in one global order, so opposite requests cannot deadlock", async () => {
+  const lock = createMemoryAdvisoryLock();
+  const taken: string[] = [];
+  const spy = { withLock: <T>(key: string, fn: () => Promise<T>) => (taken.push(key), lock.withLock(key, fn)) };
+  const active = new Set<string>();
+  const overlaps: string[] = [];
+  const work = (name: string, keys: string[]) =>
+    withLocks(spy, keys, async () => {
+      if (active.size) overlaps.push(name);
+      active.add(name);
+      await sleep(20);
+      active.delete(name);
+      return name;
+    });
+  const settled = await Promise.race([
+    Promise.all([work("left", ["b", "a", "b"]), work("right", ["a", "b"])]),
+    sleep(2_000).then(() => "deadlocked"),
+  ]);
+  assert.deepEqual(settled, ["left", "right"]);
+  assert.deepEqual(overlaps, []);
+  assert.deepEqual(taken, ["a", "a", "b", "b"]);
 });

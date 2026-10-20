@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { runMemorable } from "./run.ts";
 
 const INJECT_TIMEOUT_MS = 15_000;
 const MAX_INJECTION_CHARS = 8_000;
@@ -35,50 +35,21 @@ export function clampChars(text: string, max: number): string {
   return last >= 0xd800 && last <= 0xdbff ? cut.slice(0, -1) : cut;
 }
 
-export function memorableInject(
+export async function memorableInject(
   argv: readonly string[],
   scopeId: string,
   task: string,
   opts?: { env: NodeJS.ProcessEnv; apiKey?: string },
   timeoutMs: number = INJECT_TIMEOUT_MS,
 ): Promise<string | null> {
-  return new Promise((resolve) => {
-    const [cmd = "memorable", ...preArgs] = argv;
-    const child = spawn(cmd, [...preArgs, "inject", "--scope", scopeId], {
-      stdio: ["pipe", "pipe", "ignore"],
-      ...(opts ? { env: { ...opts.env, ...(opts.apiKey ? { MEMORABLE_API_KEY: opts.apiKey } : {}) } } : {}),
-    });
-    child.unref();
-    let chunks: Buffer[] = [];
-    let bytes = 0;
-    let settled = false;
-    const finish = (value: string | null) => {
-      if (settled) return;
-      settled = true;
-      chunks = [];
-      clearTimeout(timer);
-      resolve(value);
-    };
-    const timer = setTimeout(() => {
-      child.kill();
-      finish(null);
-    }, timeoutMs);
-    child.on("error", () => finish(null));
-    child.stdout.on("data", (c: Buffer) => {
-      bytes += c.length;
-      if (bytes > MAX_STDOUT_BYTES) {
-        child.kill();
-        finish(null);
-        return;
-      }
-      chunks.push(c);
-    });
-    child.on("exit", (code) => {
-      const text = stripTerminalControl(Buffer.concat(chunks).toString("utf8")).trim();
-      const usable = code === 0 && text.startsWith(ENVELOPE_PREFIX) && text.length <= MAX_INJECTION_CHARS;
-      finish(usable ? text : null);
-    });
-    child.stdin.on("error", () => {});
-    child.stdin.end(clampChars(stripTerminalControl(task), MAX_TASK_CHARS));
-  });
+  const run = await runMemorable(
+    argv,
+    ["inject", "--scope", scopeId],
+    clampChars(stripTerminalControl(task), MAX_TASK_CHARS),
+    { timeoutMs, maxStdoutBytes: MAX_STDOUT_BYTES, stdoutOverflow: "kill" },
+    opts,
+  );
+  if (run.status !== "exit" || run.code !== 0) return null;
+  const text = stripTerminalControl(run.stdout).trim();
+  return text.startsWith(ENVELOPE_PREFIX) && text.length <= MAX_INJECTION_CHARS ? text : null;
 }

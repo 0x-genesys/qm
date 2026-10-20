@@ -602,8 +602,8 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     return { handle, resource, crossScope: access.crossScope, durableRef };
   };
 
-  const authorizeExecution = (command: string, access?: SandboxAccessPlan, policy = deps.commandPolicy()): void => {
-    const source = evaluateCommandWithLayer(command, policy, deps.layerCommandRules?.() ?? []);
+  const authorizeExecution = (command: string, access?: SandboxAccessPlan): void => {
+    const source = evaluateCommandWithLayer(command, deps.commandPolicy(), deps.layerCommandRules?.() ?? []);
     if (source.decision === "deny") throw new CommandDenied(command, source.reason ?? "denied by policy");
     if (!access?.crossScope) {
       if (source.decision === "require_approval" && !deps.authorizeCommand(command, source.approvalKey))
@@ -638,6 +638,24 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         approvalKey,
         grantModes,
       );
+  };
+
+  const provisionAuthorized = async (
+    command: string,
+    sandboxId: string | undefined,
+    withCredentials: boolean,
+    provision: () => Promise<SandboxHandle>,
+  ): Promise<SandboxHandle> => {
+    if (sandboxId === undefined) {
+      authorizeExecution(command);
+      return provision();
+    }
+    if (!deps.sandboxResources || !deps.provisionResource) throw new Error("sandbox inventory unavailable");
+    return deps.provisionResource(await accessSandbox(sandboxId), (current) => {
+      if (current.crossScope && withCredentials)
+        throw new Error("command credentials cannot be copied to another scope's computer");
+      authorizeExecution(command, current);
+    });
   };
 
   const ledger = deps.ledger ?? createNullLedger();
@@ -890,23 +908,12 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           if (target.kind === "error") throw new Error(target.message);
           reached = { scopeId: target.scopeId, label: `#${target.channelName}` };
         }
-        const executionPolicy = deps.commandPolicy;
-        let handle;
-        if (execOpts?.sandboxId !== undefined) {
-          if (!deps.sandboxResources || !deps.provisionResource) throw new Error("sandbox inventory unavailable");
-          const access = await accessSandbox(execOpts.sandboxId);
-          handle = await deps.provisionResource(access, (current) => {
-            if (current.crossScope && requestedCredentials.length)
-              throw new Error("command credentials cannot be copied to another scope's computer");
-            authorizeExecution(command, current, executionPolicy());
-          });
-        } else {
-          authorizeExecution(command, undefined, executionPolicy());
-          if (reached) handle = await deps.reach!.provisionFor(reached.scopeId);
-          else if (scratch) handle = await deps.provisionScratch!();
-          else if (ownerAuth) handle = await deps.provisionOwnerAuth!();
-          else handle = await deps.provision();
-        }
+        const handle = await provisionAuthorized(command, execOpts?.sandboxId, requestedCredentials.length > 0, () => {
+          if (reached) return deps.reach!.provisionFor(reached.scopeId);
+          if (scratch) return deps.provisionScratch!();
+          if (ownerAuth) return deps.provisionOwnerAuth!();
+          return deps.provision();
+        });
         const resolvedMs = execOpts?.timeoutSeconds != null ? execOpts.timeoutSeconds * 1000 : deps.execTimeoutMs;
         const timeoutMs =
           resolvedMs != null && deps.execTimeoutCeilingMs != null
@@ -1256,20 +1263,9 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       if (requestedCredentials.length && !writableScopeId)
         throw new Error("command credentials are available only on scoped computers");
       const requested = await selectCredentials(requestedCredentials, false);
-      const policy = deps.commandPolicy;
-      let handle: SandboxHandle;
-      if (opts?.sandboxId !== undefined) {
-        if (!deps.sandboxResources || !deps.provisionResource) throw new Error("sandbox inventory unavailable");
-        const access = await accessSandbox(opts.sandboxId);
-        handle = await deps.provisionResource(access, (current) => {
-          if (current.crossScope && requestedCredentials.length)
-            throw new Error("command credentials cannot be copied to another scope's computer");
-          authorizeExecution(command, current, policy());
-        });
-      } else {
-        authorizeExecution(command, undefined, policy());
-        handle = await deps.provision();
-      }
+      const handle = await provisionAuthorized(command, opts.sandboxId, requestedCredentials.length > 0, () =>
+        deps.provision(),
+      );
       return once(
         async () => {
           const staged = requested.length ? await stageCredentials(requested, handle, "background") : undefined;

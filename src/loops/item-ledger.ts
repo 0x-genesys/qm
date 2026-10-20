@@ -11,6 +11,7 @@ import type {
 } from "../types.ts";
 import { isResolved } from "./ledger-view.ts";
 import { createMemoryMap, type DurableMap } from "../persistence/durable-map.ts";
+import { withLocks, type AdvisoryLock } from "../persistence/advisory-lock.ts";
 import { contentPart } from "../triggers/trigger-store.ts";
 import { hashId } from "../util/crypto.ts";
 import { randomUUID } from "node:crypto";
@@ -214,7 +215,7 @@ export function createLoopItemLedger(
   backing: DurableMap<LoopItem> = createMemoryMap<LoopItem>(),
   onEvent?: (event: LedgerEvent) => void,
   coordination?: {
-    lock: import("../persistence/advisory-lock.ts").AdvisoryLock;
+    lock: Pick<AdvisoryLock, "withLock">;
     accepts: (loopId: string) => Promise<boolean>;
   },
 ): LoopItemLedger {
@@ -714,17 +715,16 @@ export function createLoopItemLedger(
   };
   if (!coordination) return ledger;
   const guarded = async <T>(ids: string[], fn: () => Promise<T>, check = true): Promise<T> => {
-    let run = async () => {
-      if (check)
-        for (const id of ids)
-          if (!(await coordination.accepts(id))) throw new Error("This Loop no longer accepts intake");
-      return fn();
-    };
-    for (const id of [...new Set(ids)].sort().reverse()) {
-      const next = run;
-      run = () => coordination.lock.withLock(`loop-intake:${id}`, next);
-    }
-    return run();
+    return withLocks(
+      coordination.lock,
+      ids.map((id) => `loop-intake:${id}`),
+      async () => {
+        if (check)
+          for (const id of ids)
+            if (!(await coordination.accepts(id))) throw new Error("This Loop no longer accepts intake");
+        return fn();
+      },
+    );
   };
   return {
     ...ledger,

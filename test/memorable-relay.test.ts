@@ -197,3 +197,25 @@ writeFileSync(MARKER, readFileSync(0, "utf8"));
   );
   assert.deepEqual(current, original);
 });
+
+test("relayRecord settles at its deadline even when the child ignores SIGTERM", async () => {
+  const { bin, marker } = stub(
+    `import { writeFileSync } from "node:fs";\nprocess.on("SIGTERM", () => {});\nwriteFileSync(MARKER, String(process.pid));\nsetInterval(() => {}, 1000);\n`,
+  );
+  const started = Date.now();
+  const outcome = await relayRecord(bin, capture, 500);
+  process.kill(Number(readFileSync(marker, "utf8")), "SIGKILL");
+  assert.deepEqual(outcome, { ok: false, reason: "timeout" });
+  assert.ok(Date.now() - started < 3_000);
+});
+
+test("relayRecord lets a chatty child finish and reads its refusal and stderr from the kept head", async () => {
+  const { bin } = stub(
+    `import { readFileSync } from "node:fs";\nreadFileSync(0, "utf8");\nprocess.stdout.write(JSON.stringify({ error: "memorable_write_denied" }) + "\\n" + "x".repeat(200_000));\nprocess.stderr.write("  disk\\n  full " + "y".repeat(200_000));\nprocess.exitCode = 3;\n`,
+  );
+  assert.deepEqual(await relayRecord(bin, capture), { ok: false, reason: "memorable_write_denied" });
+  const quiet = stub(
+    `import { readFileSync } from "node:fs";\nreadFileSync(0, "utf8");\nprocess.stdout.write("z".repeat(200_000));\nprocess.stderr.write("  disk\\n  full ");\nprocess.exitCode = 4;\n`,
+  );
+  assert.deepEqual(await relayRecord(quiet.bin, capture), { ok: false, reason: "exit 4: disk full" });
+});

@@ -1,6 +1,6 @@
 import { createPgPool } from "../persistence/pg-pool.ts";
 import type { Grant, Permission, ScopeId } from "../types.ts";
-import type { GrantPersistence } from "./acl-store.ts";
+import { sameGrantSet, type GrantPersistence } from "./acl-store.ts";
 
 function rowToGrant(r: Record<string, unknown>): Grant {
   return {
@@ -143,16 +143,7 @@ export function createPostgresGrantStore(connectionString: string): GrantPersist
           [ownerScopeId, ref],
         );
         const current = selected.rows.map(rowToGrant);
-        const sameTuple = (a: Grant, b: Grant) =>
-          a.ownerScopeId === b.ownerScopeId &&
-          a.ref === b.ref &&
-          a.granteeScopeId === b.granteeScopeId &&
-          a.permission === b.permission &&
-          a.grantedBy === b.grantedBy;
-        if (
-          current.length !== expected.length ||
-          current.some((grant) => !expected.some((candidate) => sameTuple(grant, candidate)))
-        ) {
+        if (!sameGrantSet(current, expected)) {
           await client.query("ROLLBACK");
           return false;
         }

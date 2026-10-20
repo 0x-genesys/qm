@@ -1,6 +1,6 @@
 import { parseScopeId, type ScopeId, type ScopeKind } from "../types.ts";
 import type { MemoryCapturePolicy, MemoryProviderRoute } from "./provider-router.ts";
-import { parseMemorableProvider, type MemorableMemoryProviderConfig } from "./memorable/config.ts";
+import { parseMemorableProvider, parseTimeoutMs, type MemorableMemoryProviderConfig } from "./memorable/config.ts";
 
 const KINDS = new Set<ScopeKind>(["personal", "channel", "team", "org", "group"]);
 const ID = /^[a-z][a-z0-9-]{0,62}$/;
@@ -47,13 +47,6 @@ function capturePoliciesOf(provider: AnyMemoryProviderConfig): ReadonlySet<Memor
 export interface MemoryProviderConfig {
   providers: AnyMemoryProviderConfig[];
   routes: MemoryProviderRoute[];
-}
-
-function timeout(value: unknown, at: string, fallback: number, max: number): number {
-  const ms = value === undefined ? fallback : value;
-  if (!Number.isSafeInteger(ms) || Number(ms) <= 0 || Number(ms) > max)
-    throw new Error(`${at} must be an integer from 1 to ${max}`);
-  return Number(ms);
 }
 
 function object(value: unknown, at: string): Record<string, unknown> {
@@ -145,7 +138,7 @@ export function parseMemoryProviderConfig(
     if (!ID.test(id) || id === "default") throw new Error(`invalid memory provider id: ${id}`);
     if (raw.type === "memorable") return parseMemorableProvider(raw, id, env);
     if (raw.type !== "mcp") throw new Error(`memory provider ${id} has unsupported type`);
-    const timeoutMs = timeout(raw.timeoutMs, `memory provider ${id}.timeoutMs`, 3_000, 30_000);
+    const timeoutMs = parseTimeoutMs(raw.timeoutMs, `memory provider ${id}.timeoutMs`, 3_000, 30_000);
     return {
       id,
       type: "mcp" as const,

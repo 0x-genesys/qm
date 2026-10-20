@@ -7,7 +7,7 @@ import { createDeployStore } from "../src/deploy/deploy-store.ts";
 import { createDeployService } from "../src/deploy/deploy-service.ts";
 import { createAclStore } from "../src/acl/acl-store.ts";
 import type { LeaderLease } from "../src/persistence/leader-lease.ts";
-import type { AdvisoryLock } from "../src/persistence/advisory-lock.ts";
+import { createNoopAdvisoryLock, type AdvisoryLock } from "../src/persistence/advisory-lock.ts";
 import type { DeployProvider } from "../src/deploy/deploy-provider.ts";
 import { scopeId } from "../src/types.ts";
 
@@ -78,6 +78,7 @@ test("reaper: the leader (default no-op lease) reaps as before", async () => {
 function spyLock(): { lock: AdvisoryLock; keys: string[] } {
   const keys: string[] = [];
   const lock: AdvisoryLock = {
+    ...createNoopAdvisoryLock(),
     async withLock(key, fn) {
       keys.push(key);
       return fn();
