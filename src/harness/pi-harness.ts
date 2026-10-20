@@ -2201,7 +2201,10 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
               abort: () => entry.agentSession.abort(),
             });
             if (userAborted) return false;
-            if (outcome !== "ok") throw new NonRetryableTurnError(documentRejection.message);
+            if (outcome !== "ok")
+              throw new NonRetryableTurnError(
+                `${documentRejection.message} (retry without inline documents was ${outcome})`,
+              );
             return true;
           };
           const recoverFailedRound = async (): Promise<void> => {
