@@ -72,6 +72,7 @@ function describePublishAudience(a: PublishAudienceDescriptor | undefined): stri
 
 export interface ToolContextRef {
   documents?: DocumentInput[];
+  documentsStubbed?: boolean;
   runtimeHandoff?: HarnessHandoff;
   runtimeRunId?: string;
   runtimeActorId?: string;

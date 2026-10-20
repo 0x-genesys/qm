@@ -1077,8 +1077,8 @@ for (const budget of ["count", "bytes", "reupload", "retry"] as const) {
     assert.equal(result.status, "ok", result.reason);
     if (budget === "retry") assert.equal(prepared?.documents?.length, 1);
     else assert.deepEqual(prepared?.documents, []);
-    if (budget === "reupload" || budget === "retry") assert.doesNotMatch(prepared?.text ?? "", /count or byte budget/);
-    else assert.match(prepared?.text ?? "", /steered.txt.*count or byte budget/);
+    if (budget === "reupload" || budget === "retry") assert.doesNotMatch(prepared?.text ?? "", /not included inline/);
+    else assert.match(prepared?.text ?? "", /steered.txt" is not included inline/);
   });
 }
 

@@ -4,10 +4,10 @@ import { test } from "node:test";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { documentBlocks, nativeDocumentFormat, withDocumentInputs } from "../src/harness/document-inputs.ts";
+import { isDocumentAttachment } from "../src/core/document-kinds.ts";
 import {
   documentFallbackText,
   documentText,
-  isDocumentAttachment,
   historicalDocumentMetas,
   loadDocumentInputs,
   type DocumentInput,
@@ -258,7 +258,7 @@ test("steered reuploads already in the turn do not consume another document slot
     0,
     initial.documents,
   );
-  assert.deepEqual(steered, { documents: [], notices: [] });
+  assert.deepEqual(steered, { documents: [], notices: [], tokens: 0 });
   assert.deepEqual(checked, ["steered-upload"]);
   assert.equal(opens(), 1);
 });
@@ -281,7 +281,7 @@ test("document restoration checks current access and budgets before opening byte
   assert.equal(opens(), 0);
   const result = await loadDocumentInputs(store, [meta], () => true, 1);
   assert.equal(result.documents.length, 0);
-  assert.match(result.notices[0]!, /budget/);
+  assert.match(result.notices[0]!, /not included inline/);
   assert.equal(opens(), 0);
 });
 
