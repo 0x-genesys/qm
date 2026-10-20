@@ -227,3 +227,10 @@ test("a natural-language Gmail request keeps its relevant bundled skill in the s
   const shortlist = skillsIndex(entries, [], "Please check my Gmail inbox and tell me what I need to do today");
   assert.match(shortlist, /\*\*google-workspace\*\*/);
 });
+
+test("each shortlist entry renders on one line even when its description spans several", () => {
+  const skill = res("multi", "body");
+  skill.skill!.manifest.description = "First line.\nSecond line.";
+  const lines = skillsIndex([skill]).split("\n");
+  assert.deepEqual(lines.slice(2), ["- **multi** — First line. Second line."]);
+});

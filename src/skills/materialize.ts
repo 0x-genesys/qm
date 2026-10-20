@@ -163,7 +163,7 @@ export function skillsIndex(
   const lines = items.map((r) => {
     const m = r.skill!.manifest;
     const source = provenance.has(r.skill!.scopeId) ? ` [from ${r.skill!.scopeId}]` : "";
-    return `- **${m.name}**${source} — ${m.description}`;
+    return `- **${m.name}**${source} — ${m.description.replaceAll("\n", " ")}`;
   });
   return [
     "## Skills",
