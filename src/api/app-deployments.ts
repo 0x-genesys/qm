@@ -3,6 +3,8 @@ import { createMemoryAdvisoryLock } from "../persistence/advisory-lock.ts";
 import { INVITE_EMAIL_NOT_CONFIGURED, renderInviteEmail } from "../admin/invite-email.ts";
 import { deploymentShareScope } from "../deploy/email-access.ts";
 import { errMessage } from "../util/errors.ts";
+import { samePerson } from "../directory/person.ts";
+import { parseScopeId } from "../types.ts";
 import type { Reach } from "../deploy/deploy-service.ts";
 import { mintDeployGitAccess } from "../deploy/access-token.ts";
 
@@ -224,6 +226,11 @@ export function createDeploymentMethods(
     },
     async createEnvironment(input) {
       if (!deps.environments) throw new Error("environments not wired");
+      const { kind, ref } = parseScopeId(input.scopeId);
+      if (kind !== "personal" || !samePerson(ref, input.actorId))
+        throw new Error(
+          "Only your own computer (this conversation's computer in your DM) can be named as an environment. A shared room's computer stays with the room; name yours from your DM and attach this room to it from here.",
+        );
       const env = await deps.environments.create({
         id: input.scopeId,
         name: input.name,

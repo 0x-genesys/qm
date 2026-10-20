@@ -82,8 +82,10 @@ describe("environment verbs (list / create / attach, owner-gated)", async () => 
       SECRET,
     );
     const res = await post("/v1/environments", { name: "eng-box" }, { "x-agent-capability": roomCap });
-    assert.equal(res.status, 403);
-    assert.equal(((await res.json()) as any).error, "personal_computer_required");
+    assert.equal(res.status, 400);
+    const body = (await res.json()) as any;
+    assert.equal(body.error, "environment_create_failed");
+    assert.match(body.message, /shared room's computer stays with the room/);
     const list = (await (await get("/v1/environments", { "x-agent-capability": await cap("U-owner") })).json()) as any;
     assert.equal(
       list.environments.some((e: any) => e.id === scopeId("channel", "C-eng")),

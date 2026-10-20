@@ -145,9 +145,7 @@ async function reachNow(ctx: ApiCtx): Promise<void> {
         ...(pre.candidates ? { candidates: pre.candidates } : {}),
       });
     }
-    const envScope = await resolveEnvironmentId(deps.environments, capability.scopeId, (person, scope) =>
-      app.isCurrentSharedScopeMember(person, scope),
-    );
+    const envScope = await resolveEnvironmentId(deps.environments, capability.scopeId, app.isCurrentSharedScopeMember);
     const register: ArtifactRegistration | undefined = deps.files
       ? {
           store: deps.files,

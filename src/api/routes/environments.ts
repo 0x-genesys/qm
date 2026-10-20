@@ -1,7 +1,6 @@
 import { errMessage } from "../../util/errors.ts";
 import { samePerson } from "../../directory/person.ts";
 import { sendJson } from "../http.ts";
-import { parseScopeId } from "../../types.ts";
 import { isObj } from "./shared.ts";
 import type { ApiCtx, Route } from "./route.ts";
 
@@ -26,14 +25,6 @@ async function createEnvironment(ctx: ApiCtx): Promise<void> {
     return sendJson(res, 403, { error: "forbidden", message: "environments require an agent capability token" });
   const name = isObj(body) && typeof body.name === "string" ? body.name.trim() : "";
   if (!name) return sendJson(res, 400, { error: "bad_request", message: "name (string) required" });
-  const { kind, ref } = parseScopeId(capability.scopeId);
-  if (kind !== "personal" || !samePerson(ref, capability.actorId)) {
-    return sendJson(res, 403, {
-      error: "personal_computer_required",
-      message:
-        "Only your own computer (this conversation's computer in your DM) can be named as an environment. A shared room's computer stays with the room; name yours from your DM and attach this room to it from here.",
-    });
-  }
   try {
     const env = await app.createEnvironment({ scopeId: capability.scopeId, name, actorId: capability.actorId });
     return sendJson(res, 200, { environment: { id: env.id, name: env.name, ownerActorId: env.ownerActorId } });

@@ -1,6 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createMemoryEnvironmentStore, resolveEnvironmentId } from "../src/environments/environment-store.ts";
+import { randomUUID } from "node:crypto";
+import pg from "pg";
+import {
+  createMemoryEnvironmentStore,
+  ENVIRONMENT_MIGRATIONS,
+  resolveEnvironmentId,
+} from "../src/environments/environment-store.ts";
+import { createPgPool } from "../src/persistence/pg-pool.ts";
 import { sandboxScopeName } from "../src/sandbox/exec-sandbox-base.ts";
 import { scopeId } from "../src/types.ts";
 
@@ -88,6 +95,42 @@ describe("environments (the computer a conversation points at)", () => {
     assert.equal(second.ownerActorId, "U1");
     assert.equal(first.createdAt, second.createdAt);
   });
+
+  it(
+    "startup removes environments that were named from a shared room, together with their attachments",
+    { skip: !process.env.DATABASE_URL },
+    async () => {
+      const parent = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+      const name = `environments_${randomUUID().replaceAll("-", "")}`;
+      await parent.query(`CREATE DATABASE ${name}`);
+      const url = new URL(process.env.DATABASE_URL!);
+      url.pathname = `/${name}`;
+      try {
+        const legacy = createPgPool(url.toString(), [ENVIRONMENT_MIGRATIONS[0]!]);
+        await legacy.q(
+          `INSERT INTO environments(id, org_id, name, owner_actor_id, created_at, updated_at) VALUES
+            ('channel:C-eng', 'org', 'eng-box', 'U-member', 1, 1),
+            ('personal:U-owner', 'org', 'prod', 'U-owner', 1, 1)`,
+        );
+        await legacy.q(
+          `INSERT INTO environment_attachments(scope_id, environment_id, attached_by, attached_at) VALUES
+            ('personal:U-member', 'channel:C-eng', 'U-member', 1),
+            ('channel:C-team', 'personal:U-owner', 'U-owner', 1)`,
+        );
+        await legacy.close();
+
+        const current = createPgPool(url.toString(), ENVIRONMENT_MIGRATIONS);
+        assert.deepEqual(await current.q("SELECT id FROM environments ORDER BY id"), [{ id: "personal:U-owner" }]);
+        assert.deepEqual(await current.q("SELECT scope_id, environment_id FROM environment_attachments"), [
+          { scope_id: "channel:C-team", environment_id: "personal:U-owner" },
+        ]);
+        await current.close();
+      } finally {
+        await parent.query(`DROP DATABASE ${name} WITH (FORCE)`);
+        await parent.end();
+      }
+    },
+  );
 
   it("attachmentsFor lists every scope pointing at an environment", async () => {
     const s = store();

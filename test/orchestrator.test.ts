@@ -3811,7 +3811,11 @@ test("environments: an unattached scope provisions through its own scope (today'
   assert.equal(rwScope, scopeId("personal", "U1"), "no attachment ⇒ provision through the scope itself");
 
   await selectComputer(built, "U-shared", scopeId("personal", "U-shared"));
-  const env = await app.createEnvironment({ scopeId: scopeId("personal", "U-shared"), name: "prod", actorId: "U1" });
+  const env = await app.createEnvironment({
+    scopeId: scopeId("personal", "U-shared"),
+    name: "prod",
+    actorId: "U-shared",
+  });
   await app.attachScope({ scopeId: scopeId("personal", "U1"), environmentId: env.id, actorId: "U1" });
 
   rwScope = undefined;

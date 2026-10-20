@@ -1,7 +1,7 @@
 import { orgId as configOrgId } from "../config.ts";
-import { createPgPool } from "../persistence/pg-pool.ts";
+import { createPgPool, type PgMigrationDefinition } from "../persistence/pg-pool.ts";
 import type { IsCurrentSharedScopeMember } from "../resolution/scope-membership.ts";
-import { parseScopeId, type ScopeId } from "../types.ts";
+import { isSharedScope, type ScopeId } from "../types.ts";
 
 export interface Environment {
   id: string;
@@ -42,9 +42,7 @@ export async function resolveEnvironmentId(
   if (!store) return scopeId;
   const attachment = await store.getAttachment(scopeId);
   if (!attachment) return scopeId;
-  const { kind } = parseScopeId(scopeId);
-  const shared = kind === "channel" || kind === "group";
-  if (shared && !(await isCurrentSharedScopeMember(attachment.attachedBy, scopeId))) return scopeId;
+  if (isSharedScope(scopeId) && !(await isCurrentSharedScopeMember(attachment.attachedBy, scopeId))) return scopeId;
   return attachment.environmentId;
 }
 
@@ -107,24 +105,39 @@ export function createMemoryEnvironmentStore(opts: { now?: () => number } = {}):
   };
 }
 
+export const ENVIRONMENT_MIGRATIONS: readonly PgMigrationDefinition[] = [
+  {
+    id: "environments/store/0001",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS environments(
+        id TEXT PRIMARY KEY, org_id TEXT NOT NULL, name TEXT, owner_actor_id TEXT,
+        created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS environment_attachments(
+        scope_id TEXT PRIMARY KEY,
+        environment_id TEXT NOT NULL REFERENCES environments(id),
+        attached_by TEXT NOT NULL, attached_at BIGINT NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS environment_attachments_by_env
+        ON environment_attachments(environment_id)`,
+    ],
+  },
+  {
+    id: "environments/store/0002",
+    statements: [
+      `DELETE FROM environment_attachments
+        WHERE environment_id IN (SELECT id FROM environments WHERE id NOT LIKE 'personal:%')`,
+      `DELETE FROM environments WHERE id NOT LIKE 'personal:%'`,
+    ],
+  },
+];
+
 export function createPostgresEnvironmentStore(
   connectionString: string,
   opts: { now?: () => number } = {},
 ): EnvironmentStore {
   const now = opts.now ?? (() => Date.now());
-  const { q } = createPgPool(connectionString, "environments/store/0001", [
-    `CREATE TABLE IF NOT EXISTS environments(
-        id TEXT PRIMARY KEY, org_id TEXT NOT NULL, name TEXT, owner_actor_id TEXT,
-        created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL
-      )`,
-    `CREATE TABLE IF NOT EXISTS environment_attachments(
-        scope_id TEXT PRIMARY KEY,
-        environment_id TEXT NOT NULL REFERENCES environments(id),
-        attached_by TEXT NOT NULL, attached_at BIGINT NOT NULL
-      )`,
-    `CREATE INDEX IF NOT EXISTS environment_attachments_by_env
-        ON environment_attachments(environment_id)`,
-  ]);
+  const { q } = createPgPool(connectionString, ENVIRONMENT_MIGRATIONS);
   return {
     async create(input): Promise<Environment> {
       const ts = now();
