@@ -623,7 +623,7 @@ test("dollars in code spans and fenced code stay literal", async () => {
   const decoded = [...block.querySelectorAll("code-block")].map((code) =>
     new TextDecoder().decode(Uint8Array.from(atob(code.getAttribute("code") ?? ""), (c) => c.charCodeAt(0))),
   );
-  assert.deepEqual(decoded, ["echo $PATH $1$", "indented $y$ code"]);
+  assert.deepEqual(decoded, ["echo $PATH $1$\n", "indented $y$ code\n"]);
   block.remove();
 });
 
