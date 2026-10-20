@@ -50,7 +50,11 @@ function fakeSandbox(): Sandbox {
   };
 }
 
-function buildScenario(interruptAfterToolResult = false, submission?: Record<string, unknown>) {
+function buildScenario(
+  interruptAfterToolResult = false,
+  submission?: Record<string, unknown>,
+  answer = "it runs on this conversation's computer",
+) {
   const turns: string[] = [];
   const continued: Array<boolean | undefined> = [];
   const environments: Array<string | undefined> = [];
@@ -99,7 +103,7 @@ function buildScenario(interruptAfterToolResult = false, submission?: Record<str
           });
           throw new Error("interrupted after recording a tool result");
         }
-        const reply = "it runs on this conversation's computer";
+        const reply = answer;
         await turn.emit({
           type: "assistant",
           payload: { text: reply },
@@ -404,3 +408,15 @@ for (const interrupted of [false, true]) {
     assert.equal(turns.length, interrupted ? 2 : 1);
   });
 }
+
+test("a retried stage turn whose recorded answer is empty still returns its submission", async () => {
+  const verdict = { outcome: "met", reason: "done" };
+  const { orchestrator, runs, turns, input } = buildScenario(false, verdict, "");
+  const ask = input(ASK, { stageOutput: STAGE_OUTPUT });
+  const run = (await runs.enqueue({ sessionId: conversation.threadRef, request: ask })).run;
+  await orchestrator.handleTurn({ ...ask, runId: run.id, attempt: 1 });
+  const retry = await orchestrator.handleTurn({ ...ask, runId: run.id, attempt: 2 });
+  assert.equal(retry.status, "ok");
+  assert.deepEqual(retry.stageOutput, verdict);
+  assert.equal(turns.length, 1);
+});

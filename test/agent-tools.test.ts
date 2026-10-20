@@ -1550,6 +1550,23 @@ test("submit_stage_output records only schema-valid submissions, read-only and u
   assert.deepEqual(submittedStageOutput(entries(), -1), { outcome: "met", reason: "done" });
 });
 
+test("a turn's stage output is read only up to the next person's message, not past a steer", () => {
+  const entry = (seq: number, type: EntryType, payload: Record<string, unknown>) =>
+    ({ seq, type, payload }) as unknown as SessionEntry;
+  const submittedAt = (seq: number, output: Record<string, unknown>) =>
+    entry(seq, "tool_result", { tool: "submit_stage_output", submitted: true, output });
+  const entries = [
+    entry(1, "user", { text: "first" }),
+    submittedAt(2, { n: 1 }),
+    entry(3, "user", { text: "also this", steered: true }),
+    submittedAt(4, { n: 2 }),
+    entry(5, "user", { text: "second" }),
+    submittedAt(6, { n: 3 }),
+  ];
+  assert.deepEqual(submittedStageOutput(entries, 1), { n: 2 });
+  assert.deepEqual(submittedStageOutput(entries, 5), { n: 3 });
+});
+
 test("finish_silently on a poll fire terminates the turn at the tool contract; off one it no-ops", async () => {
   const emitted: Emitted[] = [];
   const ref: ToolContextRef = {
