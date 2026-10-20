@@ -267,7 +267,7 @@ function stepBlocks(e: SessionEntry, step: ReplayStep): Positioned[] {
 }
 
 export function recordedToolArguments(p: Record<string, unknown>): Record<string, unknown> {
-  const { tool: _tool, callId: _c, rerun, result: _r, step: _s, wire: _w, ...recorded } = p;
+  const { tool: _tool, callId: _c, rerun, result: _r, step: _s, wire: _w, activity: _a, ...recorded } = p;
   const input = (rerun as { input?: unknown } | undefined)?.input;
   if (isObj(input)) return { ...input, retrySafe: true };
   if (typeof recorded.bytes !== "number" || typeof recorded.text === "string") return recorded;
