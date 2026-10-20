@@ -213,8 +213,6 @@ import { GATED_TOOL_APPROVALS } from "../harness/agent-tools.ts";
 import { createAttachStaging } from "./orchestrator/attach-tool.ts";
 import { reconcileMessageRevisions, revisionAnchorAt } from "./message-revisions.ts";
 
-const ADDITIVE_ENVIRONMENT_SECTIONS: ReadonlySet<string> = new Set(["Skills"]);
-
 export { egressClaimAllowingControlPlane, filterConnectorSkills } from "./orchestrator/turn-helpers.ts";
 export type { Orchestrator, OrchestratorDeps, OrchestratorInput, SurfaceContextPuller } from "./orchestrator/types.ts";
 
@@ -2946,7 +2944,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const pinnedSkills = deps.config
           ? await deps.config.getPinnedSkillsDurable(scopeId).catch(reportFailureAs("orchestrator: pinned skills", []))
           : [];
-        turnContextBlocks["Skills"] = skillsIndex(
+        const skillsBlock = skillsIndex(
           nativeSkills,
           [scopeId, resolution.orgScopeId],
           input.text,
@@ -3196,12 +3194,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             memoryView.held,
             context.memoryLabels,
           );
-          const snapshot = environmentDelta(
-            turnContextBlocks,
-            continuation?.history ?? history,
-            session.id,
-            ADDITIVE_ENVIRONMENT_SECTIONS,
-          );
+          const snapshot = environmentDelta(turnContextBlocks, continuation?.history ?? history, session.id, {
+            Skills: skillsBlock,
+          });
           const turnEnvironment = environmentNote(
             [
               turnEnvironmentContents,
