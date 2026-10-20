@@ -34,6 +34,7 @@ haven't connected Dropbox — then point them to the Connectors page.
 adds it for you, so a call without that header always fails.
 
 **Telling a missing header from a bad token:**
+
 - **400 `Invalid authorization value in HTTP header/URL parameter`:** the header was
   missing, empty or malformed. Dropbox never checked the token, so this says nothing about
   the user's connection. Check that your command has the header and that the variable is
