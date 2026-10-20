@@ -228,3 +228,48 @@ test("runMicrovm retries a throttled create but never an ambiguous server error"
   await assert.rejects(api2.runMicrovm(run), /-> 502: bad gateway/);
   assert.equal(broken.calls.length, 1);
 });
+
+test("writeAbs splits writes above the chunk size into parts, joins them in the MicroVM, and removes the parts", async () => {
+  const writes: Array<{ path: string; bytes: number }> = [];
+  const execs: string[] = [];
+  let failWrite: RegExp | null = null;
+  const { fetchImpl } = fakeFetch((rec) => {
+    const body = JSON.parse(rec.body ?? "{}") as { path?: string; b64?: string; cmd?: string };
+    if (rec.url.endsWith("/write")) {
+      if (failWrite?.test(body.path!)) return { status: 500, body: { error: "disk full" } };
+      writes.push({ path: body.path!, bytes: Buffer.from(body.b64!, "base64").length });
+    }
+    if (rec.url.endsWith("/exec")) {
+      execs.push(body.cmd!);
+      return { status: 200, body: { stdout: "", stderr: "", code: 0 } };
+    }
+    return { status: 200, body: { ok: true } };
+  });
+  const api = { createAuthToken: async () => "tok" } as unknown as AwsMicrovmApi;
+  const client = createMicrovmClient(api, { agentPort: 8080, tokenTtlMinutes: 30, writeChunkBytes: 4, fetchImpl });
+  await client.writeAbs("mvm-1", "mvm-1.example.on.aws", "/app/small", new Uint8Array(4));
+  assert.deepEqual(writes, [{ path: "/app/small", bytes: 4 }]);
+  assert.equal(execs.length, 0);
+  writes.length = 0;
+  await client.writeAbs("mvm-1", "mvm-1.example.on.aws", "/app/big", new Uint8Array(10));
+  const stem = writes[0]!.path.replace(/\.part-0$/, "");
+  assert.match(stem, /^\/app\/big\.qm-[0-9a-f]{12}$/);
+  assert.deepEqual(writes, [
+    { path: `${stem}.part-0`, bytes: 4 },
+    { path: `${stem}.part-1`, bytes: 4 },
+    { path: `${stem}.part-2`, bytes: 2 },
+  ]);
+  assert.deepEqual(execs, [
+    `cat '${stem}.part-0' '${stem}.part-1' '${stem}.part-2' > '${stem}.joined' && [ "$(wc -c < '${stem}.joined')" -eq 10 ] && { chmod --reference='/app/big' '${stem}.joined' 2>/dev/null || true; } && mv -fT '${stem}.joined' '/app/big'`,
+    `rm -f '${stem}'.part-* '${stem}'.joined`,
+  ]);
+  execs.length = 0;
+  writes.length = 0;
+  failWrite = /^\/app\/other\.qm-[0-9a-f]{12}\.part-1$/;
+  await assert.rejects(
+    client.writeAbs("mvm-1", "mvm-1.example.on.aws", "/app/other", new Uint8Array(10)),
+    /part-1 failed \(500\)/,
+  );
+  const other = writes[0]!.path.replace(/\.part-0$/, "");
+  assert.deepEqual(execs, [`rm -f '${other}'.part-* '${other}'.joined`]);
+});
