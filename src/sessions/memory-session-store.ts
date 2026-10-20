@@ -43,6 +43,7 @@ import {
   promptEnvelopeBody,
   sessionCategory,
   sessionOrigin,
+  type SessionOrigin,
   userMessagePreview,
   isWebThread,
 } from "./session-store.ts";
@@ -565,6 +566,10 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
         sessions: page,
         next: rows.length > limit && last ? { activity: key(last)[0], id: last.id } : null,
       };
+    },
+
+    async inheritedOrigin(session): Promise<SessionOrigin> {
+      return (await originThroughParents(session, (id) => sessions.get(id))).origin;
     },
 
     async descendantsOf(rootIds): Promise<SessionDescendant[]> {

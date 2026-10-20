@@ -926,8 +926,7 @@ test("carried skill and steer screens tell the model gateway which session they 
   await sessions.setParentSession(result.sessionId!, cron.id);
   assert.equal(await steer(), "allow");
   assert.deepEqual(contextHeaders(requests.at(-1)!.headers), { ...turnContext, "x-qm-origin": "cron" });
-  const get = sessions.get.bind(sessions);
-  sessions.get = async (id) => (id === cron.id ? Promise.reject(new Error("session store unavailable")) : get(id));
+  sessions.inheritedOrigin = () => Promise.reject(new Error("session store unavailable"));
   assert.equal(await steer(), "allow");
   const { "x-qm-origin": _unresolved, ...unresolvedOrigin } = turnContext;
   assert.deepEqual(contextHeaders(requests.at(-1)!.headers), unresolvedOrigin);

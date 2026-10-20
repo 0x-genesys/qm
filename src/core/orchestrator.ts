@@ -53,12 +53,7 @@ import { resolveEnvironmentId } from "../environments/environment-store.ts";
 import type { GapPhase, Lease, LeaseAttempt } from "../sessions/session-store.ts";
 import { SESSION_BUSY_FIRE_TEXT, SESSION_BUSY_USER_TEXT } from "./failure-copy.ts";
 import { CONFIG_DEFAULTS } from "../config.ts";
-import {
-  acquireLeaseWithin,
-  isOverheardEntry,
-  originThroughParents,
-  sessionOrigin,
-} from "../sessions/session-store.ts";
+import { acquireLeaseWithin, isOverheardEntry, sessionOrigin } from "../sessions/session-store.ts";
 import { currentModelRequestContext, withModelRequestContext } from "../model/request-context.ts";
 import { supportsProcessSessions, supportsScopeProfile } from "../sandbox/sandbox.ts";
 import { createBackgroundBroker } from "../connectors/background-exec-broker.ts";
@@ -302,10 +297,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     createCompaction(deps);
   const originOf = async (session: Session | null) =>
     session
-      ? originThroughParents(session, (id) => deps.sessions.get(id)).then(
-          ({ origin }) => origin,
-          swallowAs("orchestrator: session origin", undefined),
-        )
+      ? deps.sessions.inheritedOrigin(session).catch(swallowAs("orchestrator: session origin", undefined))
       : undefined;
 
   async function approvalSummary(
