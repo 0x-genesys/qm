@@ -19,7 +19,11 @@ const ORG_FLOOR_RULES: CommandRule[] = [
   { pattern: "\\bmkfs\\b|:\\(\\)\\s*\\{", decision: "deny", reason: "destructive / fork bomb" },
 ];
 
-const FLOOR_ARGV_RULES: ArgvRule[] = [
+interface FloorRule extends ArgvRule {
+  pipedIntoShell?: boolean;
+}
+
+const FLOOR_ARGV_RULES: FloorRule[] = [
   { argv: ["curl"], pipedIntoShell: true, decision: "require_approval", reason: "pipe-to-shell" },
 ];
 
@@ -145,6 +149,7 @@ interface Executed {
 interface Scan {
   lines: string[];
   commands: ExecutedCommand[];
+  tooDeep: boolean;
 }
 
 export function scannableCommand(command: string): string {
@@ -158,7 +163,7 @@ function parse(command: string) {
 }
 
 function scan(command: string, depth: number): Scan {
-  if (depth >= MAX_DEPTH) return { lines: [command], commands: [] };
+  if (depth >= MAX_DEPTH) return { lines: [command], commands: [], tooDeep: true };
   const tree = parse(command);
   try {
     const executed = executedPayloads(tree.rootNode);
@@ -171,6 +176,7 @@ function scan(command: string, depth: number): Scan {
         ...nested.flatMap((inner) => inner.lines),
       ],
       commands: [...executed.commands, ...nested.flatMap((inner) => inner.commands)],
+      tooDeep: nested.some((inner) => inner.tooDeep),
     };
   } finally {
     tree.delete();
@@ -488,7 +494,8 @@ function executedPayloads(root: Node): Executed {
         const [producer, consumer] = [stages[i - 1], stages[i]];
         if (!producer || !consumer) continue;
         const consumerArgv = argvOf(consumer);
-        if (stdinReader(consumerArgv) === "shell") shellFed.add(producer.id);
+        if (stdinReader(consumerArgv) === "shell")
+          for (const upstream of stages.slice(0, i)) if (upstream) shellFed.add(upstream.id);
         const payload = literalProducerPayload(argvOf(producer));
         if (payload) feed(payload, [consumerArgv]);
       }
@@ -590,7 +597,7 @@ function containsInOrder(args: readonly string[], words: readonly string[]): boo
 
 function argvMatch(
   commands: readonly ExecutedCommand[],
-  rules: readonly ArgvRule[],
+  rules: readonly FloorRule[],
   kind: "floor" | "layer",
 ): CommandEvaluation | null {
   for (const rule of rules) {
@@ -623,11 +630,12 @@ export function evaluateCommandWithLayer(
   policy: CommandPolicy,
   layerRules: readonly ArgvRule[],
 ): CommandEvaluation {
-  const { lines, commands } = scan(command, 0);
+  const { lines, commands, tooDeep } = scan(command, 0);
   const policyMatch = firstMatch(lines.join("\n"), policy.rules);
   if (policyMatch?.decision === "deny") return policyMatch;
   const floorMatch = argvMatch(commands, FLOOR_ARGV_RULES, "floor");
   if (floorMatch) return floorMatch;
+  if (tooDeep) return { decision: "require_approval", reason: "nested too deeply to inspect", rule: { kind: "floor" } };
   if (policyMatch) return policyMatch;
   if (policy.mode === "allowlist") {
     return { decision: "deny", reason: "not in allowlist" };

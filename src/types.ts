@@ -572,7 +572,6 @@ export interface CommandRule {
 
 export interface ArgvRule {
   argv: string[];
-  pipedIntoShell?: boolean;
   decision: Exclude<CommandDecision, "allow">;
   reason?: string;
 }
