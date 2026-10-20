@@ -26,6 +26,10 @@ export function splitSqlStatements(sql: string): string[] {
     if (ch === "-" && sql[i + 1] === "-") {
       const end = sql.indexOf("\n", i);
       i = end < 0 ? sql.length : end + 1;
+    } else if (ch === "/" && sql[i + 1] === "*") {
+      const end = sql.indexOf("*/", i + 2);
+      if (end < 0) throw new Error(`absurd-schema: unterminated block comment at offset ${i}`);
+      i = end + 2;
     } else if (ch === "'" || ch === '"') {
       i = skipQuoted(sql, i, ch);
     } else if (ch === "$" && !IDENTIFIER_CHAR.test(sql[i - 1] ?? "")) {

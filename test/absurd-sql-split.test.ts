@@ -53,8 +53,9 @@ test("splitter keeps semicolons inside dollar bodies, strings, identifiers and c
   assert.match(statements[3]!, /-- trailing; note\n$/);
 });
 
-test("splitter keeps semicolons inside quoted identifiers", () => {
+test("splitter keeps semicolons inside quoted identifiers and block comments", () => {
   assert.deepEqual(splitSqlStatements('select "odd;name"; select 1;'), ['select "odd;name";', " select 1;"]);
+  assert.deepEqual(splitSqlStatements("select /* a; b */ 1; select 2;"), ["select /* a; b */ 1;", " select 2;"]);
 });
 
 test("splitter keeps trailing SQL without a semicolon as its own statement", () => {
@@ -64,4 +65,5 @@ test("splitter keeps trailing SQL without a semicolon as its own statement", () 
 test("splitter rejects unterminated bodies and strings", () => {
   assert.throws(() => splitSqlStatements("select $$ open;"), /unterminated \$\$ body/);
   assert.throws(() => splitSqlStatements("select 'open;"), /unterminated ' quote/);
+  assert.throws(() => splitSqlStatements("select /* open;"), /unterminated block comment/);
 });

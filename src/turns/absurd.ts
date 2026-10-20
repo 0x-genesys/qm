@@ -20,7 +20,7 @@ type RetryStrategy =
 
 export interface SpawnOptions {
   idempotencyKey?: string;
-  maxAttempts?: number;
+  maxAttempts: number;
   retryStrategy?: RetryStrategy;
 }
 
@@ -44,6 +44,7 @@ export interface ClaimedRun {
 
 export interface AwaitedEvent {
   suspended: boolean;
+  timedOut: boolean;
   payload: unknown;
 }
 
@@ -99,7 +100,7 @@ export async function spawnTask(
   queue: TurnQueue,
   name: string,
   params: unknown,
-  options: SpawnOptions = {},
+  options: SpawnOptions,
 ): Promise<SpawnedTask> {
   const spawnOptions = {
     idempotency_key: options.idempotencyKey,
@@ -180,16 +181,13 @@ export async function awaitEvent(
   event: string,
   timeoutSec?: number,
 ): Promise<AwaitedEvent> {
-  const [row] = await call(db, "SELECT should_suspend, payload FROM absurd.await_event($1, $2, $3, $4, $5, $6)", [
-    queue,
-    taskId,
-    runId,
-    step,
-    event,
-    timeoutSec ?? null,
-  ]);
+  const [row] = await call(
+    db,
+    "SELECT should_suspend, NOT should_suspend AND payload IS NULL AS timed_out, payload FROM absurd.await_event($1, $2, $3, $4, $5, $6)",
+    [queue, taskId, runId, step, event, timeoutSec ?? null],
+  );
   if (!row) throw new Error(`absurd: await_event returned no row for ${event}`);
-  return { suspended: Boolean(row.should_suspend), payload: row.payload };
+  return { suspended: Boolean(row.should_suspend), timedOut: Boolean(row.timed_out), payload: row.payload };
 }
 
 export async function emitEvent(db: AbsurdDb, queue: TurnQueue, event: string, payload?: unknown): Promise<void> {
@@ -229,7 +227,7 @@ export async function cleanup(db: AbsurdDb, queue: TurnQueue, ttlSec: number, li
   return { tasks: Number(row?.tasks ?? 0), events: Number(row?.events ?? 0) };
 }
 
-export async function holdsClaim(db: AbsurdDb, queue: TurnQueue, runId: string, token: string): Promise<boolean> {
+export async function holdsClaim(db: PoolClient, queue: TurnQueue, runId: string, token: string): Promise<boolean> {
   const rows = await call(
     db,
     `SELECT 1 FROM ${runsTable(queue)} WHERE run_id = $1 AND state = 'running' AND claimed_by = $2 FOR SHARE`,

@@ -128,8 +128,20 @@ test("spawn, claim and complete round-trip", { skip }, async () => {
 
 test("spawn idempotency key returns the existing task", { skip }, async () => {
   const db = await connect(T0);
-  const first = await spawnTask(db, "turns_background", "turn", { n: 1 }, { idempotencyKey: "turn:k" });
-  const again = await spawnTask(db, "turns_background", "turn", { n: 2 }, { idempotencyKey: "turn:k" });
+  const first = await spawnTask(
+    db,
+    "turns_background",
+    "turn",
+    { n: 1 },
+    { idempotencyKey: "turn:k", maxAttempts: 10 },
+  );
+  const again = await spawnTask(
+    db,
+    "turns_background",
+    "turn",
+    { n: 2 },
+    { idempotencyKey: "turn:k", maxAttempts: 10 },
+  );
   assert.equal(again.created, false);
   assert.equal(again.taskId, first.taskId);
   assert.equal(again.runId, first.runId);
@@ -137,7 +149,7 @@ test("spawn idempotency key returns the existing task", { skip }, async () => {
 
 test("scheduleRun(now) hands the run back with the same attempt and no claim", { skip }, async () => {
   const db = await connect(T0);
-  const spawned = await spawnTask(db, "turns_people", "turn", {});
+  const spawned = await spawnTask(db, "turns_people", "turn", {}, { maxAttempts: 10 });
   const [claimed] = await claimTasks(db, "turns_people", "worker-a", 30);
   await scheduleRun(db, "turns_people", claimed!.runId, T0);
   assert.deepEqual(await runRow("turns_people", claimed!.runId), {
@@ -192,10 +204,10 @@ test("failRun retries at retryAt until max attempts, then fails the task", { ski
 test("an event emitted on another connection wakes the waiter; another queue does not", { skip }, async () => {
   const worker = await connect();
   const emitter = await connect();
-  const spawned = await spawnTask(worker, "turns_delegated", "turn", {});
+  const spawned = await spawnTask(worker, "turns_delegated", "turn", {}, { maxAttempts: 10 });
   const [claimed] = await claimTasks(worker, "turns_delegated", "worker-a", 30);
   const waiting = await awaitEvent(worker, "turns_delegated", spawned.taskId, claimed!.runId, "children", "fanin:t1");
-  assert.deepEqual(waiting, { suspended: true, payload: null });
+  assert.deepEqual(waiting, { suspended: true, timedOut: false, payload: null });
   assert.equal(await holdsClaim(worker, "turns_delegated", claimed!.runId, "worker-a"), false);
 
   await emitEvent(emitter, "turns_people", "fanin:t1", { children: 3 });
@@ -209,6 +221,7 @@ test("an event emitted on another connection wakes the waiter; another queue doe
   assert.deepEqual(woken!.eventPayload, { children: 2 });
   assert.deepEqual(await awaitEvent(worker, "turns_delegated", spawned.taskId, woken!.runId, "children", "fanin:t1"), {
     suspended: false,
+    timedOut: false,
     payload: { children: 2 },
   });
   const checkpoint = await getCheckpoint(worker, "turns_delegated", spawned.taskId, "children");
@@ -217,10 +230,51 @@ test("an event emitted on another connection wakes the waiter; another queue doe
   assert.equal(await getCheckpoint(worker, "turns_delegated", spawned.taskId, "missing"), undefined);
 });
 
+test("awaitEvent tells a timeout apart from an event emitted without a payload", { skip }, async () => {
+  const now = await connect(T0);
+  const later = await connect(at(11));
+  const timed = await spawnTask(now, "turns_people", "turn", {}, { maxAttempts: 10 });
+  const [first] = await claimTasks(now, "turns_people", "worker-a", 30);
+  assert.equal(
+    (await awaitEvent(now, "turns_people", timed.taskId, first!.runId, "wait", "never", 10)).suspended,
+    true,
+  );
+  const [resumed] = await claimTasks(later, "turns_people", "worker-a", 30);
+  assert.deepEqual(await awaitEvent(later, "turns_people", timed.taskId, resumed!.runId, "wait", "never", 10), {
+    suspended: false,
+    timedOut: true,
+    payload: null,
+  });
+  const emitted = await spawnTask(later, "turns_people", "turn", {}, { maxAttempts: 10 });
+  const [second] = await claimTasks(later, "turns_people", "worker-a", 30);
+  await emitEvent(later, "turns_people", "resume:t2");
+  assert.deepEqual(await awaitEvent(later, "turns_people", emitted.taskId, second!.runId, "wait", "resume:t2"), {
+    suspended: false,
+    timedOut: false,
+    payload: null,
+  });
+});
+
+test("holdsClaim locks the run so a cancel waits for the fenced transaction", { skip }, async () => {
+  const worker = await connect(T0);
+  const other = await connect(T0);
+  const spawned = await spawnTask(worker, "turns_people", "turn", {}, { maxAttempts: 10 });
+  const [claimed] = await claimTasks(worker, "turns_people", "worker-a", 30);
+  await worker.query("BEGIN");
+  assert.equal(await holdsClaim(worker, "turns_people", claimed!.runId, "worker-a"), true);
+  let cancelled = false;
+  const cancel = cancelTask(other, "turns_people", spawned.taskId).then(() => (cancelled = true));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(cancelled, false);
+  await worker.query("COMMIT");
+  await cancel;
+  assert.equal(await holdsClaim(worker, "turns_people", claimed!.runId, "worker-a"), false);
+});
+
 test("cancelTask makes the worker's next extendClaim raise TaskCancelled", { skip }, async () => {
   const worker = await connect(T0);
   const other = await connect(T0);
-  const spawned = await spawnTask(worker, "turns_people", "turn", {});
+  const spawned = await spawnTask(worker, "turns_people", "turn", {}, { maxAttempts: 10 });
   const [claimed] = await claimTasks(worker, "turns_people", "worker-a", 30);
   await extendClaim(worker, "turns_people", claimed!.runId, 30);
   await cancelTask(other, "turns_people", spawned.taskId);
@@ -231,7 +285,7 @@ test("cancelTask makes the worker's next extendClaim raise TaskCancelled", { ski
 test("spawnTask inside a rolled-back transaction leaves no task", { skip }, async () => {
   const db = await connect(T0);
   await db.query("BEGIN");
-  await spawnTask(db, "turns_people", "turn", { turnId: "rolled-back" });
+  await spawnTask(db, "turns_people", "turn", { turnId: "rolled-back" }, { maxAttempts: 10 });
   await db.query("ROLLBACK");
   const { rows } = await admin.query("SELECT count(*)::int AS n FROM absurd.t_turns_people");
   assert.equal(rows[0]!.n, 0);
@@ -241,7 +295,7 @@ test("spawnTask inside a rolled-back transaction leaves no task", { skip }, asyn
 test("cleanup deletes finished tasks and events past the TTL", { skip }, async () => {
   const then = await connect(T0);
   const later = await connect(at(8 * 86_400));
-  await spawnTask(then, "turns_background", "turn", {});
+  await spawnTask(then, "turns_background", "turn", {}, { maxAttempts: 10 });
   const [claimed] = await claimTasks(then, "turns_background", "worker-a", 30);
   await completeRun(then, "turns_background", claimed!.runId);
   await emitEvent(then, "turns_background", "done:t1", {});
