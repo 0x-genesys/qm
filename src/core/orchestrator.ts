@@ -1293,7 +1293,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       let fallbackTitleWrite: Promise<void> | undefined;
       const assignSessionTitle = () => {
         if (!session.title && !syntheticInput && !input.approval)
-          fallbackTitleWrite = titles.titleFromFirstMessage(session, scopeId, titleText);
+          fallbackTitleWrite = detachStartup(() => titles.titleFromFirstMessage(session, scopeId, titleText));
       };
 
       const isRetry = (input.attempt ?? 1) > 1;
@@ -2838,6 +2838,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const priorTurns = input.priorTurns;
         let visibleHistory = filterHistory(forModelContext(rawEntries));
         const recallStart = Date.now();
+        startupMark("recall_start");
         const recalled = await context.recallMemory(memoryRecallQuery(input.text, visibleHistory));
         const recallMs = Date.now() - recallStart;
         startupMark("recall");
@@ -4171,13 +4172,15 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           await deps.sessions.releaseLease(lease);
         }
         if (!contextRecovered && !turnAbort.signal.aborted)
-          scheduleBackgroundCompaction({
-            sessionId: session.id,
-            scopeId,
-            orgScopeId: resolution.orgScopeId,
-            actorId: actor.id,
-            ...(input.model ? { model: input.model } : {}),
-          });
+          detachStartup(() =>
+            scheduleBackgroundCompaction({
+              sessionId: session.id,
+              scopeId,
+              orgScopeId: resolution.orgScopeId,
+              actorId: actor.id,
+              ...(input.model ? { model: input.model } : {}),
+            }),
+          );
       }
     },
   };

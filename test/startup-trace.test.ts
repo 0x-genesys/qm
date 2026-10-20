@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import type { PoolClient } from "pg";
 import { configurePgPooling, createPgPool, type PgPool } from "../src/persistence/pg-pool.ts";
 import {
   detachStartup,
@@ -107,12 +108,17 @@ test(
       }),
       traced(async () => {
         for (let i = 0; i < 6; i++) await pg.q("SELECT pg_sleep(0.01)");
-        await new Promise<void>(
-          (resolve, reject) =>
-            void pg
-              .pool()
-              .then((p) => p.query("SELECT 1", (err: Error | undefined) => (err ? reject(err) : resolve()))),
+        const p = await pg.pool();
+        await new Promise<void>((resolve, reject) =>
+          p.query("SELECT 1", (err: Error | undefined) => (err ? reject(err) : resolve())),
         );
+        const client = await new Promise<PoolClient>((resolve, reject) =>
+          p.connect((err, c) => (err || !c ? reject(err ?? new Error("no client")) : resolve(c))),
+        );
+        await new Promise<void>((resolve, reject) =>
+          client.query("SELECT 1", (err: Error | undefined) => (err ? reject(err) : resolve())),
+        );
+        client.release();
       }),
     ]);
     await outside;
@@ -120,7 +126,7 @@ test(
     assert.equal(a[0]!.queries, 4);
     assert.equal(a[0]!.untracedCalls, 0);
     assert.equal(b[0]!.queries, 6);
-    assert.equal(b[0]!.untracedCalls, 1);
+    assert.equal(b[0]!.untracedCalls, 3);
   },
 );
 

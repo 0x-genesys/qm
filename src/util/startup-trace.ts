@@ -216,7 +216,8 @@ function traced(args: unknown[]): Trace | undefined {
 }
 
 export function traceStartupQueries(pool: Pool): Pool {
-  let poolQuerySpan: Span | undefined;
+  let poolQuerySpan: Span | "untraced" | undefined;
+  const internalClients = new WeakSet<object>();
   const connect = pool.connect.bind(pool) as (...args: unknown[]) => unknown;
   const query = pool.query.bind(pool) as (...args: unknown[]) => unknown;
   pool.connect = ((...args: unknown[]) => {
@@ -225,18 +226,25 @@ export function traceStartupQueries(pool: Pool): Pool {
     if (inner && typeof args[0] === "function") {
       const callback = args[0] as (...cbArgs: unknown[]) => void;
       return connect((...cbArgs: unknown[]) => {
-        inner.acquired();
+        if (inner !== "untraced") inner.acquired();
+        if (cbArgs[1]) internalClients.add(cbArgs[1] as object);
         callback(...cbArgs);
       });
     }
-    if (typeof args[0] === "function") return connect(...args);
-    const trace = live();
+    const trace = traced(args);
     if (!trace) return connect(...args);
     return settle(() => connect(...args), span(trace, "wait", false));
   }) as Pool["connect"];
   pool.query = ((...args: unknown[]) => {
     const trace = traced(args);
-    if (!trace) return query(...args);
+    if (!trace) {
+      poolQuerySpan = "untraced";
+      try {
+        return query(...args);
+      } finally {
+        poolQuerySpan = undefined;
+      }
+    }
     const s = span(trace, "wait", true);
     poolQuerySpan = s;
     try {
@@ -248,7 +256,7 @@ export function traceStartupQueries(pool: Pool): Pool {
   pool.on("connect", (client: PoolClient) => {
     const clientQuery = client.query.bind(client) as (...args: unknown[]) => unknown;
     client.query = ((...args: unknown[]) => {
-      if (args.some((arg) => typeof arg === "function")) return clientQuery(...args);
+      if (internalClients.delete(client)) return clientQuery(...args);
       const trace = traced(args);
       if (!trace) return clientQuery(...args);
       return settle(() => clientQuery(...args), span(trace, "roundTrip", true));
