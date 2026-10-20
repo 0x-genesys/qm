@@ -180,9 +180,7 @@ const SESSION_BATCH_SIZE = 50;
 let recentLimit = SESSION_BATCH_SIZE;
 let archivedLimit = SESSION_BATCH_SIZE;
 let chatsPageLimit = SESSION_BATCH_SIZE;
-// Channels, group DMs and projects page per group: their newest few, then an in-group "Show N more".
 const GROUP_PREVIEW_SIZE = 5;
-const GROUP_BATCH_SIZE = 20;
 const groupLimits = new Map<string, number>();
 
 let chatsPageScope: string | null = null;
@@ -327,35 +325,25 @@ export function renderList(): void {
     sessionsState.openMenuId,
     sessionsState.renamingId,
   ]);
+  const activeItems = recentItemsFor(rest);
   const keptThreads = new Set(
     visible.filter((session) => !session.id || keptIds.has(session.id)).map((session) => session.threadRef),
   );
-  const windowThreads = new Set(rest.slice(0, recentLimit).map((session) => session.threadRef));
+  const shownItems = activeItems.filter(
+    (item, i) =>
+      i < recentLimit ||
+      (item.kind === "project" &&
+        (keptIds.has(projectMenuKey(item.scopeId)) ||
+          item.sessions.some((session) => keptThreads.has(session.threadRef)))),
+  );
   const shownThreads = new Set([
-    ...windowThreads,
     ...archived.slice(0, archivedLimit).map((session) => session.threadRef),
     ...keptThreads,
+    ...shownItems
+      .flatMap((item) => (item.kind === "session" ? [item.session] : item.sessions.slice(0, groupLimit(item))))
+      .map((session) => session.threadRef),
   ]);
-  const activeItems = recentItemsFor(rest);
-  // The recency window decides which groups appear; a paged group then shows its own newest rows as a unit,
-  // so its header count and rows never disagree because of where the window happened to cut.
-  const unseenGroups = new Set<string>();
-  const groupOf = new Map<string, string>();
-  for (const item of activeItems) {
-    if (!pagedGroup(item)) continue;
-    const unseen = !item.sessions.some((session) => windowThreads.has(session.threadRef));
-    if (unseen) unseenGroups.add(item.scopeId);
-    const limit = groupLimits.get(item.scopeId) ?? GROUP_PREVIEW_SIZE;
-    item.sessions.forEach((session, i) => {
-      groupOf.set(session.threadRef, item.scopeId);
-      if (i < limit && !unseen) shownThreads.add(session.threadRef);
-      else if (!keptThreads.has(session.threadRef)) shownThreads.delete(session.threadRef);
-    });
-  }
-  const moreBelow = rest.slice(recentLimit).some((session) => {
-    const scopeId = groupOf.get(session.threadRef);
-    return scopeId === undefined ? !shownThreads.has(session.threadRef) : unseenGroups.has(scopeId);
-  });
+  const moreBelow = activeItems.slice(recentLimit).some((item) => item.kind === "session" || item.sessions.length);
   const archivedItems: RecentItem[] = archived.map((session) => ({
     kind: "session",
     session,
@@ -532,26 +520,25 @@ function recentItem(item: RecentItem, shownThreads: ReadonlySet<string>): Templa
   `;
 }
 
-function pagedGroup(item: RecentItem): item is Extract<RecentItem, { kind: "project" }> {
-  return item.kind === "project" && item.groupKind !== "personal";
+function groupLimit(item: Extract<RecentItem, { kind: "project" }>): number {
+  return groupLimits.get(item.scopeId) ?? (item.groupKind === "personal" ? SESSION_BATCH_SIZE : GROUP_PREVIEW_SIZE);
 }
 
 function groupShowMore(
   item: Extract<RecentItem, { kind: "project" }>,
   shownThreads: ReadonlySet<string>,
 ): TemplateResult | typeof nothing {
-  if (!pagedGroup(item)) return nothing;
   const hidden = item.sessions.filter((session) => !shownThreads.has(session.threadRef)).length;
   if (!hidden) return nothing;
   return html`<button
     class="archived-toggle group-show-more"
     type="button"
     @click=${() => {
-      groupLimits.set(item.scopeId, (groupLimits.get(item.scopeId) ?? GROUP_PREVIEW_SIZE) + GROUP_BATCH_SIZE);
+      groupLimits.set(item.scopeId, groupLimit(item) + SESSION_BATCH_SIZE);
       renderList();
     }}
   >
-    Show ${Math.min(hidden, GROUP_BATCH_SIZE)} more
+    Show ${Math.min(hidden, SESSION_BATCH_SIZE)} more
   </button>`;
 }
 
