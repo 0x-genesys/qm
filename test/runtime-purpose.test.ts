@@ -152,7 +152,13 @@ test("runtime get and inherit use job execution defaults, and handoffs survive r
   const run = "00000000-0000-4000-8000-000000000001";
   const entries = [
     storedItem(
-      { kind: "ToolResult", tool: "runtime", turnId: run, body: { actorId: "alice", runtimeHandoff: handoff.handoff } },
+      {
+        kind: "ToolResult",
+        tool: "runtime",
+        callId: "c1",
+        turnId: run,
+        body: { actorId: "alice", runtimeHandoff: handoff.handoff },
+      },
       { sessionId: "s", seq: 1, createdAt: 1 },
     ),
   ];

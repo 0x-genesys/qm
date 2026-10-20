@@ -10,7 +10,7 @@ const entry = (seq: number, item: NewItem): Item =>
   storedItem(item, { sessionId: "s1", seq, createdAt: 1_700_000_000_000 + seq * 1000 });
 const user = (text: string, body?: Record<string, unknown>): NewItem => ({ kind: "UserMessage", text, body });
 const reply = (text: string): NewItem => ({ kind: "AgentMessage", text });
-const call = (tool: string, body: Record<string, unknown>): NewItem => ({ kind: "ToolCall", tool, body });
+const call = (tool: string, body: Record<string, unknown>): NewItem => ({ kind: "ToolCall", tool, callId: "c1", body });
 
 const ENTRIES: Item[] = [
   entry(1, user("where is the Q2 budget doc?")),
@@ -71,7 +71,7 @@ test("non-human entries carry no author label (agent/tool are self-evident by ki
 test("search view keeps compacted-away entries and the latest summary, but never superseded-summary ones", () => {
   const entries: Item[] = [
     entry(1, user("the venue is Fort Mason")),
-    entry(2, { kind: "ToolResult", text: "venue gate code 4417" }),
+    entry(2, { kind: "ToolResult", callId: "c1", text: "venue gate code 4417" }),
     entry(3, { kind: "Reasoning", text: "pondering the venue" }),
     entry(4, contextSummaryItem(3, "earlier: venue is Fort Mason, gate pending")),
     entry(5, user("correction: the venue is Pier 27")),
@@ -166,8 +166,8 @@ test("history view excludes tool results from search and reopening while retaini
   const entries: Item[] = [
     entry(1, user("check the forecast")),
     entry(2, call("forecast", { city: "Oakland" })),
-    entry(3, { kind: "ToolResult", tool: "forecast", text: "forecast output: sunny" }),
-    entry(4, { kind: "ToolResult", tool: "forecast", body: { result: { weather: "clear" } } }),
+    entry(3, { kind: "ToolResult", tool: "forecast", callId: "c3", text: "forecast output: sunny" }),
+    entry(4, { kind: "ToolResult", tool: "forecast", callId: "c4", body: { result: { weather: "clear" } } }),
     entry(5, reply("forecast checked")),
   ];
   const view = forSearchView(entries);

@@ -108,22 +108,6 @@ test("reconstructMessagesFromHistory rebuilds a faithful tool round — a fact i
   assert.equal(result.isError, false);
 });
 
-test("reconstructMessagesFromHistory SKIPS legacy tool entries with no callId (degrades to no tool replay)", () => {
-  const history: Item[] = [
-    item({ kind: "UserMessage", text: "hi" }, 1),
-    item({ kind: "ToolCall", tool: "read", body: { path: "a.txt" } }, 2),
-    item({ kind: "ToolResult", tool: "read", body: { path: "a.txt", found: true } }, 3),
-    item({ kind: "AgentMessage", text: "ok" }, 4),
-  ];
-  const msgs = reconstructMessagesFromHistory(history);
-  assertValidWire(msgs);
-  assert.deepEqual(
-    msgs.map((m) => m.role),
-    ["user", "assistant"],
-  );
-  assert.ok(!msgs.some((m) => m.role === "assistant" && m.content.some((c) => c.type === "toolCall")));
-});
-
 test("a tool call with no recorded result replays with a synthetic interrupted result (turn died mid-call)", () => {
   const history: Item[] = [
     item({ kind: "UserMessage", text: "build and push the release" }, 1),

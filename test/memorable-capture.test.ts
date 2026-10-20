@@ -138,9 +138,8 @@ test("captureSession marks quarantined results as failed, never guesses success"
 
 test("captureSession tolerates malformed payloads and missing user entry", () => {
   const entries: Item[] = [
-    item({ kind: "ToolCall" }, 1),
-    item({ kind: "ToolCall", callId: "c1" }, 2),
-    item({ kind: "ToolCall", body: { junk: true } }, 3),
+    item({ kind: "ToolCall", callId: "c1" }, 1),
+    item({ kind: "ToolCall", callId: "c2", body: { junk: true } }, 2),
   ];
   const capture = captureSession("s1", "personal:U1", entries);
   assert.deepEqual(capture.workflows, []);

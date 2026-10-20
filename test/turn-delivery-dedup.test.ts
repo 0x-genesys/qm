@@ -118,18 +118,6 @@ test("completedSurfaceEnqueues counts only completed surface enqueue calls after
   ];
   assert.equal(completedSurfaceEnqueues(entries, 0, "slack"), 2, "the interrupted post at seq 7 is not counted");
   assert.equal(completedSurfaceEnqueues(entries, 5, "slack"), 0, "entries at or before sinceSeq are excluded");
-
-  const noCallIds = [
-    entry(0, { kind: "UserMessage", text: "!go" }),
-    entry(1, { kind: "ToolCall", tool: "slack", body: { action: "post" } }),
-    entry(2, { kind: "ToolResult", tool: "post", body: { ok: true } }),
-    entry(3, { kind: "ToolCall", tool: "slack", body: { action: "post" } }),
-  ];
-  assert.equal(
-    completedSurfaceEnqueues(noCallIds, 0, "slack"),
-    1,
-    "callId-less results pair with the latest open call",
-  );
 });
 
 test("turnPostKeys mints deterministic per-destination position keys and seeds past recorded work", () => {

@@ -28,11 +28,6 @@ test("compactTranscript does NOT mark a tool call that has a recorded result", (
   assert.match(out, /wrote inv=89/);
 });
 
-test("compactTranscript leaves legacy tool calls without a callId untouched (no false interrupted marker)", () => {
-  const out = compactTranscript([ent({ kind: "ToolCall", tool: "read", body: { path: "a.txt" } }, 1)]);
-  assert.doesNotMatch(out, /interrupted/);
-});
-
 test("compactTranscript labels overheard entries by author and keeps a file-only one's caption", () => {
   const out = compactTranscript([
     ent(

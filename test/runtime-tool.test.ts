@@ -97,6 +97,7 @@ test("runtime recovery uses only durable decisions belonging to the same run and
       {
         kind: "ToolResult",
         tool: "runtime",
+        callId: "c1",
         turnId,
         body: { actorId, runtimeHandoff: { choice: { ...active, modelId }, lifetime: "task" } },
       },

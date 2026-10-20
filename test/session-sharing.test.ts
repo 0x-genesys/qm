@@ -274,10 +274,13 @@ test("fresh shares freeze messages and authorized attachments with separate audi
 test("attachment projection includes only user and delivered attachments", () => {
   const messages = sharedMessages([
     entry({ kind: "UserMessage", body: { attachments: [{ artifactId: "user" }] } }, 1),
-    entry({ kind: "ToolResult", tool: "execute", body: { files: [{ artifactId: "private" }] } }, 2),
-    entry({ kind: "ToolResult", tool: "attach", isError: true, body: { files: [{ artifactId: "failed" }] } }, 3),
-    entry({ kind: "ToolResult", tool: "attach", body: { files: [{ artifactId: "old", name: "a" }] } }, 4),
-    entry({ kind: "ToolResult", tool: "attach", body: { files: [{ artifactId: "new", name: "a" }] } }, 5),
+    entry({ kind: "ToolResult", callId: "a1", tool: "execute", body: { files: [{ artifactId: "private" }] } }, 2),
+    entry(
+      { kind: "ToolResult", callId: "a2", tool: "attach", isError: true, body: { files: [{ artifactId: "failed" }] } },
+      3,
+    ),
+    entry({ kind: "ToolResult", callId: "a3", tool: "attach", body: { files: [{ artifactId: "old", name: "a" }] } }, 4),
+    entry({ kind: "ToolResult", callId: "a4", tool: "attach", body: { files: [{ artifactId: "new", name: "a" }] } }, 5),
     entry({ kind: "AgentMessage", text: "Here" }, 6),
     entry({ kind: "ToolCall", callId: "p", body: { action: "post", text: "Posted" } }, 8),
     entry({ kind: "ToolResult", callId: "p", body: { files: [{ artifactId: "posted" }] } }, 9),
@@ -324,7 +327,12 @@ test("snapshot authorization checks mixed tenure bounds without reading transcri
 
 test("staged tool attachments are never shared without confirmed delivery", () => {
   const staged = entry(
-    { kind: "ToolResult", tool: "attach", body: { ok: true, files: [{ artifactId: "PRIVATE_STAGED_FILE" }] } },
+    {
+      kind: "ToolResult",
+      callId: "a5",
+      tool: "attach",
+      body: { ok: true, files: [{ artifactId: "PRIVATE_STAGED_FILE" }] },
+    },
     1,
   );
   for (const following of [
