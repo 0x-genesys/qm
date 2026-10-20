@@ -197,7 +197,19 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
     ],
   );
 
-  const availabilityListeners = new Map<() => void, number>();
+  const availabilityListeners = new Map<() => boolean | void, number>();
+  let availabilityOff: (() => void) | undefined;
+  let wakeCursor = 0;
+  function wakeOne(): void {
+    const listeners = [...availabilityListeners.keys()];
+    for (let i = 0; i < listeners.length; i++) {
+      const at = (wakeCursor + i) % listeners.length;
+      if (listeners[at]!() === true) {
+        wakeCursor = at + 1;
+        return;
+      }
+    }
+  }
   let availabilityTimer: ReturnType<typeof setTimeout> | undefined;
   let availabilityProbe: Promise<void> | null = null;
   let availabilityClosed = false;
@@ -218,7 +230,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
           [Date.now()],
         )
           .then(({ rows }) => {
-            if (rows[0]?.available) for (const listener of availabilityListeners.keys()) listener();
+            if (rows[0]?.available) wakeOne();
           })
           .catch((error: unknown) => swallow("run availability probe", error))
           .finally(() => {
@@ -287,6 +299,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
       SELECT 1 FROM runs sibling WHERE sibling.session_id=candidate.session_id
         AND (sibling.status='running' OR (sibling.status='pending'
           AND (sibling.retry_after > ${now} OR (sibling.created_at, sibling.seq) < (candidate.created_at, candidate.seq))))
+      OFFSET 0
     )`;
 
   async function claim(workerId: string, ttlMs: number, runId?: string, sessionId?: string): Promise<Run | null> {
@@ -304,7 +317,9 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
          ) RETURNING *`,
         [token, now + ttlMs, workerId, now, runId ?? null, sessionId ?? null],
       );
-      return rows[0] ? rowToRun(rows[0]) : null;
+      if (!rows[0]) return null;
+      if (runId === undefined && sessionId === undefined) wakeOne();
+      return rowToRun(rows[0]);
     } catch (err) {
       if (isUniqueViolation(err)) return null;
       throw err;
@@ -316,12 +331,15 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
       availabilityListeners.set(listener, options?.pollMs ?? 50);
       clearTimeout(availabilityTimer);
       availabilityTimer = undefined;
-      const off = available.subscribe(listener, options);
+      availabilityOff ??= available.subscribe(wakeOne);
+      const off = available.subscribe(() => {}, options);
       watchAvailability();
       return () => {
         off();
         availabilityListeners.delete(listener);
         if (availabilityListeners.size === 0) {
+          availabilityOff?.();
+          availabilityOff = undefined;
           clearTimeout(availabilityTimer);
           availabilityTimer = undefined;
         }
@@ -664,6 +682,8 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
       availabilityClosed = true;
       clearTimeout(availabilityTimer);
       availabilityListeners.clear();
+      availabilityOff?.();
+      availabilityOff = undefined;
       await availabilityProbe;
       await available.close?.();
       await closePool();
