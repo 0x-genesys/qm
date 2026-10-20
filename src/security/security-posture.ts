@@ -105,6 +105,7 @@ const INTERNAL_RESULT_TOOLS = new Set([
   "get_goal",
   "update_goal",
   "finish_silently",
+  "submit_stage_output",
   "guidance",
   "webhook",
   "share",

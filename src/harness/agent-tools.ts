@@ -8,9 +8,9 @@ import { createGrindMeter, grindState } from "./grind.ts";
 import type { HarnessHandoff, RuntimeRequest } from "./runtime-types.ts";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
-import { Check } from "typebox/value";
+import { Check, Errors } from "typebox/value";
 import { CONFIG_DEFAULTS, type Config } from "../config.ts";
-import type { ClientToolDeclaration, CronFireLogEntry, EntryType, ScopeId } from "../types.ts";
+import type { ClientToolDeclaration, CronFireLogEntry, EntryType, ScopeId, StageOutputDeclaration } from "../types.ts";
 import type { ToolContext, PublishInput, PublishAudienceDescriptor } from "../tools/primitives.ts";
 import type { GapWork } from "../sessions/session-store.ts";
 import { NeedsApproval, CommandDenied } from "../tools/primitives.ts";
@@ -322,11 +322,12 @@ export interface AgentToolsOptions {
   delegateWork?: boolean;
   surfaceName?: string;
   clientTools?: readonly ClientToolDeclaration[];
+  stageOutput?: StageOutputDeclaration;
 }
 
 export type CoreToolOptions = Omit<
   AgentToolsOptions,
-  "readOnly" | "surfaceTools" | "surfaceName" | "delegateWork" | "clientTools"
+  "readOnly" | "surfaceTools" | "surfaceName" | "delegateWork" | "clientTools" | "stageOutput"
 >;
 
 export function coreToolOptions(config: Config): CoreToolOptions {
@@ -348,7 +349,15 @@ export function coreToolOptions(config: Config): CoreToolOptions {
 const CLIENT_TOOL_DEFAULT_TIMEOUT_MS = 10_000;
 const CLIENT_TOOL_TIMEOUT_TEXT = "The page didn't respond in time. It may have been closed or navigated away.";
 
-const READ_ONLY_TOOL_NAMES = new Set(["memory", "history", "finish_silently", "runtime", "sessions", "subagents"]);
+const READ_ONLY_TOOL_NAMES = new Set([
+  "memory",
+  "history",
+  "finish_silently",
+  "runtime",
+  "sessions",
+  "subagents",
+  "submit_stage_output",
+]);
 
 export function pauseStampAfterToolCall(
   ref: Pick<ToolContextRef, "pausedOnApproval" | "silentRequested" | "runtimeHandoff">,
@@ -3862,6 +3871,37 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     },
   });
 
+  const stageOutput = opts?.stageOutput;
+  const submitStageOutput =
+    stageOutput &&
+    defineTool({
+      name: "submit_stage_output",
+      label: "submit_stage_output",
+      description: stageOutput.description,
+      parameters: stageOutput.schema as never,
+      async execute(callId, params) {
+        await recordCall(callId, { tool: "submit_stage_output" });
+        const sink = ref.current?.stageOutput;
+        if (!sink || !isObj(params) || !Check(stageOutput.schema, params)) {
+          const problems = Errors(stageOutput.schema, params)
+            .slice(0, 5)
+            .map((error) => `${error.instancePath || "/"} ${error.message}`);
+          return recordCoreAuthoredResult(
+            callId,
+            { tool: "submit_stage_output", invalid: true },
+            text(
+              sink
+                ? `[error] invalid submit_stage_output arguments: ${problems.join("; ")}. Fix them and submit again.`
+                : "[error] this turn does not accept a stage output.",
+            ),
+            true,
+          );
+        }
+        sink.submit(params);
+        return recordCoreAuthoredResult(callId, { tool: "submit_stage_output", submitted: true }, text("[submitted]"));
+      },
+    });
+
   const GOAL_EVIDENCE_FILES = 5;
   const GOAL_EVIDENCE_FILE_CHARS = 20_000;
   async function goalEvidenceFiles(
@@ -4365,6 +4405,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     context,
     ...mcpTools,
     ...clientTools,
+    ...(submitStageOutput ? [submitStageOutput] : []),
   ];
   const operationFields: Record<string, Record<string, string[]>> = {
     sandbox: {
@@ -4500,7 +4541,7 @@ function withRetrySafety(tool: ToolDefinition, marks: Map<string, RetryMark>): T
   } as ToolDefinition;
 }
 
-const TOOL_APPROVAL_EXEMPT = new Set(["finish_silently"]);
+const TOOL_APPROVAL_EXEMPT = new Set(["finish_silently", "submit_stage_output"]);
 export const GATED_TOOL_APPROVALS: Record<
   string,
   { reason: string; summary: (params: Record<string, unknown>) => string }

@@ -2642,6 +2642,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           postKeys,
           spine,
         });
+        let stageOutput: Record<string, unknown> | undefined;
         const attachStaging = createAttachStaging({
           sandbox: deps.sandbox,
           provision: provisionOutbound,
@@ -2756,6 +2757,16 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               }
             : {}),
           ...(strictReadOnly ? {} : { attach: attachStaging.attach }),
+          ...(input.stageOutput
+            ? {
+                stageOutput: {
+                  ...input.stageOutput,
+                  submit: (value: Record<string, unknown>) => {
+                    stageOutput = value;
+                  },
+                },
+              }
+            : {}),
           memory: context.memory,
           memoryCaptureMetadata: () => ({ sessionId: session.id, inheritedFacts: captureDependencies() }),
           memoryScopeId,
@@ -4069,6 +4080,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         }
 
         if (turnRuntime) finalResult = { ...finalResult, runtime: turnRuntime };
+        if (stageOutput) finalResult = { ...finalResult, stageOutput };
         await fallbackTitleWrite;
 
         if (input.background && finalResult.status !== "pending_approval") {

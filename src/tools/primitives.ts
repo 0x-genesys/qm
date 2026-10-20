@@ -30,6 +30,7 @@ import type {
   Permission,
   Principal,
   ScopeId,
+  StageOutputDeclaration,
   WorkspaceLayer,
 } from "../types.ts";
 import { parseScopeId, scopeId } from "../types.ts";
@@ -190,12 +191,17 @@ export type AttachResult = { ok: true; files: AttachedFileMeta[]; staged: number
 
 export type AttachFiles = (files: readonly OutboundFile[], sandboxId?: string) => Promise<AttachResult>;
 
+export interface StageOutputSink extends StageOutputDeclaration {
+  submit(value: Record<string, unknown>): void;
+}
+
 export interface ToolContext extends SurfaceToolDeps {
   installSharedCanvas?: (fileId: string) => Promise<string | null>;
   admin?: AdminToolAccess;
   runtime?(request: RuntimeRequest, signal?: AbortSignal): Promise<RuntimeResult>;
   attach: AttachFiles;
   sessionSyscalls?: SessionSyscalls;
+  stageOutput?: StageOutputSink;
   /** True when a person's own message started this turn (not a cron, webhook, ambient or delegated wake). */
   humanTurn?: boolean;
   commandCredentialHandles?: readonly string[];
@@ -545,6 +551,7 @@ export interface ToolContextDeps {
   surface?: SurfaceToolDeps;
   attach?: AttachFiles;
   sessionSyscalls?: SessionSyscalls;
+  stageOutput?: StageOutputSink;
   humanTurn?: boolean;
 }
 
@@ -1198,6 +1205,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
 
     ...(deps.humanTurn ? { humanTurn: true } : {}),
     ...(deps.sessionSyscalls ? { sessionSyscalls: deps.sessionSyscalls } : {}),
+    ...(deps.stageOutput ? { stageOutput: deps.stageOutput } : {}),
 
     async history(q: string, limit?: number): Promise<string[]> {
       if (!deps.sessionHistory) return [];

@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { JUDGE_OUTPUT } from "../src/loops/stage-outputs.ts";
 import { createGoalRecord } from "../src/harness/goal.ts";
 import assert from "node:assert/strict";
 import { Check } from "typebox/value";
@@ -1515,6 +1516,42 @@ test("readOnly exposes observation and constrained session coordination without 
   for (const t of ["execute", "background", "files", "apps", "cron", "webhook", "guidance"]) {
     assert.ok(!names(readOnly).has(t), `read-only toolset drops ${t}`);
   }
+});
+
+test("submit_stage_output hands only schema-valid arguments to the turn, read-only and ungated", async () => {
+  const submitted: Array<Record<string, unknown>> = [];
+  const emitted: Emitted[] = [];
+  const stageOutput = {
+    description: "Submit the verdict.",
+    schema: JSON.parse(JSON.stringify(JUDGE_OUTPUT.schema)) as Record<string, unknown>,
+  };
+  const ref: ToolContextRef = {
+    current: { ...fakeToolContext(), stageOutput: { ...stageOutput, submit: (value) => submitted.push(value) } },
+    emit: (e) => {
+      emitted.push(e as Emitted);
+    },
+    scopeLabel: "personal:U1",
+    toolApprovalGate: () => false,
+  };
+  assert.ok(!createAgentTools(ref).some((t) => t.name === "submit_stage_output"));
+  const tools = createAgentTools(ref, { readOnly: true, stageOutput });
+  const submit = tools.find((t) => t.name === "submit_stage_output");
+  assert.equal(submit?.description, "Submit the verdict.");
+
+  const bad = (await call(submit, { outcome: "maybe", reason: "" })) as { content: Array<{ text?: string }> };
+  assert.match(bad.content[0]?.text ?? "", /^\[error\] invalid submit_stage_output arguments: \/outcome .*\/reason /);
+  assert.deepEqual(submitted, []);
+
+  const good = (await call(submit, { outcome: "met", reason: "done" })) as { content: Array<{ text?: string }> };
+  assert.equal(good.content[0]?.text, "[submitted]");
+  assert.deepEqual(submitted, [{ outcome: "met", reason: "done" }]);
+  assert.deepEqual(
+    emitted.filter((e) => e.type === "tool_result").map((e) => [e.payload.invalid, e.payload.submitted]),
+    [
+      [true, undefined],
+      [undefined, true],
+    ],
+  );
 });
 
 test("finish_silently on a poll fire terminates the turn at the tool contract; off one it no-ops", async () => {
