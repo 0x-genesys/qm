@@ -43,6 +43,7 @@ import {
   INTAKE_OUTPUT,
   JUDGE_OUTPUT,
   PROPOSAL_OUTPUT,
+  REPLY_JUDGE_OUTPUT,
   REPLY_PROPOSAL_OUTPUT,
   REPLY_WORK_OUTPUT,
   TRIAGE_OUTPUT,
@@ -193,10 +194,8 @@ function parseIntake(outcome: TriggerOutcome): IntakeCandidate[] {
   }));
 }
 
-function workOutputFor(loop: Loop, item: LoopItem): typeof WORK_OUTPUT | typeof REPLY_WORK_OUTPUT {
-  return adapterForItem(item) && loop.shipActions.length === 1 && loop.shipActions[0]?.action === "send"
-    ? REPLY_WORK_OUTPUT
-    : WORK_OUTPUT;
+function draftsReply(loop: Loop, item: LoopItem): boolean {
+  return Boolean(adapterForItem(item)) && loop.shipActions.length === 1 && loop.shipActions[0]?.action === "send";
 }
 
 async function parseVerdict(
@@ -370,8 +369,8 @@ function workPrompt(loop: Loop, item: LoopItem, guidance?: string, similar: Loop
     "```",
     shipActionContract(loop),
     `The item's success condition: ${promptText(loop.successCondition)}`,
-    workOutputFor(loop, item) === REPLY_WORK_OUTPUT
-      ? "Submit the draft reply as proposal, with empty outputs, using submit_stage_output for human review; never send it. If no reply is needed, submit empty outputs without a proposal."
+    draftsReply(loop, item)
+      ? "Draft the reply for human review and submit it with submit_stage_output; never send it."
       : "When the work is finished, submit outputs with submit_stage_output.",
     "[End loop work]",
     "",
@@ -656,7 +655,7 @@ export function createLoopFireService(deps: LoopFireDeps): LoopFireService {
             const heldIds = (held ??= heldMembers(loop, all));
             const itemThreadRef = loopFireItemThreadRef(loopId, fireKey, item.id);
             const similar = all.filter((member) => heldIds.has(member.id) && member.triage?.groupId === item.id);
-            const expected = workOutputFor(loop, item);
+            const expected = draftsReply(loop, item) ? REPLY_WORK_OUTPUT : WORK_OUTPUT;
             const outcome = await stageTurn(
               loop,
               `${fireKey}:work:${item.id}:${item.attempts}`,
@@ -709,7 +708,7 @@ export function createLoopFireService(deps: LoopFireDeps): LoopFireService {
               loopFireItemThreadRef(loopId, fireKey, item.id),
               judgePrompt(loop, item),
               undefined,
-              { stageOutput: JUDGE_OUTPUT.declaration },
+              { stageOutput: (draftsReply(loop, item) ? REPLY_JUDGE_OUTPUT : JUDGE_OUTPUT).declaration },
             );
             const failure = stageFailure("judge", outcome);
             if (failure) throw failure.error;

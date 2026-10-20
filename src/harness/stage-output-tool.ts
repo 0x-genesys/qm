@@ -39,9 +39,17 @@ export function stageOutputTool(
   }) as unknown as ToolDefinition;
 }
 
-export function submittedStageOutput(entries: readonly SessionEntry[]): Record<string, unknown> | undefined {
+export function submittedStageOutput(
+  entries: readonly SessionEntry[],
+  userSeq: number,
+): Record<string, unknown> | undefined {
+  const next = entries.find(
+    (entry) => entry.seq > userSeq && entry.type === "user" && !(isObj(entry.payload) && entry.payload.steered),
+  );
   const output = entries.findLast(
     (entry) =>
+      entry.seq > userSeq &&
+      (next === undefined || entry.seq < next.seq) &&
       entry.type === "tool_result" &&
       isObj(entry.payload) &&
       entry.payload.tool === STAGE_OUTPUT_TOOL &&

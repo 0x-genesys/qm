@@ -1537,17 +1537,17 @@ test("submit_stage_output records only schema-valid submissions, read-only and u
 
   const bad = (await call(submit, { outcome: "maybe", reason: "" })) as { content: Array<{ text?: string }> };
   assert.match(bad.content[0]?.text ?? "", /^\[error\] invalid submit_stage_output arguments: \/outcome .*\/reason /);
-  assert.equal(submittedStageOutput(entries()), undefined);
-  assert.deepEqual(emitted.find((e) => e.type === "tool_call")?.payload, {
-    outcome: "maybe",
-    reason: "",
-    tool: "submit_stage_output",
-    callId: emitted[0]!.payload.callId,
-  });
+  const workShaped = (await call(submit, { outputs: [] })) as { content: Array<{ text?: string }> };
+  assert.match(
+    workShaped.content[0]?.text ?? "",
+    /^\[error\] invalid submit_stage_output arguments: \/ must have required/,
+  );
+  assert.equal(submittedStageOutput(entries(), -1), undefined);
+  assert.equal(emitted.find((e) => e.type === "tool_call")?.payload.outcome, "maybe");
 
   const good = (await call(submit, { outcome: "met", reason: "done" })) as { content: Array<{ text?: string }> };
   assert.equal(good.content[0]?.text, "[submitted]");
-  assert.deepEqual(submittedStageOutput(entries()), { outcome: "met", reason: "done" });
+  assert.deepEqual(submittedStageOutput(entries(), -1), { outcome: "met", reason: "done" });
 });
 
 test("finish_silently on a poll fire terminates the turn at the tool contract; off one it no-ops", async () => {

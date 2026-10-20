@@ -135,10 +135,10 @@ const addresses = (description: string) =>
   Type.Optional(Type.Array(Type.String({ pattern: "^[^\\r\\n\\u0000]*$" }), { maxItems: 100, description }));
 
 export const REPLY_DRAFT_SCHEMA = Type.Object({
-  body: Type.String({ description: "The draft reply." }),
+  body: Type.String({ maxLength: 20000, description: "The draft reply." }),
   to: addresses("Email recipients, if applicable."),
   cc: addresses("Email cc recipients, if applicable."),
-  subject: Type.Optional(Type.String({ description: "Email subject, if applicable." })),
+  subject: Type.Optional(Type.String({ maxLength: 300, description: "Email subject, if applicable." })),
 });
 
 export type ReplyDraft = Static<typeof REPLY_DRAFT_SCHEMA>;

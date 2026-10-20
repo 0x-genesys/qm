@@ -1296,7 +1296,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
 
       const withStageOutput = async (result: TurnResult, userSeq: number): Promise<TurnResult> => {
         if (!input.stageOutput) return result;
-        const stageOutput = submittedStageOutput(await deps.sessions.getEntries(session.id, { sinceSeq: userSeq }));
+        const stageOutput = submittedStageOutput(
+          await deps.sessions.getEntries(session.id, { sinceSeq: userSeq }),
+          userSeq,
+        );
         return stageOutput ? { ...result, stageOutput } : result;
       };
       const isRetry = (input.attempt ?? 1) > 1;
@@ -1335,7 +1338,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         console.error(
           `[orchestrator] turn.already_answered attempt=${input.attempt} run=${input.runId} thread=${conversation.threadRef} answerSeq=${recordedAnswer.seq}`,
         );
-        return recordedAnswer.text.trim()
+        return recordedAnswer.text.trim() || input.stageOutput
           ? withStageOutput(
               {
                 status: "ok",
