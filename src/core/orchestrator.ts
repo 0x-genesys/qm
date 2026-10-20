@@ -1993,11 +1993,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           return true;
         });
         const memoryWindow = await deps.sessions.getContextWindow(session.id);
-        const earlyRecallQuery = ambientTurn
-          ? undefined
-          : memoryRecallQuery(input.text, filterHistory(forModelContext(memoryWindow.entries)));
-        const earlyRecall = earlyRecallQuery === undefined ? undefined : context.recallMemory(earlyRecallQuery);
-        earlyRecall?.catch(() => undefined);
 
         memoryView = await context.memorySnapshot();
         const latestMemoryContext = memoryWindow.entries.findLast((entry) => memoryContextPayload(entry));
@@ -2009,6 +2004,17 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         memoryContextChanged =
           nextContext.throughSeq > (latestMemoryContext ? memoryContextPayload(latestMemoryContext)!.throughSeq : -1);
         const memoryHistoryReset = nextContext.throughSeq >= 0;
+        const earlyRecallQuery =
+          ambientTurn || memoryContextChanged || input.overheard?.length
+            ? undefined
+            : memoryRecallQuery(input.text, filterHistory(forModelContext(memoryWindow.entries)));
+        const timedRecall = async (query: string) => {
+          const start = Date.now();
+          const facts = await context.recallMemory(query);
+          return { facts, ms: Date.now() - start };
+        };
+        const earlyRecall = earlyRecallQuery === undefined ? undefined : timedRecall(earlyRecallQuery);
+        earlyRecall?.catch(swallowAs("orchestrator: early memory recall", undefined));
         const captureDependencies = () => [
           ...memoryView.facts,
           ...(!memoryView.complete ||
@@ -2880,9 +2886,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const priorTurns = memoryHistoryReset ? undefined : input.priorTurns;
         let visibleHistory = filterHistory(forModelContext(rawEntries));
         const recallQuery = memoryRecallQuery(input.text, visibleHistory);
-        const recallStart = Date.now();
-        const recalled = await (recallQuery === earlyRecallQuery ? earlyRecall! : context.recallMemory(recallQuery));
-        const recallMs = Date.now() - recallStart;
+        const { facts: recalled, ms: recallMs } = await (recallQuery === earlyRecallQuery
+          ? earlyRecall!
+          : timedRecall(recallQuery));
         const partial = isRetry ? (recordedTurn ?? findTrailingPartialTurn(visibleHistory, input.text)) : null;
         let resumePlan = partial ? resumeStrategy(visibleHistory, partial) : null;
         if (partial && resumePlan?.kind === "settle") {

@@ -24,6 +24,7 @@ import { createMemoryFileArtifactStore } from "../src/files/file-artifact-store.
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
 import type { HarnessTurnInput, Harness } from "../src/harness/harness.ts";
 import type { Sandbox } from "../src/sandbox/sandbox.ts";
+import type { MetricsSink } from "../src/admin/metrics-sink.ts";
 import type { FeatureFlagStore } from "../src/feature-flags.ts";
 import type { Conversation, Principal, SessionEntry } from "../src/types.ts";
 
@@ -296,21 +297,19 @@ test("a failed audience reset is retried before recording the new checkpoint", a
 });
 
 const webTurn = (text: string, extra: Partial<OrchestratorInput> = {}): OrchestratorInput => ({
+  ...dm("early-recall", text),
   surface: "web",
-  actor,
-  conversation: { kind: "dm", threadRef: "early-recall", audience: [actor] } as Conversation,
   origin: { kind: "human" },
-  text,
   ...extra,
 });
 
-function recallingMemory(events: string[], fail = false) {
+function recallingMemory(events: string[], failing = false) {
   const queries: string[] = [];
   const recalls = new WeakSet<object>();
-  let total = 0;
   let started = () => {};
-  const memory: MemoryService & { queries: string[]; recallStarted: () => Promise<"recall"> } = {
+  const memory: MemoryService & { queries: string[]; failing: boolean; recallStarted: () => Promise<"recall"> } = {
     queries,
+    failing,
     recallStarted: () =>
       queries.length
         ? Promise.resolve("recall")
@@ -324,14 +323,13 @@ function recallingMemory(events: string[], fail = false) {
       if (!recalls.has(context)) {
         recalls.add(context);
         queries.push(context.query ?? "");
-        total++;
         events.push("recall");
         started();
       }
-      const n = total;
       await new Promise((resolve) => setTimeout(resolve, 20));
-      if (fail) throw new Error("recall unavailable");
-      return [{ id: `f${n}`, text: `RECALLED_${n}`, score: 1 }];
+      if (memory.failing) throw new Error("recall unavailable");
+      const text = `RECALLED<${(context.query ?? "").replace(/\s+/g, " ")}>`;
+      return [{ id: text, text, score: 1 }];
     },
   };
   return memory;
@@ -370,16 +368,16 @@ test("a warm follow-up starts recall before tool setup and uses that one recall"
   const memory = recallingMemory(events);
   const seen: HarnessTurnInput[] = [];
   let waitForRecall = false;
-  const orch = buildOrchestrator(
-    recordingHarness(seen),
-    memory,
-    undefined,
-    withFlagGate(events, async () => {
+  const recallMs: number[] = [];
+  const orch = buildOrchestrator(recordingHarness(seen), memory, undefined, {
+    ...withFlagGate(events, async () => {
       if (!waitForRecall) return;
       const timeout = new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 1000));
       events.push(await Promise.race([memory.recallStarted(), timeout]));
+      await new Promise((resolve) => setTimeout(resolve, 60));
     }),
-  );
+    metrics: { record: (metric) => void recallMs.push(metric.recallMs ?? -1) } as MetricsSink,
+  });
   assert.equal((await orch.handleTurn(webTurn("first question"))).status, "ok");
   events.length = 0;
   memory.queries.length = 0;
@@ -391,10 +389,11 @@ test("a warm follow-up starts recall before tool setup and uses that one recall"
     events.filter((event) => event !== "flag:responsive_spine"),
     ["recall", "recall", "flag:ui_canvas"],
   );
-  assert.match(seen[1]!.environment ?? "", /RECALLED_2/);
+  assert.match(seen[1]!.environment ?? "", /RECALLED<user: first question[^\n]*Current message: follow-up question>/);
+  assert.ok(recallMs.at(-1)! >= 20, `recallMs ${recallMs.at(-1)}`);
 });
 
-test("history imported after the early start is recalled with the current query", async () => {
+test("a turn importing overheard messages recalls once with them in the query", async () => {
   const events: string[] = [];
   const memory = recallingMemory(events);
   const seen: HarnessTurnInput[] = [];
@@ -403,11 +402,28 @@ test("history imported after the early start is recalled with the current query"
   memory.queries.length = 0;
   const overheard = [{ ts: "1", role: "user" as const, name: "Bea", text: "OVERHEARD_LINE" }];
   assert.equal((await orch.handleTurn(webTurn("follow-up question", { overheard }))).status, "ok");
-  assert.equal(memory.queries.length, 2);
-  assert.doesNotMatch(memory.queries[0]!, /OVERHEARD_LINE/);
-  assert.match(memory.queries[1]!, /OVERHEARD_LINE/);
-  assert.match(seen[1]!.environment ?? "", /RECALLED_3/);
-  assert.doesNotMatch(seen[1]!.environment ?? "", /RECALLED_2/);
+  assert.equal(memory.queries.length, 1);
+  assert.match(seen[1]!.environment ?? "", /RECALLED<[^\n]*OVERHEARD_LINE[^\n]*Current message: follow-up question>/);
+});
+
+test("an audience change never sends the hidden history to recall", async () => {
+  const events: string[] = [];
+  const memory = recallingMemory(events);
+  const seen: HarnessTurnInput[] = [];
+  const orch = buildOrchestrator(recordingHarness(seen), memory, undefined, withFlagGate(events));
+  const roomTurn = (text: string, audience: Principal[]) =>
+    webTurn(text, {
+      conversation: { kind: "group", channelRef: "room", threadRef: "early-recall-room", audience },
+    });
+  assert.equal(
+    (await orch.handleTurn(roomTurn("PRIOR_QUESTION", [actor, { id: "U2", type: "internal" }]))).status,
+    "ok",
+  );
+  memory.queries.length = 0;
+  assert.equal((await orch.handleTurn(roomTurn("follow-up question", [actor]))).status, "ok");
+  assert.ok(memory.queries.length > 0);
+  for (const query of memory.queries) assert.doesNotMatch(query, /PRIOR_QUESTION/);
+  assert.match(seen[1]!.environment ?? "", /RECALLED<[^\n]*Current message: follow-up question>/);
 });
 
 test("an ambient message the agent declines does not recall memory", async () => {
@@ -441,18 +457,20 @@ test("a failed recall still fails the turn, and an abandoned one raises no unhan
       withFlagGate(events),
     );
     await assert.rejects(failing.handleTurn(webTurn("question")), /recall unavailable/);
+    let breakWindow = false;
+    const memory = recallingMemory(events, true);
     const abandoning = buildOrchestrator(
       recordingHarness([]),
-      recallingMemory(events, true),
+      memory,
       undefined,
-      withFlagGate(events),
+      withFlagGate(events, async () => {
+        if (!breakWindow) return;
+        await memory.recallStarted();
+        throw new Error("tool setup failed");
+      }),
     );
-    await assert.rejects(
-      abandoning.handleTurn(
-        webTurn("question", { overheard: [{ ts: "1", role: "user", name: "Bea", text: "OVERHEARD_LINE" }] }),
-      ),
-      /recall unavailable/,
-    );
+    breakWindow = true;
+    await assert.rejects(abandoning.handleTurn(webTurn("question")), /tool setup failed/);
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.deepEqual(unhandled, []);
   } finally {
