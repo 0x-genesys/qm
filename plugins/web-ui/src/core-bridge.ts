@@ -525,6 +525,7 @@ export interface RunPoll {
     status: string;
     reply?: string;
     reason?: string;
+    refusalKind?: string;
     stopped?: boolean;
     pendingApprovals?: PendingApproval[];
     attachments?: Array<{ name: string; mimetype?: string; sizeBytes?: number; artifactId?: string }>;
@@ -1551,7 +1552,7 @@ function applyRun(
   }
   const approvals = res?.pendingApprovals ?? [];
   const paused = approvals.length > 0;
-  const approvalDenied = approvalDeniedMessage(res?.reason);
+  const approvalDenied = res?.refusalKind === "approval_denied";
   const quiet = res?.status === "silent" || res?.status === "react";
   if (work) {
     work.finishedAt = typeof run.finishedAt === "number" ? run.finishedAt : Date.now();
@@ -1572,7 +1573,7 @@ function applyRun(
   }
   if (approvalDenied) {
     (partial as AssistantWork & { approvalDecision?: "denied" }).approvalDecision = "denied";
-    finish(stream, partial, st, approvalDenied);
+    finish(stream, partial, st, "Denied.");
     return "terminal";
   }
   if (!paused && !quiet && (run.status === "failed" || (res && res.status !== "ok"))) {
@@ -1835,13 +1836,6 @@ function deliveredFilesFromAttachments(
       ...(typeof a.sizeBytes === "number" ? { sizeBytes: a.sizeBytes } : {}),
       ...(a.artifactId ? { artifactId: a.artifactId } : {}),
     }));
-}
-
-function approvalDeniedMessage(reason?: string): string | null {
-  const trimmed = reason?.trim();
-  if (!trimmed) return null;
-  if (trimmed === "approval denied") return "Denied.";
-  return trimmed.startsWith("approval denied for ") ? "Denied." : null;
 }
 
 function sleep(ms: number): Promise<void> {
