@@ -1,5 +1,4 @@
 import { composeSoul } from "../resolution/resolution-service.ts";
-import { principalEntitledToScope } from "../resolution/context-filter.ts";
 import { createCurrentScopeMembers } from "../resolution/scope-membership.ts";
 import { notifyDeploymentShared } from "../deploy/share-notice.ts";
 import { deploymentShareScope } from "../deploy/email-access.ts";
@@ -168,7 +167,7 @@ export function createSessionMethods(
 
   const storedEntryAt = async (sessionId: string, seq: number) => {
     const entry = await deps.sessions.getEntry(sessionId, seq);
-    return entry && entry.type !== "soul" ? entry : undefined;
+    return entry;
   };
 
   const viewerStoredEntryAt = async (sessionId: string, principalId: string, seq: number) => {
@@ -554,19 +553,9 @@ export function createSessionMethods(
           ),
         ),
       );
-      const teamIds = [...new Set(hits.map((hit) => hit.entryScopeLabel))]
-        .map(parseScopeId)
-        .filter((label) => label.kind === "team")
-        .map((label) => label.ref);
-      const memberships = await Promise.all(
-        teamIds.map(async (id) => ((await deps.teams?.isMember(principalId, id)) ? id : null)),
-      );
-      const principal = { ...deps.identity.classify(principalId), teamIds: memberships.filter((id) => id !== null) };
       const terms = searchTerms(query);
       const entryHits: SessionSearchHit[] = hits.flatMap((hit) => {
         if (!allowed.get(hit.scopeId)) return [];
-        if (!principalEntitledToScope(principal, hit.entryScopeLabel, hit.scopeId, scopeId("org", orgIdOf())))
-          return [];
         const session = hit;
         return [
           {

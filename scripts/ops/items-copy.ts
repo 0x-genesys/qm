@@ -26,16 +26,13 @@ export class ItemsCopyOperator {
       throw new Error("batch must be between 1 and 10000");
   }
 
-  async transaction<T>(
-    run: () => Promise<T>,
-    migrationLock: "exclusive" | "shared" | "none" = "exclusive",
-  ): Promise<T> {
+  async transaction<T>(run: () => Promise<T>, shared = false): Promise<T> {
     await this.client.query(
       "BEGIN; SET LOCAL lock_timeout='2s'; SET LOCAL statement_timeout='120s'; SET LOCAL search_path=public",
     );
     try {
-      const lock = `SELECT pg_try_advisory_xact_lock${migrationLock === "shared" ? "_shared" : ""}(hashtext('qm:schema-migrations')) AS acquired`;
-      for (let attempt = 0; migrationLock !== "none" && !(await this.client.query(lock)).rows[0].acquired; attempt++) {
+      const lock = `SELECT pg_try_advisory_xact_lock${shared ? "_shared" : ""}(hashtext('qm:schema-migrations')) AS acquired`;
+      for (let attempt = 0; !(await this.client.query(lock)).rows[0].acquired; attempt++) {
         if (attempt >= 300) throw new Error("schema migration is running; retry after it completes");
         await sleep(1000);
       }
@@ -225,7 +222,7 @@ export class ItemsCopyOperator {
         [slice, last.session_id, last.seq, last.n, copied.rows],
       );
       return last.n as number;
-    }, "shared");
+    }, true);
   }
 
   async completeCopy() {
@@ -285,11 +282,19 @@ export class ItemsCopyOperator {
   async indexes() {
     await this.transaction(async () => {
       await this.assertState(["catchup", "verified"]);
-    }, "none");
-    await this.client.query(
-      "SET search_path=public; SET statement_timeout=0; SET lock_timeout='5s'; SET maintenance_work_mem='1GB'",
-    );
+    });
+    let acquired = false;
     try {
+      for (let attempt = 0; !acquired; attempt++) {
+        acquired = (
+          await this.client.query("SELECT pg_try_advisory_lock_shared(hashtext('qm:schema-migrations')) AS ok")
+        ).rows[0].ok;
+        if (!acquired) {
+          if (attempt >= 300) throw new Error("schema migration is running; retry after it completes");
+          await sleep(1000);
+        }
+      }
+      await this.client.query("SET search_path=public; SET statement_timeout=0; SET lock_timeout='5s'");
       for (const index of ITEM_INDEXES) {
         const {
           rows: [existing],
@@ -299,11 +304,11 @@ export class ItemsCopyOperator {
         );
         if (existing && !existing.ours) throw new Error(`index ${index.name} belongs to another table`);
         if (existing?.indisvalid) continue;
-        if (existing) await this.client.query(`DROP INDEX public.${index.name}`);
-        await this.client.query(itemIndexSql(index));
+        if (existing) await this.client.query(`DROP INDEX CONCURRENTLY public.${index.name}`);
+        await this.client.query(itemIndexSql(index).replace("INDEX IF NOT EXISTS", "INDEX CONCURRENTLY IF NOT EXISTS"));
       }
     } finally {
-      await this.client.query("RESET maintenance_work_mem");
+      if (acquired) await this.client.query("SELECT pg_advisory_unlock_shared(hashtext('qm:schema-migrations'))");
     }
   }
 
