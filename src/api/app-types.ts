@@ -367,6 +367,9 @@ export interface App {
   listConversationPins(threadRef: string, reader: string): Promise<SessionPinView[] | null>;
   unpinConversationItem(threadRef: string, pinId: string): Promise<boolean | null>;
   listSessions(principalId: string): Promise<Session[]>;
+  listSessionPage(principalId: string, query: SessionPageQuery): Promise<SessionPageResult>;
+  sessionChildren(principalId: string, sessionId: string): Promise<Session[] | null>;
+  sessionRow(principalId: string, ref: { id?: string; threadRef?: string }): Promise<Session | null>;
   searchResources(
     principalId: string,
     query: string,
@@ -793,3 +796,21 @@ export class SoulVersionConflictError extends Error {
 export const CONTEXT_REQUEST_EXPIRY_MS = 2 * 60_000;
 
 export const STALE_LEASE_GRACE_MS = 30_000;
+
+interface SessionPageQuery {
+  limit: number;
+  before?: { activity: number; id: string };
+  status?: SessionPageStatus;
+  surface?: string;
+  scopeId?: ScopeId;
+  titleQuery?: string;
+}
+
+export type SessionPageStatus = "active" | "archived" | "waiting";
+
+interface SessionPageResult {
+  sessions: Session[];
+  pinned?: Session[];
+  next: { activity: number; id: string } | null;
+  hasArchived?: boolean;
+}

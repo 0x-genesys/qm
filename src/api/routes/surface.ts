@@ -19,7 +19,7 @@ import {
 } from "../../model/pi-models.ts";
 import { builtInModelCatalog, selectableCatalogForHarness, selectableModelCatalog } from "../../model/model-catalog.ts";
 import { errMessage } from "../../util/errors.ts";
-import { SoulUpdateDeniedError } from "../app-types.ts";
+import { SoulUpdateDeniedError, type SessionPageStatus } from "../app-types.ts";
 import { parsePinnedSkills } from "../../skills/materialize.ts";
 import { renderAgentApis } from "../agent-api-catalog.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS } from "../../auth/capability-token.ts";
@@ -484,11 +484,67 @@ async function patchAgentConversation(ctx: ApiCtx): Promise<void> {
   });
 }
 
+const DEFAULT_SESSION_PAGE = 50;
+
 async function listSessions(ctx: ApiCtx): Promise<void> {
   const { res, app, url } = ctx;
   const principalId = url.searchParams.get("principalId");
   if (!principalId) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
-  return sendJson(res, 200, { sessions: await app.listSessions(principalId) });
+  const n = Number(url.searchParams.get("limit") ?? DEFAULT_SESSION_PAGE);
+  const before = parseSessionCursor(url.searchParams.get("before"));
+  const status = url.searchParams.get("status") ?? "active";
+  if (!Number.isInteger(n) || n < 1 || before === null || !isSessionPageStatus(status))
+    return sendJson(res, 400, {
+      error: "bad_request",
+      message: "limit must be a positive integer, before a cursor, status active, archived or waiting",
+    });
+  const page = await app.listSessionPage(principalId, {
+    limit: n,
+    ...(before ? { before } : {}),
+    status,
+    ...(url.searchParams.get("surface") ? { surface: url.searchParams.get("surface")! } : {}),
+    ...(url.searchParams.get("scope") ? { scopeId: url.searchParams.get("scope")! } : {}),
+    ...(url.searchParams.get("q")?.trim() ? { titleQuery: url.searchParams.get("q")!.trim() } : {}),
+  });
+  return sendJson(res, 200, {
+    sessions: page.sessions,
+    ...(page.pinned ? { pinned: page.pinned } : {}),
+    ...(page.hasArchived !== undefined ? { hasArchived: page.hasArchived } : {}),
+    nextCursor: page.next ? `${page.next.activity}.${page.next.id}` : null,
+  });
+}
+
+function isSessionPageStatus(value: string): value is SessionPageStatus {
+  return value === "active" || value === "archived" || value === "waiting";
+}
+
+function parseSessionCursor(raw: string | null): { activity: number; id: string } | undefined | null {
+  if (raw === null || raw === "") return undefined;
+  const dot = raw.indexOf(".");
+  const activity = Number(raw.slice(0, dot));
+  const id = raw.slice(dot + 1);
+  return dot > 0 && Number.isSafeInteger(activity) && id ? { activity, id } : null;
+}
+
+async function listSessionChildren(ctx: ApiCtx): Promise<void> {
+  const { res, app, url, params } = ctx;
+  const principalId = url.searchParams.get("principalId");
+  if (!principalId) return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
+  const children = await app.sessionChildren(principalId, params.id!);
+  if (!children) return sendJson(res, 404, { error: "not_found" });
+  return sendJson(res, 200, { sessions: children });
+}
+
+async function getSessionRow(ctx: ApiCtx): Promise<void> {
+  const { res, app, url } = ctx;
+  const principalId = url.searchParams.get("principalId");
+  const id = url.searchParams.get("id") ?? undefined;
+  const threadRef = url.searchParams.get("threadRef") ?? undefined;
+  if (!principalId || (!id && !threadRef))
+    return sendJson(res, 400, { error: "bad_request", message: "principalId and id or threadRef required" });
+  const session = await app.sessionRow(principalId, id ? { id } : { threadRef });
+  if (!session) return sendJson(res, 404, { error: "not_found" });
+  return sendJson(res, 200, { session: session });
 }
 
 async function searchResources(ctx: ApiCtx): Promise<void> {
@@ -1405,6 +1461,8 @@ export const surfaceRoutes: ReadonlyArray<Route<ApiCtx>> = [
     { method: "GET", path: "/v1/resources/search", auth: "source", handle: searchResources },
     { method: "GET", path: "/v1/sessions/search", auth: "source", handle: searchSessions },
     { method: "GET", path: "/v1/sessions", auth: "source", handle: listSessions },
+    { method: "GET", path: "/v1/sessions/row", auth: "source", handle: getSessionRow },
+    { method: "GET", path: "/v1/sessions/:id/children", auth: "source", handle: listSessionChildren },
     { method: "GET", path: "/v1/contexts", auth: "source", handle: listContexts },
     { method: "GET", path: "/v1/scope-resources", auth: "source", handle: listScopeResources },
     { method: "GET", path: "/v1/memory", auth: "source", handle: selfMemory },
