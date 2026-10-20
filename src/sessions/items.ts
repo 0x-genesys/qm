@@ -3,11 +3,11 @@ import { isObj } from "../util/objects.ts";
 
 export type { ItemKind } from "./items-schema.ts";
 
-export type WakeCause = (typeof WAKE_CAUSES)[number];
+type WakeCause = (typeof WAKE_CAUSES)[number];
 
-export type AgentMessageVariant = "narration" | "files_delivered";
+type AgentMessageVariant = "narration" | "files_delivered";
 
-export interface ItemColumns {
+interface ItemColumns {
   turnId: string | null;
   author: string | null;
   callId: string | null;
@@ -45,7 +45,7 @@ export type NewItem<K extends ItemKind = ItemKind> = {
   [P in K]: { kind: P } & Partial<ItemColumns> & Required<P>;
 }[K];
 
-export const USER_MESSAGE_KINDS: ReadonlySet<ItemKind> = new Set<ItemKind>(["UserMessage", "SteeringMessage"]);
+const USER_MESSAGE_KINDS: ReadonlySet<ItemKind> = new Set<ItemKind>(["UserMessage", "SteeringMessage"]);
 
 export const isUserMessage = (item: Pick<Item, "kind">): item is Item<"UserMessage" | "SteeringMessage"> =>
   USER_MESSAGE_KINDS.has(item.kind);

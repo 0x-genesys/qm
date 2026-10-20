@@ -14,9 +14,9 @@ export type ItemKind =
   | "Stop"
   | "RuntimeChange";
 
-export type WakeCause = "cron" | "webhook" | "child_done" | "system";
+type WakeCause = "cron" | "webhook" | "child_done" | "system";
 
-export type AgentMessageVariant = "narration" | "files_delivered";
+type AgentMessageVariant = "narration" | "files_delivered";
 
 export interface ItemColumns {
   turnId: string | null;
@@ -53,7 +53,7 @@ export type Item<K extends ItemKind = ItemKind> = {
     RequiredFor<P>;
 }[K];
 
-export interface TextStartMarker {
+interface TextStartMarker {
   marker: "text_start";
   seq: number;
   createdAt: number;
@@ -61,7 +61,7 @@ export interface TextStartMarker {
   streamOffset?: number;
 }
 
-export interface SandboxStatusMarker {
+interface SandboxStatusMarker {
   marker: "sandbox_status";
   seq: number;
   createdAt: number;
@@ -74,9 +74,6 @@ export type WorkActivity = { item: Item } | TextStartMarker;
 
 export const isUserMessage = (item: Pick<Item, "kind">): boolean =>
   item.kind === "UserMessage" || item.kind === "SteeringMessage";
-
-export const isReply = (item: Pick<Item, "kind" | "variant">): boolean =>
-  item.kind === "AgentMessage" && item.variant === null;
 
 export const isNarration = (item: Pick<Item, "kind" | "variant">): boolean =>
   item.kind === "AgentMessage" && item.variant === "narration";

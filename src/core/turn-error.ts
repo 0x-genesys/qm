@@ -47,7 +47,7 @@ export class TitleRejected extends Error {
   }
 }
 
-export const TURN_FAILURE = "turn_failure";
+const TURN_FAILURE = "turn_failure";
 
 export function turnFailureItem(message: string, runId?: string): NewItem<"Error"> {
   return { kind: "Error", errorCode: TURN_FAILURE, text: message, turnId: runId ?? null };

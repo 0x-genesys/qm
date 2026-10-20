@@ -77,7 +77,7 @@ export interface OverheardEntryPayload {
   mentions?: Record<string, string>;
 }
 
-export function overheardOf(e: Item): OverheardEntryPayload | null {
+function overheardOf(e: Item): OverheardEntryPayload | null {
   if (!isOverheard(e) || !e.externalId) return null;
   const { overheard: _o, ...rest } = e.body;
   return {

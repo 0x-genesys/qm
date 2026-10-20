@@ -239,23 +239,17 @@ function candidateKey(target: string, audienceScopeId: ScopeId): string {
 const SURFACE_ENQUEUE_ACTIONS = new Set(["post", "reach", "react", "edit", "delete"]);
 
 export function completedSurfaceEnqueues(entries: readonly Item[], sinceSeq: number, surfaceTool: string): number {
-  const calls: Array<{ enqueues: boolean; callId: string | undefined; done: boolean }> = [];
-  for (const e of entries) {
-    if (e.seq <= sinceSeq) continue;
-    if (e.kind === "ToolCall") {
-      calls.push({
-        enqueues: e.tool === surfaceTool && SURFACE_ENQUEUE_ACTIONS.has(String(e.body.action)),
-        callId: e.callId ?? undefined,
-        done: false,
-      });
-    } else if (e.kind === "ToolResult") {
-      if (e.body.interrupted === true) continue;
-      const cid = e.callId;
-      const call = cid ? calls.find((c) => c.callId === cid && !c.done) : calls.findLast((c) => !c.done);
-      if (call) call.done = true;
-    }
-  }
-  return calls.filter((c) => c.enqueues && c.done).length;
+  const later = entries.filter((e) => e.seq > sinceSeq);
+  const answered = new Set(
+    later.flatMap((e) => (e.kind === "ToolResult" && e.body.interrupted !== true ? [e.callId] : [])),
+  );
+  return later.filter(
+    (e) =>
+      e.kind === "ToolCall" &&
+      e.tool === surfaceTool &&
+      SURFACE_ENQUEUE_ACTIONS.has(String(e.body.action)) &&
+      answered.has(e.callId),
+  ).length;
 }
 
 export interface TurnPostKeys {
