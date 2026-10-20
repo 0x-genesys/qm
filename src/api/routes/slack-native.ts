@@ -4,7 +4,7 @@ import { errMessage } from "../../util/errors.ts";
 import { ErrorCode, type WebAPIPlatformError, type AuthTestResponse } from "@slack/web-api";
 import { slackWebClient } from "../../slack/web-client.ts";
 import { personIds, samePerson } from "../../directory/person.ts";
-import { connectorAccountNames } from "../../credentials/connector-accounts.ts";
+import { connectorAccountSlots } from "../../credentials/connector-accounts.ts";
 import { resolverFor } from "./connectors.ts";
 import type { ApiCtx } from "./route.ts";
 
@@ -22,7 +22,7 @@ export async function nativeSlackConnection(ctx: ApiCtx) {
   const tokens = ctx.deps.connectorTokens;
   if (!tokens) return null;
   for (const id of personIds(principal)) {
-    for (const accountType of await connectorAccountNames(tokens, "slack.com", id)) {
+    for (const accountType of (await connectorAccountSlots(tokens, id))("slack.com")) {
       const auth = await tokens.connectorDerivedAuth("slack.com", id, accountType);
       if (!auth) continue;
       const call = async (method: string, payload?: Record<string, unknown>, token = auth.accessToken) => {

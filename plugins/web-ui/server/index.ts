@@ -2253,7 +2253,6 @@ const apiRoutes: readonly WebRoute[] = [
           ? body.returnTo
           : "/keychain";
       const params = new URLSearchParams({ principalId: user, redirectUri: callback, returnTo });
-      // Optional named connection slot; core validates it.
       if (typeof body.accountType === "string" && body.accountType) params.set("accountType", body.accountType);
       const corePath = `/v1/connectors/oauth/${encodeURIComponent(provider)}/start?${params.toString()}`;
       return relayCore(res, "GET", corePath);

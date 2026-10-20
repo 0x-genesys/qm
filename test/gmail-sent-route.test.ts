@@ -158,7 +158,7 @@ test("sent mail falls back to a named Google account after the built-in slots", 
               owners[0]!,
               [
                 { ...meta, host: "gmail.googleapis.com", accountType: "ops@example.com" },
-                { ...meta, host: "slack.com", accountType: "ycf2026" },
+                { ...meta, host: "slack.com", accountType: "globex" },
               ],
             ],
           ]);

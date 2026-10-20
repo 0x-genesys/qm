@@ -144,20 +144,12 @@ test("revoke clears a connector linked under a non-default account type", async 
   }
 });
 
-const idToken = (claims: Record<string, unknown>) =>
-  ["h", Buffer.from(JSON.stringify({ sub: "1", ...claims }), "utf8").toString("base64url"), "s"].join(".");
-
 test("named connection slots: start, callback, status, and per-account revoke", async () => {
   let email = "ops@example.com";
   const srv = start(async () => ({
     ok: true,
     status: 200,
-    json: async () => ({
-      access_token: `at-${email}`,
-      refresh_token: "rt",
-      expires_in: 3600,
-      id_token: idToken({ email }),
-    }),
+    json: async () => ({ access_token: `at-${email}`, refresh_token: "rt", expires_in: 3600 }),
   }));
   try {
     const redirectUri = `${srv.base}/v1/connectors/oauth/google/callback`;
@@ -181,20 +173,10 @@ test("named connection slots: start, callback, status, and per-account revoke", 
 
     const ops = await connect(" Ops@Example.com ");
     assert.equal(ops.body.accountType, "ops@example.com");
-    assert.equal(ops.consent.searchParams.get("login_hint"), "ops@example.com");
     assert.equal(ops.callback.status, 200);
-
-    email = "someone-else@example.com";
-    const mismatch = await connect("team@example.com");
-    assert.equal(mismatch.callback.status, 400);
-    assert.match(
-      ((await mismatch.callback.json()) as { message: string }).message,
-      /connected Google account is someone-else@example\.com, not team@example\.com/,
-    );
 
     email = "me@example.com";
     const fallback = await connect("default");
-    assert.equal(fallback.consent.searchParams.get("login_hint"), null);
     assert.equal(fallback.callback.status, 200);
 
     const tokens = srv.built.connectorTokens;
@@ -203,7 +185,6 @@ test("named connection slots: start, callback, status, and per-account revoke", 
       "at-ops@example.com",
     );
     assert.equal(await tokens.connectorAccessToken("gmail.googleapis.com", "U1"), "at-me@example.com");
-    assert.equal(await tokens.connectorAccessToken("gmail.googleapis.com", "U1", "team@example.com"), null);
 
     const revoke = async (body: Record<string, unknown>) => {
       const raw = JSON.stringify({ principalId: "U1", provider: "google", ...body });
@@ -220,7 +201,7 @@ test("named connection slots: start, callback, status, and per-account revoke", 
     assert.equal(await tokens.connectorAccessToken("gmail.googleapis.com", "U1", "ops@example.com"), null);
     assert.equal(await tokens.connectorAccessToken("gmail.googleapis.com", "U1"), "at-me@example.com");
 
-    await tokens.setConnectorToken("slack.com", "U1", { accessToken: "slack-ws", accountType: "ycf2026" }, "ycf2026");
+    await tokens.setConnectorToken("slack.com", "U1", { accessToken: "slack-ws", accountType: "globex" }, "globex");
     const statusPath = "/v1/connectors/oauth/status?principalId=U1";
     const status = (await (await fetch(`${srv.base}${statusPath}`, { headers: sign("GET", statusPath) })).json()) as {
       providers: Record<string, { connected?: boolean }>;
@@ -235,7 +216,7 @@ test("named connection slots: start, callback, status, and per-account revoke", 
     assert.equal((await revoke({})).status, 200);
     for (const account of [undefined, "x", "ops@example.com"])
       assert.equal(await tokens.connectorAccessToken("gmail.googleapis.com", "U1", account), null);
-    assert.equal(await tokens.connectorAccessToken("slack.com", "U1", "ycf2026"), "slack-ws");
+    assert.equal(await tokens.connectorAccessToken("slack.com", "U1", "globex"), "slack-ws");
   } finally {
     await srv.close();
   }

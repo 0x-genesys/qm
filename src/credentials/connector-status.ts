@@ -1,9 +1,8 @@
 import type { DurableMap } from "../persistence/durable-map.ts";
 import type { ConnectorTokenStore, OAuthTokenStatus } from "./keychain.ts";
-import { connectorAccountsByHost } from "./connector-accounts.ts";
+import { connectorAccountSlots } from "./connector-accounts.ts";
 import {
   oauthProviderEntries,
-  orderAccountNames,
   PROVIDERS,
   type OAuthClientResolver,
   type OAuthProviderConfig,
@@ -84,15 +83,13 @@ export async function providerTokenStatuses(
   tokens: ConnectorTokenStore,
   principalId: string,
 ): Promise<Array<{ name: string; provider: OAuthProviderConfig; hosts: HostTokenStatus[] }>> {
-  const accounts = await connectorAccountsByHost(tokens, principalId);
+  const slots = await connectorAccountSlots(tokens, principalId);
   const all = await Promise.all(
     oauthProviderEntries().map(async ([name, provider]) => {
       const hosts = await Promise.all(
         provider.hosts.map(async (host) => {
           const statuses = await Promise.all(
-            orderAccountNames(accounts.get(host) ?? []).map((accountType) =>
-              tokens.connectorTokenStatus(host, principalId, accountType),
-            ),
+            slots(host).map((accountType) => tokens.connectorTokenStatus(host, principalId, accountType)),
           );
           return { host, ...bestOAuthTokenStatus(statuses) };
         }),

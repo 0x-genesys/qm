@@ -16,7 +16,6 @@ export interface McpServer {
   auth: McpServerAuthMode;
   credentialScope?: "shared" | "per-user";
   credentialHost?: string;
-  /** Connection slot of the per-user OAuth token: `default`, `personal`, `company`, or a named account. */
   credentialAccountType?: string;
   bearerToken?: string;
   clientId?: string;

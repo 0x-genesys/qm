@@ -324,8 +324,8 @@ test("named OAuth accounts surface as connector:<host>:<name> handles and resolv
   await built.connectorTokens.setConnectorToken(
     "slack.com",
     "U1",
-    { accessToken: "ycf-token", expiresAt: expires, accountType: "ycf2026" },
-    "ycf2026",
+    { accessToken: "globex-token", expiresAt: expires, accountType: "globex" },
+    "globex",
   );
   await built.connectorTokens.setConnectorToken(
     "slack.com",
@@ -340,11 +340,11 @@ test("named OAuth accounts surface as connector:<host>:<name> handles and resolv
     "ops@example.com",
   );
   const prompt = (await built.app.turn({ ...turn("dm", "!sysprompt"), liveActor: true })).reply ?? "";
-  for (const handle of ["slack.com:ycf2026", "slack.com:acme-eng", "gmail.googleapis.com:ops@example.com"])
+  for (const handle of ["slack.com:globex", "slack.com:acme-eng", "gmail.googleapis.com:ops@example.com"])
     assert.ok(prompt.includes(`connector:${handle}`), handle);
   assert.doesNotMatch(prompt, /connector:slack\.com:default/);
   for (const [handle, host, token] of [
-    ["connector:slack.com:ycf2026", "slack.com", "ycf-token"],
+    ["connector:slack.com:globex", "slack.com", "globex-token"],
     ["connector:slack.com:acme-eng", "slack.com", "acme-token"],
     ["connector:gmail.googleapis.com:ops@example.com", "gmail.googleapis.com", "ops-token"],
   ] as const) {

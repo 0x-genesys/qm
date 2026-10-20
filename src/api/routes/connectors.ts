@@ -18,7 +18,7 @@ import {
   accountNameRule,
   parseAccountName,
 } from "../../connectors/oauth.ts";
-import { connectorAccountNames } from "../../credentials/connector-accounts.ts";
+import { connectorAccountSlots } from "../../credentials/connector-accounts.ts";
 import { providerTokenStatuses } from "../../credentials/connector-status.ts";
 import type { ConnectorTokenStore, DerivedOAuthAuth, OAuthTokenStatus } from "../../credentials/keychain.ts";
 import { createEnvSecretSource } from "../../credentials/secret-source.ts";
@@ -57,7 +57,6 @@ export function resolverFor(deps: ServerDeps): OAuthClientResolver {
   );
 }
 
-/** An omitted or blank account means the `default` slot; anything else must be a valid account name (null if not). */
 function parseAccountType(v: unknown): AccountType | null {
   if (v === undefined || v === null || (typeof v === "string" && !v.trim())) return "default";
   return parseAccountName(v);
@@ -192,8 +191,9 @@ async function oauthCallback(ctx: BaseCtx): Promise<void> {
 async function principalHasProvider(deps: ServerDeps, provider: string, principalId: string): Promise<boolean> {
   const p = oauthProvider(provider);
   if (!p || !deps.connectorTokens) return false;
+  const slots = await connectorAccountSlots(deps.connectorTokens, principalId);
   for (const host of p.hosts) {
-    for (const at of await connectorAccountNames(deps.connectorTokens, host, principalId)) {
+    for (const at of slots(host)) {
       const st = await deps.connectorTokens
         .connectorTokenStatus(host, principalId, at)
         .catch(swallowAs("connectors: token status", { connected: false } as OAuthTokenStatus));
@@ -447,13 +447,12 @@ export async function oauthRevoke(ctx: ApiCtx): Promise<void> {
   if (!principalId || (!providerName && !host)) {
     return sendJson(res, 400, { error: "bad_request", message: "principalId and provider or host required" });
   }
-  // One named account when accountType is given; otherwise every account slot on the host.
   const onlyAccount = b.accountType === undefined ? undefined : parseAccountName(b.accountType);
   if (onlyAccount === null) return sendJson(res, 400, { error: "bad_request", message: accountNameRule() });
   const tokens = deps.connectorTokens;
+  const slots = await connectorAccountSlots(tokens, principalId);
   const revokeHost = async (h: string): Promise<void> => {
-    const accounts = onlyAccount ? [onlyAccount] : await connectorAccountNames(tokens, h, principalId);
-    for (const at of accounts) await tokens.deleteConnectorToken(h, principalId, at);
+    for (const at of onlyAccount ? [onlyAccount] : slots(h)) await tokens.deleteConnectorToken(h, principalId, at);
   };
   const account = onlyAccount ? { accountType: onlyAccount } : {};
   if (providerName) {
@@ -527,7 +526,7 @@ export async function gmailSent(ctx: ApiCtx): Promise<void> {
     const tokens = ctx.deps.connectorTokens;
     let candidates: AccountType[] = [];
     if (requestedAccountType) candidates = [requestedAccountType];
-    else if (tokens) candidates = await connectorAccountNames(tokens, "gmail.googleapis.com", principal);
+    else if (tokens) candidates = (await connectorAccountSlots(tokens, principal))("gmail.googleapis.com");
     for (const candidate of candidates) {
       try {
         auth = await tokens?.connectorDerivedAuth("gmail.googleapis.com", principal, candidate);
