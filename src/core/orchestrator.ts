@@ -3194,9 +3194,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             memoryView.held,
             context.memoryLabels,
           );
-          const snapshot = environmentDelta(turnContextBlocks, continuation?.history ?? history, session.id, {
-            ...(skillsList ? { Skills: skillsList } : {}),
-          });
+          const snapshot = environmentDelta(
+            turnContextBlocks,
+            continuation?.history ?? history,
+            session.id,
+            skillsList ? { Skills: skillsList } : {},
+          );
           const turnEnvironment = environmentNote(
             [
               turnEnvironmentContents,
