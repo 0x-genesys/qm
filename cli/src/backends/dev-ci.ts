@@ -6,6 +6,8 @@ import { serviceDef } from "../services.ts";
 
 const ciDir = (root: string): string => join(root, process.env.CI_INSTANCE_DIR ?? ".ci-instance");
 const ciPort = (): number => envNum("CI_INSTANCE_PORT", 8181);
+const SLACK_HEALTH_PORT_OFFSET = 2;
+const TUNNEL_METRICS_PORT_OFFSET = 3;
 const readyTimeout = (): number => envNum("CI_INSTANCE_READY_TIMEOUT", 60);
 const pidFromFile = (dir: string, name: string): number | undefined => {
   const path = join(dir, `${name}.pid`);
@@ -17,7 +19,7 @@ const writePid = (dir: string, name: string, pid: number): void => writeFileSync
 
 async function startTunnel(port: number, dir: string): Promise<string | undefined> {
   if (!which("cloudflared")) return undefined;
-  const metrics = `127.0.0.1:${port + 3}`;
+  const metrics = `127.0.0.1:${port + TUNNEL_METRICS_PORT_OFFSET}`;
   writePid(
     dir,
     "tunnel",
@@ -68,7 +70,7 @@ export async function devCiUp(): Promise<void> {
   for (const f of ["core.log", "tunnel.log"]) writeFileSync(join(dir, f), "");
   const port = ciPort();
 
-  const healthPort = port + 2;
+  const healthPort = port + SLACK_HEALTH_PORT_OFFSET;
   const overlay: Record<string, string> = {
     HARNESS: process.env.HARNESS ?? "pi",
     DEV_INTROSPECTION: "1",

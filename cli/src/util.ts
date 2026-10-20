@@ -22,9 +22,9 @@ const procOpts = (o: { cwd?: string; env?: NodeJS.ProcessEnv }) => ({
   ...(o.env ? { env: o.env } : {}),
 });
 
-async function pollUntil(cond: () => boolean, tries: number): Promise<boolean> {
+async function pollUntil(cond: () => boolean | Promise<boolean>, tries: number): Promise<boolean> {
   for (let i = 0; i < tries; i++) {
-    if (cond()) return true;
+    if (await cond()) return true;
     await sleep(1000);
   }
   return false;
@@ -227,17 +227,17 @@ export async function waitForJson(
   timeoutSec: number,
   ready: (body: Record<string, unknown>) => boolean = () => true,
 ): Promise<Record<string, unknown> | undefined> {
-  for (let i = 0; i < timeoutSec; i++) {
+  let body: Record<string, unknown> | undefined;
+  const answered = await pollUntil(async () => {
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(1000) });
-      const body = response.ok ? ((await response.json()) as Record<string, unknown>) : undefined;
-      if (body && ready(body)) return body;
+      body = response.ok ? ((await response.json()) as Record<string, unknown>) : undefined;
     } catch {
-      void 0;
+      body = undefined;
     }
-    await sleep(1000);
-  }
-  return undefined;
+    return !!body && ready(body);
+  }, timeoutSec);
+  return answered ? body : undefined;
 }
 
 export const tailString = (s: string, lines: number): string => s.split("\n").slice(-lines).join("\n");

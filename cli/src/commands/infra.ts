@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateRawSync } from "node:zlib";
-import { AWS_JSON_ERRORS, awsErrorCode, withAwsLease } from "../aws-lease.ts";
+import { awsCapture, awsErrorCode, withAwsLease } from "../aws-lease.ts";
 import { updateConfigCoreEnv, type QmConfig } from "../config.ts";
 import { CliError, ok, step } from "../log.ts";
 import { awsObjectStoreBucket } from "../terraform.ts";
@@ -474,7 +474,7 @@ async function buildAwsMicrovmImageLocked(
         : ["--name", imageName, "--tags", JSON.stringify({ ManagedBy: "qm-cli", Deployment: config.orgId })];
       try {
         operation = JSON.parse(
-          capture(awsBin, [
+          awsCapture([
             "lambda-microvms",
             command,
             ...identityArgs,
@@ -491,7 +491,6 @@ async function buildAwsMicrovmImageLocked(
             "--output",
             "json",
             "--no-cli-pager",
-            ...AWS_JSON_ERRORS,
           ]),
         ) as ImageOperation;
         step(`${existing ? "updating" : "creating"} ${imageName}`);

@@ -18,9 +18,10 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   acquireAwsLease as acquireLease,
-  AWS_JSON_ERRORS,
+  awsCapture,
   awsErrorCode,
   awsText,
+  awsUsageError,
   deployLocksTable,
   deploymentStateKey,
   releaseAwsLease as releaseLease,
@@ -282,7 +283,7 @@ function awsArgs(aws: AwsConfig, args: string[]): string[] {
 }
 
 function awsJson<T>(aws: AwsConfig, args: string[]): T {
-  const raw = capture(process.env.AWS_BIN ?? "aws", awsArgs(aws, [...args, "--output", "json", ...AWS_JSON_ERRORS]));
+  const raw = awsCapture(awsArgs(aws, [...args, "--output", "json"]));
   if (!raw.trim()) return {} as T;
   return JSON.parse(raw) as T;
 }
@@ -319,12 +320,11 @@ function deployImageCoordinates(config: QmConfig): { name: string; version: stri
   return { name, version };
 }
 
+const AWS_CLI_TOO_OLD =
+  "the AWS CLI rejected the command line; qm needs AWS CLI v2.35.10 or newer for the `lambda-microvms` commands and `--cli-error-format`";
+
 export function guardLambdaMicrovms(e: unknown): never {
-  if (awsErrorCode(e) === "ParamValidation") {
-    throw new CliError(
-      "this AWS CLI lacks the `lambda-microvms` commands needed to build/verify the AWS deploy MicroVM image; install an AWS CLI with Lambda MicroVMs support",
-    );
-  }
+  if (awsUsageError(e)) throw new CliError(`${AWS_CLI_TOO_OLD}: ${errMessage(e)}`);
   throw e instanceof Error ? e : new Error(errMessage(e));
 }
 
@@ -342,8 +342,9 @@ function assertAwsDeployImage(config: QmConfig): void {
       expectedArn,
     ]);
   } catch (e) {
-    if (awsErrorCode(e) === "ParamValidation") return;
-    guardLambdaMicrovms(e);
+    if (!awsUsageError(e)) guardLambdaMicrovms(e);
+    warn(`skipping the AWS deploy image check — ${AWS_CLI_TOO_OLD}`);
+    return;
   }
   const detail = (image.image && typeof image.image === "object" ? image.image : image) as Record<string, unknown>;
   const arn = detail.imageArn ?? detail.imageARN ?? detail.arn;

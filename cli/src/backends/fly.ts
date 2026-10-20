@@ -450,13 +450,16 @@ function writeDerived(ctx: FlyCtx, service: ServiceName): string {
   return path;
 }
 
-function flyJsonList(raw: string, command: string): Record<string, unknown>[] {
-  let parsed: unknown;
+function flyJson(raw: string, command: string): unknown {
   try {
-    parsed = JSON.parse(raw);
+    return JSON.parse(raw);
   } catch {
     throw new CliError(`${command} returned invalid JSON`);
   }
+}
+
+function flyJsonList(raw: string, command: string): Record<string, unknown>[] {
+  const parsed = flyJson(raw, command);
   if (!Array.isArray(parsed)) throw new CliError(`${command} returned a non-array`);
   return parsed.filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === "object");
 }
@@ -494,12 +497,7 @@ function ensureObjectStorage(ctx: FlyCtx): void {
 }
 
 function flyConfigEnv(path: string): Record<string, unknown> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(fly(["config", "show", "--local", "--config", path]));
-  } catch {
-    throw new CliError(`fly config show returned invalid JSON for ${path}`);
-  }
+  const parsed = flyJson(fly(["config", "show", "--local", "--config", path]), `fly config show for ${path}`);
   const env = parsed && typeof parsed === "object" ? (parsed as { env?: unknown }).env : undefined;
   return env && typeof env === "object" ? (env as Record<string, unknown>) : {};
 }
@@ -550,7 +548,7 @@ function flyOrgApps(flyOrg: string): Set<string> {
   return new Set(
     flyJsonList(fly(["apps", "list", "--org", flyOrg, "--json"]), `fly apps list for organization ${flyOrg}`).flatMap(
       (entry) => {
-        const name = String(entry.Name ?? entry.name ?? "").trim();
+        const name = String(entry.Name ?? "").trim();
         return name ? [name] : [];
       },
     ),

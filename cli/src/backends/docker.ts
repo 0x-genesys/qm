@@ -535,7 +535,8 @@ async function waitReady(ctx: DockerCtx, service: ServiceName): Promise<void> {
     }
     await sleep(1000);
   }
-  throw new CliError(`${service} did not become ready in 90s`);
+  noteLogTail(name, captureBoth("docker", ["logs", name]));
+  throw new CliError(`${service} did not become ready in 90s (see logs above)`);
 }
 
 async function waitPluginUp(name: string): Promise<void> {

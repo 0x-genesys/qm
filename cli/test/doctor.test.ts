@@ -415,11 +415,12 @@ test("slackCheck fails naming each manifest scope the token lacks", async () => 
     await withStubbedSlack({ auth: authOk("chat:write, users:read") }, () =>
       assert.rejects(
         doctorCommon(slackConfig(), SLACK_TOKENS, { configDir: dir }),
-        new RegExp(
-          `missing scopes: ${slackBotScopes()
-            .filter((scope) => scope !== "chat:write" && scope !== "users:read")
-            .join(", ")};`,
-        ),
+        (error: unknown) =>
+          (error as Error).message.includes(
+            `missing scopes: ${slackBotScopes()
+              .filter((scope) => scope !== "chat:write" && scope !== "users:read")
+              .join(", ")};`,
+          ),
         "the CLI's rendered manifest scopes are required even when the deployment's manifest file lists fewer",
       ),
     );
@@ -448,9 +449,8 @@ test("slackCheck treats a missing x-oauth-scopes header as zero granted scopes, 
   const dir = manifestDir();
   try {
     await withStubbedSlack({ auth: authOk() }, () =>
-      assert.rejects(
-        doctorCommon(slackConfig(), SLACK_TOKENS, { configDir: dir }),
-        new RegExp(`missing scopes: ${slackBotScopes().join(", ")};`),
+      assert.rejects(doctorCommon(slackConfig(), SLACK_TOKENS, { configDir: dir }), (error: unknown) =>
+        (error as Error).message.includes(`missing scopes: ${slackBotScopes().join(", ")};`),
       ),
     );
   } finally {

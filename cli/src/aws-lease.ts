@@ -13,23 +13,22 @@ export interface AwsLease {
   renewTimer?: ReturnType<typeof setInterval>;
 }
 
-export const AWS_JSON_ERRORS = ["--cli-error-format", "json"];
-
-export function awsText(aws: AwsConfig, args: string[]): string {
-  return capture(process.env.AWS_BIN ?? "aws", [
-    ...args,
-    "--region",
-    aws.region,
-    "--output",
-    "text",
-    ...AWS_JSON_ERRORS,
-  ]).trim();
+export function awsCapture(args: string[]): string {
+  return capture(process.env.AWS_BIN ?? "aws", [...args, "--cli-error-format", "json"]);
 }
 
+export function awsText(aws: AwsConfig, args: string[]): string {
+  return awsCapture([...args, "--region", aws.region, "--output", "text"]).trim();
+}
+
+function awsFailure(error: unknown): { status?: unknown; stderr?: unknown } | undefined {
+  return error instanceof Error ? (error.cause as { status?: unknown; stderr?: unknown } | undefined) : undefined;
+}
+
+export const awsUsageError = (error: unknown): boolean => awsFailure(error)?.status === 252;
+
 export function awsErrorCode(error: unknown): string | undefined {
-  const failure =
-    error instanceof Error ? (error.cause as { status?: unknown; stderr?: unknown } | undefined) : undefined;
-  if (failure?.status === 252) return "ParamValidation";
+  const failure = awsFailure(error);
   if (typeof failure?.stderr !== "string") return undefined;
   const stderr = failure.stderr;
   try {

@@ -10,40 +10,24 @@ import { emailSecretNames, serviceSecretValue } from "./secrets.ts";
 
 const PROBE_TIMEOUT_MS = 10_000;
 
-const isNumeric = (part: string): boolean => Number.isSafeInteger(Number(part)) && String(Number(part)) === part;
-
 interface Semver {
   core: number[];
-  prerelease: string[];
+  prerelease: boolean;
 }
 
 function parseSemver(text: string): Semver | undefined {
   const bare = text.trim().startsWith("v") ? text.trim().slice(1) : text.trim();
   const [version = ""] = bare.split("+");
-  const dash = version.indexOf("-");
-  const core = (dash === -1 ? version : version.slice(0, dash)).split(".");
-  if (core.length > 3 || !core.every(isNumeric)) return undefined;
-  return {
-    core: [0, 1, 2].map((i) => Number(core[i] ?? 0)),
-    prerelease: dash === -1 ? [] : version.slice(dash + 1).split("."),
-  };
+  const [release = "", ...prerelease] = version.split("-");
+  const core = release.split(".");
+  if (core.length > 3 || !core.every((part) => Number.isSafeInteger(Number(part)) && String(Number(part)) === part))
+    return undefined;
+  return { core: [0, 1, 2].map((i) => Number(core[i] ?? 0)), prerelease: prerelease.length > 0 };
 }
 
-function compareSemver(a: Semver, b: Semver): number {
-  for (let i = 0; i < 3; i++) if (a.core[i] !== b.core[i]) return a.core[i]! - b.core[i]!;
-  if (!a.prerelease.length || !b.prerelease.length) return b.prerelease.length - a.prerelease.length;
-  for (let i = 0; i < Math.max(a.prerelease.length, b.prerelease.length); i++) {
-    const x = a.prerelease[i];
-    const y = b.prerelease[i];
-    if (x === undefined || y === undefined) return x === undefined ? -1 : 1;
-    if (x === y) continue;
-    const xn = isNumeric(x);
-    const yn = isNumeric(y);
-    if (xn && yn) return Number(x) - Number(y);
-    if (xn !== yn) return xn ? -1 : 1;
-    return x < y ? -1 : 1;
-  }
-  return 0;
+function atLeast(actual: Semver, minimum: Semver): boolean {
+  for (let i = 0; i < 3; i++) if (actual.core[i] !== minimum.core[i]) return actual.core[i]! > minimum.core[i]!;
+  return !actual.prerelease || minimum.prerelease;
 }
 
 function enginesNodeSpec(packagePath: string): string | undefined {
@@ -71,7 +55,7 @@ export function nodeEngineProblem(spec: string, source: string, nodeVersion = pr
     );
     return undefined;
   }
-  if (compareSemver(actual, minimum) >= 0) return undefined;
+  if (atLeast(actual, minimum)) return undefined;
   return (
     `Node ${nodeVersion} does not satisfy "node": ${JSON.stringify(spec)} required by ${source} — ` +
     `install Node >=${minimumText} (e.g. \`nvm install ${minimum.core[0]}\`) and rerun`

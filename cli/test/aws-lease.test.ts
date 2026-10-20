@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { awsErrorCode } from "../src/aws-lease.ts";
+import { awsErrorCode, awsUsageError } from "../src/aws-lease.ts";
 import { guardLambdaMicrovms } from "../src/backends/aws.ts";
 import { capture } from "../src/util.ts";
 
@@ -20,12 +20,16 @@ test("awsErrorCode reads the error code from the AWS CLI's JSON error output, pa
   assert.equal(awsErrorCode(error), "ResourceNotFoundException");
 });
 
-test("awsErrorCode maps the CLI's parameter-validation exit status, whose usage text is never JSON", () => {
+test("a command line the AWS CLI rejects is a usage error, reported with the CLI's own output", () => {
   const error = failure(
     `console.error("aws: [ERROR]: argument command: Found invalid choice 'lambda-microvms'"); process.exit(252);`,
   );
-  assert.equal(awsErrorCode(error), "ParamValidation");
-  assert.throws(() => guardLambdaMicrovms(error), /lacks the `lambda-microvms` commands/);
+  assert.equal(awsUsageError(error), true);
+  assert.equal(awsErrorCode(error), undefined);
+  assert.throws(
+    () => guardLambdaMicrovms(error),
+    /qm needs AWS CLI v2\.35\.10 or newer.*invalid choice 'lambda-microvms'/s,
+  );
 });
 
 test("awsErrorCode does not guess from legacy error text", () => {
@@ -35,6 +39,7 @@ test("awsErrorCode does not guess from legacy error text", () => {
   assert.equal(awsErrorCode(legacy), undefined);
   assert.equal(awsErrorCode(new Error("ResourceNotFoundException")), undefined);
   const other = failure(`console.error(JSON.stringify({ Code: "ThrottlingException" })); process.exit(254);`);
+  assert.equal(awsUsageError(other), false);
   assert.throws(
     () => guardLambdaMicrovms(other),
     (error: unknown) => error === other,
