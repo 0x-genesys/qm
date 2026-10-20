@@ -1282,6 +1282,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         desktopClientForTurn(input) ? [desktopComputerTool] : undefined,
       );
       screenSession.id = session.id;
+      const recordSessionLlmRequest = async (rec: HarnessLlmRequestRecord, signal?: AbortSignal): Promise<void> => {
+        try {
+          await deps.sessions.recordLlmRequest(session.id, { ...rec, scopeLabel: scopeId }, signal);
+        } catch (err) {
+          reportFailure("orchestrator: persist LLM request snapshot", err);
+        }
+      };
       if (!input.sessionParticipantIds?.length && !automatedTurn)
         await deps.sessions.addParticipant(session.id, actor.id);
 
@@ -2353,6 +2360,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 deps.modelGateway.recordCall({ at: Date.now(), scopeLabel: scopeId, ...rec });
                 void deps.budget?.record(actor.id, estimateCostUsd(rec.inputTokens));
               },
+              recordLlmRequest: recordSessionLlmRequest,
             })
             .catch((e: unknown): HarnessDetectResult => {
               deps.errors?.record(
@@ -3645,13 +3653,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               deps.modelGateway.recordCall({ at: Date.now(), scopeLabel: scopeId, ...rec });
               void deps.budget?.record(actor.id, estimateCostUsd(rec.inputTokens));
             },
-            recordLlmRequest: async (rec, signal) => {
-              try {
-                await deps.sessions.recordLlmRequest(session.id, { ...rec, scopeLabel: scopeId }, signal);
-              } catch (err) {
-                reportFailure("orchestrator: persist LLM request snapshot", err);
-              }
-            },
+            recordLlmRequest: recordSessionLlmRequest,
           });
         };
         let runtimeHandoffs = restoredRuntime ? 1 : 0;
