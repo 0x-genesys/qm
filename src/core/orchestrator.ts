@@ -303,7 +303,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
   const { compactContextIfNeeded, compactRecent, scheduleBackgroundCompaction } = createCompaction(deps);
   const originOf = async (session: Session | null) =>
     session
-      ? originThroughParents(session, (id) => deps.sessions.get(id)).catch(
+      ? originThroughParents(session, (id) => deps.sessions.get(id)).then(
+          ({ origin }) => origin,
           swallowAs("orchestrator: session origin", undefined),
         )
       : undefined;

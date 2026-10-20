@@ -344,7 +344,7 @@ export function sessionOrigin(threadRef: string | null | undefined): SessionOrig
 export async function originThroughParents(
   session: Pick<Session, "id" | "threadRef" | "parentSessionId">,
   get: (id: string) => Session | null | undefined | Promise<Session | null | undefined>,
-): Promise<SessionOrigin> {
+): Promise<{ origin: SessionOrigin; ancestor: Pick<Session, "id" | "threadRef" | "parentSessionId"> }> {
   let origin = sessionOrigin(session.threadRef);
   let ancestor = session;
   const visited = new Set([session.id]);
@@ -355,7 +355,7 @@ export async function originThroughParents(
     ancestor = parent;
     origin = sessionOrigin(parent.threadRef);
   }
-  return origin;
+  return { origin, ancestor };
 }
 
 export function sessionCategory(origin: SessionOrigin): SessionCategory {
