@@ -46,7 +46,6 @@ const STATUS_PLACEHOLDER_LOOKBACK_MS = 6 * 3_600_000;
 
 type Post = OutboundPost;
 
-/** Posts one message to Slack now: a channel or group DM, or a person's DM. Throws when Slack refuses it. */
 export function createSlackSender(deps: {
   clientForAccount?: (accountId: string, teamId?: string) => any;
   externalNamespace?: (accountId: string) => string | undefined;
@@ -54,7 +53,6 @@ export function createSlackSender(deps: {
   core: SlackCoreClient;
   webUiPublicUrl?: string;
   flow: TurnFlow;
-  /** Whether any connected account's turn handler is still waiting on this run. */
   runInFlight?: (runId: string) => boolean;
   threads: ReturnType<typeof createThreadTracker>;
   clientForIdentity(identity: string): any;

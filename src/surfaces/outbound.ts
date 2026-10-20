@@ -7,25 +7,19 @@ import type { IdempotencyStore } from "../idempotency/idempotency-store.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import { errMessage, reportFailure } from "../util/errors.ts";
 
-/** One message for a surface. The surface's sender posts it before `send` resolves; the key keeps retries idempotent. */
 export interface OutboundPost {
   destination: Destination;
   text: string;
   attachments?: OutgoingAttachment[];
   idempotencyKey: string;
   provenance?: DeliveryProvenance;
-  /** When the content was produced, if well before now (a recovered run reply); bounds Slack's duplicate check. */
   createdAt?: number;
-  /** A resend after a failed attempt that Slack may have accepted anyway: check for an earlier copy first. */
   retry?: boolean;
 }
 
 export interface PostReceipt {
-  /** A Slack DM post: the DM thread it landed in. */
   recipientThreadRef?: string;
-  /** A live turn handler owns this run's reply, so nothing was posted. */
   deferred?: boolean;
-  /** The surface failed transiently; the post is saved and `retryQueued` sends it once the surface recovers. */
   queued?: boolean;
 }
 
@@ -34,33 +28,20 @@ export type SurfaceSender = (post: OutboundPost) => Promise<PostReceipt | void>;
 export interface Outbound {
   send(post: OutboundPost): Promise<PostReceipt | void>;
   register(types: readonly string[], sender: SurfaceSender): () => void;
-  /** Re-sends posts that failed transiently; returns how many went out. */
   retryQueued(now?: number): Promise<number>;
 }
 
-/** A post whose surface was unreachable, kept until it goes out or ages out. */
 export interface QueuedPost {
   post: OutboundPost;
   firstFailedAt: number;
-  attempts: number;
-  nextAttemptAt: number;
   lastError: string;
 }
 
 const RETRY_MAX_AGE_MS = 6 * 60 * 60_000;
-const RETRY_BASE_MS = 15_000;
-const RETRY_MAX_BACKOFF_MS = 10 * 60_000;
-const retryDelay = (attempts: number): number => Math.min(RETRY_MAX_BACKOFF_MS, RETRY_BASE_MS * 2 ** (attempts - 1));
 const isPermanent = (error: unknown): boolean => (error as { permanent?: boolean } | null)?.permanent === true;
 
 const DEFERRED = new Error("deferred to a live turn handler");
 
-/**
- * Routes each post to the sender its surface registered. A key that already went out is not sent again (the
- * shared idempotency store remembers it across processes). With `retries`, a transient surface failure (Slack
- * down, rate limited) saves the post and counts it as sent; `retryQueued` keeps trying it with backoff for up to
- * six hours. Without `retries`, or for a permanent refusal, the error is thrown and the key is not remembered.
- */
 export function createOutbound(opts: {
   idempotency?: Pick<IdempotencyStore, "once">;
   retries?: DurableMap<QueuedPost>;
@@ -70,18 +51,19 @@ export function createOutbound(opts: {
   const senderFor = (type: string): SurfaceSender | undefined => senders.get(type)?.at(-1);
   const once =
     opts.idempotency?.once.bind(opts.idempotency) ?? (async (_: string, fn: () => Promise<void>) => (await fn(), true));
-  // Web posts are local transcript writes; a failure there is not a surface outage worth replaying.
   const retryable = (post: OutboundPost, error: unknown): boolean =>
     Boolean(opts.retries) && post.destination.type !== "web" && !isPermanent(error);
   return {
     async send(post) {
       const sender = senderFor(post.destination.type);
-      if (!sender) throw new Error(`no ${post.destination.type} connection is available to post this message`);
+      if (!sender && !retryable(post, null))
+        throw new Error(`no ${post.destination.type} connection is available to post this message`);
       let receipt: PostReceipt = {};
       let posted = false;
       try {
         await once(`post:${post.idempotencyKey}`, async () => {
           try {
+            if (!sender) throw new Error(`no ${post.destination.type} connection is available to post this message`);
             receipt = (await sender(post)) ?? {};
           } catch (error) {
             if (!retryable(post, error)) throw error;
@@ -89,8 +71,6 @@ export function createOutbound(opts: {
             await opts.retries!.put(post.idempotencyKey, {
               post,
               firstFailedAt: now,
-              attempts: 1,
-              nextAttemptAt: now + retryDelay(1),
               lastError: errMessage(error),
             });
             reportFailure("outbound: post failed, queued for retry", error, `key=${post.idempotencyKey}`);
@@ -121,7 +101,6 @@ export function createOutbound(opts: {
       if (!opts.retries) return 0;
       let sent = 0;
       for (const [key, queued] of await opts.retries.entries()) {
-        if (queued.nextAttemptAt > now) continue;
         const { post } = queued;
         if (now - queued.firstFailedAt > RETRY_MAX_AGE_MS) {
           await opts.retries.delete(key);
@@ -135,6 +114,9 @@ export function createOutbound(opts: {
             (await sender({ ...post, retry: true, createdAt: post.createdAt ?? queued.firstFailedAt })) ?? {};
           if (receipt.deferred) continue;
           await opts.retries.delete(key);
+          console.error(
+            `[outbound] queued post ${key} went out ${Math.round((now - queued.firstFailedAt) / 1000)}s after it first failed (${queued.lastError})`,
+          );
           opts.afterSend?.(post, receipt);
           sent += 1;
         } catch (error) {
@@ -143,13 +125,7 @@ export function createOutbound(opts: {
             reportFailure("outbound: queued post refused (not retried)", error, `key=${key}`);
             continue;
           }
-          const attempts = queued.attempts + 1;
-          await opts.retries.put(key, {
-            ...queued,
-            attempts,
-            nextAttemptAt: now + retryDelay(attempts),
-            lastError: errMessage(error),
-          });
+          await opts.retries.put(key, { ...queued, lastError: errMessage(error) });
         }
       }
       return sent;
@@ -197,10 +173,6 @@ interface TranscriptDeps {
   leaseWaitMs?: number;
 }
 
-/**
- * Appends one message to a session, once per key, and tells open web views to reload. Waits for a running turn
- * there to finish first.
- */
 export async function appendToTranscript(
   deps: TranscriptDeps,
   session: { id: string; threadRef: string; scopeId: ScopeId },
@@ -235,11 +207,6 @@ export async function appendToTranscript(
   });
 }
 
-/**
- * Web conversations have no transport besides their transcript: a post from elsewhere (a cron, another
- * session, a recovered run reply) becomes an assistant message there. A conversation's own posts are already
- * in its transcript, so they need nothing.
- */
 export function createWebSender(deps: {
   sessions: TranscriptSessions;
   sessionStates?: SessionStateBus;

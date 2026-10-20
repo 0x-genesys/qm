@@ -1,10 +1,5 @@
 import type { DurableMap } from "../persistence/durable-map.ts";
 
-/**
- * The last few messages QM posted into a person's Slack DM outside a conversation turn there (a cron, a teammate's
- * relay, an approval card). A top-level DM turn does not read Slack history, so these are its only record of what
- * the person just received; the orchestrator lists them in the next turn's context. One row per DM thread.
- */
 export interface RecentDmPosts {
   posts: Array<{ key: string; text: string; at: number; onBehalfOf?: string; trigger?: string }>;
 }

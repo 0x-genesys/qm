@@ -1644,7 +1644,7 @@ export function subscribeDeliveries(
   onInboxResync?: () => void,
 ): () => void {
   if (typeof EventSource === "undefined") return () => {};
-  const es = new EventSource(withBase("/api/deliveries/events"));
+  const es = new EventSource(withBase("/api/session-events"));
   let everOpened = false;
   es.onopen = (): void => {
     if (everOpened) {

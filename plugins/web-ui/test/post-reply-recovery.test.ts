@@ -162,7 +162,7 @@ test("post replies remain visible in new and continuing conversations", async (t
     const host = document.querySelector<HTMLElement>("#main")!;
     appState.mainEl = host;
     ensureDeliveryStream();
-    const delivery = FakeEventSource.instances.find((es) => es.url === "/api/deliveries/events")!;
+    const delivery = FakeEventSource.instances.find((es) => es.url === "/api/session-events")!;
     const shownAnswer = () =>
       [...host.querySelectorAll(".assistant-body > .streaming-text")].some((el) => el.textContent?.includes(answer));
     async function mount(recorded: SessionEntry[] = [user], readOnly = false, wait = true) {

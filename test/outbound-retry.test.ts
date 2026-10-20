@@ -33,18 +33,26 @@ test("a transient surface failure is queued, counted as sent once, and goes out 
   assert.deepEqual(await r.outbound.send(post("k1")), { queued: true });
   assert.deepEqual(await r.outbound.send(post("k1")), {}, "a repeat of the key is not queued twice");
   assert.equal((await r.retries.entries()).length, 1);
-  const queued = (await r.retries.get("k1"))!;
-  assert.equal(await r.outbound.retryQueued(queued.nextAttemptAt - 1), 0, "not before its backoff");
-  assert.equal(await r.outbound.retryQueued(queued.nextAttemptAt), 0, "still failing: kept with a longer backoff");
-  const again = (await r.retries.get("k1"))!;
-  assert.equal(again.attempts, 2);
-  assert.ok(again.nextAttemptAt - queued.nextAttemptAt >= 30_000);
+  r.fail(new Error("Slack is still unreachable"));
+  assert.equal(await r.outbound.retryQueued(), 0);
+  assert.equal((await r.retries.get("k1"))?.lastError, "Slack is still unreachable", "kept with its latest error");
   r.fail(null);
-  assert.equal(await r.outbound.retryQueued(again.nextAttemptAt), 1);
+  assert.equal(await r.outbound.retryQueued(), 1);
   assert.deepEqual(r.sent, ["k1"]);
   assert.deepEqual(r.after, ["k1"], "recipient bookkeeping runs once the post really lands");
   assert.equal(await r.retries.get("k1"), null);
-  assert.equal(await r.outbound.retryQueued(Number.MAX_SAFE_INTEGER), 0);
+  assert.equal(await r.outbound.retryQueued(), 0);
+});
+
+test("a post for a surface that is not connected yet waits in the queue for it", async () => {
+  const retries = createMemoryMap<QueuedPost>();
+  const outbound = createOutbound({ retries });
+  assert.deepEqual(await outbound.send(post("k6")), { queued: true });
+  const sent: string[] = [];
+  outbound.register(["slack"], async (p) => void sent.push(p.idempotencyKey));
+  assert.equal(await outbound.retryQueued(), 1);
+  assert.deepEqual(sent, ["k6"]);
+  await assert.rejects(createOutbound({}).send(post("k7")), /no slack connection is available/);
 });
 
 test("permanent refusals and web transcript failures throw instead of queueing", async () => {
@@ -65,9 +73,9 @@ test("a queued post that turns permanent or ages out is dropped", async () => {
   await r.outbound.send(post("k4"));
   await r.outbound.send(post("k5"));
   r.fail(Object.assign(new Error("not_in_channel"), { permanent: true }));
-  const k4 = (await r.retries.get("k4"))!;
-  await r.retries.put("k5", { ...(await r.retries.get("k5"))!, firstFailedAt: k4.firstFailedAt - 7 * 60 * 60_000 });
-  assert.equal(await r.outbound.retryQueued(k4.nextAttemptAt + 1_000), 0);
+  const k5 = (await r.retries.get("k5"))!;
+  await r.retries.put("k5", { ...k5, firstFailedAt: k5.firstFailedAt - 7 * 60 * 60_000 });
+  assert.equal(await r.outbound.retryQueued(), 0);
   assert.equal((await r.retries.entries()).length, 0);
   assert.deepEqual(r.sent, []);
 });

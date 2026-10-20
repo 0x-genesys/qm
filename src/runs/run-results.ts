@@ -21,10 +21,6 @@ function turnRecordedFailure(tail: readonly SessionEntry[], note: { notBefore: n
 
 export type AdminUrlFor = (sessionId: string) => string | undefined;
 
-/**
- * What a finished run still owes its conversation when nobody posted it live: a Slack reply after a restart,
- * a failure notice, or a web reply the turn never wrote into its transcript. Null when nothing is owed.
- */
 export function runResultPost(run: Run, adminUrlFor?: AdminUrlFor): OutboundPost | null {
   if (isSubagentThreadRef(run.sessionId) || run.request.swarm || run.request.privateSessionMessage) return null;
   const target = run.request.deliveryTarget;
@@ -140,7 +136,6 @@ export async function recordRunFailureEntry(sessions: TurnFailureSessions, run: 
 const RUN_RESULT_SWEEP_LOOKBACK_MS = 60 * 60_000;
 const RUN_RESULT_SWEEP_GRACE_MS = 60_000;
 const RUN_RESULT_SWEEP_PAGE = 200;
-/** A Slack turn handler waiting on the run posts its reply itself; give it this long before recovering. */
 const RUN_RECOVERY_GRACE_MS = 15_000;
 
 export interface RunResultRecovery {

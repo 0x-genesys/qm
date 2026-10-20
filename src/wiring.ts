@@ -2551,7 +2551,7 @@ export function buildApp(
       advisoryLock.tryWithLock
         ? advisoryLock.tryWithLock("queued-post-retry", () => outbound.retryQueued())
         : advisoryLock.withLock("queued-post-retry", () => outbound.retryQueued()),
-    15_000,
+    30_000,
     { label: "queued-posts" },
   );
   const runResultSweeper = createSweeper(

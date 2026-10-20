@@ -25,7 +25,6 @@ async function createShare(ctx: ApiCtx): Promise<void> {
   if (!source) return sendJson(res, 404, { error: "not_found" });
   const runs = (await deps.runs?.list({ threadRef: source.session.threadRef, limit: 10_000 })) ?? [];
   if (runs.length >= 10_000) return sendJson(res, 413, { error: "share_too_large" });
-  // A web reply's files count as delivered once its run finished with them; staged-but-unsent files never do.
   const deliveredAttachments = new Map<number, string[]>();
   for (const run of runs) {
     const seq = run.result?.sourceAssistantEntrySeq;

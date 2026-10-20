@@ -160,7 +160,7 @@ function rememberRun(runId: string, user: string, threadRef: string): void {
   activeRunsByThread.set(key, [...(activeRunsByThread.get(key) ?? []), runId]);
 }
 
-const deliveryClients = new Map<string, Set<ServerResponse>>();
+const eventClients = new Map<string, Set<ServerResponse>>();
 
 function ownerOfWebThread(threadRef: string): string | null {
   if (!threadRef.startsWith("web:")) return null;
@@ -532,7 +532,7 @@ function forwardSessionState(frame: SessionStateFrame): void {
   }
   const { participants: _participants, ...visible } = frame;
   for (const user of targets) {
-    for (const res of deliveryClients.get(user) ?? []) sseEvent(res, "session_state", visible);
+    for (const res of eventClients.get(user) ?? []) sseEvent(res, "session_state", visible);
   }
 }
 
@@ -594,7 +594,7 @@ function runStateFeed(): Promise<void> {
     "session_state",
     (data) => forwardSessionState(data as SessionStateFrame),
     () => {
-      for (const conns of deliveryClients.values()) for (const res of conns) sseEvent(res, "session_state_resync", {});
+      for (const conns of eventClients.values()) for (const res of conns) sseEvent(res, "session_state_resync", {});
     },
   );
 }
@@ -609,15 +609,15 @@ function runInboxFeed(): Promise<void> {
 }
 
 function resyncInbox(): void {
-  for (const conns of deliveryClients.values()) for (const res of conns) sseEvent(res, "inbox_resync", {});
+  for (const conns of eventClients.values()) for (const res of conns) sseEvent(res, "inbox_resync", {});
 }
 
 async function forwardInboxItem(ev: { loopId?: string; itemId?: string; op?: string }): Promise<void> {
-  if (!ev.loopId || !ev.itemId || !deliveryClients.size) return;
+  if (!ev.loopId || !ev.itemId || !eventClients.size) return;
   const r = await coreFetch(
     "POST",
     "/v1/inbox/viewers",
-    JSON.stringify({ loopId: ev.loopId, candidates: [...deliveryClients.keys()] }),
+    JSON.stringify({ loopId: ev.loopId, candidates: [...eventClients.keys()] }),
   ).catch(() => null);
   if (r?.status === 404) return;
   let viewers: string[] | undefined;
@@ -628,7 +628,7 @@ async function forwardInboxItem(ev: { loopId?: string; itemId?: string; op?: str
   }
   if (!viewers) return resyncInbox();
   const frame = { loopId: ev.loopId, itemId: ev.itemId, op: ev.op ?? "" };
-  for (const user of viewers) for (const res of deliveryClients.get(user) ?? []) sseEvent(res, "inbox_item", frame);
+  for (const user of viewers) for (const res of eventClients.get(user) ?? []) sseEvent(res, "inbox_item", frame);
 }
 
 async function coreFetch(
@@ -2582,7 +2582,7 @@ const apiRoutes: readonly WebRoute[] = [
   },
   {
     method: "GET",
-    path: "/api/deliveries/events",
+    path: "/api/session-events",
     handle: async (c) => {
       const { req, res, user } = c;
       res.writeHead(200, {
@@ -2592,20 +2592,20 @@ const apiRoutes: readonly WebRoute[] = [
         "x-accel-buffering": "no",
       });
       res.write(": open\n\n");
-      let set = deliveryClients.get(user);
+      let set = eventClients.get(user);
       if (!set) {
         set = new Set();
-        deliveryClients.set(user, set);
+        eventClients.set(user, set);
       }
       set.add(res);
       const beat = setInterval(() => res.write(": ping\n\n"), SSE_HEARTBEAT_MS);
       beat.unref?.();
       req.on("close", () => {
         clearInterval(beat);
-        const s = deliveryClients.get(user);
+        const s = eventClients.get(user);
         if (s) {
           s.delete(res);
-          if (!s.size) deliveryClients.delete(user);
+          if (!s.size) eventClients.delete(user);
         }
       });
       return;

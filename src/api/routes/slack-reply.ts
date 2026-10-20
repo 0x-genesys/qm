@@ -53,8 +53,6 @@ export async function slackReply(ctx: ApiCtx, send: boolean): Promise<void> {
         key,
         () => sessions!.hasDeliveryEntry(source.session.id, key, ts),
       );
-    // A turn running in this conversation (often the one the reply itself just woke) holds it for a while;
-    // record the receipt once it ends rather than keeping the request open.
     await record(RECEIPT_WAIT_MS).catch((error: unknown) => {
       if (!(error as { busy?: boolean }).busy) throw error;
       void record().catch((late: unknown) =>

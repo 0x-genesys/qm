@@ -5,11 +5,9 @@ const SURFACES = ["slack", "group", "principal"] as const;
 
 export interface PostLog {
   posts: OutboundPost[];
-  /** Posts sent to one destination type, oldest first. */
   pending(type: string): Promise<OutboundPost[]>;
 }
 
-/** Registers recording senders on an existing outbound (e.g. a built app's), standing in for the Slack plugin. */
 export function recordSurfacePosts(outbound: Pick<Outbound, "register">, types: readonly string[] = SURFACES): PostLog {
   const posts: OutboundPost[] = [];
   outbound.register(types, async (post) => {
@@ -18,7 +16,6 @@ export function recordSurfacePosts(outbound: Pick<Outbound, "register">, types: 
   return { posts, pending: async (type) => posts.filter((p) => p.destination.type === type) };
 }
 
-/** A standalone outbound that records every post (deduplicated per key like the real one). */
 export function recordingOutbound(types: readonly string[] = [...SURFACES, "web"]): Outbound & PostLog {
   const outbound = createOutbound({ idempotency: createIdempotencyStore() });
   return Object.assign(outbound, recordSurfacePosts(outbound, types));
