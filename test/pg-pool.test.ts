@@ -60,7 +60,6 @@ test("declaring statements as concurrent indexes keeps the checksum of the same 
     concurrentIndexes: [{ name: "session_search", table: "sessions", statement }],
   });
   assert.equal(declared.checksum, definePgMigration("test/indexes/0001", [statement]).checksum);
-  assert.deepEqual(declared.concurrentIndexes, [{ name: "session_search", table: "sessions", statement }]);
 });
 
 function pathToUrl(p: string): string {

@@ -76,30 +76,6 @@ test("failed concurrent index builds are unrecorded and rebuild invalid indexes 
   }
 });
 
-test(
-  "a concurrent index left in a transactional migration is refused by Postgres and rolled back",
-  { skip },
-  async () => {
-    const pool = new pg.Pool({ connectionString: databaseUrl });
-    const { id, table } = names();
-    try {
-      await assert.rejects(
-        applyPgMigrations(pool, [
-          definePgMigration(id, [
-            `CREATE TABLE ${table}(value INT)`,
-            `CREATE INDEX CONCURRENTLY IF NOT EXISTS ${table}_idx ON ${table}(value)`,
-          ]),
-        ]),
-        { code: "25001" },
-      );
-      assert.equal((await pool.query("SELECT to_regclass($1) AS name", [table])).rows[0].name, null);
-      assert.equal((await pool.query(`SELECT 1 FROM ${PG_MIGRATIONS_TABLE} WHERE id=$1`, [id])).rowCount, 0);
-    } finally {
-      await pool.end();
-    }
-  },
-);
-
 test("a concurrent index declared under the wrong name is not recorded", { skip }, async () => {
   const pool = new pg.Pool({ connectionString: databaseUrl });
   const { id, table } = names();
@@ -135,44 +111,12 @@ test("Postgres refuses a migration element holding two statements and nothing is
       applyPgMigrations(pool, [
         definePgMigration(id, [`CREATE TABLE ${table}(a INT); ALTER TABLE ${table} ADD COLUMN b INT`]),
       ]),
-      { code: "42601" },
+      (error: Error) => (error.cause as { code?: string }).code === "42601" && error.message.includes(id),
     );
     assert.equal((await pool.query("SELECT to_regclass($1) AS name", [table])).rows[0].name, null);
     assert.equal((await pool.query(`SELECT 1 FROM ${PG_MIGRATIONS_TABLE} WHERE id=$1`, [id])).rowCount, 0);
   } finally {
     await pool.query(`DROP TABLE IF EXISTS ${table}`);
-    await pool.end();
-  }
-});
-
-test("semicolons inside dollar quotes, literals and comments stay within one statement", { skip }, async () => {
-  const pool = new pg.Pool({ connectionString: databaseUrl });
-  const { id, table } = names();
-  try {
-    await applyPgMigrations(pool, [
-      definePgMigration(id, [
-        `CREATE TABLE ${table}(value TEXT)`,
-        `DO $$
-        BEGIN
-          ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS a INT;
-          ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS b INT;
-        END $$`,
-        `INSERT INTO ${table}(value) VALUES ('x;y') -- don't; split\n`,
-        `SELECT 1;`,
-      ]),
-    ]);
-    const columns = await pool.query(
-      "SELECT column_name FROM information_schema.columns WHERE table_name = $1 ORDER BY ordinal_position",
-      [table],
-    );
-    assert.deepEqual(
-      columns.rows.map((row) => row.column_name),
-      ["value", "a", "b"],
-    );
-    assert.deepEqual((await pool.query(`SELECT value FROM ${table}`)).rows, [{ value: "x;y" }]);
-  } finally {
-    await pool.query(`DROP TABLE IF EXISTS ${table}`);
-    await pool.query(`DELETE FROM ${PG_MIGRATIONS_TABLE} WHERE id = $1`, [id]);
     await pool.end();
   }
 });

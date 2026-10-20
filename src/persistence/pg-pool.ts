@@ -183,9 +183,15 @@ export async function withPgTransaction<T>(pool: Pool, fn: (client: PoolClient) 
   }
 }
 
-async function runSchemaStatement(client: PoolClient, statement: string): Promise<void> {
+async function runSchemaStatement(client: PoolClient, migrationId: string, statement: string): Promise<void> {
   const config: QueryConfig & { queryMode: "extended" } = { text: statement, queryMode: "extended" };
-  await client.query(config);
+  try {
+    await client.query(config);
+  } catch (error) {
+    throw new Error(`pg-pool: ${migrationId} failed: ${errMessage(error)} (in: ${statement.slice(0, 80)}…)`, {
+      cause: error,
+    });
+  }
 }
 
 export function pgMigrationChecksum(statements: readonly string[]): string {
@@ -281,7 +287,7 @@ export async function applyPgMigrations(pool: Pool, migrations: readonly PgMigra
       if (migration.prepare) {
         await client.query("SET statement_timeout = 0");
         try {
-          for (const statement of migration.prepare) await runSchemaStatement(client, statement);
+          for (const statement of migration.prepare) await runSchemaStatement(client, migration.id, statement);
         } catch (error) {
           await client
             .query("RESET statement_timeout")
@@ -299,13 +305,13 @@ export async function applyPgMigrations(pool: Pool, migrations: readonly PgMigra
              FROM pg_class t JOIN pg_namespace n ON n.oid = t.relnamespace
              JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = $2
              JOIN pg_index i ON i.indexrelid = c.oid WHERE t.oid = to_regclass($1)`,
-              [table, name],
+              [table.toLowerCase(), name.toLowerCase()],
             );
           const existing = (await inspect()).rows[0];
           if (existing && !existing.same_table)
             throw new Error(`pg-pool: concurrent index ${name} belongs to a different table`);
           if (existing?.indisvalid === false) await client.query(`DROP INDEX CONCURRENTLY ${existing.qualified_name}`);
-          await runSchemaStatement(client, statement);
+          await runSchemaStatement(client, migration.id, statement);
           const built = (await inspect()).rows[0];
           if (!built?.indisvalid || !built.indisready || !built.same_table) {
             throw new Error(`pg-pool: concurrent index ${name} is not ready and valid`);
@@ -329,7 +335,8 @@ export async function applyPgMigrations(pool: Pool, migrations: readonly PgMigra
             adopted = legacy.rows.length > 0;
           }
         }
-        if (!adopted) for (const statement of migration.statements) await runSchemaStatement(client, statement);
+        if (!adopted)
+          for (const statement of migration.statements) await runSchemaStatement(client, migration.id, statement);
         await client.query(`INSERT INTO ${PG_MIGRATIONS_TABLE}(id, checksum) VALUES ($1, $2)`, [
           migration.id,
           migration.checksum,
@@ -411,7 +418,7 @@ async function applyPgMaintenance(pool: Pool, maintenance: readonly PgMigration[
     for (const operation of maintenance) {
       await client.query("BEGIN");
       try {
-        for (const statement of operation.statements) await runSchemaStatement(client, statement);
+        for (const statement of operation.statements) await runSchemaStatement(client, operation.id, statement);
         await client.query("COMMIT");
       } catch (error) {
         await client.query("ROLLBACK").catch(swallowAs(`pg-pool: rollback maintenance ${operation.id}`, undefined));

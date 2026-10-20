@@ -140,7 +140,7 @@ export function createPostgresEventSink<E>(cfg: PostgresEventSinkConfig<E>): Pos
     ].join(",\n"),
     ")",
   ].join("\n");
-  const pg = createPgPool(cfg.connectionString, [
+  const { q } = createPgPool(cfg.connectionString, [
     {
       id: scopedEventMigrationId(cfg.table, 1),
       statements: [createTable, ...(cfg.extraSchemaStatements ?? standardIndexes(cfg.table))],
@@ -148,27 +148,6 @@ export function createPostgresEventSink<E>(cfg: PostgresEventSinkConfig<E>): Pos
     },
     ...followUps,
   ]);
-  let columnsChecked: Promise<void> | undefined;
-  async function checkColumns(): Promise<void> {
-    const rows = await pg.q(
-      "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = $1",
-      [cfg.table],
-    );
-    const present = new Set(rows.map((row) => row.column_name));
-    const missing = cfg.columns.map(([db]) => db).filter((db) => !present.has(db));
-    if (missing.length) {
-      throw new Error(
-        `scoped-event-sink: ${cfg.table} has no column ${missing.join(", ")} after its migrations; add a follow-up migration`,
-      );
-    }
-  }
-  const q: PgPool["q"] = async (...args) => {
-    await (columnsChecked ??= checkColumns().catch((error: unknown) => {
-      columnsChecked = undefined;
-      throw error;
-    }));
-    return pg.q(...args);
-  };
 
   const dbCols = cfg.columns.map(([db]) => db).join(", ");
   const insertSql = `INSERT INTO ${cfg.table}(${dbCols}) VALUES (${cfg.columns.map((_, i) => `$${i + 1}`).join(",")})`;
