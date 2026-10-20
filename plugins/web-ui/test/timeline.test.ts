@@ -657,7 +657,7 @@ test("ordinary and hidden user events do not become steering markers", () => {
     status: "complete",
     activity: [
       { item: item("UserMessage", { seq: 1, createdAt: 1, text: "ordinary" }) },
-      { item: item("SteeringMessage", { seq: 2, createdAt: 2, text: "hidden", body: { hidden: true } }) },
+      { item: item("UserMessage", { seq: 2, createdAt: 2, text: "hidden", hidden: true }) },
     ],
   };
   assert.deepEqual(buildTimeline(work), []);
