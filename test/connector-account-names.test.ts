@@ -3,12 +3,14 @@ import assert from "node:assert/strict";
 import { createKeychain, type KeychainCredential } from "../src/credentials/keychain.ts";
 import { deriveConnectorKey } from "../src/connectors/connector-client-store.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { createMemoryAdvisoryLock } from "../src/persistence/advisory-lock.ts";
 import { isAccountType, parseAccountName } from "../src/connectors/oauth.ts";
 import { connectorAccountSlots } from "../src/credentials/connector-accounts.ts";
 import { tokenFor } from "../src/loops/sources/adapter.ts";
 
 const keychain = () =>
   createKeychain({
+    lock: createMemoryAdvisoryLock(),
     creds: createMemoryMap<KeychainCredential>(),
     grants: createMemoryMap(),
     asks: createMemoryMap(),
