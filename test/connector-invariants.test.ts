@@ -341,7 +341,7 @@ test("named OAuth accounts surface as connector:<host>:<name> handles and resolv
   );
   const prompt = (await built.app.turn({ ...turn("dm", "!sysprompt"), liveActor: true })).reply ?? "";
   for (const handle of ["slack.com:ycf2026", "slack.com:acme-eng", "gmail.googleapis.com:ops@example.com"])
-    assert.match(prompt, new RegExp(`connector:${handle.replace(/\./g, "\\.")}`));
+    assert.ok(prompt.includes(`connector:${handle}`), handle);
   assert.doesNotMatch(prompt, /connector:slack\.com:default/);
   for (const [handle, host, token] of [
     ["connector:slack.com:ycf2026", "slack.com", "ycf-token"],
