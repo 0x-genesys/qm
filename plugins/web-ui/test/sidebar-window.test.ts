@@ -172,3 +172,43 @@ test("an open project menu and rename survive the last project row leaving the b
     await h.close();
   }
 });
+
+test("channel groups page as a unit with their own Show more, independent of the recency window", async () => {
+  const list = sessions(80);
+  const scopeId = "slack:T1:C1";
+  // The channel's newest chat is inside the first window; the rest are older than every windowed chat.
+  for (const item of [list[2]!, ...list.slice(60, 72)]) item.scopeId = scopeId;
+  const h = await harness({
+    path: `/s/${list[0]!.id}`,
+    session: list[0],
+    listSessions: list,
+    contexts: [
+      { scopeId: "personal:tester", kind: "personal", name: "Personal", sessionCount: 67, lastActivityAt: null },
+      { scopeId, kind: "channel", name: "#builds", sessionCount: 13, lastActivityAt: null },
+    ],
+  });
+  try {
+    await h.boot();
+    h.releaseSessions();
+    await h.sessionsReady();
+    const sidebar = document.querySelector("#sidebar-body")!;
+    const section = () =>
+      [...sidebar.querySelectorAll<HTMLElement>("section.recent-project")].find(
+        (el) => el.querySelector(".recent-project-name")?.textContent === "Channel",
+      )!;
+    const rows = () => section().querySelectorAll(".recent-project-children .session-row").length;
+    assert.equal(section().querySelector(".recent-project-count")?.textContent, "13");
+    assert.equal(rows(), 5, "a channel shows its newest five, not just the rows inside the window");
+    button(section(), "Show 8 more").click();
+    assert.equal(rows(), 13);
+    assert.equal(section().querySelector(".group-show-more"), null);
+    // The bottom button still pages personal chats; group rows outside the window don't keep it alive.
+    button(sidebar, "Show more conversations").click();
+    assert.ok(
+      ![...sidebar.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Show more conversations"),
+      "no bottom button once every personal chat and group is on screen",
+    );
+  } finally {
+    await h.close();
+  }
+});
