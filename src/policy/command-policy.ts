@@ -161,6 +161,9 @@ function scan(command: string, depth: number): Scan {
   try {
     const executed = executedPayloads(tree.rootNode);
     const nested = executed.scripts.map((script) => scan(script, depth + 1));
+    let uninspectable = nested.find((inner) => inner.uninspectable)?.uninspectable;
+    if (executed.misread) uninspectable = "laid out in a way the shell parser may misread";
+    if (tree.rootNode.hasError) uninspectable = "shell syntax the parser could not read";
     return {
       lines: [
         ...(tree.rootNode.hasError ? [command] : []),
@@ -170,11 +173,7 @@ function scan(command: string, depth: number): Scan {
       ],
       commands: [...executed.commands, ...nested.flatMap((inner) => inner.commands)],
       feedsShell: executed.feedsShell || nested.some((inner) => inner.feedsShell),
-      ...(tree.rootNode.hasError
-        ? { uninspectable: "shell syntax the parser could not read" }
-        : executed.misread
-          ? { uninspectable: "laid out in a way the shell parser may misread" }
-          : nested.find((inner) => inner.uninspectable)),
+      ...(uninspectable ? { uninspectable } : {}),
     };
   } finally {
     tree.delete();
