@@ -107,65 +107,32 @@ function heldLineTexts(history: readonly SessionEntry[], sinceSeq: number): Map<
   return texts;
 }
 
-function commonLines(before: readonly string[], after: readonly string[]): [boolean[], boolean[]] {
-  const lengths = Array.from({ length: before.length + 1 }, () => Array.from({ length: after.length + 1 }, () => 0));
-  for (let i = before.length - 1; i >= 0; i--)
-    for (let j = after.length - 1; j >= 0; j--)
-      lengths[i]![j] =
-        before[i] === after[j] ? lengths[i + 1]![j + 1]! + 1 : Math.max(lengths[i + 1]![j]!, lengths[i]![j + 1]!);
-  const keptBefore = before.map(() => false);
-  const keptAfter = after.map(() => false);
-  for (let i = 0, j = 0; i < before.length && j < after.length;) {
-    if (before[i] === after[j]) {
-      keptBefore[i++] = true;
-      keptAfter[j++] = true;
-    } else if (lengths[i + 1]![j]! >= lengths[i]![j + 1]!) i++;
-    else j++;
-  }
-  return [keptBefore, keptAfter];
-}
-
 function changedLines(
   text: string,
   lines: readonly string[],
   previous: readonly string[],
   held: () => Map<string, string>,
 ): string | null {
-  const current = text.split("\n");
   if (previous[0] !== lines[0]) return null;
-  const [keptBefore, keptAfter] = commonLines(previous, lines);
+  const current = text.split("\n");
   const texts = held();
+  const before = previous.map((hash) => texts.get(hash));
+  const kept = new Set(lines);
+  const was = new Set(previous);
   const out = [`${current[0]} (changed lines only: + added, - removed; all other lines are unchanged)`];
   let context: string | undefined;
-  const note = (heading: string | undefined) => {
+  const emit = (version: readonly (string | undefined)[], index: number, mark: string) => {
+    const heading = version.slice(1, index).findLast((line) => line?.startsWith("#"));
     if (heading !== undefined && heading !== context) out.push(`  ${heading}`);
     context = heading;
+    out.push(`${mark} ${version[index]}`);
   };
-  const headingBefore = (from: number, read: (index: number) => string | undefined) => {
-    for (let index = from; index > 0; index--) {
-      const line = read(index);
-      if (line?.startsWith("#")) return line;
-    }
-    return undefined;
-  };
-  let i = 0;
-  let j = 0;
-  while (i < previous.length || j < lines.length) {
-    if (i < previous.length && !keptBefore[i]) {
-      const removed = texts.get(previous[i]!);
-      if (removed === undefined) return null;
-      note(headingBefore(i - 1, (index) => texts.get(previous[index]!)));
-      out.push(`- ${removed}`);
-      i++;
-    } else if (j < lines.length && !keptAfter[j]) {
-      note(headingBefore(j - 1, (index) => current[index]));
-      out.push(`+ ${current[j]}`);
-      j++;
-    } else {
-      i++;
-      j++;
-    }
+  for (const [index, hash] of previous.entries()) {
+    if (kept.has(hash)) continue;
+    if (before[index] === undefined) return null;
+    emit(before, index, "-");
   }
+  for (const [index, hash] of lines.entries()) if (!was.has(hash)) emit(current, index, "+");
   const delta = out.join("\n");
   return delta.length * 2 <= text.length ? delta : null;
 }
