@@ -11,7 +11,7 @@ import {
 import { resolveModel } from "../src/model/pi-models.ts";
 import { loadConfig } from "../src/config.ts";
 
-const BASE_ENV = { HARNESS: "mock" } as NodeJS.ProcessEnv;
+const BASE_ENV = {} as NodeJS.ProcessEnv;
 
 afterEach(() => {
   setProviderBaseUrls({});

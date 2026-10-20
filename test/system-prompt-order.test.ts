@@ -19,7 +19,7 @@ import { createMemoryService } from "../src/memory/memory-service.ts";
 import { createModelGateway } from "../src/model/model-gateway.ts";
 import { createAuditLog } from "../src/audit/audit-log.ts";
 import { createRateLimiter } from "../src/ratelimit/rate-limiter.ts";
-import { createMockHarness } from "../src/harness/mock-harness.ts";
+import { createMockHarness } from "./support/mock-harness.ts";
 import { createPiHarness } from "../src/harness/pi-harness.ts";
 import { anthropicStream, contextHeaders, recordRequests } from "./support/gateway-stream.ts";
 import { settle } from "./support/settle.ts";
@@ -38,6 +38,7 @@ import { createSkillStore, type SkillStore } from "../src/skills/skill-store.ts"
 import { scopeId, type Conversation, type Principal, type ScopeId, type TurnRequest } from "../src/types.ts";
 import type { ManagedGroupDirectory } from "../src/resolution/scope-membership.ts";
 import type { IsCurrentSharedScopeMember } from "../src/resolution/scope-membership.ts";
+import { singleProcessDeps } from "./support/single-process.ts";
 
 const ORG = "default-org";
 const actor: Principal = { id: "U1", type: "internal" };
@@ -111,6 +112,7 @@ function buildOrchestrator(
   const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "spo-")));
   const memory = createMemoryService(workspace);
   const deploy = createDeployService({
+    ...singleProcessDeps(),
     deployStore: createDeployStore(),
     provider: createDockerDeployProvider(),
     deployDir: join(tmpdir(), "spo-deploy"),
@@ -120,6 +122,7 @@ function buildOrchestrator(
   const sessions = createMemorySessionStore();
   const files = createMemoryFileArtifactStore(createMemoryDurableByteStore());
   const orchestrator = createOrchestrator({
+    ...singleProcessDeps(),
     identity: createIdentityService(),
     resolution: createResolutionService(ORG, config, acl),
     sessions,
@@ -1222,8 +1225,8 @@ for (const budget of ["count", "bytes", "reupload", "retry"] as const) {
     assert.equal(result.status, "ok", result.reason);
     if (budget === "retry") assert.equal(prepared?.documents?.length, 1);
     else assert.deepEqual(prepared?.documents, []);
-    if (budget === "reupload" || budget === "retry") assert.doesNotMatch(prepared?.text ?? "", /count or byte budget/);
-    else assert.match(prepared?.text ?? "", /steered.txt.*count or byte budget/);
+    if (budget === "reupload" || budget === "retry") assert.doesNotMatch(prepared?.text ?? "", /not included inline/);
+    else assert.match(prepared?.text ?? "", /steered.txt" is not included inline/);
   });
 }
 

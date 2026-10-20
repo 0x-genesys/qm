@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { createInsecureTestServer } from "../src/api/server.ts";
-import { buildApp } from "../src/wiring.ts";
+import { buildApp } from "./support/build-app.ts";
 import { scopeId, type TurnRequest } from "../src/types.ts";
 import { testConfig } from "./support/test-config.ts";
 import { SECURITY_SCREEN_STEP } from "../src/security/security-posture.ts";
@@ -189,7 +189,6 @@ test("an org admin sees EXACTLY what we sent the model per turn (captured reques
         step: number;
         model: string;
         truncated: boolean;
-        request: unknown;
         promptEnvelope?: unknown;
       }[];
     };
@@ -198,8 +197,11 @@ test("an org admin sees EXACTLY what we sent the model per turn (captured reques
     assert.equal(meta.step, 0, "first agent step of the turn");
     assert.equal(typeof meta.turnSeq, "number", "correlated to the turn's user entry");
     assert.equal(meta.truncated, false);
-    assert.equal(meta.request, null, "the bare list omits the prompt body — bodies load per turn on demand");
-    assert.equal(meta.promptEnvelope, undefined, "…and the prompt envelope");
+    assert.equal(
+      meta.promptEnvelope,
+      undefined,
+      "the bare list omits the prompt body — bodies load per turn on demand",
+    );
     const tr = await get(
       s.base,
       `/v1/admin/sessions/${encodeURIComponent(conv.id)}/llm?turnSeq=${meta.turnSeq}&scope=org:default-org`,

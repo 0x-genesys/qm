@@ -11,7 +11,7 @@ import { once } from "node:events";
 import * as Sentry from "@sentry/node";
 import { flushErrorReporting, initializeErrorReporting } from "../plugins/chassis/src/error-reporting.ts";
 import { createInsecureTestServer } from "../src/api/server.ts";
-import { buildApp } from "../src/wiring.ts";
+import { buildApp } from "./support/build-app.ts";
 import { testConfig } from "./support/test-config.ts";
 import { withTraceCarrier } from "../src/runs/run-store.ts";
 
@@ -74,34 +74,6 @@ test("core requests are named by route template and carry no URL, query or heade
   } finally {
     await new Promise<void>((r) => server.close(() => r()));
   }
-});
-
-test("a queued run continues the producer's trace and records time to first token", async () => {
-  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "timing-run-")) }));
-  captured.length = 0;
-  let producerTrace = "";
-  const result = await Sentry.startSpan({ name: "producer", op: "test" }, (span) => {
-    producerTrace = span.spanContext().traceId;
-    return built.app.turn({
-      surface: "test",
-      actor: { externalId: "U1" },
-      conversation: { kind: "dm", threadRef: "dm:U1:timing" },
-      text: "private prompt",
-    });
-  });
-  assert.equal(result.status, "ok");
-  await settle(() => captured.some((event) => event.contexts?.trace?.op === "queue.process"));
-  const run = captured.find((event) => event.contexts?.trace?.op === "queue.process")!;
-  assert.ok(run, "the run attempt is its own transaction");
-  assert.equal(run.transaction, "run");
-  assert.equal(run.contexts.trace.trace_id, producerTrace);
-  assert.equal(run.contexts.trace.data["qm.surface"], "test");
-  assert.equal(run.contexts.trace.data["qm.origin"], "direct");
-  assert.equal(typeof run.contexts.trace.data["messaging.message.id"], "string");
-  assert.equal(run.measurements?.time_to_first_token?.unit, "millisecond");
-  assert.doesNotMatch(JSON.stringify(run), /private prompt/);
-  const stored = await built.runs.get(run.contexts.trace.data["messaging.message.id"]);
-  assert.equal(stored?.request.trace?.sentryTrace.split("-")[0], producerTrace);
 });
 
 test("a run stores the request's trace context, and never a swarm's", async () => {

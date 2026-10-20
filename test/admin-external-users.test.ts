@@ -10,8 +10,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { createInsecureTestServer, createServer } from "../src/api/server.ts";
-import { buildApp } from "../src/wiring.ts";
-import { INVITE_EMAIL_NOT_CONFIGURED, renderInviteEmail, type InviteMailer } from "../src/admin/invite-email.ts";
+import { buildApp } from "./support/build-app.ts";
+import { INVITE_EMAIL_NOT_CONFIGURED, renderInviteEmail } from "../src/admin/invite-email.ts";
+import type { Mailer } from "../plugins/chassis/src/resend.ts";
 import { adminStatusFromGrants } from "../src/admin/admin-service.ts";
 import { coreEmailAdmission, coreEmailAllowed } from "../plugins/chassis/src/external-members.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS, CONTROL_PLANE_AUD } from "../src/auth/capability-token.ts";
@@ -27,7 +28,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 type Sent = { to: string; subject: string; text: string; html: string };
 
-function stubMailer(fail?: string): { sent: Sent[]; mailer: InviteMailer } {
+function stubMailer(fail?: string): { sent: Sent[]; mailer: Mailer } {
   const sent: Sent[] = [];
   return {
     sent,
@@ -42,7 +43,7 @@ function stubMailer(fail?: string): { sent: Sent[]; mailer: InviteMailer } {
 }
 
 function start(
-  opts: { mailer?: InviteMailer; signed?: boolean; emailAuthDomain?: string; emailAuthPrincipals?: string[] } = {},
+  opts: { mailer?: Mailer; signed?: boolean; emailAuthDomain?: string; emailAuthPrincipals?: string[] } = {},
 ) {
   const built = buildApp(
     testConfig({

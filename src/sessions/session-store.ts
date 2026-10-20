@@ -3,6 +3,8 @@ import type { EntryType, ScopeId, Session, SessionEntry, SessionType, SpawnMeta 
 import { sleep } from "../util/async.ts";
 import type { GoalRecord } from "../harness/goal.ts";
 
+export const LLM_CAPTURE_RETENTION_MS = 30 * 24 * 60 * 60_000;
+
 export function promptEnvelopeBody(envelope: unknown): { hash: string; body: string } | null {
   if (envelope == null) return null;
   let body: string;
@@ -249,7 +251,6 @@ export interface LlmRequestRecord {
   model: string;
   scopeLabel: ScopeId;
   createdAt: number;
-  request: unknown;
   promptHash: string | null;
   promptEnvelope?: unknown;
   truncated: boolean;
@@ -378,6 +379,35 @@ export interface SessionRef {
 export interface DistinctScope {
   scopeId: ScopeId;
   channelName?: string;
+}
+
+export interface ParticipantPageQuery {
+  limit: number;
+  before?: { activity: number; id: string };
+  archived?: boolean;
+  pinned?: boolean;
+  surface?: string;
+  scopeId?: ScopeId;
+  titleQuery?: string;
+  sessionIds?: readonly string[];
+}
+
+export interface ParticipantPage {
+  sessions: Session[];
+  next: { activity: number; id: string } | null;
+}
+
+export interface SessionDescendant {
+  id: string;
+  rootId: string;
+  threadRef: string;
+}
+
+export interface ParticipantScope {
+  scopeId: ScopeId;
+  channelName?: string;
+  sessionCount: number;
+  lastActivityAt: number | null;
 }
 
 export interface EntrySearchHit extends Pick<Session, "scopeId" | "title" | "channelName" | "surface" | "archived"> {
@@ -590,10 +620,15 @@ export interface SessionStore {
   listLlmRequests(sessionId: string, opts?: ListLlmRequestsOptions): Promise<LlmRequestRecord[]>;
   /** The most recent security screenings across every scope, newest first. */
   listScreenSamples(limit: number): Promise<ScreenSample[]>;
+  purgeLlmCaptures?(cutoff: number, opts?: { deadline?: number; stop?: () => boolean }): Promise<number>;
 
   addParticipant(sessionId: string, principalId: string, title?: string, opts?: AddParticipantOptions): Promise<void>;
   removeParticipant(sessionId: string, principalId: string): Promise<void>;
   listByParticipant(principalId: string, opts?: { limit: number }): Promise<Session[]>;
+  participantScopes(principalId: string): Promise<ParticipantScope[]>;
+  listParticipantPage(principalId: string, query: ParticipantPageQuery): Promise<ParticipantPage>;
+  descendantsOf(rootIds: readonly string[]): Promise<SessionDescendant[]>;
+  listDescendantsForParticipant(rootId: string, principalId: string, limit: number): Promise<Session[]>;
   getForParticipant(sessionId: string, principalId: string): Promise<Session | null>;
 
   deleteSession(sessionId: string): Promise<void>;
