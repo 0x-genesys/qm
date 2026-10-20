@@ -91,7 +91,10 @@ test("embedding outage falls back to whole bullets, without disabling grep or wr
 
 test("recall query includes bounded dialogue, not tool payloads", () => {
   const entry = (kind: "UserMessage" | "AgentMessage" | "ToolResult", text: string) =>
-    storedItem({ kind, text }, { sessionId: "s", seq: 0, createdAt: 0 });
+    storedItem(
+      { kind, text, callId: kind === "ToolResult" ? "c1" : undefined },
+      { sessionId: "s", seq: 0, createdAt: 0 },
+    );
   const q = memoryRecallQuery("yes, do that", [
     entry("UserMessage", "Let's revise the portal timeout"),
     entry("AgentMessage", "Extend the session"),

@@ -13,7 +13,8 @@ import { storedItem, type Item, type ItemKind, type NewItem } from "../src/sessi
 import { testConfig } from "./support/test-config.ts";
 
 function entry(seq: number, kind: ItemKind): Item {
-  return storedItem({ kind, text: `e${seq}` } as NewItem, { sessionId: "s1", seq, createdAt: seq });
+  const callId = kind === "ToolCall" || kind === "ToolResult" ? `c${seq}` : undefined;
+  return storedItem({ kind, text: `e${seq}`, callId } as NewItem, { sessionId: "s1", seq, createdAt: seq });
 }
 
 const LOG: Item[] = [
