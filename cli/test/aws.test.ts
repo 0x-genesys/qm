@@ -452,6 +452,7 @@ else if (a.includes("ecs update-service")) {
   if (!${JSON.stringify(opts.ignoreUpdate ?? false)} && args.includes("--task-definition")) service.taskDefinition = after("--task-definition");
   if (!${JSON.stringify(opts.ignoreUpdate ?? false)} && args.includes("--desired-count")) service.desiredCount = Number(after("--desired-count"));
   if (!${JSON.stringify(opts.ignoreUpdate ?? false)}) service.deploymentId = "ecs-svc/" + name + "-" + (++s.revision);
+  if (s.stoppedInventory) delete s.taskInventory;
   if (s.failNextWebRollout && service.workload === "web-ui") { s.failedTaskDefinition = service.taskDefinition; s.failNextWebRollout = false; }
   s.updated = true;
   s.drainPolls = ${JSON.stringify(opts.drainPolls ?? 0)};
@@ -6137,41 +6138,31 @@ test("a stopped AWS core cohort is replaceable only while the production route r
   process.env.PATH = `${dir}:${priorPath}`;
   try {
     await awsUp(single, dir, { yes: true });
-    const deployed = JSON.parse(readFileSync(fake.state, "utf8"));
-    const manifest = JSON.parse(
-      deployed.dynamo[`deployment/manifest/${deployed.dynamo["deployment/current"].manifestId.S}`].manifest.S,
-    );
-    const taskDefinition = deployed.services["acme-core"].taskDefinition;
-    const stopped = (lastStatus = "STOPPED", runningCount = 0) => ({
-      ...deployed,
-      serviceOverrides: {
-        "acme-core": {
-          desiredCount: 0,
-          runningCount,
-          pendingCount: 0,
-          deployments: [
-            {
-              id: "scaled-down",
-              status: "PRIMARY",
-              taskDefinition,
-              rolloutState: "COMPLETED",
-              runningCount: 0,
-              pendingCount: 0,
-            },
-          ],
-        },
-      },
-      taskInventory: {
+    const current = () => {
+      const state = JSON.parse(readFileSync(fake.state, "utf8"));
+      return JSON.parse(
+        state.dynamo[`deployment/manifest/${state.dynamo["deployment/current"].manifestId.S}`].manifest.S,
+      );
+    };
+    const manifest = current();
+    const stopped = (lastStatus = "STOPPED", runningCount = 0) => {
+      const state = JSON.parse(readFileSync(fake.state, "utf8"));
+      state.services["acme-core"].desiredCount = 0;
+      if (runningCount) state.serviceOverrides = { "acme-core": { runningCount } };
+      else delete state.serviceOverrides;
+      state.stoppedInventory = true;
+      state.taskInventory = {
         "acme-core": [
           {
             taskArn: "arn:aws:ecs:us-west-2:123456789012:task/old-core",
-            taskDefinitionArn: taskDefinition,
+            taskDefinitionArn: state.services["acme-core"].taskDefinition,
             desiredStatus: "STOPPED",
             lastStatus,
           },
         ],
-      },
-    });
+      };
+      return state;
+    };
     const production = {
       protocol: 2,
       deploymentId: "other-core:release",
@@ -6233,9 +6224,22 @@ test("a stopped AWS core cohort is replaceable only while the production route r
     writeFileSync(fake.state, JSON.stringify(stopped()));
     reads.length = 0;
     writeFileSync(fake.log, "");
-    await assert.rejects(awsUp(single, dir, { yes: true }), /0 desired, expected 1/);
-    assert.deepEqual(reads, ["https://agent.acme.example/v1/background-work"]);
+    await awsUp(single, dir, { yes: true, restart: ["core"] });
+    const replaced = current();
+    assert.notEqual(replaced.id, manifest.id);
+    assert.notEqual(replaced.backgroundDeploymentId, manifest.backgroundDeploymentId);
+    assert.equal(replaced.counts.core, 1);
     assert.match(readFileSync(fake.log, "utf8"), /ecs update-service/);
+    writeFileSync(fake.state, JSON.stringify(stopped()));
+    await awsRollback(single, manifest.id);
+    const rolledBack = JSON.parse(readFileSync(fake.state, "utf8"));
+    assert.equal(current().id, manifest.id);
+    assert.equal(rolledBack.services["acme-core"].taskDefinition, manifest.tasks.core);
+    assert.equal(rolledBack.services["acme-core"].desiredCount, 1);
+    assert.deepEqual(reads, [
+      "https://agent.acme.example/v1/background-work",
+      "https://agent.acme.example/v1/background-work",
+    ]);
   } finally {
     process.env.PATH = priorPath;
     fake.restore();
