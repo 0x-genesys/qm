@@ -41,6 +41,11 @@ test("staged core stays on the verified copy until authenticated promotion compl
     await op.verify();
     await assert.rejects(createItemsPromotion(url!), /indexes ready/);
     await op.indexes();
+    await pool.query(
+      "INSERT INTO session_entries(session_id,seq,type,payload,scope_label,created_at) VALUES($1,1,'assistant','{\"text\":\"queued\"}','personal:alice',2)",
+      [id],
+    );
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM items_copy_ops.dirty")).rows[0].n, 1);
     const stageUrl = new URL(url!);
     stageUrl.searchParams.set("application_name", "staged-promotion-test");
     staged = createPostgresSessionStore(stageUrl.toString(), { stageItemsCutover: true });
@@ -88,7 +93,7 @@ test("staged core stays on the verified copy until authenticated promotion compl
     await staged.releaseLease(lease);
     assert.deepEqual(
       (await pool.query("SELECT text FROM items ORDER BY seq")).rows.map((r) => r.text),
-      ["before", "after"],
+      ["before", "queued", "after"],
     );
     await applyPgMigrations(pool, migrations);
     await pool.query("UPDATE qm_schema_migrations SET checksum='invalid' WHERE id=$1", [ITEMS_CUTOVER_ID]);

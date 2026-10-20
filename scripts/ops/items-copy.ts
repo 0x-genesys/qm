@@ -111,7 +111,7 @@ export class ItemsCopyOperator {
     });
   }
 
-  async assertState(phases: string[], lock: "UPDATE" | "SHARE" = "UPDATE") {
+  async assertState(phases: string[], lock: "UPDATE" | "SHARE" | "KEY SHARE" = "UPDATE") {
     const {
       rows: [cutover],
     } = await this.client.query(
@@ -237,18 +237,23 @@ export class ItemsCopyOperator {
     });
   }
 
-  async catchupBatch() {
+  async catchupBatch(worker = 0, workers = 1) {
     return this.transaction(async () => {
-      await this.assertState(["catchup", "verified", "ready"]);
-      return this.drainBatch();
-    });
+      await this.assertState(["catchup", "verified", "ready"], "KEY SHARE");
+      return this.drainBatch(worker, workers);
+    }, true);
   }
 
-  async drainBatch() {
+  async drainBatch(worker = 0, workers = 1) {
     await this.client.query("TRUNCATE pg_temp.items_copy_batch");
     const {
       rows: [entry],
-    } = await this.client.query(`SELECT * FROM ${dirty} ORDER BY touched_at,session_id LIMIT 1`);
+    } = await this.client.query(
+      `SELECT * FROM ${dirty}
+        WHERE (hashtext(session_id)::bigint & 2147483647) % $2 = $1
+        ORDER BY touched_at,session_id LIMIT 1`,
+      [worker, workers],
+    );
     if (!entry) return 0;
     const version = entry.copy_version ?? entry.version;
     const params = [entry.session_id, entry.cursor_seq ?? -1, this.batch];
@@ -328,7 +333,13 @@ export class ItemsCopyOperator {
         "SELECT count(*)::int AS n FROM public.session_leases WHERE expires_at>(extract(epoch FROM clock_timestamp())*1000)::bigint",
       );
       if (leases.n) throw new Error("active session leases remain; drain writers before finishing the copy");
-      while (await this.drainBatch()) continue;
+      await this.snapshotDirty();
+      for (let cursor: { session: string; seq: number } | null = { session: "", seq: -1 }; cursor;)
+        cursor = (await this.bulkStep(cursor)).next;
+      const {
+        rows: [left],
+      } = await this.client.query(`SELECT count(*)::int AS n FROM ${dirty}`);
+      if (left.n) throw new Error("queued items changes remain after the final drain");
       const {
         rows: [{ valid }],
       } = await this.client.query(
@@ -454,6 +465,148 @@ export class ItemsCopyOperator {
         count(*) FILTER (WHERE done)::int AS done FROM ${slices}) sl`)
     ).rows[0];
   }
+  async snapshotDirty(worker = 0, workers = 1) {
+    await this.client.query("DROP TABLE IF EXISTS pg_temp.items_copy_snap");
+    await this.client.query(
+      `CREATE TEMP TABLE items_copy_snap AS SELECT session_id,version FROM ${dirty}
+        WHERE (hashtext(session_id)::bigint & 2147483647) % $2 = $1`,
+      [worker, workers],
+    );
+    await this.client.query("ALTER TABLE pg_temp.items_copy_snap ADD PRIMARY KEY(session_id)");
+    return (await this.client.query("SELECT count(*)::int AS n FROM pg_temp.items_copy_snap")).rows[0].n as number;
+  }
+  async bulkCatchupBatch(cursor: { session: string; seq: number }, window = 50) {
+    return this.transaction(async () => {
+      await this.assertState(["catchup", "verified", "ready"], "KEY SHARE");
+      return this.bulkStep(cursor, window);
+    }, true);
+  }
+  async bulkStep(cursor: { session: string; seq: number }, window = 50) {
+    await this.client.query("TRUNCATE pg_temp.items_copy_batch");
+    await this.client.query(
+      `INSERT INTO pg_temp.items_copy_batch
+        WITH s AS (SELECT session_id FROM pg_temp.items_copy_snap WHERE session_id>=$1 ORDER BY session_id LIMIT $4),
+             k AS (SELECT e.session_id,e.seq FROM s JOIN public.session_entries e USING(session_id)
+                   UNION SELECT i.session_id,i.seq::int FROM s JOIN public.items i
+                     ON i.tenant_id=(SELECT id FROM public.qm_tenant) AND i.session_id=s.session_id)
+        SELECT session_id,seq FROM k WHERE (session_id,seq)>($1,$2) ORDER BY session_id,seq LIMIT $3`,
+      [cursor.session, cursor.seq, this.batch, window],
+    );
+    const {
+      rows: [last],
+    } = await this.client.query(
+      "SELECT session_id,seq,(SELECT count(*)::int FROM pg_temp.items_copy_batch) AS n FROM pg_temp.items_copy_batch ORDER BY session_id DESC,seq DESC LIMIT 1",
+    );
+    const n = (last?.n ?? 0) as number;
+    if (n) await this.replaceSelected();
+    let done: string | null;
+    let next: { session: string; seq: number } | null;
+    if (n < this.batch) {
+      const {
+        rows: [w],
+      } = await this.client.query(
+        "SELECT max(session_id) AS hi FROM (SELECT session_id FROM pg_temp.items_copy_snap WHERE session_id>=$1 ORDER BY session_id LIMIT $2) s",
+        [cursor.session, window],
+      );
+      done = w.hi;
+      next =
+        w.hi === null || (w.hi === cursor.session && cursor.seq === 2147483647)
+          ? null
+          : { session: w.hi, seq: 2147483647 };
+      if (done !== null) await this.finishSnapshot("s.session_id>=$1 AND s.session_id<=$2", [cursor.session, done]);
+    } else {
+      next = { session: last.session_id, seq: last.seq };
+      await this.finishSnapshot("s.session_id>=$1 AND s.session_id<$2", [cursor.session, last.session_id]);
+    }
+    return { rows: n, next };
+  }
+  async finishSnapshot(range: string, params: string[]) {
+    await this.client.query(
+      `DELETE FROM ${dirty} d USING pg_temp.items_copy_snap s
+        WHERE d.session_id=s.session_id AND d.version=s.version AND ${range}`,
+      params,
+    );
+    await this.client.query(
+      `UPDATE ${dirty} d SET copy_version=NULL,cursor_seq=NULL FROM pg_temp.items_copy_snap s
+        WHERE d.session_id=s.session_id AND ${range}`,
+      params,
+    );
+  }
+}
+
+export async function catchupBulk(
+  url: string,
+  batch: number,
+  workers: number,
+  progress: (p: Record<string, unknown>) => void,
+  signal?: AbortSignal,
+) {
+  if (!Number.isSafeInteger(workers) || workers < 1 || workers > 32)
+    throw new Error("workers must be between 1 and 32");
+  let failed: unknown = null;
+  await Promise.all(
+    Array.from({ length: workers }, async (_, worker) => {
+      const client = new pg.Client({ connectionString: url, application_name: "qm-items-copy" });
+      try {
+        await client.connect();
+        const op = new ItemsCopyOperator(client, batch);
+        const sessions = await op.snapshotDirty(worker, workers);
+        let cursor: { session: string; seq: number } | null = { session: "", seq: -1 };
+        let rows = 0;
+        let batches = 0;
+        while (cursor && failed === null && !signal?.aborted) {
+          const r = await op.bulkCatchupBatch(cursor);
+          rows += r.rows;
+          cursor = r.next;
+          if (++batches % 20 === 0 || !cursor)
+            progress({ worker, sessions, batches, rows, cursor: cursor?.session ?? null });
+        }
+      } catch (error) {
+        failed ??= error;
+      } finally {
+        await client.end();
+      }
+    }),
+  );
+  if (failed !== null) throw failed;
+  signal?.throwIfAborted();
+}
+
+export async function catchupParallel(
+  url: string,
+  batch: number,
+  workers: number,
+  progress: (value: Record<string, unknown>) => void,
+  signal?: AbortSignal,
+) {
+  if (!Number.isSafeInteger(workers) || workers < 1 || workers > 32)
+    throw new Error("workers must be between 1 and 32");
+  let remaining = true;
+  while (remaining && !signal?.aborted) {
+    let failed: unknown = null;
+    const counts = await Promise.all(
+      Array.from({ length: workers }, async (_, worker) => {
+        const client = new pg.Client({ connectionString: url, application_name: "qm-items-copy" });
+        let batches = 0;
+        try {
+          await client.connect();
+          const op = new ItemsCopyOperator(client, batch);
+          while (failed === null && !signal?.aborted && (await op.catchupBatch(worker, workers))) {
+            if (++batches % 20 === 0) progress({ worker, batches, ...(await op.status()) });
+          }
+          return Number((await op.status()).queued);
+        } catch (error) {
+          failed ??= error;
+          return 0;
+        } finally {
+          await client.end();
+        }
+      }),
+    );
+    if (failed !== null) throw failed;
+    remaining = counts.some((count) => count > 0);
+  }
+  signal?.throwIfAborted();
 }
 
 async function main() {
@@ -520,8 +673,9 @@ async function main() {
       await op.completeCopy();
     }
     if (action === "catchup") {
-      let batches = 0;
-      while (await op.catchupBatch()) if (++batches % 20 === 0) console.log(JSON.stringify(await op.status()));
+      await catchupParallel(process.env.DATABASE_URL, op.batch, Number(values.workers), (value) =>
+        console.log(JSON.stringify(value)),
+      );
     }
     console.log(JSON.stringify(await op.status()));
   } finally {
