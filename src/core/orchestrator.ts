@@ -2944,7 +2944,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const pinnedSkills = deps.config
           ? await deps.config.getPinnedSkillsDurable(scopeId).catch(reportFailureAs("orchestrator: pinned skills", []))
           : [];
-        const skillsBlock = skillsIndex(
+        const skillsList = skillsIndex(
           nativeSkills,
           [scopeId, resolution.orgScopeId],
           input.text,
@@ -3195,7 +3195,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             context.memoryLabels,
           );
           const snapshot = environmentDelta(turnContextBlocks, continuation?.history ?? history, session.id, {
-            Skills: skillsBlock,
+            ...(skillsList ? { Skills: skillsList } : {}),
           });
           const turnEnvironment = environmentNote(
             [

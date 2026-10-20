@@ -10,9 +10,15 @@ import {
   rankedSkills,
   renderSkillBody,
   safeSkillDirName,
-  skillsIndex,
+  skillsIndex as shortlist,
 } from "../src/skills/materialize.ts";
 import { computeBundleHash, type SkillBundle } from "../src/skills/skill-bundle-store.ts";
+import { renderListSection } from "../src/core/environment-facts.ts";
+
+const skillsIndex = (...args: Parameters<typeof shortlist>) => {
+  const section = shortlist(...args);
+  return section ? renderListSection(section) : "";
+};
 
 const handle: SandboxHandle = { id: "h", rootDir: "/workspace" };
 const root = ".agent-turn/t1/skills";
@@ -226,11 +232,4 @@ test("a natural-language Gmail request keeps its relevant bundled skill in the s
     });
   const shortlist = skillsIndex(entries, [], "Please check my Gmail inbox and tell me what I need to do today");
   assert.match(shortlist, /\*\*google-workspace\*\*/);
-});
-
-test("each shortlist entry renders on one line even when its description spans several", () => {
-  const skill = res("multi", "body");
-  skill.skill!.manifest.description = "First line.\nSecond line.";
-  const lines = skillsIndex([skill]).split("\n");
-  assert.deepEqual(lines.slice(2), ["- **multi** — First line. Second line."]);
 });

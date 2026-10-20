@@ -82,49 +82,61 @@ export function renderConnectedAppsBlock(
 
 interface EnvironmentSnapshot {
   hashes: Record<string, string>;
-  entries?: Record<string, string[]>;
+  entries?: Record<string, Record<string, string>>;
   sessionId: string;
   anchorSeq?: number;
 }
 
+export interface ListSection {
+  head: string;
+  entries: ReadonlyMap<string, string>;
+}
+
+export const renderListSection = (section: ListSection, lines = [...section.entries.values()]) =>
+  [section.head, ...lines].join("\n");
+
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-const filled = (blocks: Record<string, string>) => Object.entries(blocks).filter(([, text]) => text.trim());
 
 export function environmentDelta(
   blocks: Record<string, string>,
   history: readonly SessionEntry[],
   sessionId: string,
-  growing: Record<string, string> = {},
+  lists: Record<string, ListSection> = {},
 ): { text: string; record: EnvironmentSnapshot } {
   const { previous, anchorSeq } = retainedSnapshot(
     history,
     (entry) => (entry.payload as { environmentSnapshot?: EnvironmentSnapshot } | null)?.environmentSnapshot,
   );
-  const current = filled(blocks);
-  const grown = filled(growing);
+  const current = Object.entries(blocks).filter(([, text]) => text.trim());
+  const listed = Object.entries(lists);
   const record: EnvironmentSnapshot = {
-    hashes: Object.fromEntries(current.map(([key, text]) => [key, sha(text)])),
+    hashes: Object.fromEntries([
+      ...current.map(([key, text]) => [key, sha(text)]),
+      ...listed.map(([key, section]) => [key, sha(section.head)]),
+    ]),
     entries: Object.fromEntries(
-      grown.map(([key, text]) => [key, text.split("\n").map((line) => sha(line).slice(0, 16))]),
+      listed.map(([key, section]) => [
+        key,
+        Object.fromEntries([...section.entries].map(([name, line]) => [name, sha(line).slice(0, 16)])),
+      ]),
     ),
     sessionId,
     ...(anchorSeq !== undefined ? { anchorSeq } : {}),
   };
-  if (!previous) return { text: [...current, ...grown].map(([, text]) => text).join("\n\n"), record };
+  const full = [...current.map(([, text]) => text), ...listed.map(([, section]) => renderListSection(section))];
+  if (!previous) return { text: full.join("\n\n"), record };
   const changed = current.filter(([key]) => previous.hashes[key] !== record.hashes[key]).map(([, text]) => text);
-  const additions = grown.flatMap(([key, text]) => {
-    const seen = previous.entries?.[key];
-    if (!seen) return [text];
-    const lines = text.split("\n");
-    const added = lines.filter((_, index) => !seen.includes(record.entries![key]![index]!));
-    if (added.some((line) => !line.startsWith("- "))) return [text];
-    record.entries![key] = [...new Set([...seen, ...record.entries![key]!])];
-    return added.length ? [[`${lines[0]} (additions only; earlier entries still apply)`, ...added].join("\n")] : [];
+  const additions = listed.flatMap(([key, section]) => {
+    const seen = previous.hashes[key] === record.hashes[key] ? previous.entries?.[key] : undefined;
+    const now = record.entries![key]!;
+    if (!seen || Object.entries(now).some(([name, hash]) => seen[name] !== undefined && seen[name] !== hash))
+      return [renderListSection(section)];
+    record.entries![key] = { ...seen, ...now };
+    const added = [...section.entries].filter(([name]) => seen[name] === undefined).map(([, line]) => line);
+    const heading = `${section.head.split("\n")[0]} (additions only; earlier entries still apply)`;
+    return added.length ? [[heading, ...added].join("\n")] : [];
   });
-  const present = new Set([...current, ...grown].map(([key]) => key));
-  const removed = [...Object.keys(previous.hashes), ...Object.keys(previous.entries ?? {})].filter(
-    (key) => !present.has(key),
-  );
+  const removed = Object.keys(previous.hashes).filter((key) => !(key in record.hashes));
   return {
     text:
       changed.length || additions.length || removed.length
