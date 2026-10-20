@@ -1993,6 +1993,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           return true;
         });
         const memoryWindow = await deps.sessions.getContextWindow(session.id);
+        const earlyRecallQuery = ambientTurn
+          ? undefined
+          : memoryRecallQuery(input.text, filterHistory(forModelContext(memoryWindow.entries)));
+        const earlyRecall = earlyRecallQuery === undefined ? undefined : context.recallMemory(earlyRecallQuery);
+        earlyRecall?.catch(() => undefined);
 
         memoryView = await context.memorySnapshot();
         const latestMemoryContext = memoryWindow.entries.findLast((entry) => memoryContextPayload(entry));
@@ -2874,8 +2879,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const rawEntries = (await deps.sessions.getContextWindow(session.id)).entries;
         const priorTurns = memoryHistoryReset ? undefined : input.priorTurns;
         let visibleHistory = filterHistory(forModelContext(rawEntries));
+        const recallQuery = memoryRecallQuery(input.text, visibleHistory);
         const recallStart = Date.now();
-        const recalled = await context.recallMemory(memoryRecallQuery(input.text, visibleHistory));
+        const recalled = await (recallQuery === earlyRecallQuery ? earlyRecall! : context.recallMemory(recallQuery));
         const recallMs = Date.now() - recallStart;
         const partial = isRetry ? (recordedTurn ?? findTrailingPartialTurn(visibleHistory, input.text)) : null;
         let resumePlan = partial ? resumeStrategy(visibleHistory, partial) : null;
