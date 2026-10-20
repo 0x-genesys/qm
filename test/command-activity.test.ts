@@ -34,6 +34,8 @@ test("anything that is not one plain read or search stays a command", () => {
     "rg -n",
     "cat 'unterminated",
     "npm test",
+    "rg x\n\\reboot",
+    "grep -n TODO\n  \\./reset.sh",
   ]) {
     assert.equal(commandActivity(command), undefined, command);
   }

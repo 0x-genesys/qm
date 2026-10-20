@@ -19,13 +19,7 @@ const ORG_FLOOR_RULES: CommandRule[] = [
   { pattern: "\\bmkfs\\b|:\\(\\)\\s*\\{", decision: "deny", reason: "destructive / fork bomb" },
 ];
 
-interface FloorRule extends ArgvRule {
-  pipedIntoShell?: boolean;
-}
-
-const FLOOR_ARGV_RULES: FloorRule[] = [
-  { argv: ["curl"], pipedIntoShell: true, decision: "require_approval", reason: "pipe-to-shell" },
-];
+const PIPE_TO_SHELL_RULES: ArgvRule[] = [{ argv: ["curl"], decision: "require_approval", reason: "pipe-to-shell" }];
 
 export function defaultOrgPolicy(): CommandPolicy {
   return { mode: "denylist", rules: ORG_FLOOR_RULES };
@@ -79,7 +73,7 @@ parser.setLanguage(await Language.load(require.resolve("tree-sitter-bash/tree-si
 
 const MAX_DEPTH = 8;
 const SHELLS = new Set(["bash", "sh", "dash", "zsh", "ksh"]);
-const SHELL_VALUE_OPTIONS = ["-O", "-o", "--rcfile", "--init-file"];
+const SHELL_VALUE_OPTIONS = ["-O", "-o", "+O", "+o", "--rcfile", "--init-file"];
 const SCRIPT_INTERPRETERS = new Set(["node", "perl", "ruby"]);
 const STDIN_SCRIPTS = new Set(["-", "/dev/stdin", "/dev/fd/0", "/proc/self/fd/0"]);
 const WRAPPER_OPTIONS: Record<string, string[]> = {
@@ -135,21 +129,19 @@ export interface CommandEvaluation {
   rule?: { kind: "policy"; index: number } | { kind: "floor" | "layer" };
 }
 
-interface ExecutedCommand {
-  argv: string[];
-  pipedIntoShell: boolean;
-}
-
 interface Executed {
   scripts: string[];
   code: string[];
-  commands: ExecutedCommand[];
+  commands: string[][];
+  feedsShell: boolean;
+  misread: boolean;
 }
 
 interface Scan {
   lines: string[];
-  commands: ExecutedCommand[];
-  tooDeep: boolean;
+  commands: string[][];
+  feedsShell: boolean;
+  uninspectable?: string;
 }
 
 export function scannableCommand(command: string): string {
@@ -163,7 +155,8 @@ function parse(command: string) {
 }
 
 function scan(command: string, depth: number): Scan {
-  if (depth >= MAX_DEPTH) return { lines: [command], commands: [], tooDeep: true };
+  if (depth >= MAX_DEPTH)
+    return { lines: [command], commands: [], feedsShell: false, uninspectable: "nested too deeply to inspect" };
   const tree = parse(command);
   try {
     const executed = executedPayloads(tree.rootNode);
@@ -176,7 +169,10 @@ function scan(command: string, depth: number): Scan {
         ...nested.flatMap((inner) => inner.lines),
       ],
       commands: [...executed.commands, ...nested.flatMap((inner) => inner.commands)],
-      tooDeep: nested.some((inner) => inner.tooDeep),
+      feedsShell: executed.feedsShell || nested.some((inner) => inner.feedsShell),
+      ...(executed.misread
+        ? { uninspectable: "laid out in a way the shell parser may misread" }
+        : nested.find((inner) => inner.uninspectable)),
     };
   } finally {
     tree.delete();
@@ -294,7 +290,7 @@ export function plainArgv(command: string): string[] | undefined {
   const tree = parse(command);
   try {
     const [only, ...rest] = tree.rootNode.namedChildren;
-    if (tree.rootNode.hasError || rest.length || only?.type !== "command") return undefined;
+    if (tree.rootNode.hasError || rest.length || only?.type !== "command" || misread(only)) return undefined;
     if (
       only.namedChildren.some((child) => child?.type === "herestring_redirect" || child?.type === "variable_assignment")
     )
@@ -384,10 +380,41 @@ function shellInvocation(inner: string[]): { script?: string; readsStdin: boolea
     if (arg === "-s") return { readsStdin: true };
     if (arg === "--") return { readsStdin: args[i + 1] === undefined || STDIN_SCRIPTS.has(args[i + 1]!) };
     if (SHELL_VALUE_OPTIONS.includes(arg)) i++;
-    else if (!arg.startsWith("-") || arg === "-") return { readsStdin: STDIN_SCRIPTS.has(arg) };
+    else if ((!arg.startsWith("-") && !arg.startsWith("+")) || arg === "-")
+      return { readsStdin: STDIN_SCRIPTS.has(arg) };
     else if (!arg.startsWith("--") && arg.includes("c")) return { script: args[i + 1], readsStdin: false };
   }
   return { readsStdin: true };
+}
+
+function runsStdinAsShell(argv: string[]): boolean {
+  if (stdinReader(argv) === "shell") return true;
+  const script = shellInvocation(innermost(argv))?.script;
+  if (script === undefined) return false;
+  const tree = parse(script);
+  try {
+    return (
+      tree.rootNode.descendantsOfType(EXPANSIONS).length > 0 ||
+      tree.rootNode.descendantsOfType("command").some((command) => {
+        const inner = argvOf(command!);
+        return stdinReader(inner) === "shell" || basename(innermost(inner)[0] ?? "") === "eval";
+      })
+    );
+  } finally {
+    tree.delete();
+  }
+}
+
+function misread(command: Node): boolean {
+  const name = command.childForFieldName("name");
+  const words = [name?.firstNamedChild ?? name, ...command.childrenForFieldName("argument")].filter(
+    (word): word is Node => !!word,
+  );
+  return words.some(
+    (word, i) =>
+      (word.type === "word" && word.text.includes("\n")) ||
+      (i > 0 && sourceBetween(command, words[i - 1]!.endIndex, word.startIndex).includes("\n")),
+  );
 }
 
 function stdinReader(argv: string[]): "shell" | "code" | undefined {
@@ -453,9 +480,8 @@ function heredocReceivers(statement: Node, redirect: Node): string[][] {
 }
 
 function executedPayloads(root: Node): Executed {
-  const executed: Executed = { scripts: [], code: [], commands: [] };
+  const executed: Executed = { scripts: [], code: [], commands: [], feedsShell: false, misread: false };
   const variables = new Map<string, string>();
-  const shellFed = new Set<number>();
   const feed = (text: string, readers: string[][]) => {
     const kinds = readers.map(stdinReader);
     if (kinds.includes("shell")) executed.scripts.push(text);
@@ -472,7 +498,8 @@ function executedPayloads(root: Node): Executed {
       const argv = argvOf(node);
       const chain = wrapperChain(argv);
       const inner = chain.at(-1)!;
-      executed.commands.push(...chain.map((level) => ({ argv: level, pipedIntoShell: shellFed.has(node.id) })));
+      executed.commands.push(...chain);
+      executed.misread ||= misread(node);
       executed.scripts.push(...shellPayloads(argv));
       executed.code.push(...sqlClientPayloads(inner));
       const position = argv.length - inner.length;
@@ -489,16 +516,12 @@ function executedPayloads(root: Node): Executed {
       if (body) feed(body.text, heredocReceivers(node, redirect!));
     }
     if (node.type === "pipeline") {
-      const stageNodes = node.namedChildren;
-      const stages = stageNodes.map(commandOf);
+      const stages = node.namedChildren.map(commandOf);
       for (let i = 1; i < stages.length; i++) {
         const [producer, consumer] = [stages[i - 1], stages[i]];
         if (!consumer) continue;
         const consumerArgv = argvOf(consumer);
-        if (stdinReader(consumerArgv) === "shell")
-          for (const upstream of stageNodes.slice(0, i))
-            for (const command of upstream ? [upstream, ...upstream.descendantsOfType("command")] : [])
-              if (command) shellFed.add(command.id);
+        executed.feedsShell ||= runsStdinAsShell(consumerArgv);
         if (!producer) continue;
         const payload = literalProducerPayload(argvOf(producer));
         if (payload) feed(payload, [consumerArgv]);
@@ -603,24 +626,23 @@ function containsInOrder(args: readonly string[], words: readonly string[]): boo
 }
 
 function invokes(argv: readonly string[], [name, ...words]: readonly string[]): boolean {
-  return argv.some((arg, at) => basename(arg) === name && containsInOrder(argv.slice(at + 1), words));
+  const at = argv.findIndex((arg) => basename(arg) === name);
+  return at >= 0 && containsInOrder(argv.slice(at + 1), words);
 }
 
 function argvMatch(
-  commands: readonly ExecutedCommand[],
-  rules: readonly FloorRule[],
+  commands: readonly string[][],
+  rules: readonly ArgvRule[],
   kind: "floor" | "layer",
 ): CommandEvaluation | null {
   for (const rule of rules) {
-    const hit = commands.find(
-      (command) => (!rule.pipedIntoShell || command.pipedIntoShell) && invokes(command.argv, rule.argv),
-    );
+    const hit = commands.find((argv) => invokes(argv, rule.argv));
     if (hit) {
       return {
         decision: rule.decision,
         ...(rule.reason ? { reason: rule.reason } : {}),
-        matched: hit.argv.join(" "),
-        approvalKey: `argv:${JSON.stringify(rule.argv)}${rule.pipedIntoShell ? "|shell" : ""}`,
+        matched: hit.join(" "),
+        approvalKey: `argv:${JSON.stringify(rule.argv)}`,
         rule: { kind },
       };
     }
@@ -637,12 +659,12 @@ export function evaluateCommandWithLayer(
   policy: CommandPolicy,
   layerRules: readonly ArgvRule[],
 ): CommandEvaluation {
-  const { lines, commands, tooDeep } = scan(command, 0);
+  const { lines, commands, feedsShell, uninspectable } = scan(command, 0);
   const policyMatch = firstMatch(lines.join("\n"), policy.rules);
   if (policyMatch?.decision === "deny") return policyMatch;
   if (policy.mode === "allowlist" && !policyMatch) return { decision: "deny", reason: "not in allowlist" };
-  const floorMatch = argvMatch(commands, FLOOR_ARGV_RULES, "floor");
+  const floorMatch = feedsShell ? argvMatch(commands, PIPE_TO_SHELL_RULES, "floor") : null;
   if (floorMatch) return floorMatch;
-  if (tooDeep) return { decision: "require_approval", reason: "nested too deeply to inspect", rule: { kind: "floor" } };
+  if (uninspectable) return { decision: "require_approval", reason: uninspectable, rule: { kind: "floor" } };
   return policyMatch ?? argvMatch(commands, layerRules, "layer") ?? { decision: "allow" };
 }
