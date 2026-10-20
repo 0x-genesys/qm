@@ -3,14 +3,15 @@ export function decodeSlackEntities(text: string): string {
   return text.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 }
 
-export function resolveMentionsInText(text: string, lookup: (id: string) => string | undefined): string {
-  return text.replace(/<@(U\w+)(?:\|([^>]*))?>/g, (_m, id: string, label?: string) => {
-    const name = (label && label.trim()) || lookup(id);
-    return name ? `@${name}` : `@${id}`;
-  });
+export function escapeSlackEntities(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 const SLACK_MENTION = /<@([A-Z0-9]+)(?:\|[^>]*)?>/g;
+
+export function slackMentionIds(text: string): string[] {
+  return [...new Set(Array.from(text.matchAll(SLACK_MENTION), (m) => m[1]!))];
+}
 
 export function resolveMentions(text: string, nameById: ReadonlyMap<string, string> | undefined): string {
   if (!nameById || !text.includes("<@")) return text;

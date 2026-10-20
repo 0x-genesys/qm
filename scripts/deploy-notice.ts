@@ -1,6 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { sleep } from "../src/util/async.ts";
 import { errMessage } from "../src/util/errors.ts";
+import { escapeSlackEntities } from "../src/slack/mrkdwn.ts";
 
 const TYPE_EMOJI: Record<string, string> = {
   feat: "✨",
@@ -19,10 +20,6 @@ const TYPE_EMOJI: Record<string, string> = {
 
 const DEFAULT_EMOJI = "🚀";
 
-function escapeSlack(text: string): string {
-  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
-}
-
 function emojiFor(subject: string): string {
   const type = /^([a-z]+)(?:\([^)]*\))?!?: /.exec(subject)?.[1];
   return (type && TYPE_EMOJI[type]) || DEFAULT_EMOJI;
@@ -37,7 +34,7 @@ export interface DeployNoticeInput {
 export function formatDeployNotice({ subject, repo, sha }: DeployNoticeInput): string {
   const trimmed = subject.trim();
   const pr = /\s*\(#(\d+)\)$/.exec(trimmed);
-  const body = escapeSlack(pr ? trimmed.slice(0, pr.index) : trimmed);
+  const body = escapeSlackEntities(pr ? trimmed.slice(0, pr.index) : trimmed);
   const link = pr
     ? `<https://github.com/${repo}/pull/${pr[1]}|#${pr[1]}>`
     : `<https://github.com/${repo}/commit/${sha}|${sha.slice(0, 7)}>`;

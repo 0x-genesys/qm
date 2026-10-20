@@ -5,6 +5,7 @@ import { samePerson } from "../directory/person.ts";
 import { approvalMessage } from "./approval-cards.ts";
 import { deliverKeychainCard } from "./keychain-approvals.ts";
 import { errMessage, swallow, swallowAs } from "../util/errors.ts";
+import { sleep } from "../util/async.ts";
 import { performance } from "node:perf_hooks";
 import {
   botIdentityArgs,
@@ -33,6 +34,7 @@ import type { TurnFlow } from "./turn-flow.ts";
 import { cleanAgentReplyForSlack, stripSlackDirectives } from "./messaging.ts";
 import { cronIdOf } from "../sessions/session-store.ts";
 import { slackErrorCode } from "./payloads.ts";
+import { escapeSlackEntities } from "./mrkdwn.ts";
 
 const DELIVERY_CLAIM_MS = 15_000;
 const SLOW_DRAIN_ALARM_MS = 120_000;
@@ -83,8 +85,6 @@ export function createDeliveryPoller(deps: {
     deliver: (d: Delivery) => Promise<void>,
     leaseLost?: () => boolean,
   ): Promise<number> {
-    const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
     const expiresAt = new Map<string, number>();
 
     const claim = async (): Promise<{ rows: Delivery[]; complete: boolean }> => {
@@ -161,14 +161,41 @@ export function createDeliveryPoller(deps: {
     const sender = d.destination.relaySender?.trim().replace(/^@+/, "");
     const attribution = sender ? [{ type: "plain_text", text: `Sent for @${sender}`, emoji: false }] : [];
     if (!base || !id) return attribution;
-    const title = (d.provenance?.sourceTitle?.trim() || "Cron")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;");
+    const title = escapeSlackEntities(d.provenance?.sourceTitle?.trim() || "Cron");
     return [
       ...attribution,
       { type: "mrkdwn", text: `${title} · <${base}/crons/${encodeURIComponent(id)}|Settings>`, verbatim: true },
     ];
+  }
+
+  function footerBlocks(
+    text: string,
+    footer: Array<Record<string, unknown>>,
+  ): Array<Record<string, unknown>> | undefined {
+    return footer.length
+      ? [...(text.trim() ? slackSectionBlocks(text) : []), { type: "context", elements: footer }]
+      : undefined;
+  }
+
+  function attachmentFallbackText(text: string, footer: unknown[], d: Delivery): string {
+    return !text.trim() && !footer.length && d.attachments?.length ? "Files attached." : text;
+  }
+
+  async function uploadDeliveryAttachments(
+    client: any,
+    channel: string,
+    root: string | undefined,
+    d: Delivery,
+  ): Promise<void> {
+    if (!d.attachments?.length) return;
+    try {
+      await uploadAttachments(client, channel, root, d.attachments, core);
+    } catch (err) {
+      console.error(`[slack-plugin] delivery ${d.id} attachment upload failed:`, errMessage(err));
+      await client.chat
+        .postMessage(slackReplyArgs(channel, uploadFailureNote(err), root))
+        .catch(swallowAs("slack: post upload-failure note", undefined));
+    }
   }
 
   const deliveryTracker = createDeliveryTracker();
@@ -289,31 +316,18 @@ export function createDeliveryPoller(deps: {
                   editRef = placeholder.ts;
                 }
               }
-              let text = toSlackMrkdwn(runId ? cleanAgentReplyForSlack(d.text).text : stripSlackDirectives(d.text));
-              const replayAttachments = async (root?: string): Promise<void> => {
-                if (!d.attachments?.length) return;
-                try {
-                  await uploadAttachments(client, channel, root, d.attachments, core);
-                } catch (err) {
-                  console.error(
-                    "%s",
-                    `[slack-plugin] delivery ${d.id} attachment upload failed:`,
-                    (err as Error).message,
-                  );
-                  await client.chat
-                    .postMessage(slackReplyArgs(channel, uploadFailureNote(err), root))
-                    .catch(swallowAs("slack: post upload-failure note", undefined));
-                }
-              };
+              const replayAttachments = (root?: string): Promise<void> =>
+                uploadDeliveryAttachments(client, channel, root, d);
               const messageFooter = deliveryFooter(d);
-              if (!text.trim() && !messageFooter.length && d.attachments?.length) text = "Files attached.";
-              const footer = [
+              const text = attachmentFallbackText(
+                toSlackMrkdwn(runId ? cleanAgentReplyForSlack(d.text).text : stripSlackDirectives(d.text)),
+                messageFooter,
+                d,
+              );
+              const blocks = footerBlocks(text, [
                 ...messageFooter,
                 ...(d.destination.debugFooter ? [{ type: "mrkdwn", text: d.destination.debugFooter }] : []),
-              ];
-              const footerBlocks = footer.length
-                ? [...(text.trim() ? slackSectionBlocks(text) : []), { type: "context", elements: footer }]
-                : undefined;
+              ]);
               if (!text.trim() && !(messageFooter.length && d.attachments?.length)) {
                 if (editRef) {
                   await client.chat
@@ -343,7 +357,7 @@ export function createDeliveryPoller(deps: {
                     channel,
                     ts: editRef,
                     text,
-                    ...(footerBlocks ? { blocks: footerBlocks } : {}),
+                    ...(blocks ? { blocks } : {}),
                     ...botIdentityArgs(),
                     metadata: deliveryMetadata(d.idempotencyKey ?? d.id),
                     ...(unfurlLinks !== undefined ? { unfurl_links: unfurlLinks, unfurl_media: unfurlLinks } : {}),
@@ -361,7 +375,7 @@ export function createDeliveryPoller(deps: {
                   ...slackReplyArgs(channel, text, threadTs, {
                     unfurlLinks: runId ? false : d.destination.unfurlLinks,
                   }),
-                  ...(footerBlocks ? { blocks: footerBlocks } : {}),
+                  ...(blocks ? { blocks } : {}),
                 },
                 d.idempotencyKey ?? d.id,
                 runId || recoveredRow(d) ? { verifyFirst: true, ...(verifyOldest ? { verifyOldest } : {}) } : undefined,
@@ -421,18 +435,13 @@ export function createDeliveryPoller(deps: {
               if (d.destination.deploymentAccess) card = deployAccessMessage(d.destination.deploymentAccess, d.text);
               if (commandApproval)
                 card = approvalMessage([{ ...commandApproval, reason: commandApproval.reason ?? "Approval required" }]);
-              let text = card?.text ?? toSlackMrkdwn(stripReactionDirectives(d.text));
-              if (!text.trim() && !d.attachments?.length) return undefined;
+              const body = card?.text ?? toSlackMrkdwn(stripReactionDirectives(d.text));
+              if (!body.trim() && !d.attachments?.length) return undefined;
               const channel = await openConversationFor(client, [d.destination.target]);
               const threadTs = d.destination.threadTs;
               const footer = deliveryFooter(d);
-              if (!text.trim() && !footer.length && d.attachments?.length) text = "Files attached.";
-              const blocks =
-                card?.blocks ??
-                (footer.length
-                  ? [...(text.trim() ? slackSectionBlocks(text) : []), { type: "context", elements: footer }]
-                  : undefined);
-              let uploadError: unknown;
+              const text = attachmentFallbackText(body, footer, d);
+              const blocks = card?.blocks ?? footerBlocks(text, footer);
               let reused = false;
               if (text.trim() || blocks) {
                 const posted = await postWithVerify(
@@ -448,22 +457,7 @@ export function createDeliveryPoller(deps: {
                 );
                 reused = Boolean(posted.reused);
               }
-              if (d.attachments?.length && !reused) {
-                try {
-                  await uploadAttachments(client, channel, threadTs, d.attachments, core);
-                } catch (error) {
-                  uploadError = error;
-                  console.error(
-                    `[slack-plugin] principal delivery ${d.id} attachment upload failed:`,
-                    errMessage(error),
-                  );
-                }
-              }
-              if (uploadError) {
-                await client.chat
-                  .postMessage(slackReplyArgs(channel, uploadFailureNote(uploadError), threadTs))
-                  .catch(swallowAs("slack: post principal upload-failure note", undefined));
-              }
+              if (!reused) await uploadDeliveryAttachments(client, channel, threadTs, d);
               return { recipientThreadRef: dmThreadRef(channel, threadTs) };
             } finally {
               slackApiMs = Math.round(performance.now() - tPost);

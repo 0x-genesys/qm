@@ -1,4 +1,5 @@
 import { LRUCache } from "lru-cache";
+import { WebClient } from "@slack/web-api";
 import { personalScope, type LoopItem } from "../types.ts";
 import type { FeatureFlagStore } from "../feature-flags.ts";
 import type { ErrorLog } from "../admin/error-log.ts";
@@ -9,6 +10,7 @@ import { isResolved } from "./ledger-view.ts";
 import { isObj, tokenFor, type ConnectorTokenSource } from "./sources/adapter.ts";
 import { normalizeSlackApiUrl } from "../slack/config.ts";
 import { GmailApiError, gmailApi } from "../connectors/gmail-api.ts";
+import { slackCallFailure, slackWebClientOptions } from "../slack/web-client.ts";
 import type { DirectoryStore } from "../directory/directory-store.ts";
 
 interface RefreshDeps {
@@ -34,14 +36,17 @@ interface SlackParticipant {
 // results/identities, never credentials, and share in-flight reads between tabs.
 export function createInboxSourceRefresh(deps: RefreshDeps): InboxSourceRefresh {
   const checked = new LRUCache<string, boolean>({ max: 2000, ttl: 60_000 });
-  const info = new LRUCache<string, Record<string, unknown>>({ max: 2000, ttl: 300_000 });
+  const info = new LRUCache<string, Record<string, unknown>, () => Promise<Record<string, unknown>>>({
+    max: 2000,
+    ttl: 300_000,
+    fetchMethod: (_key, _stale, { context }) => context(),
+  });
   const limited = new LRUCache<string, boolean>({ max: 2000 });
   const running = new Map<string, Promise<void>>();
-  const infoRunning = new Map<string, Promise<Record<string, unknown>>>();
   const fetchImpl = deps.fetchImpl ?? fetch;
   const now = deps.now ?? Date.now;
   const positions = new LRUCache<string, number>({ max: 2000 });
-  const slackBase = normalizeSlackApiUrl(deps.slackApiUrl ?? "https://slack.com/api");
+  const slackApiUrl = deps.slackApiUrl ? normalizeSlackApiUrl(deps.slackApiUrl) : undefined;
 
   function recordFailure(owner: string, subject: string, error: unknown): void {
     deps.errors?.record({
@@ -52,60 +57,52 @@ export function createInboxSourceRefresh(deps: RefreshDeps): InboxSourceRefresh 
     });
   }
 
-  async function get(
-    owner: string,
-    source: string,
-    path: string,
-    token: string,
-    deadline = now() + 3000,
-  ): Promise<Record<string, unknown>> {
-    const method = path.split("?")[0]!;
-    const key = `${owner}:${source}:${source === "slack" ? method : "read"}`;
-    if (limited.has(key)) throw new Error("Source rate limited. The next refresh will retry.");
-    const timeoutMs = Math.max(1, Math.min(3000, deadline - now()));
-    const rateLimit = (retry: number) =>
-      limited.set(key, true, { ttl: Math.max(60, Number.isFinite(retry) ? retry : 60) * 1000 });
-    const failure = (cause: Error) =>
-      new Error("Couldn't refresh the source. Your item has not been dismissed.", { cause });
-    if (source === "gmail") {
-      try {
-        return await gmailApi(token, fetchImpl)<Record<string, unknown>>(path, { timeoutMs });
-      } catch (error) {
-        if (!(error instanceof GmailApiError)) throw error;
-        if (error.status === 429) rateLimit(error.retryAfterSeconds);
-        throw failure(error);
-      }
-    }
-    const res = await fetchImpl(`${slackBase}${path}`, {
-      headers: { authorization: `Bearer ${token}` },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    if (res.status === 429) rateLimit(Number(res.headers.get("retry-after")));
-    if (!res.ok) throw failure(new Error(`${source} ${method}: HTTP ${res.status}`));
-    const body: unknown = await res.json();
-    if (!isObj(body) || body.ok === false)
-      throw failure(
-        new Error(
-          `${source} ${method}: ${isObj(body) && typeof body.error === "string" ? body.error : "Invalid response"}`,
-        ),
-      );
-    return body;
+  const refreshFailed = (cause: Error): Error =>
+    new Error("Couldn't refresh the source. Your item has not been dismissed.", { cause });
+
+  function admit(key: string, retryAfterSeconds?: number): void {
+    if (retryAfterSeconds !== undefined)
+      limited.set(key, true, { ttl: Math.max(60, Number.isFinite(retryAfterSeconds) ? retryAfterSeconds : 60) * 1000 });
+    else if (limited.has(key)) throw new Error("Source rate limited. The next refresh will retry.");
   }
 
-  async function slackInfo(owner: string, path: string, token: string): Promise<Record<string, unknown>> {
-    const key = `${owner}:${path}`;
-    const cached = info.get(key);
-    if (cached) return cached;
-    const pending = infoRunning.get(key);
-    if (pending) return pending;
-    const task = get(owner, "slack", path, token)
-      .then((value) => {
-        info.set(key, value);
-        return value;
-      })
-      .finally(() => infoRunning.delete(key));
-    infoRunning.set(key, task);
-    return task;
+  async function gmailGet(owner: string, path: string, token: string): Promise<Record<string, unknown>> {
+    const key = `${owner}:gmail:read`;
+    admit(key);
+    try {
+      return await gmailApi(token, fetchImpl)<Record<string, unknown>>(path, { timeoutMs: 3000 });
+    } catch (error) {
+      if (!(error instanceof GmailApiError)) throw error;
+      if (error.status === 429) admit(key, error.retryAfterSeconds);
+      throw refreshFailed(error);
+    }
+  }
+  async function slackGet(
+    owner: string,
+    method: string,
+    params: Record<string, string | number>,
+    token: string,
+  ): Promise<Record<string, unknown>> {
+    const key = `${owner}:slack:${method}`;
+    admit(key);
+    try {
+      return { ...(await new WebClient(token, slackWebClientOptions(3000, slackApiUrl)).apiCall(method, params)) };
+    } catch (error) {
+      const failure = slackCallFailure(error);
+      if (failure.retryAfter !== undefined) admit(key, failure.retryAfter);
+      const detail = failure.platformError ?? (failure.status ? `HTTP ${failure.status}` : errMessage(error));
+      throw refreshFailed(new Error(`slack ${method}: ${detail}`, { cause: error }));
+    }
+  }
+
+  async function slackInfo(
+    owner: string,
+    method: string,
+    params: Record<string, string>,
+    token: string,
+  ): Promise<Record<string, unknown>> {
+    const key = `${owner}:${method}:${new URLSearchParams(params).toString()}`;
+    return (await info.fetch(key, { context: () => slackGet(owner, method, params, token) }))!;
   }
 
   function imageUrl(profile: Record<string, unknown>): string | undefined {
@@ -194,7 +191,7 @@ export function createInboxSourceRefresh(deps: RefreshDeps): InboxSourceRefresh 
     if (source === "gmail") {
       const meta = isObj(payload.gmail) ? payload.gmail : {};
       if (typeof meta.threadId !== "string") return;
-      const body = await get(owner, source, `threads/${encodeURIComponent(meta.threadId)}?format=metadata`, token);
+      const body = await gmailGet(owner, `threads/${encodeURIComponent(meta.threadId)}?format=metadata`, token);
       const messages = Array.isArray(body.messages) ? body.messages.filter(isObj) : [];
       const latest = messages
         .filter((m) => Array.isArray(m.labelIds) && !m.labelIds.includes("DRAFT"))
@@ -214,16 +211,15 @@ export function createInboxSourceRefresh(deps: RefreshDeps): InboxSourceRefresh 
     }
     const meta = isObj(payload.slack) ? payload.slack : {};
     if (typeof meta.channelId !== "string" || typeof meta.ts !== "string") return;
-    const channel = encodeURIComponent(meta.channelId);
-    const channelInfo = await slackInfo(owner, `conversations.info?channel=${channel}`, token);
+    const channel = meta.channelId;
+    const channelInfo = await slackInfo(owner, "conversations.info", { channel }, token);
     if (!isObj(channelInfo.channel)) throw new Error("Couldn't identify the Slack conversation.");
     const direct = channelInfo.channel.is_im === true || channelInfo.channel.is_mpim === true;
     const defaultRoot = direct ? undefined : meta.ts;
     const root = typeof meta.threadTs === "string" ? meta.threadTs : defaultRoot;
-    const path = root
-      ? `conversations.replies?channel=${channel}&ts=${encodeURIComponent(root)}&limit=100`
-      : `conversations.history?channel=${channel}&limit=100`;
-    const body = await get(owner, source, path, token);
+    const body = root
+      ? await slackGet(owner, "conversations.replies", { channel, ts: root, limit: 100 }, token)
+      : await slackGet(owner, "conversations.history", { channel, limit: 100 }, token);
     if (!Array.isArray(body.messages)) throw new Error("Couldn't read the Slack conversation.");
     const messages = body.messages
       .filter(isObj)
@@ -310,7 +306,7 @@ export function createInboxSourceRefresh(deps: RefreshDeps): InboxSourceRefresh 
     // A partial thread is not evidence of its latest reply. History is newest-first
     // upstream, so its newest message remains conclusive even when older pages exist.
     if ((!root || !partial) && latest && !isResolved(item)) {
-      const identity = await slackInfo(owner, "auth.test", token);
+      const identity = await slackInfo(owner, "auth.test", {}, token);
       if (typeof identity.user_id === "string" && latest.user === identity.user_id) {
         await deps.items.recordAction(item.id, {
           kind: "replied",

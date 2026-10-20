@@ -1,10 +1,13 @@
-import { swallowAs } from "../util/errors.ts";
+import { LRUCache } from "lru-cache";
+import { swallow, swallowAs } from "../util/errors.ts";
+import { workspaceCustomEmoji } from "./payloads.ts";
 import { CURATED_ACK_EMOJI, DEFAULT_ACK_REACTIONS } from "./lib.ts";
 import { EMOJI_NAME_BY_CHAR } from "./emoji-map.ts";
 import type { SlackCoreClient } from "../api/slack-core-client.ts";
 
 export interface AckEmojiPicker {
   refreshAckEmoji(client: any): void;
+  workspaceEmoji(client: any): Promise<Record<string, string> | undefined>;
   ackPickCandidates(client: any): string[];
   requestAckEmoji(
     text: string,
@@ -34,33 +37,40 @@ export function createAckEmojiPicker(
   core: SlackCoreClient,
   opts: { candidatesOverride?: () => readonly string[] | null } = {},
 ): AckEmojiPicker {
-  let ackEmojiCache: { custom: string[]; urls: Record<string, string>; at: number } | null = null;
-  let ackEmojiInFlight: Promise<void> | null = null;
+  const listed = new LRUCache<"emoji", { all: Record<string, string>; ack: Record<string, string> }, any>({
+    max: 1,
+    ttl: ACK_EMOJI_TTL_MS,
+    fetchMethod: async (_key, stale, { context: client }) => {
+      try {
+        const all = workspaceCustomEmoji(((await client.emoji.list()) as { emoji?: Record<string, unknown> }).emoji);
+        return { all, ack: Object.fromEntries(Object.entries(all).filter(([name]) => !COMPLETION_EMOJI.test(name))) };
+      } catch (err) {
+        swallow("slack: emoji.list", err);
+        return stale;
+      }
+    },
+  });
   function refreshAckEmoji(client: any): void {
-    if (ackEmojiInFlight || (ackEmojiCache && Date.now() - ackEmojiCache.at < ACK_EMOJI_TTL_MS)) return;
-    ackEmojiInFlight = Promise.resolve(client.emoji.list())
-      .then((res: { emoji?: Record<string, string> }) => {
-        const urls: Record<string, string> = {};
-        for (const [name, url] of Object.entries(res.emoji ?? {})) {
-          if (typeof url === "string" && !url.startsWith("alias:") && !COMPLETION_EMOJI.test(name)) urls[name] = url;
-        }
-        ackEmojiCache = { custom: Object.keys(urls), urls, at: Date.now() };
-      })
-      .catch(swallowAs("slack: emoji.list", undefined))
-      .finally(() => {
-        ackEmojiInFlight = null;
-      });
+    void listed.fetch("emoji", { context: client });
   }
+  async function workspaceEmoji(client: any): Promise<Record<string, string> | undefined> {
+    return (await listed.fetch("emoji", { context: client }))?.all;
+  }
+  const ackCustomEmoji = (): Record<string, string> => listed.get("emoji", { allowStale: true })?.ack ?? {};
 
   function resolveEmojiIcon(name: string): string | undefined {
-    return ackEmojiCache?.urls[name] ?? NAME_TO_CHAR[name];
+    return ackCustomEmoji()[name] ?? NAME_TO_CHAR[name];
   }
 
   function ackPickCandidates(client: any): string[] {
     const override = opts.candidatesOverride?.();
     if (override?.length) return [...override];
     refreshAckEmoji(client);
-    return [...CURATED_ACK_EMOJI, ...DEFAULT_ACK_REACTIONS, ...sample(ackEmojiCache?.custom ?? [], CUSTOM_PICK_SAMPLE)];
+    return [
+      ...CURATED_ACK_EMOJI,
+      ...DEFAULT_ACK_REACTIONS,
+      ...sample(Object.keys(ackCustomEmoji()), CUSTOM_PICK_SAMPLE),
+    ];
   }
 
   function requestAckEmoji(
@@ -91,5 +101,5 @@ export function createAckEmojiPicker(
       });
   }
 
-  return { refreshAckEmoji, ackPickCandidates, requestAckEmoji };
+  return { refreshAckEmoji, workspaceEmoji, ackPickCandidates, requestAckEmoji };
 }

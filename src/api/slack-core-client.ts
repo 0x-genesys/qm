@@ -19,6 +19,7 @@ import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { buffer } from "node:stream/consumers";
 import type { App } from "./app.ts";
+import { applyDirectoryPush, type DirectoryPush } from "./directory-push.ts";
 import type { ErrorLog } from "../admin/error-log.ts";
 import { createNoopLeaderLease, type LeaderLease } from "../persistence/leader-lease.ts";
 import type {
@@ -60,22 +61,6 @@ interface StoredApprovalView extends Omit<PendingApproval, "reason"> {
   createdAt?: number;
   reason?: string;
   request?: Record<string, unknown>;
-}
-
-interface DirectoryPush {
-  members?: Array<{ principalId: string; displayName: string; type: "internal"; slackId?: string; avatarUrl?: string }>;
-  channels?: Array<{ channelId: string; name: string; isPrivate?: boolean; isExternal?: boolean }>;
-  channelMembers?: Array<{ channelId: string; principalId: string }>;
-  channelRosterIds?: string[];
-  channelRevocations?: Array<{ channelId: string; principalId: string }>;
-  groupMembers?: Array<{ groupId: string; principalId: string }>;
-  groupIds?: string[];
-  groupRosterIds?: string[];
-  workspaceUrl?: string;
-  membersSyncedAt?: number;
-  channelsSyncedAt?: number;
-  partialChannels?: boolean;
-  groupsSyncedAt?: number;
 }
 
 export interface SlackCoreClient {
@@ -424,26 +409,7 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
     },
 
     async pushDirectory(body) {
-      if (body.workspaceUrl) await deps.app.setDirectoryWorkspaceUrl(body.workspaceUrl);
-      let applied = true;
-      if (body.members) applied = (await deps.app.upsertDirectory(body.members, body.membersSyncedAt)) && applied;
-      if (body.channels) {
-        applied =
-          (await deps.app.upsertChannels(
-            body.channels,
-            body.channelMembers,
-            body.channelsSyncedAt,
-            body.channelRosterIds,
-            body.channelRevocations,
-            body.partialChannels,
-          )) && applied;
-      }
-      if (body.groupMembers) {
-        applied =
-          (await deps.app.upsertGroups(body.groupMembers, body.groupsSyncedAt, body.groupIds, body.groupRosterIds)) &&
-          applied;
-      }
-      return applied;
+      return Object.values(await applyDirectoryPush(deps.app, body)).every(Boolean);
     },
 
     claimDeliveries(type, claimMs) {

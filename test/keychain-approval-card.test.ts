@@ -169,6 +169,27 @@ test("the card links the conversation inline and omits command-policy fields", a
   assert.match(settled.text, /ongoing access/);
 });
 
+test("a request from a Slack thread links the card to that channel and thread root, or to the asking message in a DM", async () => {
+  const f = await fixture();
+  for (const [threadRef, requesterMessageTs, expected] of [
+    ["ch:C1:1792519513.097759", undefined, { channel: "C1", ts: "1792519513.097759" }],
+    ["dm:D1", "1792519600.000100", { channel: "D1", ts: "1792519600.000100" }],
+  ] as const) {
+    const session = await f.sessions.getOrCreateByThread(threadRef, "dm", "personal:alice@example.com");
+    await f.sessions.addParticipant(session.id, "alice@example.com");
+    const { ask } = await f.keychain.createAsk({
+      credentialId: f.ask.credentialId,
+      requesterId: "alice@example.com",
+      requesterScopeId: "personal:alice@example.com",
+      requesterThreadRef: threadRef,
+      ...(requesterMessageTs ? { requesterMessageTs } : {}),
+      requestedMode: "once",
+      purpose: "Read the nightly report",
+    });
+    assert.deepEqual((await f.approvals.get(ask.id, "alice@example.com"))!.slack, expected);
+  }
+});
+
 test("Slack action records the authenticated clicker before displaying success", async () => {
   const f = await fixture();
   let handler: (args: any) => Promise<void> = async () => {};

@@ -4,7 +4,6 @@ import {
   decodeSlackEntities,
   toSlackMrkdwn,
   slackSectionBlocks,
-  resolveMentionsInText,
   neutralizeMassMentions,
   neutralizeMentions,
   wireMentionKeys,
@@ -132,16 +131,6 @@ test("slackSectionBlocks splits long replies below Slack's section limit", () =>
   const blocks = slackSectionBlocks("x".repeat(7_000));
   assert.equal(blocks.length, 3);
   assert.ok(blocks.every((block) => (block.text as { text: string }).text.length <= 2_900));
-});
-
-test("resolveMentionsInText: plain, labeled, unknown, multiple", () => {
-  const lookup = (id: string): string | undefined => ({ U1: "jordan", U2: "avery" })[id];
-  assert.equal(resolveMentionsInText("hey <@U1>", lookup), "hey @jordan");
-  assert.equal(resolveMentionsInText("hey <@U1|Jordan Label>", lookup), "hey @Jordan Label");
-  assert.equal(resolveMentionsInText("ping <@U9>", lookup), "ping @U9");
-  assert.equal(resolveMentionsInText("ping <@U9|Nobody>", lookup), "ping @Nobody");
-  assert.equal(resolveMentionsInText("<@U1> and <@U2> and <@U3>", lookup), "@jordan and @avery and @U3");
-  assert.equal(resolveMentionsInText("no mentions", lookup), "no mentions");
 });
 
 test("toSlackMrkdwn disarms encoded mass mentions outside code, leaves real mentions alone", () => {

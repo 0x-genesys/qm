@@ -1,6 +1,7 @@
 import { hasSlackAccount } from "./slack-composio.ts";
 import { slackReply } from "./slack-reply.ts";
 import { nativeSlackConfigured, nativeSlackConnection } from "./slack-native.ts";
+import { slackCallFailure, slackWebClient } from "../../slack/web-client.ts";
 import { isBackendCredential } from "../../credentials/keychain.ts";
 import { livePersonCapability } from "../artifact-share.ts";
 import { mintSignedPayload, verifySignedPayload } from "../../auth/signed-token.ts";
@@ -14,7 +15,7 @@ import { principalEntitledToScope } from "../../resolution/context-filter.ts";
 import { sendJson } from "../http.ts";
 import { redactSecrets } from "../../../plugins/chassis/src/redact-secrets.ts";
 import { createExactSecretValueMasker } from "../../security/secret-masking.ts";
-import { errMessage, httpFailure, reportFailure } from "../../util/errors.ts";
+import { errMessage, httpFailure, reportFailure, swallow } from "../../util/errors.ts";
 import { activePrincipal, audit } from "./shared.ts";
 import type { ApiCtx, Route } from "./route.ts";
 
@@ -752,14 +753,16 @@ async function completeSlack(ctx: ApiCtx): Promise<void> {
     let teamId = installation?.teamId;
     const botToken = installation?.botToken ?? deps.slackEnvBotToken;
     if (!teamId && botToken) {
-      const response = await (deps.slackInstallationFetch ?? fetch)("https://slack.com/api/auth.test", {
-        method: "POST",
-        headers: { authorization: `Bearer ${botToken}` },
-        signal: AbortSignal.timeout(10_000),
-        redirect: "error",
-      });
-      const bot = (await response.json()) as { ok?: boolean; team_id?: string };
-      if (response.ok && bot.ok) teamId = bot.team_id;
+      const bot = (await slackWebClient(botToken, deps.slackWebClient, 10_000)
+        .apiCall("auth.test")
+        .catch((error: unknown) => {
+          const failure = slackCallFailure(error);
+          if (failure.platformError === undefined && failure.status === undefined && failure.retryAfter === undefined)
+            throw error;
+          swallow("composio: workspace bot auth.test", error);
+          return undefined;
+        })) as { team_id?: string } | undefined;
+      teamId = bot?.team_id;
     }
     if (!teamId)
       return sendJson(res, 409, {

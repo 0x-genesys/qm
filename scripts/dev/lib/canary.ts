@@ -1,3 +1,7 @@
+import { WebClient } from "@slack/web-api";
+import { errMessage } from "../../../src/util/errors.ts";
+import { slackWebClientOptions } from "../../../src/slack/web-client.ts";
+
 export interface CanaryChannelCandidate {
   id: string;
   name: string;
@@ -13,34 +17,24 @@ export function pickCanaryChannel(channels: CanaryChannelCandidate[]): CanaryCha
 
 export async function discoverCanaryChannel(
   botToken: string,
-  fetchImpl: typeof fetch = fetch,
-  apiBase = "https://slack.com/api/",
+  slackApiUrl?: string,
 ): Promise<CanaryChannelCandidate | null> {
+  const client = new WebClient(botToken, slackWebClientOptions(10_000, slackApiUrl));
   const channels: CanaryChannelCandidate[] = [];
-  let cursor = "";
+  let pages = 0;
   try {
-    for (let page = 0; page < 5; page++) {
-      const url =
-        `${apiBase.replace(/\/+$/, "")}/users.conversations?types=public_channel,private_channel&exclude_archived=true&limit=200` +
-        (cursor ? `&cursor=${encodeURIComponent(cursor)}` : "");
-      const res = await fetchImpl(url, {
-        headers: { authorization: `Bearer ${botToken}` },
-        signal: AbortSignal.timeout(10_000),
-      });
-      const body = (await res.json()) as {
-        ok?: boolean;
-        channels?: CanaryChannelCandidate[];
-        response_metadata?: { next_cursor?: string };
-      };
-      if (!body.ok || !Array.isArray(body.channels)) return channels.length ? pickCanaryChannel(channels) : null;
-      channels.push(...body.channels);
+    for await (const page of client.paginate("users.conversations", {
+      types: "public_channel,private_channel",
+      exclude_archived: true,
+      limit: 200,
+    })) {
+      channels.push(...((page as { channels?: CanaryChannelCandidate[] }).channels ?? []));
       const dedicated = channels.find((c) => c.name === "dev-canary" && !c.is_archived);
       if (dedicated) return dedicated;
-      cursor = body.response_metadata?.next_cursor ?? "";
-      if (!cursor) break;
+      if (++pages >= 5) break;
     }
-    return pickCanaryChannel(channels);
-  } catch {
-    return channels.length ? pickCanaryChannel(channels) : null;
+  } catch (error) {
+    console.warn(`[dev] canary channel discovery stopped after ${pages} page(s): ${errMessage(error)}`);
   }
+  return pickCanaryChannel(channels);
 }

@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { LogLevel, WebClient } from "@slack/web-api";
+import { NO_RETRY } from "../src/slack/config.ts";
+import { startFakeSlackApi } from "./support/fake-slack-api.ts";
 import {
   slackReplyArgs,
   botIdentityArgs,
@@ -456,27 +459,47 @@ test("postWithVerify: platform error rethrows without retry", async () => {
   assert.equal(h.historyCalled, false);
 });
 
-test("postWithVerify: rate limit waits, verifies (the claim may have lapsed), then re-posts", async () => {
-  const h = verifyHarness({
-    postResults: [
-      { err: { code: "slack_webapi_rate_limited_error", retryAfter: 0 } },
-      { ok: { ts: "2.2", channel: "C1" } },
-    ],
+test("postWithVerify: a Slack 429 is waited out by the SDK, then verified and re-posted once", async (t) => {
+  const api = await startFakeSlackApi(({ method }) => {
+    if (method === "chat.postMessage" && api.calls.filter((c) => c.method === method).length === 1)
+      return new Response(JSON.stringify({ ok: false, error: "ratelimited" }), {
+        status: 429,
+        headers: { "retry-after": "0", "content-type": "application/json" },
+      });
+    if (method === "chat.postMessage") return Response.json({ ok: true, ts: "2.2", channel: "C1" });
+    return Response.json({ ok: true, messages: [] });
   });
-  const res = await postWithVerify(h.client, { channel: "C1", text: "hi" } as any, KEY);
-  assert.equal(res.ts, "2.2");
-  assert.equal(h.postCalls, 2);
-  assert.equal(h.historyCalled, true, "the 429 wait may outlive our delivery claim — check for a sibling's post");
+  t.after(() => api.close());
+  const client = new WebClient("xoxb-test", {
+    ...NO_RETRY,
+    slackApiUrl: api.apiUrl,
+    logLevel: LogLevel.ERROR,
+  });
+  const res = await postWithVerify(client as never, { channel: "C1", text: "hi" }, KEY);
+  assert.deepEqual(res, { ts: "2.2", channel: "C1" });
+  assert.deepEqual(
+    api.calls.map((c) => c.method),
+    ["chat.postMessage", "conversations.history", "chat.postMessage"],
+  );
 });
 
-test("postWithVerify: rate limit wait finds a sibling relay's post and reuses it", async () => {
-  const h = verifyHarness({
-    postResults: [{ err: { code: "slack_webapi_rate_limited_error", retryAfter: 0 } }],
-    historyMessages: [foundMsg],
+test("postWithVerify: when a sibling posted during the SDK's 429 wait, verification finds it and nothing is re-posted", async (t) => {
+  const api = await startFakeSlackApi(({ method }) => {
+    if (method === "chat.postMessage")
+      return new Response(JSON.stringify({ ok: false, error: "ratelimited" }), {
+        status: 429,
+        headers: { "retry-after": "0", "content-type": "application/json" },
+      });
+    return Response.json({ ok: true, messages: [foundMsg] });
   });
-  const res = await postWithVerify(h.client, { channel: "C1", text: "hi" } as any, KEY);
-  assert.deepEqual(res, { ts: "9.9", channel: "C1", reused: true });
-  assert.equal(h.postCalls, 1, "never re-posts over a sibling's landed message");
+  t.after(() => api.close());
+  const client = new WebClient("xoxb-test", { ...NO_RETRY, slackApiUrl: api.apiUrl, logLevel: LogLevel.ERROR });
+  const res = await postWithVerify(client as never, { channel: "C1", text: "hi" }, KEY);
+  assert.deepEqual(res, { ts: "9.9", channel: "C1" });
+  assert.deepEqual(
+    api.calls.map((c) => c.method),
+    ["chat.postMessage", "conversations.history"],
+  );
 });
 
 test("postWithVerify: ambiguous error + message found on verify returns existing ts, no re-post", async () => {

@@ -209,6 +209,13 @@ export function isDirectChannelType(channelType: unknown): boolean {
   return channelType === "im" || channelType === "mpim";
 }
 
+export function workspaceCustomEmoji(listed: Record<string, unknown> | undefined): Record<string, string> {
+  const emoji: Record<string, string> = {};
+  for (const [name, url] of Object.entries(listed ?? {}))
+    if (typeof url === "string" && !url.startsWith("alias:")) emoji[name] = url;
+  return emoji;
+}
+
 export function slackErrorCode(err: unknown): string | undefined {
   return str(rec(rec(err)?.data)?.error);
 }

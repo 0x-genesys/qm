@@ -1,6 +1,7 @@
 import { isOwnStatusCard } from "./message-gating.ts";
 import { swallow } from "../util/errors.ts";
 import { decodeSlackEntities, mentionsBot } from "./lib.ts";
+import { slackMentionIds } from "./mrkdwn.ts";
 import { messageWithForwardedContent } from "./forwards.ts";
 import type { SlackCoreClient } from "../api/slack-core-client.ts";
 import type { IngestEvent } from "../surface-cache/surface-cache.ts";
@@ -91,18 +92,18 @@ export function createMirror(deps: {
   }
 
   async function resolveMentionNames(client: any, text: string): Promise<Record<string, string>> {
-    const mentionIds = new Set<string>();
-    for (const match of text.matchAll(/<@(U\w+)(?:\|[^>]*)?>/g)) mentionIds.add(match[1] as string);
     const names = new Map<string, string>();
     await Promise.all(
-      [...mentionIds].slice(0, MAX_NAME_LOOKUPS).map(async (id) => {
-        try {
-          const dn = (await directory.classifyUserCached(client, id)).actor.displayName;
-          if (dn) names.set(id, dn);
-        } catch (e) {
-          swallow("slack: mention users.info", e);
-        }
-      }),
+      slackMentionIds(text)
+        .slice(0, MAX_NAME_LOOKUPS)
+        .map(async (id) => {
+          try {
+            const dn = (await directory.classifyUserCached(client, id)).actor.displayName;
+            if (dn) names.set(id, dn);
+          } catch (e) {
+            swallow("slack: mention users.info", e);
+          }
+        }),
     );
     return Object.fromEntries(names);
   }

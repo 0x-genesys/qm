@@ -1,6 +1,7 @@
 import { isPrincipalType, PRINCIPAL_TYPES } from "../../types.ts";
 import type { DirectoryMember } from "../../directory/directory-store.ts";
 import { canonicalPerson } from "../../directory/person.ts";
+import { applyDirectoryPush, type DirectoryPush } from "../directory-push.ts";
 import { sendJson } from "../http.ts";
 import { audit, isObj, orgScope } from "./shared.ts";
 import { withActor, type ApiCtx, type Route } from "./route.ts";
@@ -77,78 +78,61 @@ async function pushDirectory(ctx: ApiCtx): Promise<void> {
       message: `member type must be one of: ${PRINCIPAL_TYPES.join(", ")}`,
     });
   }
-  if (typeof b.workspaceUrl === "string" && /^https:\/\/[^\s/]+$/.test(b.workspaceUrl.replace(/\/+$/, ""))) {
-    await app.setDirectoryWorkspaceUrl(b.workspaceUrl.replace(/\/+$/, ""));
-  }
-  let memberCount: number | undefined;
-  if (Array.isArray(b.members)) {
-    const members = b.members
-      .filter(
-        (m): m is DirectoryMember =>
-          isObj(m) && typeof m.principalId === "string" && typeof m.displayName === "string" && isPrincipalType(m.type),
-      )
-      .map((m) => ({
-        principalId: m.principalId,
-        displayName: m.displayName,
-        type: m.type,
-        ...(typeof m.slackId === "string" && m.slackId ? { slackId: m.slackId } : {}),
-        ...(typeof m.avatarUrl === "string" && m.avatarUrl.startsWith("https://") ? { avatarUrl: m.avatarUrl } : {}),
-      }));
-    await app.upsertDirectory(members, numOrUndef(b.membersSyncedAt));
-    memberCount = members.length;
-  }
-  let channelCount: number | undefined;
-  if (Array.isArray(b.channels)) {
-    const channels = b.channels.filter(
-      (c): c is { channelId: string; name: string; isPrivate?: boolean; isExternal?: boolean } =>
-        isObj(c) && typeof c.channelId === "string" && typeof c.name === "string",
-    );
-    const channelMembers = Array.isArray(b.channelMembers)
-      ? b.channelMembers.filter(
-          (m): m is { channelId: string; principalId: string } =>
-            isObj(m) && typeof m.channelId === "string" && typeof m.principalId === "string",
+  const isMembership = (m: unknown): m is { channelId: string; principalId: string } =>
+    isObj(m) && typeof m.channelId === "string" && typeof m.principalId === "string";
+  const strings = (v: unknown): string[] | undefined =>
+    Array.isArray(v) ? v.filter((item): item is string => typeof item === "string") : undefined;
+  const push: DirectoryPush = {
+    workspaceUrl: typeof b.workspaceUrl === "string" ? b.workspaceUrl : undefined,
+    members: Array.isArray(b.members)
+      ? b.members
+          .filter(
+            (m): m is DirectoryMember =>
+              isObj(m) &&
+              typeof m.principalId === "string" &&
+              typeof m.displayName === "string" &&
+              isPrincipalType(m.type),
+          )
+          .map((m) => ({
+            principalId: m.principalId,
+            displayName: m.displayName,
+            type: m.type,
+            ...(typeof m.slackId === "string" && m.slackId ? { slackId: m.slackId } : {}),
+            ...(typeof m.avatarUrl === "string" && m.avatarUrl.startsWith("https://")
+              ? { avatarUrl: m.avatarUrl }
+              : {}),
+          }))
+      : undefined,
+    channels: Array.isArray(b.channels)
+      ? b.channels.filter(
+          (c): c is { channelId: string; name: string; isPrivate?: boolean; isExternal?: boolean } =>
+            isObj(c) && typeof c.channelId === "string" && typeof c.name === "string",
         )
-      : undefined;
-    const channelRosterIds = Array.isArray(b.channelRosterIds)
-      ? b.channelRosterIds.filter((channelId): channelId is string => typeof channelId === "string")
-      : undefined;
-    const channelRevocations = Array.isArray(b.channelRevocations)
-      ? b.channelRevocations.filter(
-          (m): m is { channelId: string; principalId: string } =>
-            isObj(m) && typeof m.channelId === "string" && typeof m.principalId === "string",
+      : undefined,
+    partialChannels: b.partialChannels === true,
+    channelMembers: Array.isArray(b.channelMembers) ? b.channelMembers.filter(isMembership) : undefined,
+    channelRevocations: Array.isArray(b.channelRevocations) ? b.channelRevocations.filter(isMembership) : undefined,
+    channelRosterIds: strings(b.channelRosterIds),
+    groupMembers: Array.isArray(b.groupMembers)
+      ? b.groupMembers.filter(
+          (m): m is { groupId: string; principalId: string } =>
+            isObj(m) && typeof m.groupId === "string" && typeof m.principalId === "string",
         )
-      : undefined;
-    const applied = await app.upsertChannels(
-      channels,
-      channelMembers,
-      numOrUndef(b.channelsSyncedAt),
-      channelRosterIds,
-      channelRevocations,
-      b.partialChannels === true,
-    );
-    if (b.partialChannels && !applied) return sendJson(res, 409, { error: "stale_directory_observation" });
-    channelCount = channels.length;
-  }
-  let groupMemberCount: number | undefined;
-  if (Array.isArray(b.groupMembers)) {
-    const groupMembers = b.groupMembers.filter(
-      (m): m is { groupId: string; principalId: string } =>
-        isObj(m) && typeof m.groupId === "string" && typeof m.principalId === "string",
-    );
-    const groupIds = Array.isArray(b.groupIds)
-      ? b.groupIds.filter((groupId): groupId is string => typeof groupId === "string")
-      : undefined;
-    const groupRosterIds = Array.isArray(b.groupRosterIds)
-      ? b.groupRosterIds.filter((groupId): groupId is string => typeof groupId === "string")
-      : undefined;
-    await app.upsertGroups(groupMembers, numOrUndef(b.groupsSyncedAt), groupIds, groupRosterIds);
-    groupMemberCount = groupMembers.length;
-  }
+      : undefined,
+    groupIds: strings(b.groupIds),
+    groupRosterIds: strings(b.groupRosterIds),
+    membersSyncedAt: numOrUndef(b.membersSyncedAt),
+    channelsSyncedAt: numOrUndef(b.channelsSyncedAt),
+    groupsSyncedAt: numOrUndef(b.groupsSyncedAt),
+  };
+  const outcome = await applyDirectoryPush(app, push);
+  if (push.partialChannels && outcome.channels === false)
+    return sendJson(res, 409, { error: "stale_directory_observation" });
   return sendJson(res, 200, {
     ok: true,
-    ...(memberCount !== undefined ? { members: memberCount } : {}),
-    ...(channelCount !== undefined ? { channels: channelCount } : {}),
-    ...(groupMemberCount !== undefined ? { groupMembers: groupMemberCount } : {}),
+    ...(push.members ? { members: push.members.length } : {}),
+    ...(push.channels ? { channels: push.channels.length } : {}),
+    ...(push.groupMembers ? { groupMembers: push.groupMembers.length } : {}),
   });
 }
 

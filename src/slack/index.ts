@@ -37,6 +37,7 @@ import { createHttpEventsReceiver } from "./http-events.ts";
 import { parseChannelPage, parseLogLevel } from "./payloads.ts";
 import type { SlackCoreClient, SurfaceContextRequest } from "../api/slack-core-client.ts";
 import type { AuthTestResponse } from "@slack/web-api";
+import { LRUCache } from "lru-cache";
 const { App } = bolt;
 
 export type { SlackCoreClient };
@@ -52,6 +53,25 @@ const slackAccountClients = new Map<
     inFlightRuns?: { add(id: string): void; delete(id: string): void };
   }
 >();
+
+const CORE_READ = "value";
+
+function coreReadCache<T extends NonNullable<unknown>>(
+  label: string,
+  ttl: number,
+  fallback: T,
+  load: () => Promise<T>,
+): LRUCache<typeof CORE_READ, T> {
+  return new LRUCache<typeof CORE_READ, T>({
+    max: 1,
+    ttl,
+    fetchMethod: (_key, stale) =>
+      load().catch((err: unknown) => {
+        swallow(label, err);
+        return stale ?? fallback;
+      }),
+  });
+}
 
 export async function startSlackPlugin(
   cfg: SlackPluginConfig,
@@ -113,59 +133,26 @@ export async function startSlackPlugin(
     identityMode: cfg.identityEmail === "0" ? "slack-id" : "email",
   };
 
-  const ACK_OVERRIDE_CACHE_MS = 60_000;
-  let ackOverrideCache: { names: string[] | null; fetchedAt: number } | undefined;
+  const ackOverrides = coreReadCache("slack: ack-emoji override read", 60_000, [], async () => [
+    ...((await core.ackEmojiOverride()) ?? []),
+  ]);
   function ackEmojiOverride(): readonly string[] | null {
-    if (!ackOverrideCache || Date.now() - ackOverrideCache.fetchedAt >= ACK_OVERRIDE_CACHE_MS) {
-      const prev = ackOverrideCache;
-      ackOverrideCache = { names: prev?.names ?? null, fetchedAt: Date.now() };
-      core
-        .ackEmojiOverride()
-        .then((names) => {
-          ackOverrideCache = { names: names?.length ? names : null, fetchedAt: Date.now() };
-        })
-        .catch((err) => {
-          swallow("slack: ack-emoji override read", err);
-        });
-    }
-    return ackOverrideCache.names;
+    void ackOverrides.fetch(CORE_READ);
+    const names = ackOverrides.get(CORE_READ, { allowStale: true });
+    return names?.length ? names : null;
   }
-
-  const INTERNAL_OVERRIDES_CACHE_MS = 60_000;
-  let internalOverridesCache: { members: ReadonlySet<string>; fetchedAt: number } | undefined;
-  async function internalOverrides(): Promise<ReadonlySet<string>> {
-    if (internalOverridesCache && Date.now() - internalOverridesCache.fetchedAt < INTERNAL_OVERRIDES_CACHE_MS) {
-      return internalOverridesCache.members;
-    }
-    try {
-      const members = new Set(await core.internalMemberOverrides());
-      internalOverridesCache = { members, fetchedAt: Date.now() };
-      return members;
-    } catch (err) {
-      swallow("slack: internal-member-overrides read", err);
-      return internalOverridesCache?.members ?? new Set();
-    }
-  }
-
-  const EXTERNAL_PARTICIPANTS_CACHE_MS = 30_000;
-  let externalParticipantsCache: { on: boolean; fetchedAt: number } | undefined;
-  async function externalParticipantsEnabled(): Promise<boolean> {
-    if (cfg.externalAccess) return true;
-    if (
-      externalParticipantsCache &&
-      Date.now() - externalParticipantsCache.fetchedAt < EXTERNAL_PARTICIPANTS_CACHE_MS
-    ) {
-      return externalParticipantsCache.on;
-    }
-    try {
-      const on = await core.externalSlackParticipants();
-      externalParticipantsCache = { on, fetchedAt: Date.now() };
-      return on;
-    } catch (err) {
-      swallow("slack: surface-config read", err);
-      return externalParticipantsCache?.on ?? false;
-    }
-  }
+  const internalOverrideReads = coreReadCache(
+    "slack: internal-member-overrides read",
+    60_000,
+    new Set<string>(),
+    async (): Promise<ReadonlySet<string>> => new Set(await core.internalMemberOverrides()),
+  );
+  const internalOverrides = async (): Promise<ReadonlySet<string>> => (await internalOverrideReads.fetch(CORE_READ))!;
+  const externalParticipantReads = coreReadCache("slack: surface-config read", 30_000, false, () =>
+    core.externalSlackParticipants(),
+  );
+  const externalParticipantsEnabled = async (): Promise<boolean> =>
+    Boolean(cfg.externalAccess) || (await externalParticipantReads.fetch(CORE_READ))!;
 
   const stagingAccount = cfg.installationId ? `${ACCOUNT_LABEL}:${cfg.installationId}` : ACCOUNT_LABEL;
   const staging = core.stagedEnvelopes
@@ -513,14 +500,9 @@ export async function startSlackPlugin(
   const EMOJI_CATALOG_REFRESH_MS = 6 * 60 * 60_000;
   const publishEmojiCatalog = (): void => {
     if (stopped) return;
-    void Promise.resolve(app.client.emoji.list())
-      .then((res: { emoji?: Record<string, string> }) => {
-        const emoji: Record<string, string> = {};
-        for (const [name, url] of Object.entries(res.emoji ?? {})) {
-          if (typeof url === "string" && !url.startsWith("alias:")) emoji[name] = url;
-        }
-        return core.publishEmojiCatalog(emoji);
-      })
+    void ackEmoji
+      .workspaceEmoji(app.client)
+      .then((emoji) => (emoji ? core.publishEmojiCatalog(emoji) : undefined))
       .catch(swallowAs("slack: emoji catalog publish", undefined));
   };
   let emojiCatalogTimer: NodeJS.Timeout | undefined;

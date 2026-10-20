@@ -1,6 +1,7 @@
 import type { DurableMap } from "../persistence/durable-map.ts";
 import { decryptSecret, deriveConnectorKey, encryptSecret } from "../connectors/connector-client-store.ts";
 import { SLACK_AUTH_ERRORS } from "../slack/payloads.ts";
+import { slackCallFailure, slackWebClient, type SlackWebClientFactory } from "../slack/web-client.ts";
 
 interface ActiveSlackInstallation {
   serviceBlocked?: boolean;
@@ -286,7 +287,7 @@ async function readSlackSocketAppId(url: string): Promise<string> {
 export async function validateSlackInstallation(
   botToken: string,
   appToken: string,
-  fetchImpl: typeof fetch = fetch,
+  clientFactory?: SlackWebClientFactory,
   readSocketAppId: SlackSocketAppIdReader = readSlackSocketAppId,
 ): Promise<{ teamId?: string; teamName?: string }> {
   if (!botToken.startsWith("xoxb-"))
@@ -297,46 +298,52 @@ export async function validateSlackInstallation(
     throw new Error(
       "App token must start with xapp-. Generate an App-Level Token in Basic Information with connections:write.",
     );
-  const call = async (method: string, token: string, formBody = ""): Promise<SlackValidationResponse> => {
-    const response = await fetchImpl(`https://slack.com/api/${method}`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/x-www-form-urlencoded" },
-      body: formBody,
-      signal: AbortSignal.timeout(10_000),
-    });
+  const call = async (
+    method: string,
+    token: string,
+    params: Record<string, string> = {},
+  ): Promise<SlackValidationResponse> => {
     const label = method === "apps.connections.open" ? "App-level token" : "Bot token";
-    if (response.status === 429) {
-      const seconds = Number(response.headers.get("retry-after"));
-      throw new Error(
-        `Slack is temporarily rate-limiting validation. Try again${seconds > 0 && Number.isFinite(seconds) ? ` in ${Math.ceil(seconds)} seconds` : " shortly"}. Your existing connection has not changed.`,
-      );
-    }
-    const payload = (await response.json()) as SlackValidationResponse;
-    if (!response.ok || !payload.ok) {
-      if (SLACK_AUTH_ERRORS.has(payload.error ?? ""))
+    try {
+      return (await slackWebClient(token, clientFactory, 10_000).apiCall(method, params)) as SlackValidationResponse;
+    } catch (error) {
+      const failure = slackCallFailure(error);
+      if (failure.retryAfter !== undefined) {
+        const seconds = failure.retryAfter;
+        throw new Error(
+          `Slack is temporarily rate-limiting validation. Try again${seconds > 0 ? ` in ${Math.ceil(seconds)} seconds` : " shortly"}. Your existing connection has not changed.`,
+          { cause: error },
+        );
+      }
+      if (failure.platformError === undefined && failure.status === undefined) throw error;
+      const code = failure.platformError;
+      if (SLACK_AUTH_ERRORS.has(code ?? ""))
         throw new Error(
           `${label} was rejected by Slack. Copy a current token from the same installed Slack app and try again.`,
+          { cause: error },
         );
-      if (payload.error === "missing_scope")
+      if (code === "missing_scope")
         throw new Error(
           method === "apps.connections.open"
             ? "App-level token needs connections:write. Generate a new token in Basic Information with that scope."
             : "Bot token is missing permissions. Apply the provided manifest and reinstall the app in OAuth & Permissions.",
+          { cause: error },
         );
-      if (payload.error === "not_allowed_token_type")
+      if (code === "not_allowed_token_type")
         throw new Error(
           `${label} has the wrong token type. Use the Bot User OAuth Token (xoxb-) and App-Level Token (xapp-) from the setup guide.`,
+          { cause: error },
         );
       throw new Error(
-        `${label} validation failed (${payload.error ?? `HTTP ${response.status}`}). Check that the app is installed and Socket Mode is enabled, then try again.`,
+        `${label} validation failed (${code ?? `HTTP ${failure.status}`}). Check that the app is installed and Socket Mode is enabled, then try again.`,
+        { cause: error },
       );
     }
-    return payload;
   };
   const auth = await call("auth.test", botToken);
   let botAppId = auth.app_id;
   if (!botAppId && auth.bot_id) {
-    const bot = await call("bots.info", botToken, new URLSearchParams({ bot: auth.bot_id }).toString());
+    const bot = await call("bots.info", botToken, { bot: auth.bot_id });
     botAppId = bot.bot?.app_id;
   }
   if (!botAppId) throw new Error("Slack bot identity returned no app_id");

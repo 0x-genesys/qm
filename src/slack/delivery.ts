@@ -1,6 +1,5 @@
 import { errMessage, swallowAs } from "../util/errors.ts";
 import { safeChunks, safeClip } from "./safe-cut.ts";
-import { sleep } from "./util.ts";
 import { isExternallyShared, isMpim, type ChannelMeta } from "./identity.ts";
 
 export interface SlackReplyArgs {
@@ -562,18 +561,6 @@ export async function postWithVerify(
       lastErr = err;
       const code = (err as { code?: string }).code;
       if (code === "slack_webapi_platform_error") throw err;
-      if (code === "slack_webapi_rate_limited_error") {
-        const retryAfter = (err as { retryAfter?: number }).retryAfter ?? 1;
-        await sleep(retryAfter * 1000);
-
-        try {
-          const found = await findPostedByKey(client, args, idempotencyKey, verifyOldest);
-          if (found) return { ...found, reused: true };
-        } catch {
-          /* verification is best-effort on this path */
-        }
-        continue;
-      }
       let found: { ts: string; channel: string } | undefined;
       try {
         found = await findPostedByKey(client, args, idempotencyKey, verifyOldest);

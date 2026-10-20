@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, afterEach, before, test } from "node:test";
 import { createInboxSourceRefresh } from "../src/loops/inbox-source-refresh.ts";
 import { createLoopItemLedger } from "../src/loops/item-ledger.ts";
+import { startFakeSlackApi, type FakeSlackApi } from "./support/fake-slack-api.ts";
 
 async function fixture(source = "gmail", meta: Record<string, unknown> = { threadId: "t1" }) {
   const items = createLoopItemLedger();
@@ -16,6 +17,22 @@ async function fixture(source = "gmail", meta: Record<string, unknown> = { threa
     },
   ]);
   return { items, item: (await items.byLoop("inbox"))[0]! };
+}
+type SlackHandler = (url: string, init?: RequestInit) => Promise<Response>;
+const slackHandlers: SlackHandler[] = [];
+let slack: FakeSlackApi;
+before(async () => {
+  slack = await startFakeSlackApi(({ path, method, params }) =>
+    slackHandlers[Number(path.split("/")[1])]!(`https://slack.test/api/${method}?${params}`),
+  );
+});
+after(() => slack.close());
+afterEach(() => {
+  const errors = slack.errors.splice(0);
+  if (errors.length) throw errors[0];
+});
+function slackApi(handler: SlackHandler): string {
+  return `${slack.origin}/${slackHandlers.push(handler) - 1}/api/`;
 }
 const featureFlags = { enabled: async () => true };
 const tokens = { connectorAccessToken: async () => "synthetic-token" };
@@ -167,7 +184,7 @@ test("top-level/private-channel mentions fetch just their root and replies, neve
       items,
       tokens,
       directory,
-      fetchImpl: slackFetch(calls),
+      slackApiUrl: slackApi(slackFetch(calls)),
     })("owner", [item]);
     const after = (await items.get(item.id))!;
     assert.deepEqual(
@@ -189,7 +206,7 @@ test("Slack detects group DMs by conversation metadata, including C-prefixed IDs
     items,
     tokens,
     directory,
-    fetchImpl: slackFetch(calls, { direct: true, own: true }),
+    slackApiUrl: slackApi(slackFetch(calls, { direct: true, own: true })),
   })("owner", [item]);
   assert.ok(calls.some((p) => p.includes("conversations.history")));
   assert.equal((await items.get(item.id))!.actionKind, "replied");
@@ -202,7 +219,7 @@ test("a partial Slack thread is displayed as partial but cannot resolve an item"
     items,
     tokens,
     directory,
-    fetchImpl: slackFetch([], { partial: true, own: true }),
+    slackApiUrl: slackApi(slackFetch([], { partial: true, own: true })),
   })("owner", [item]);
   const after = (await items.get(item.id))!;
   assert.equal(after.status, "ready");
@@ -217,11 +234,11 @@ test("rate limiting is respected across different Slack items and never triggers
     items,
     tokens,
     directory,
-    fetchImpl: async (url) => {
+    slackApiUrl: slackApi(async (url) => {
       if (String(url).includes("conversations.info")) return json({ ok: true, channel: {} });
       reads++;
       return new Response("limited", { status: 429, headers: { "retry-after": "120" } });
-    },
+    }),
   });
   await refresh("owner", [item]);
   await refresh("owner", [{ ...item, id: "second" }]);
@@ -281,7 +298,7 @@ test("Slack avatars come from the org directory without the owner's Slack login 
     items,
     tokens: { connectorAccessToken: async () => null },
     directory: directoryOf({ U1: { displayName: "Alex", avatarUrl: ALEX } }, (id) => looked.push(id)),
-    fetchImpl: async () => assert.fail("no Slack reads"),
+    slackApiUrl: slackApi(async () => assert.fail("no Slack reads")),
   });
   await refresh("owner", [item], "avatars");
   const after = (await items.get(item.id))!;
@@ -308,7 +325,13 @@ test("missing or unsafe directory photos retain initials", async () => {
 
 test("avatar-only refresh does not suppress full Slack context refresh", async () => {
   const { items, item } = await fixture("slack", { channelId: "C1", ts: "1.0", userId: "U1" });
-  const refresh = createInboxSourceRefresh({ featureFlags, items, tokens, directory, fetchImpl: slackFetch([]) });
+  const refresh = createInboxSourceRefresh({
+    featureFlags,
+    items,
+    tokens,
+    directory,
+    slackApiUrl: slackApi(slackFetch([])),
+  });
   await refresh("owner", [item], "avatars");
   await refresh("owner", [(await items.get(item.id))!]);
   const after = (await items.get(item.id))!;
@@ -346,7 +369,7 @@ test("concurrent list and detail refreshes preserve the authoritative Slack thre
     items,
     tokens,
     directory,
-    fetchImpl: slackFetch([], { direct: true }),
+    slackApiUrl: slackApi(slackFetch([], { direct: true })),
   });
   await Promise.all([refresh("owner", [item]), refresh("owner", [item], "avatars")]);
   const after = (await items.get(item.id))!;
@@ -394,7 +417,7 @@ test("opening a thread retains cached photos and author names when profile reads
       throw new Error("directory unavailable");
     }),
     now: () => 1000,
-    fetchImpl: slackFetch([]),
+    slackApiUrl: slackApi(slackFetch([])),
   })("owner", [(await items.get(item.id))!]);
   const after = (await items.get(item.id))!;
   assert.deepEqual(after.sourcePayload!.participants, [saved]);
@@ -420,7 +443,7 @@ test("thread profile limits prioritize the waiting sender and latest visible aut
     items,
     tokens,
     directory: directoryOf(people, (id) => lookedUp.push(id)),
-    fetchImpl: async (url) => {
+    slackApiUrl: slackApi(async (url) => {
       const u = new URL(String(url));
       if (u.pathname.endsWith("conversations.info")) return json({ ok: true, channel: {} });
       if (u.pathname.endsWith("auth.test")) return json({ ok: true, user_id: "OWNER" });
@@ -433,7 +456,7 @@ test("thread profile limits prioritize the waiting sender and latest visible aut
           text: "Message",
         })),
       });
-    },
+    }),
   })("owner", [item]);
   assert.deepEqual(lookedUp, ["U1", "U12", "U11", "U10", "U9", "U8", "U7", "U6"]);
   const after = (await items.get(item.id))!;
@@ -449,7 +472,7 @@ test("bot and external-user messages use profiles already returned by Slack", as
     items,
     tokens,
     directory,
-    fetchImpl: async (url) => {
+    slackApiUrl: slackApi(async (url) => {
       const path = new URL(String(url)).pathname;
       assert.ok(!path.endsWith("users.info") && !path.endsWith("bots.info"));
       if (path.endsWith("conversations.info")) return json({ ok: true, channel: {} });
@@ -465,7 +488,7 @@ test("bot and external-user messages use profiles already returned by Slack", as
           },
         ],
       });
-    },
+    }),
   })("owner", [item]);
   const after = (await items.get(item.id))!;
   assert.deepEqual(after.sourcePayload!.participants, [
@@ -484,12 +507,12 @@ test("a partial source page cannot replace the waiting sender with an unrelated 
       participants: [{ id: "U1", name: "Alex", avatarUrl: "https://avatars.slack-edge.com/alex.png" }],
     });
     const sourceFetch = slackFetch([], { direct: true });
-    const fetchImpl: typeof fetch = async (url, init) => {
+    const slackApiUrl = slackApi(async (url, init) => {
       const response = await sourceFetch(url, init);
       if (!String(url).includes("conversations.history")) return response;
       return json({ ok: true, messages: [{ ts: "2.0", user: "U_OTHER", text: "Newer message" }] });
-    };
-    await createInboxSourceRefresh({ featureFlags, items, tokens, directory, fetchImpl })("owner", [
+    });
+    await createInboxSourceRefresh({ featureFlags, items, tokens, directory, slackApiUrl })("owner", [
       (await items.get(item.id))!,
     ]);
     assert.equal(((await items.get(item.id))!.sourcePayload!.participants as Array<{ id: string }>)[0]!.id, "U1");
@@ -512,13 +535,13 @@ test("cosmetic avatar refresh never waits for an in-flight full conversation ref
     items,
     tokens,
     directory,
-    fetchImpl: async (url, init) => {
+    slackApiUrl: slackApi(async (url, init) => {
       if (String(url).includes("conversations.info")) {
         begin();
         await blocked;
       }
       return sourceFetch(url, init);
-    },
+    }),
   });
   const source = refresh("owner", [item]);
   await started;
@@ -565,10 +588,10 @@ test("a second core's full refresh wins over a stale cosmetic profile refresh", 
       items,
       tokens,
       directory,
-      fetchImpl: async (url, init) => {
+      slackApiUrl: slackApi(async (url, init) => {
         if (String(url).includes("auth.test")) return json({ ok: true, user_id: "OWNER" });
         return sourceFetch(url, init);
-      },
+      }),
     })("owner", [item]);
   } finally {
     release();
@@ -593,11 +616,11 @@ test("unverified waiting senders never inherit another context author's avatar",
     items,
     tokens,
     directory: people,
-    fetchImpl: async (url) => {
+    slackApiUrl: slackApi(async (url) => {
       if (String(url).includes("conversations.info")) return json({ ok: true, channel: { is_im: true } });
       if (String(url).includes("auth.test")) return json({ ok: true, user_id: "OWNER" });
       return json({ ok: true, messages: [{ ts: "2.0", user: "U_OTHER", text: "Another message" }] });
-    },
+    }),
   })("owner", [item]);
   const after = (await items.get(item.id))!;
   assert.deepEqual(after.sourcePayload!.participants, []);
@@ -620,11 +643,11 @@ test("saved participants do not supply a missing sender identity", async () => {
       items,
       tokens,
       directory: directoryOf({ U1: { displayName: "Alex", avatarUrl: ALEX } }, (id) => looked.push(id)),
-      fetchImpl: async (url) => {
+      slackApiUrl: slackApi(async (url) => {
         assert.notEqual(mode, "avatars");
         if (String(url).includes("conversations.info")) return json({ ok: true, channel: { is_im: true } });
         return json({ ok: true, messages: [] });
-      },
+      }),
     })("owner", [before], mode);
     const after = (await items.get(item.id))!;
     assert.deepEqual(looked, []);
@@ -647,7 +670,7 @@ test("profile failures retain diagnostics without exposing credentials", async (
         throw new Error("lookup failed token=xoxb-private-credential");
       }),
       errors,
-      fetchImpl: slackFetch([]),
+      slackApiUrl: slackApi(slackFetch([])),
     })("owner", [item], mode);
     const events = await errors.list();
     assert.ok(events.length > 0);
@@ -673,7 +696,7 @@ test("cosmetic refresh records ledger failures without rejecting the inbox reque
     tokens,
     directory,
     errors,
-    fetchImpl: async () => json({ ok: true, user: { name: "Alex" } }),
+    slackApiUrl: slackApi(async () => json({ ok: true, user: { name: "Alex" } })),
   })("owner", [item], "avatars");
   const events = await errors.list();
   assert.equal(events.length, 1);
@@ -702,7 +725,7 @@ test("Inbox source refresh checks the owner rollout before credentials, reads, o
         },
       },
       directory,
-      fetchImpl: slackFetch(calls),
+      slackApiUrl: slackApi(slackFetch(calls)),
     });
     await refresh("owner", [item], mode);
     assert.equal(credentials, 0);
@@ -725,12 +748,12 @@ test("Inbox source refresh checks the owner rollout before credentials, reads, o
 
 test("Slack-id principals and items without a known sender use only the directory", async () => {
   const { items, item } = await fixture("slack", { channelId: "D1", ts: "1.0", userId: "U1" });
-  const fetchImpl: typeof fetch = async () => assert.fail("no Slack reads");
+  const slackApiUrl = slackApi(async () => assert.fail("no Slack reads"));
   const slackIdMode = {
     getBySlackId: async (id: string) =>
       id === "U1" ? { principalId: "U1", displayName: "Alex", type: "internal" as const, avatarUrl: ALEX } : null,
   };
-  await createInboxSourceRefresh({ featureFlags, items, tokens, directory: slackIdMode, fetchImpl })(
+  await createInboxSourceRefresh({ featureFlags, items, tokens, directory: slackIdMode, slackApiUrl })(
     "owner",
     [item],
     "avatars",
@@ -738,13 +761,13 @@ test("Slack-id principals and items without a known sender use only the director
   assert.deepEqual((await items.get(item.id))!.sourcePayload!.participants, [
     { id: "U1", name: "Alex", avatarUrl: ALEX },
   ]);
-  const legacy = await fixture("slack", { channelId: "D2", ts: "1.0" });
-  await createInboxSourceRefresh({ featureFlags, items: legacy.items, tokens, directory, fetchImpl })(
+  const noSender = await fixture("slack", { channelId: "D2", ts: "1.0" });
+  await createInboxSourceRefresh({ featureFlags, items: noSender.items, tokens, directory, slackApiUrl })(
     "owner",
-    [legacy.item],
+    [noSender.item],
     "avatars",
   );
-  assert.deepEqual(await legacy.items.get(legacy.item.id), legacy.item);
+  assert.deepEqual(await noSender.items.get(noSender.item.id), noSender.item);
 });
 
 test("people outside the directory keep the profile Slack returned with their message", async () => {
@@ -754,7 +777,7 @@ test("people outside the directory keep the profile Slack returned with their me
     items,
     tokens,
     directory,
-    fetchImpl: async (url) => {
+    slackApiUrl: slackApi(async (url) => {
       const path = new URL(String(url)).pathname;
       if (path.endsWith("conversations.info")) return json({ ok: true, channel: {} });
       if (path.endsWith("auth.test")) return json({ ok: true, user_id: "OWNER" });
@@ -769,7 +792,7 @@ test("people outside the directory keep the profile Slack returned with their me
           },
         ],
       });
-    },
+    }),
   })("owner", [item]);
   const after = (await items.get(item.id))!;
   assert.deepEqual(after.sourcePayload!.participants, [
@@ -785,13 +808,13 @@ test("people outside the directory without message profiles keep initials and ne
     items,
     tokens,
     directory,
-    fetchImpl: async (url) => {
+    slackApiUrl: slackApi(async (url) => {
       const path = new URL(String(url)).pathname;
       if (path.endsWith("conversations.info")) return json({ ok: true, channel: {} });
       if (path.endsWith("auth.test")) return json({ ok: true, user_id: "OWNER" });
       assert.ok(path.endsWith("conversations.replies"));
       return json({ ok: true, messages: [{ ts: "1.0", user: "U_EXT", text: "Hello" }] });
-    },
+    }),
   })("owner", [item]);
   assert.deepEqual((await items.get(item.id))!.sourcePayload!.participants, [{ id: "U_EXT", name: "U_EXT" }]);
 });
