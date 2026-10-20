@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateRawSync } from "node:zlib";
-import { withAwsLease } from "../aws-lease.ts";
+import { AWS_JSON_ERRORS, awsErrorCode, withAwsLease } from "../aws-lease.ts";
 import { updateConfigCoreEnv, type QmConfig } from "../config.ts";
 import { CliError, ok, step } from "../log.ts";
 import { awsObjectStoreBucket } from "../terraform.ts";
@@ -491,12 +491,13 @@ async function buildAwsMicrovmImageLocked(
             "--output",
             "json",
             "--no-cli-pager",
+            ...AWS_JSON_ERRORS,
           ]),
         ) as ImageOperation;
         step(`${existing ? "updating" : "creating"} ${imageName}`);
         break;
       } catch (error) {
-        if (!/ConflictException|conflict/i.test(error instanceof Error ? error.message : String(error))) throw error;
+        if (awsErrorCode(error) !== "ConflictException") throw error;
         if (now() >= deadline) throw new CliError(`timed out waiting to start MicroVM image build ${imageName}`);
         step(`another ${imageName} image operation started; waiting for it before retrying this build`);
         await wait(options.intervalMs ?? 10_000);

@@ -10,21 +10,40 @@ import { emailSecretNames, serviceSecretValue } from "./secrets.ts";
 
 const PROBE_TIMEOUT_MS = 10_000;
 
-function versionParts(version: string): number[] {
-  return version
-    .replace(/^v/, "")
-    .split(".")
-    .map((part) => Number.parseInt(part, 10) || 0);
+const isNumeric = (part: string): boolean => Number.isSafeInteger(Number(part)) && String(Number(part)) === part;
+
+interface Semver {
+  core: number[];
+  prerelease: string[];
 }
 
-function versionAtLeast(actual: string, minimum: string): boolean {
-  const a = versionParts(actual);
-  const b = versionParts(minimum);
-  for (let i = 0; i < Math.max(a.length, b.length); i++) {
-    const delta = (a[i] ?? 0) - (b[i] ?? 0);
-    if (delta !== 0) return delta > 0;
+function parseSemver(text: string): Semver | undefined {
+  const bare = text.trim().startsWith("v") ? text.trim().slice(1) : text.trim();
+  const [version = ""] = bare.split("+");
+  const dash = version.indexOf("-");
+  const core = (dash === -1 ? version : version.slice(0, dash)).split(".");
+  if (core.length > 3 || !core.every(isNumeric)) return undefined;
+  return {
+    core: [0, 1, 2].map((i) => Number(core[i] ?? 0)),
+    prerelease: dash === -1 ? [] : version.slice(dash + 1).split("."),
+  };
+}
+
+function compareSemver(a: Semver, b: Semver): number {
+  for (let i = 0; i < 3; i++) if (a.core[i] !== b.core[i]) return a.core[i]! - b.core[i]!;
+  if (!a.prerelease.length || !b.prerelease.length) return b.prerelease.length - a.prerelease.length;
+  for (let i = 0; i < Math.max(a.prerelease.length, b.prerelease.length); i++) {
+    const x = a.prerelease[i];
+    const y = b.prerelease[i];
+    if (x === undefined || y === undefined) return x === undefined ? -1 : 1;
+    if (x === y) continue;
+    const xn = isNumeric(x);
+    const yn = isNumeric(y);
+    if (xn && yn) return Number(x) - Number(y);
+    if (xn !== yn) return xn ? -1 : 1;
+    return x < y ? -1 : 1;
   }
-  return true;
+  return 0;
 }
 
 function enginesNodeSpec(packagePath: string): string | undefined {
@@ -43,16 +62,20 @@ function cliPackagePath(): string {
 }
 
 export function nodeEngineProblem(spec: string, source: string, nodeVersion = process.version): string | undefined {
-  const minimums = [...spec.matchAll(/>=\s*v?(\d+(?:\.\d+){0,2})/g)].map((match) => match[1]!);
-  for (const minimum of minimums) {
-    if (!versionAtLeast(nodeVersion, minimum)) {
-      return (
-        `Node ${nodeVersion} does not satisfy "node": ${JSON.stringify(spec)} required by ${source} — ` +
-        `install Node >=${minimum} (e.g. \`nvm install ${minimum.split(".")[0]}\`) and rerun`
-      );
-    }
+  const minimumText = spec.trim().startsWith(">=") ? spec.trim().slice(2).trim() : "";
+  const minimum = parseSemver(minimumText);
+  const actual = parseSemver(nodeVersion);
+  if (!minimum || !actual) {
+    warn(
+      `cannot check "node": ${JSON.stringify(spec)} in ${source} — qm only checks a single ">=<version>" constraint`,
+    );
+    return undefined;
   }
-  return undefined;
+  if (compareSemver(actual, minimum) >= 0) return undefined;
+  return (
+    `Node ${nodeVersion} does not satisfy "node": ${JSON.stringify(spec)} required by ${source} — ` +
+    `install Node >=${minimumText} (e.g. \`nvm install ${minimum.core[0]}\`) and rerun`
+  );
 }
 
 export function assertNodeEngine(deploymentDir?: string): void {

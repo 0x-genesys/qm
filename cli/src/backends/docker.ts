@@ -1,5 +1,6 @@
 import { httpDeploymentLayerTransport, type DeploymentLayerTransport } from "../deployment-layer.ts";
 
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -521,16 +522,15 @@ function noteLogTail(name: string, logs: string): void {
 }
 
 async function waitReady(ctx: DockerCtx, service: ServiceName): Promise<void> {
-  const def = serviceDef(service);
   const name = cname(ctx, service);
+  const probe = `fetch("http://127.0.0.1:${serviceDef(service).docker.internalPort}/healthz").then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))`;
   for (let i = 0; i < 90; i++) {
-    const logs = captureBoth("docker", ["logs", name]);
-    if (def.readiness.test(logs)) {
+    if (spawnSync("docker", ["exec", name, "node", "-e", probe], { stdio: "ignore" }).status === 0) {
       persistRestart(name);
       return;
     }
     if (!containerRunning(name)) {
-      noteLogTail(name, logs);
+      noteLogTail(name, captureBoth("docker", ["logs", name]));
       throw new CliError(`${service} exited before becoming ready (see logs above)`);
     }
     await sleep(1000);

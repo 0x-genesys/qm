@@ -13,8 +13,33 @@ export interface AwsLease {
   renewTimer?: ReturnType<typeof setInterval>;
 }
 
+export const AWS_JSON_ERRORS = ["--cli-error-format", "json"];
+
 export function awsText(aws: AwsConfig, args: string[]): string {
-  return capture(process.env.AWS_BIN ?? "aws", [...args, "--region", aws.region, "--output", "text"]).trim();
+  return capture(process.env.AWS_BIN ?? "aws", [
+    ...args,
+    "--region",
+    aws.region,
+    "--output",
+    "text",
+    ...AWS_JSON_ERRORS,
+  ]).trim();
+}
+
+export function awsErrorCode(error: unknown): string | undefined {
+  const failure =
+    error instanceof Error ? (error.cause as { status?: unknown; stderr?: unknown } | undefined) : undefined;
+  if (failure?.status === 252) return "ParamValidation";
+  if (typeof failure?.stderr !== "string") return undefined;
+  const stderr = failure.stderr;
+  try {
+    const parsed = JSON.parse(stderr.slice(stderr.startsWith("{") ? 0 : stderr.indexOf("\n{") + 1)) as {
+      Code?: unknown;
+    };
+    return typeof parsed.Code === "string" ? parsed.Code : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function deployLocksTable(aws: AwsConfig): string {
@@ -44,7 +69,7 @@ export function acquireAwsLease(aws: AwsConfig, key = "deploy"): AwsLease {
       JSON.stringify({ ":now": { N: String(now) } }),
     ]);
   } catch (error) {
-    if (/ConditionalCheckFailedException/.test(errMessage(error))) {
+    if (awsErrorCode(error) === "ConditionalCheckFailedException") {
       throw new CliError(
         `another QM operation holds the ${JSON.stringify(key)} lease in ${table}; it expires within ${LEASE_SECONDS / 60} minutes, or delete that item to release it manually`,
       );
@@ -88,7 +113,7 @@ function renewAwsLease(aws: AwsConfig, lease: AwsLease): void {
       JSON.stringify({ ":expiresAt": { N: String(now + LEASE_SECONDS) }, ":holder": { S: lease.holder } }),
     ]);
   } catch (error) {
-    if (/ConditionalCheckFailedException/.test(errMessage(error))) {
+    if (awsErrorCode(error) === "ConditionalCheckFailedException") {
       clearInterval(lease.renewTimer);
       lease.renewTimer = undefined;
       warn(

@@ -222,15 +222,22 @@ export async function stopPid(pid: number | undefined, graceSec = 5): Promise<vo
   killTree(pid!, "SIGKILL");
 }
 
-export function waitForLog(file: string, pattern: RegExp, timeoutSec: number): Promise<boolean> {
-  return pollUntil(() => {
-    if (!existsSync(file)) return false;
+export async function waitForJson(
+  url: string,
+  timeoutSec: number,
+  ready: (body: Record<string, unknown>) => boolean = () => true,
+): Promise<Record<string, unknown> | undefined> {
+  for (let i = 0; i < timeoutSec; i++) {
     try {
-      return pattern.test(readFileSync(file, "utf8"));
+      const response = await fetch(url, { signal: AbortSignal.timeout(1000) });
+      const body = response.ok ? ((await response.json()) as Record<string, unknown>) : undefined;
+      if (body && ready(body)) return body;
     } catch {
-      return false;
+      void 0;
     }
-  }, timeoutSec);
+    await sleep(1000);
+  }
+  return undefined;
 }
 
 export const tailString = (s: string, lines: number): string => s.split("\n").slice(-lines).join("\n");
