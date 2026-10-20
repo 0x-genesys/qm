@@ -29,6 +29,22 @@ they're absent by design, even for a fully-connected user. So don't tell a chann
 reconnect; ask them to DM you to run this. Only if it's empty inside a DM does it mean they
 haven't connected Dropbox — then point them to the Connectors page.
 
+**Always send the token yourself.** Every Dropbox call needs
+`-H "Authorization: Bearer $VAULT_TOKEN_..."`. Nothing between your computer and Dropbox
+adds it for you, so a call without that header always fails.
+
+**Telling a missing header from a bad token:**
+- **400 `Invalid authorization value in HTTP header/URL parameter`:** the header was
+  missing, empty or malformed. Dropbox never checked the token, so this says nothing about
+  the user's connection. Check that your command has the header and that the variable is
+  set (`echo ${#VAULT_TOKEN_API_DROPBOXAPI_COM}` prints its length, not the token), then retry.
+  Don't tell the user their connection is broken and don't ask them to reconnect.
+- **401 `invalid_access_token` / `expired_access_token`:** the token was sent and rejected.
+  Only then is a reconnect the answer.
+
+Before telling the user Dropbox is broken, run `users/get_current_account` (below) with the
+header. If it returns their account, the connection works and the fault is in your call.
+
 On **401**: the token is expired/invalid → have them reconnect — _unless_ the error body's
 `.tag` is `missing_scope`, in which case the app lacks a permission; name the `required_scope`
 it returns (the connected app grants account_info.read, files.metadata.read,
