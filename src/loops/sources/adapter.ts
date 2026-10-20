@@ -1,6 +1,5 @@
 import type { LoopItem, LoopSourcePayload } from "../../types.ts";
-import { connectorAccountSlots } from "../../credentials/connector-accounts.ts";
-import { PERSONAL_FIRST_ACCOUNT_TYPES } from "../../connectors/oauth.ts";
+import { connectorAccountSlots, PERSONAL_FIRST_ACCOUNT_TYPES } from "../../credentials/connector-accounts.ts";
 import type { ConnectorTokenStore } from "../../credentials/keychain.ts";
 
 export interface ConnectorTokenSource extends Pick<ConnectorTokenStore, "listConnectorsByOwners"> {

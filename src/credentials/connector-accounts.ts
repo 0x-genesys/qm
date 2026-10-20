@@ -1,5 +1,16 @@
-import { orderAccountNames, type AccountType } from "../connectors/oauth.ts";
+import { isAccountType, type AccountType } from "../connectors/oauth.ts";
 import type { ConnectorTokenStore } from "./keychain.ts";
+
+const BUILTIN_ACCOUNT_TYPES = ["default", "personal", "company"] as const;
+export const PERSONAL_FIRST_ACCOUNT_TYPES = ["personal", "default", "company"] as const;
+
+function orderAccountNames(
+  names: Iterable<string>,
+  preferred: readonly string[] = BUILTIN_ACCOUNT_TYPES,
+): AccountType[] {
+  const extra = [...new Set(names)].filter((name) => isAccountType(name) && !preferred.includes(name)).sort();
+  return [...preferred, ...extra];
+}
 
 type AccountSlots = (host: string, preferred?: readonly string[]) => AccountType[];
 

@@ -77,8 +77,8 @@ import {
   renderConnectedAppsBlock,
   renderSandboxProfiles,
 } from "./environment-facts.ts";
-import { PERSONAL_FIRST_ACCOUNT_TYPES, PROVIDERS } from "../connectors/oauth.ts";
-import { accountSlots } from "../credentials/connector-accounts.ts";
+import { PROVIDERS } from "../connectors/oauth.ts";
+import { accountSlots, PERSONAL_FIRST_ACCOUNT_TYPES } from "../credentials/connector-accounts.ts";
 import { estimateCostUsd } from "../ratelimit/budget.ts";
 import {
   mintCapabilityToken,

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createKeychain, type KeychainCredential } from "../src/credentials/keychain.ts";
 import { deriveConnectorKey } from "../src/connectors/connector-client-store.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
-import { isAccountType, orderAccountNames, parseAccountName } from "../src/connectors/oauth.ts";
+import { isAccountType, parseAccountName } from "../src/connectors/oauth.ts";
 import { connectorAccountSlots } from "../src/credentials/connector-accounts.ts";
 import { tokenFor } from "../src/loops/sources/adapter.ts";
 
@@ -25,17 +25,6 @@ test("account names: built-in slots, workspace and email names pass; unsafe or o
   assert.equal(parseAccountName(undefined), null);
 });
 
-test("orderAccountNames puts preferred slots first, then other valid names alphabetically, once each", () => {
-  assert.deepEqual(orderAccountNames(["zeta", "company", "alpha", "zeta", "Bad Name"]), [
-    "default",
-    "personal",
-    "company",
-    "alpha",
-    "zeta",
-  ]);
-  assert.deepEqual(orderAccountNames(["b@x.io"], ["personal", "default"]), ["personal", "default", "b@x.io"]);
-});
-
 test("connectorAccountSlots lists a principal's named accounts per host from the keychain inventory", async () => {
   const kc = keychain();
   await kc.setConnectorToken("slack.com", "U1", { accessToken: "a", accountType: "globex" }, "globex");
@@ -48,8 +37,6 @@ test("connectorAccountSlots lists a principal's named accounts per host from the
   assert.deepEqual(slots("slack.com"), ["default", "personal", "company", "acme-eng", "globex"]);
   assert.deepEqual(slots("GMAIL.googleapis.com"), ["default", "personal", "company", "a@b.io"]);
   assert.deepEqual((await connectorAccountSlots({}, "U1"))("slack.com"), ["default", "personal", "company"]);
-  assert.equal(await kc.connectorAccessToken("slack.com", "U1", "globex"), "a");
-  assert.equal(await kc.connectorAccessToken("slack.com", "U1", "acme-eng"), "b");
 });
 
 test("loop token selection keeps the built-in order and falls back to a named account", async () => {

@@ -6,8 +6,6 @@ import { mintSignedPayload, verifySignedPayload } from "../auth/signed-token.ts"
 import { swallow } from "../util/errors.ts";
 
 export type AccountType = string;
-const BUILTIN_ACCOUNT_TYPES = ["default", "personal", "company"] as const;
-export const PERSONAL_FIRST_ACCOUNT_TYPES = ["personal", "default", "company"] as const;
 const ACCOUNT_NAME_MAX_LENGTH = 64;
 const ACCOUNT_NAME_EDGE_CHARS = new Set("abcdefghijklmnopqrstuvwxyz0123456789");
 const ACCOUNT_NAME_CHARS = new Set([...ACCOUNT_NAME_EDGE_CHARS, ".", "_", "@", "+", "-"]);
@@ -26,14 +24,6 @@ export function parseAccountName(value: unknown): AccountType | null {
   if (typeof value !== "string") return null;
   const name = value.trim().toLowerCase();
   return isAccountType(name) ? name : null;
-}
-
-export function orderAccountNames(
-  names: Iterable<string>,
-  preferred: readonly string[] = BUILTIN_ACCOUNT_TYPES,
-): AccountType[] {
-  const extra = [...new Set(names)].filter((name) => isAccountType(name) && !preferred.includes(name)).sort();
-  return [...preferred, ...extra];
 }
 
 export function generateCodeVerifier(): string {

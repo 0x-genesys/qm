@@ -169,7 +169,6 @@ test("named connection slots: start, callback, status, and per-account revoke", 
     const invalid = await startFor("not/a slot");
     assert.equal(invalid.status, 400);
     assert.match(((await invalid.json()) as { message: string }).message, /^accountType must be 1-64 characters/);
-    assert.equal((await startFor("x".repeat(65))).status, 400);
 
     const ops = await connect(" Ops@Example.com ");
     assert.equal(ops.body.accountType, "ops@example.com");

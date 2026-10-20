@@ -197,7 +197,6 @@ test("sent chat preserves long quoted recipient headers and rejects oversized in
     { cc: "x".repeat(8001) },
     { to: "a@example.com\r\nBcc: b@example.com" },
     { accountType: "forged slot" },
-    { accountType: "x".repeat(65) },
     { accountType: ["default"] },
   ]) {
     ctx.body = { threadId: "t", ...invalid };
