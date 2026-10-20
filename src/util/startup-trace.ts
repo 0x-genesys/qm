@@ -133,7 +133,7 @@ export async function traceStartup<T extends { status: string }>(
   }
 }
 
-export type StartupMark =
+type StartupMark =
   | "models"
   | "received"
   | "session"
