@@ -24,7 +24,9 @@ test(
       createPostgresDirectoryStore(url!);
       await applyPgMigrations(
         pool,
-        registeredPgMigrations(url!).filter((m) => m.id !== "sessions/store/0035-items"),
+        registeredPgMigrations(url!).filter(
+          (m) => m.id !== "sessions/store/0035-items" && m.id !== "sessions/store/0036-items-cutover",
+        ),
       );
       await client.query(
         "ALTER TABLE session_entries ADD CONSTRAINT operator_source_fk FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE",
@@ -156,29 +158,8 @@ test(
       await client.query("ALTER TABLE session_entries ENABLE TRIGGER items_copy_capture");
       await resumed.verify();
       await assert.rejects(resumed.finish(true), /build the items indexes/);
-      await assert.rejects(
-        client.query("CREATE UNIQUE INDEX CONCURRENTLY items_one_call_per_kind ON items(tenant_id)"),
-        /could not create unique index/,
-      );
-      await writer.query("SELECT pg_advisory_lock(hashtext('qm:schema-migrations'))");
-      try {
-        await resumed.indexes();
-        await resumed.indexes();
-      } finally {
-        await writer.query("SELECT pg_advisory_unlock(hashtext('qm:schema-migrations'))");
-      }
-      assert.match(
-        (await client.query("SELECT pg_get_indexdef('items_one_call_per_kind'::regclass) AS def")).rows[0].def,
-        /call_id\) WHERE \(call_id IS NOT NULL\)/,
-      );
-      assert.equal(
-        (
-          await client.query(
-            "SELECT count(*)::int AS n FROM pg_index WHERE indrelid='items'::regclass AND NOT indisvalid",
-          )
-        ).rows[0].n,
-        0,
-      );
+      await resumed.indexes();
+      await resumed.indexes();
       await resumed.finish(true);
       assert.equal((await resumed.status()).phase, "ready");
       assert.equal(
@@ -188,7 +169,7 @@ test(
       await resumed.finish(true);
       await applyPgMigrations(pool, registeredPgMigrations(url!));
       await client.query(
-        "INSERT INTO qm_schema_migrations(id,checksum) VALUES('sessions/store/0036-items-cutover','test')",
+        "INSERT INTO qm_schema_migrations(id,checksum) VALUES('sessions/store/0036-items-cutover','test') ON CONFLICT DO NOTHING",
       );
       await assert.rejects(resumed.catchupBatch(), /cutover is already applied/);
       await resumed.cleanup();

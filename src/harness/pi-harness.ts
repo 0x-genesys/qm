@@ -1840,6 +1840,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
                   ...imageRefs(turn.images),
                 },
                 scopeLabel: turn.scopeLabel,
+                ...(turn.runtimeActorId ? { author: turn.runtimeActorId } : {}),
               });
           const modelPrompt =
             (userEntry
@@ -2049,6 +2050,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
                         ts,
                         attachments: prepared?.attachments,
                         images: prepared?.images,
+                        author: prepared?.author,
                         acknowledge,
                       };
                       pendingSteers.push(steer);
