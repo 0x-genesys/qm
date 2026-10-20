@@ -170,9 +170,11 @@ function scan(command: string, depth: number): Scan {
       ],
       commands: [...executed.commands, ...nested.flatMap((inner) => inner.commands)],
       feedsShell: executed.feedsShell || nested.some((inner) => inner.feedsShell),
-      ...(executed.misread
-        ? { uninspectable: "laid out in a way the shell parser may misread" }
-        : nested.find((inner) => inner.uninspectable)),
+      ...(tree.rootNode.hasError
+        ? { uninspectable: "shell syntax the parser could not read" }
+        : executed.misread
+          ? { uninspectable: "laid out in a way the shell parser may misread" }
+          : nested.find((inner) => inner.uninspectable)),
     };
   } finally {
     tree.delete();
@@ -405,6 +407,16 @@ function runsStdinAsShell(argv: string[]): boolean {
   }
 }
 
+function heredocMisread(redirect: Node): boolean {
+  const start = redirect.namedChildren.find((child) => child?.type === "heredoc_start");
+  return (
+    !!start &&
+    redirect
+      .childrenForFieldName("argument")
+      .some((argument) => !!argument && sourceBetween(redirect, start.endIndex, argument.startIndex).includes("\n"))
+  );
+}
+
 function misread(command: Node): boolean {
   const name = command.childForFieldName("name");
   const words = [name?.firstNamedChild ?? name, ...command.childrenForFieldName("argument")].filter(
@@ -421,6 +433,7 @@ function stdinReader(argv: string[]): "shell" | "code" | undefined {
   const inner = innermost(argv);
   const executable = basename(inner[0] ?? "");
   if (shellInvocation(inner)?.readsStdin) return "shell";
+  if ((executable === "source" || executable === ".") && STDIN_SCRIPTS.has(inner[1] ?? "")) return "shell";
   if (sqlClientSpec(inner) || SCRIPT_INTERPRETERS.has(executable) || executable.startsWith("python")) return "code";
   return undefined;
 }
@@ -511,6 +524,7 @@ function executedPayloads(root: Node): Executed {
       const herestring = node.namedChildren.find((child) => child?.type === "herestring_redirect")?.lastNamedChild;
       if (herestring) feed(literal(herestring), [argv]);
     }
+    if (node.type === "heredoc_redirect") executed.misread ||= heredocMisread(node);
     for (const redirect of node.type === "redirected_statement" ? node.childrenForFieldName("redirect") : []) {
       const body = redirect?.namedChildren.find((child) => child?.type === "heredoc_body");
       if (body) feed(body.text, heredocReceivers(node, redirect!));
