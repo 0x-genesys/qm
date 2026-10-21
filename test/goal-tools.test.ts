@@ -4,6 +4,7 @@ import { createAgentTools, type ToolContextRef } from "../src/harness/agent-tool
 import { createGrindMeter } from "../src/harness/grind.ts";
 import { harnessToolContext } from "../src/harness/harness-shared.ts";
 import {
+  GovernorUndecided,
   bankGoalTurn,
   goalContinuationPrompt,
   goalFloorUnmet,
@@ -128,13 +129,15 @@ test("agent cannot close a user-paused goal or replace it", async () => {
   assert.match(textOf(conflict as never), /already registered/);
 });
 
-test("the agent cannot self-complete: without a governor the request is rejected", async () => {
-  const { ref, create, update } = toolbox();
+test("the agent cannot self-complete: without a governor the request decides nothing", async () => {
+  const { ref, create, update, saved } = toolbox();
   delete ref.governGoal;
   await create.execute("c1", { objective: "ship it" });
+  const before = structuredClone(saved());
   const res = await update.execute("u1", { status: "complete", note: "trust me" });
-  assert.match(textOf(res as never), /did not accept completion/);
+  assert.match(textOf(res as never), /could not reach a decision \(no independent governor/);
   assert.equal(ref.goal?.status, "active");
+  assert.deepEqual(saved(), before);
 });
 
 test("a governor approval closes the goal and sees only the objective and evidence", async () => {
@@ -188,15 +191,22 @@ test("a completion request can draw a step back, then a pause that ends the goal
   assert.deepEqual(seenWork, ["tool_call execute: sleep 240", "tool_call execute: sleep 240"]);
 });
 
-test("a failing governor never closes the goal", async () => {
-  const { ref, create, update } = toolbox();
-  ref.governGoal = async () => {
-    throw new Error("model down");
-  };
+test("a governor that refuses or fails decides nothing: the goal stays active and nothing is held against it", async () => {
+  const { ref, create, update, saved } = toolbox();
   await create.execute("c1", { objective: "suite green" });
-  const res = await update.execute("u1", { status: "complete", note: "done" });
-  assert.match(textOf(res as never), /governor failed/);
-  assert.equal(ref.goal?.status, "active");
+  const earlier = { verdict: "step_back" as const, reasons: "same test rerun three times" };
+  ref.goal!.governor = earlier;
+  const before = structuredClone(saved());
+  for (const failure of [new Error("provider refusal"), new GovernorUndecided("its reply was not a verdict")]) {
+    ref.governGoal = async () => {
+      throw failure;
+    };
+    const res = await update.execute("u1", { status: "complete", note: "done" });
+    assert.match(textOf(res as never), /could not reach a decision[\s\S]*not a rejection/);
+    assert.equal(ref.goal?.status, "active");
+    assert.deepEqual(ref.goal?.governor, earlier);
+    assert.deepEqual(saved(), before);
+  }
 });
 
 test("update with no active goal errors cleanly", async () => {
