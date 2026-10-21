@@ -2773,6 +2773,9 @@ export function buildApp(
     30 * 60_000,
     { label: "Composio consent returns", immediate: true },
   );
+  const connectorProviderSync = createUntrackedSweeper(() => configStore.syncConnectorProviders(), 30_000, {
+    label: "connector-providers",
+  });
   const blobSweeper = createSweeper(() => blobTransfer.sweep(BLOB_TTL_MS), 30 * 60_000);
   const BLOB_TRANSFER_EXPIRY_DAYS = 1;
   void blobTransfer
@@ -2906,6 +2909,7 @@ export function buildApp(
       if (inlineShutdown.signal.aborted) inlineShutdown = new AbortController();
       flyTunnel?.monitor();
       drain.start();
+      connectorProviderSync.start();
       if (config.backgroundWorkEnabled && !config.backgroundDeploymentId) startBackground();
     },
     startBackground,
@@ -2933,6 +2937,7 @@ export function buildApp(
       ]).catch(swallowAs("wiring: worker drain failed", undefined));
       await releaseInFlightRuns();
       await drain.stop();
+      await connectorProviderSync.stop();
       stopStreamSync();
       await Promise.all(
         [
