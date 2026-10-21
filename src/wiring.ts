@@ -415,6 +415,7 @@ import { createPostgresErrorLog } from "./admin/postgres-error-log.ts";
 import { errMessage, reportFailureAs, swallowAs } from "./util/errors.ts";
 import { sleep, withTimeout } from "./util/async.ts";
 import { createSlackInstallationStore, type SlackInstallationStore } from "./surfaces/slack-installation.ts";
+import { tokenFor } from "./loops/sources/adapter.ts";
 
 export interface Runtime {
   start(): void;
@@ -2487,11 +2488,7 @@ export function buildApp(
     keychain
       ? {
           searchToken: async (source, viewer) =>
-            source === "slack" && viewer
-              ? ((await keychain.connectorAccessToken("slack.com", viewer, "personal")) ??
-                (await keychain.connectorAccessToken("slack.com", viewer)) ??
-                keychain.connectorAccessToken("slack.com", viewer, "company"))
-              : null,
+            source === "slack" && viewer ? tokenFor(keychain, "slack.com", viewer) : null,
         }
       : {},
   );

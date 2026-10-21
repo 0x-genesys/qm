@@ -1,16 +1,35 @@
 import type { OAuthToken, OAuthRefresh } from "../credentials/keychain.ts";
-import type { CustomOAuthProvider } from "./custom-provider.ts";
+import {
+  parseOAuthProviderPreset,
+  type CustomOAuthProvider,
+  type OAuthProviderPresetFields,
+} from "./custom-provider.ts";
 import { createEnvSecretSource, type SecretSource } from "../credentials/secret-source.ts";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { decodeJwt } from "jose";
+import { z } from "zod";
+import presets from "./oauth-providers.json" with { type: "json" };
 import { mintSignedPayload, verifySignedPayload } from "../auth/signed-token.ts";
 import { swallow } from "../util/errors.ts";
 import { isObj } from "../util/objects.ts";
 
-export const ACCOUNT_TYPES = ["default", "personal", "company"] as const;
-export type AccountType = (typeof ACCOUNT_TYPES)[number];
-export const isAccountType = (value: unknown): value is AccountType =>
-  typeof value === "string" && (ACCOUNT_TYPES as readonly string[]).includes(value);
+export type AccountType = string;
+export const MODEL_LOGIN_ACCOUNT_TYPE = "individual-model";
+const accountName = z
+  .string()
+  .max(64)
+  .regex(/^[a-z0-9]([a-z0-9._@+-]*[a-z0-9])?$/)
+  .refine((name) => name !== MODEL_LOGIN_ACCOUNT_TYPE);
+export const accountNameRule = (field = "accountType"): string =>
+  `${field} must be 1-64 characters of lowercase letters, digits, and . _ @ + -, starting and ending with a letter or digit`;
+
+export const isAccountType = (value: unknown): value is AccountType => accountName.safeParse(value).success;
+
+export function parseAccountName(value: unknown): AccountType | null {
+  if (typeof value !== "string") return null;
+  const name = value.trim().toLowerCase();
+  return isAccountType(name) ? name : null;
+}
 
 export function generateCodeVerifier(): string {
   return randomBytes(32).toString("base64url");
@@ -51,9 +70,9 @@ export interface OAuthProviderConfig {
   scopes: string[];
   clientIdEnv?: string;
   clientSecretEnv?: string;
+  hostedDomainEnv?: string;
   redirectPath: string;
   consentMode: ConsentMode;
-  egressRule: string[];
   setupGuide: OAuthSetupGuide;
   scopeParam?: string;
   authParams?: Record<string, string>;
@@ -114,17 +133,27 @@ export async function oauthFailure(action: string, res: { status: number; json()
 const resourceBody = (p: OAuthProviderConfig): Record<string, string> =>
   p.authParams?.resource ? { resource: p.authParams.resource } : {};
 
+function checkHostedDomain(provider: OAuthProviderConfig, domain: string, raw: Record<string, unknown>): void {
+  const idToken = typeof raw.id_token === "string" ? raw.id_token : "";
+  let claims: Record<string, unknown> | undefined;
+  try {
+    if (idToken) claims = decodeJwt(idToken);
+  } catch (e) {
+    swallow(`${provider.label} id_token decode`, e);
+  }
+  const hd = typeof claims?.hd === "string" ? claims.hd : "";
+  if (hd.toLowerCase() !== domain.toLowerCase())
+    throw new Error(
+      `connected account is not in the ${domain} workspace — pick your company ${provider.label} account`,
+    );
+}
+
 function makeTokenAdapters(opts: {
   acceptJson?: boolean;
   rejectErrorBody?: boolean;
   label?: string;
   clientAuth?: "body" | "basic";
-}): {
-  exchange: (
-    args: OAuthAdapterArgs & { code: string },
-  ) => Promise<{ hosts: string[]; token: OAuthToken; raw: Record<string, unknown> }>;
-  refresh: OAuthRefreshAdapter;
-} {
+}): { exchange: OAuthExchangeAdapter; refresh: OAuthRefreshAdapter } {
   const prefix = opts.label ? `${opts.label} ` : "";
   const basic = opts.clientAuth === "basic";
   const headers = (client: ResolvedClient) => ({
@@ -139,7 +168,7 @@ function makeTokenAdapters(opts: {
       throw new Error(`${prefix}oauth error: ${oauthErrorDetail(raw) || String(raw.error)}`);
   };
   return {
-    async exchange({ provider, client, code, redirectUri, fetchImpl, now, codeVerifier }) {
+    async exchange({ provider, client, code, redirectUri, fetchImpl, now, codeVerifier, accountType }) {
       const res = await fetchImpl(provider.tokenUrl, {
         method: "POST",
         headers: headers(client),
@@ -155,7 +184,9 @@ function makeTokenAdapters(opts: {
       if (!res.ok) throw await oauthFailure(`${prefix}token exchange`, res);
       const raw = (await res.json()) as Record<string, unknown>;
       checkErrorBody(raw);
-      return { hosts: provider.hosts, token: toToken(raw, undefined, now), raw };
+      if (provider.hostedDomainEnv && accountType === "company" && client.hostedDomain)
+        checkHostedDomain(provider, client.hostedDomain, raw);
+      return { hosts: provider.hosts, token: toToken(raw, undefined, now) };
     },
     async refresh({ provider, client, token, fetchImpl, now }) {
       const res = await fetchImpl(provider.tokenUrl, {
@@ -177,33 +208,6 @@ function makeTokenAdapters(opts: {
 }
 
 const { exchange: defaultExchange, refresh: defaultRefresh } = makeTokenAdapters({});
-
-const googleExchange: OAuthExchangeAdapter = async (args) => {
-  const { client, accountType } = args;
-  const { hosts, token, raw } = await defaultExchange(args);
-  if (accountType === "company" && client.hostedDomain) {
-    const idToken = typeof raw?.id_token === "string" ? raw.id_token : "";
-    let claims: Record<string, unknown> | undefined;
-    try {
-      if (idToken) claims = decodeJwt(idToken);
-    } catch (e) {
-      swallow("google id_token decode", e);
-    }
-    const hd = typeof claims?.hd === "string" ? claims.hd : "";
-    if (hd.toLowerCase() !== client.hostedDomain.toLowerCase()) {
-      throw new Error(
-        `connected account is not in the ${client.hostedDomain} workspace — pick your company Google account`,
-      );
-    }
-  }
-  return { hosts, token };
-};
-
-const github = makeTokenAdapters({ acceptJson: true, rejectErrorBody: true, label: "github" });
-
-const x = makeTokenAdapters({ acceptJson: true, rejectErrorBody: true, label: "x", clientAuth: "basic" });
-
-const zoom = makeTokenAdapters({ acceptJson: true, rejectErrorBody: true, label: "zoom", clientAuth: "basic" });
 
 const slackExchange: OAuthExchangeAdapter = async ({ provider, client, code, redirectUri, fetchImpl }) => {
   const res = await fetchImpl(provider.tokenUrl, {
@@ -240,278 +244,6 @@ const notionExchange: OAuthExchangeAdapter = async ({ provider, client, code, re
   return { hosts: provider.hosts, token: { accessToken: access } };
 };
 
-export const PROVIDERS: Record<string, OAuthProviderConfig> = {
-  google: {
-    label: "Google Workspace",
-    description: "Gmail, Calendar, Drive, Sheets",
-    hosts: [
-      "gmail.googleapis.com",
-      "www.googleapis.com",
-      "sheets.googleapis.com",
-      "docs.googleapis.com",
-      "slides.googleapis.com",
-    ],
-    authUrl: "https://accounts.google.com/o/oauth2/v2/auth",
-    tokenUrl: "https://oauth2.googleapis.com/token",
-    scopes: [
-      "https://www.googleapis.com/auth/gmail.modify",
-      "https://www.googleapis.com/auth/calendar",
-      "https://www.googleapis.com/auth/drive",
-      "https://www.googleapis.com/auth/spreadsheets",
-      "https://www.googleapis.com/auth/tasks",
-      "openid",
-      "email",
-    ],
-    clientIdEnv: "GOOGLE_OAUTH_CLIENT_ID",
-    clientSecretEnv: "GOOGLE_OAUTH_CLIENT_SECRET",
-    redirectPath: "google/callback",
-    consentMode: "standard",
-    egressRule: [
-      "gmail.googleapis.com",
-      "www.googleapis.com",
-      "sheets.googleapis.com",
-      "docs.googleapis.com",
-      "slides.googleapis.com",
-      "oauth2.googleapis.com",
-      "accounts.google.com",
-    ],
-    authParams: { access_type: "offline", prompt: "consent" },
-    exchange: googleExchange,
-    setupGuide: {
-      console: "Google Cloud Console → APIs & Services → Credentials",
-      url: "https://console.cloud.google.com/auth/clients",
-      steps: [
-        "Create an OAuth 2.0 Client ID (type: Web application).",
-        "Add the redirect URI shown below to 'Authorized redirect URIs' on YOUR client.",
-        "Enable the Gmail, Calendar, Drive, Sheets, Docs, Slides, and Tasks APIs for the project.",
-        "Choose admin-consent (domain-wide) vs per-user consent on the OAuth consent screen.",
-        "Paste the Client ID + Client secret below; we validate by dry-running the consent URL.",
-      ],
-      scopesRationale:
-        "gmail.modify/calendar/drive/spreadsheets/tasks back the Google Workspace skills; openid+email identify the account.",
-    },
-  },
-
-  slack: {
-    label: "Slack",
-    description: "Channels & messages",
-    hosts: ["slack.com"],
-    authUrl: "https://slack.com/oauth/v2/authorize",
-    tokenUrl: "https://slack.com/api/oauth.v2.access",
-    scopes: [
-      "users:read",
-      "channels:read",
-      "channels:history",
-      "groups:read",
-      "groups:history",
-      "im:read",
-      "im:write",
-      "im:history",
-      "mpim:read",
-      "mpim:write",
-      "mpim:history",
-      "chat:write",
-      "canvases:read",
-      "canvases:write",
-      "search:read",
-      "search:read.im",
-      "search:read.mpim",
-    ],
-    clientIdEnv: "SLACK_OAUTH_CLIENT_ID",
-    clientSecretEnv: "SLACK_OAUTH_CLIENT_SECRET",
-    redirectPath: "slack/callback",
-    consentMode: "standard",
-    egressRule: ["slack.com"],
-    scopeParam: "user_scope",
-    exchange: slackExchange,
-    refresh: null,
-    setupGuide: {
-      console: "Slack API → Your Apps → OAuth & Permissions",
-      url: "https://api.slack.com/apps",
-      steps: [
-        "Create a Slack app (from scratch) in your workspace.",
-        "Under OAuth & Permissions, add the redirect URL shown below.",
-        "Add the requested USER token scopes under 'User Token Scopes'.",
-        "Install the app to the workspace.",
-        "Paste the Client ID + Client secret below.",
-      ],
-      scopesRationale:
-        "User-token scopes let the agent read/post, search, and edit canvases as the connecting user, not a bot.",
-    },
-  },
-
-  notion: {
-    label: "Notion",
-    description: "Pages & databases",
-    hosts: ["api.notion.com"],
-    authUrl: "https://api.notion.com/v1/oauth/authorize",
-    tokenUrl: "https://api.notion.com/v1/oauth/token",
-    scopes: [],
-    clientIdEnv: "NOTION_OAUTH_CLIENT_ID",
-    clientSecretEnv: "NOTION_OAUTH_CLIENT_SECRET",
-    redirectPath: "notion/callback",
-    consentMode: "standard",
-    egressRule: ["api.notion.com"],
-    authParams: { owner: "user" },
-    exchange: notionExchange,
-    refresh: null,
-    setupGuide: {
-      console: "Notion → My integrations → New integration (Public)",
-      url: "https://www.notion.so/profile/integrations",
-      steps: [
-        "Create a public OAuth integration.",
-        "Add the redirect URI shown below to the integration's redirect URIs.",
-        "Configure the capabilities the integration needs.",
-        "Paste the Client ID (OAuth client ID) + the OAuth client secret below.",
-      ],
-      scopesRationale: "Notion grants access per selected pages at consent time (no OAuth scope list).",
-    },
-  },
-
-  linear: {
-    label: "Linear",
-    description: "Issues & projects",
-    hosts: ["api.linear.app"],
-    authUrl: "https://linear.app/oauth/authorize",
-    tokenUrl: "https://api.linear.app/oauth/token",
-    scopes: ["read", "write"],
-    clientIdEnv: "LINEAR_OAUTH_CLIENT_ID",
-    clientSecretEnv: "LINEAR_OAUTH_CLIENT_SECRET",
-    redirectPath: "linear/callback",
-    consentMode: "standard",
-    egressRule: ["api.linear.app"],
-    setupGuide: {
-      console: "Linear → Settings → API → OAuth applications",
-      url: "https://linear.app/settings/api/applications",
-      steps: [
-        "Create an OAuth application.",
-        "Add the redirect URI shown below as a callback URL.",
-        "Select the read/write scopes.",
-        "Paste the Client ID + Client secret below.",
-      ],
-      scopesRationale: "read/write let the agent query and update issues, projects, and comments.",
-    },
-  },
-
-  dropbox: {
-    label: "Dropbox",
-    description: "Files & folders",
-    hosts: ["api.dropboxapi.com", "content.dropboxapi.com"],
-    authUrl: "https://www.dropbox.com/oauth2/authorize",
-    tokenUrl: "https://api.dropboxapi.com/oauth2/token",
-    scopes: [
-      "account_info.read",
-      "files.metadata.read",
-      "files.content.read",
-      "files.content.write",
-      "sharing.read",
-      "sharing.write",
-    ],
-    clientIdEnv: "DROPBOX_OAUTH_CLIENT_ID",
-    clientSecretEnv: "DROPBOX_OAUTH_CLIENT_SECRET",
-    redirectPath: "dropbox/callback",
-    consentMode: "standard",
-    egressRule: ["api.dropboxapi.com", "content.dropboxapi.com", "www.dropbox.com"],
-    authParams: { token_access_type: "offline" },
-    setupGuide: {
-      console: "Dropbox App Console → Create app",
-      url: "https://www.dropbox.com/developers/apps/create",
-      steps: [
-        "Create an app: Scoped access, Full Dropbox access.",
-        "On the app's OAuth 2 section, add the redirect URI shown below.",
-        "On the Permissions tab, enable account_info.read, files.metadata.read, files.content.read, files.content.write, sharing.read, sharing.write — then Submit.",
-        "Paste the App key (Client ID) + App secret (Client secret) below.",
-      ],
-      scopesRationale:
-        "files.content/metadata read+write back browse/download/upload; sharing.read/write let the agent manage shared links; account_info.read identifies the account.",
-    },
-  },
-
-  github: {
-    label: "GitHub",
-    description: "Repos, issues & PRs",
-    hosts: ["api.github.com"],
-    authUrl: "https://github.com/login/oauth/authorize",
-    tokenUrl: "https://github.com/login/oauth/access_token",
-    scopes: ["repo", "read:org"],
-    clientIdEnv: "GITHUB_OAUTH_CLIENT_ID",
-    clientSecretEnv: "GITHUB_OAUTH_CLIENT_SECRET",
-    redirectPath: "github/callback",
-    consentMode: "github_app",
-    egressRule: ["api.github.com", "github.com"],
-    exchange: github.exchange,
-    refresh: github.refresh,
-    setupGuide: {
-      console: "GitHub → Settings → Developer settings → OAuth Apps (or GitHub App)",
-      url: "https://github.com/settings/applications/new",
-      steps: [
-        "Register a new OAuth App (or a GitHub App for installation tokens).",
-        "Set the Authorization callback URL to the redirect URI shown below.",
-        "Select the repo/org scopes the agent needs.",
-        "Paste the Client ID + Client secret below.",
-      ],
-      scopesRationale: "repo/read:org back the GitHub skills (PRs, issues, org-visible repos) as the connecting user.",
-    },
-  },
-
-  x: {
-    label: "X (Twitter)",
-    description: "Posts & profile",
-    hosts: ["api.x.com"],
-    authUrl: "https://x.com/i/oauth2/authorize",
-    tokenUrl: "https://api.x.com/2/oauth2/token",
-    scopes: ["tweet.read", "tweet.write", "users.read", "offline.access"],
-    clientIdEnv: "X_OAUTH_CLIENT_ID",
-    clientSecretEnv: "X_OAUTH_CLIENT_SECRET",
-    redirectPath: "x/callback",
-    consentMode: "standard",
-    egressRule: ["api.x.com"],
-    pkce: true,
-    exchange: x.exchange,
-    refresh: x.refresh,
-    setupGuide: {
-      console: "X Developer Portal → Projects & Apps → your app → User authentication settings",
-      url: "https://developer.x.com/en/portal/projects-and-apps",
-      steps: [
-        "Set up User authentication: OAuth 2.0, type Confidential client, App permissions Read and write.",
-        "Add the Callback URI shown below to the app's Callback URLs.",
-        "Under Keys and tokens, generate the OAuth 2.0 Client ID and Client Secret.",
-        "Paste the Client ID + Client secret below.",
-      ],
-      scopesRationale:
-        "tweet.read/users.read back reads; tweet.write lets the connecting user post as themselves; offline.access issues a refresh token so the 2-hour access token renews.",
-    },
-  },
-
-  zoom: {
-    label: "Zoom",
-    description: "Meetings",
-    hosts: ["api.zoom.us"],
-    authUrl: "https://zoom.us/oauth/authorize",
-    tokenUrl: "https://zoom.us/oauth/token",
-    scopes: [],
-    clientIdEnv: "ZOOM_OAUTH_CLIENT_ID",
-    clientSecretEnv: "ZOOM_OAUTH_CLIENT_SECRET",
-    redirectPath: "zoom/callback",
-    consentMode: "standard",
-    egressRule: ["api.zoom.us"],
-    exchange: zoom.exchange,
-    refresh: zoom.refresh,
-    setupGuide: {
-      console: "Zoom App Marketplace → Develop → Build App → General app",
-      url: "https://marketplace.zoom.us/",
-      steps: [
-        "Create a General app and choose User-managed. Until it is published, only users in your Zoom account can connect it.",
-        "Add the redirect URI shown below as the OAuth redirect URL and to the OAuth allow list, with strict mode on.",
-        "Under Scopes, add meeting:read:meeting, meeting:read:list_meetings, meeting:write:meeting, meeting:update:meeting, meeting:delete:meeting, and user:read:user.",
-        "Paste the Client ID + Client secret below — the Development credentials unless the app is published.",
-      ],
-      scopesRationale:
-        "Zoom grants the scopes configured on the app rather than a requested list; the meeting scopes let the agent find, create, reschedule, and cancel meetings the connecting user hosts or schedules, and user:read:user reads their Zoom profile and timezone.",
-    },
-  },
-};
-
 export interface PublicOAuthClient {
   name: string;
   host: string;
@@ -525,7 +257,6 @@ export interface PublicOAuthClient {
 
 const publicClients = new Map<string, PublicOAuthClient>();
 const publicProviders = new Map<string, OAuthProviderConfig>();
-const storedProviders = new Map<string, OAuthProviderConfig>();
 let reloadStoredProviders: (() => Promise<void>) | undefined;
 
 export function setStoredOAuthProviderReload(reload: (() => Promise<void>) | undefined): void {
@@ -539,13 +270,20 @@ async function lookupWithReload<T>(lookup: () => T | undefined): Promise<T | und
   return lookup();
 }
 
-function customProviderConfig(p: CustomOAuthProvider): OAuthProviderConfig {
-  const adapters = makeTokenAdapters({
-    acceptJson: true,
-    rejectErrorBody: true,
+type ProviderRecord = CustomOAuthProvider & Partial<OAuthProviderPresetFields>;
+
+const TOKEN_ADAPTERS = { slack: slackExchange, notion: notionExchange };
+
+export const OAUTH_PROVIDER_PRESETS = presets.map((p) => parseOAuthProviderPreset(p));
+
+function providerConfig(p: ProviderRecord): OAuthProviderConfig {
+  const generic = makeTokenAdapters({
+    acceptJson: p.acceptJson ?? true,
+    rejectErrorBody: p.rejectErrorBody ?? true,
     label: p.provider,
     clientAuth: p.clientAuth,
   });
+  const custom = p.tokenAdapter ? TOKEN_ADAPTERS[p.tokenAdapter] : undefined;
   return {
     label: p.label,
     ...(p.description ? { description: p.description } : {}),
@@ -553,23 +291,31 @@ function customProviderConfig(p: CustomOAuthProvider): OAuthProviderConfig {
     authUrl: p.authUrl,
     tokenUrl: p.tokenUrl,
     scopes: p.scopes,
+    ...(p.clientIdEnv && p.clientSecretEnv ? { clientIdEnv: p.clientIdEnv, clientSecretEnv: p.clientSecretEnv } : {}),
+    ...(p.hostedDomainEnv ? { hostedDomainEnv: p.hostedDomainEnv } : {}),
     redirectPath: `${p.provider}/callback`,
-    consentMode: "standard",
-    egressRule: p.hosts,
+    consentMode: p.consentMode ?? "standard",
     ...(p.scopeParam ? { scopeParam: p.scopeParam } : {}),
     ...(p.authParams ? { authParams: p.authParams } : {}),
     ...(p.pkce ? { pkce: true } : {}),
-    exchange: adapters.exchange,
-    refresh: adapters.refresh,
-    setupGuide: { console: p.label, url: p.docsUrl ?? "", steps: p.setupSteps ?? [] },
+    exchange: custom ?? generic.exchange,
+    refresh: custom ? null : generic.refresh,
+    setupGuide: {
+      console: p.setupConsole ?? p.label,
+      url: p.docsUrl ?? "",
+      steps: p.setupSteps ?? [],
+      ...(p.scopesRationale ? { scopesRationale: p.scopesRationale } : {}),
+    },
   };
 }
 
+const builtInProviders = new Map(OAUTH_PROVIDER_PRESETS.map((p) => [p.provider, providerConfig(p)]));
+let connectorProviders = builtInProviders;
+
 export function setStoredOAuthProviders(providers: CustomOAuthProvider[]): void {
-  storedProviders.clear();
-  for (const p of providers) {
-    if (!isBuiltInProvider(p.provider)) storedProviders.set(p.provider, customProviderConfig(p));
-  }
+  connectorProviders = new Map(builtInProviders);
+  for (const p of providers)
+    if (!builtInProviders.has(p.provider)) connectorProviders.set(p.provider, providerConfig(p));
 }
 
 export function setPublicOAuthClients(clients: PublicOAuthClient[]): void {
@@ -586,7 +332,6 @@ export function setPublicOAuthClients(clients: PublicOAuthClient[]): void {
       scopes: c.scopes,
       redirectPath: `${c.name}/callback`,
       consentMode: "standard",
-      egressRule: [],
       pkce: true,
       mcpLabel: c.label,
       ...(c.resource ? { authParams: { resource: c.resource } } : {}),
@@ -600,15 +345,15 @@ export function hostsOverlap(a: readonly string[], b: readonly string[]): boolea
 }
 
 export function isBuiltInProvider(name: string): boolean {
-  return Object.hasOwn(PROVIDERS, name);
+  return builtInProviders.has(name);
 }
 
 export function connectorProvider(name: string): OAuthProviderConfig | undefined {
-  return isBuiltInProvider(name) ? PROVIDERS[name] : storedProviders.get(name);
+  return connectorProviders.get(name);
 }
 
 export function connectorProviderEntries(): Array<[string, OAuthProviderConfig]> {
-  return [...Object.entries(PROVIDERS), ...storedProviders.entries()];
+  return [...connectorProviders];
 }
 
 export function oauthProviderEntries(): Array<[string, OAuthProviderConfig]> {
@@ -654,7 +399,7 @@ export function createSecretClientResolver(secrets: SecretSource = createEnvSecr
     const [id, secret, hostedDomain] = await Promise.all([
       secrets.get(p.clientIdEnv),
       secrets.get(p.clientSecretEnv),
-      providerName === "google" ? secrets.get("GOOGLE_WORKSPACE_DOMAIN") : undefined,
+      p.hostedDomainEnv ? secrets.get(p.hostedDomainEnv) : undefined,
     ]);
     if (!id || !secret) throw new Error(`provider not configured — set ${p.clientIdEnv} and ${p.clientSecretEnv}`);
     return { id, secret, clientRef: `env:${providerName}`, ...(hostedDomain ? { hostedDomain } : {}) };

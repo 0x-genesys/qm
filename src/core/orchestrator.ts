@@ -78,6 +78,7 @@ import {
   renderSandboxProfiles,
 } from "./environment-facts.ts";
 import { connectorProviderEntries } from "../connectors/oauth.ts";
+import { accountSlots, PERSONAL_FIRST_ACCOUNT_TYPES } from "../credentials/connector-accounts.ts";
 import { estimateCostUsd } from "../ratelimit/budget.ts";
 import {
   mintCapabilityToken,
@@ -1511,22 +1512,22 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           const inventory = tokens.listConnectorsByOwners
             ? ((await tokens.listConnectorsByOwners([actor.id])).get(actor.id) ?? [])
             : undefined;
+          const slots = accountSlots(inventory ?? []);
           for (const host of connectorProviderEntries().flatMap(([, p]) => p.hosts)) {
-            for (const accountType of ["personal", undefined, "company"]) {
+            for (const accountType of slots(host, PERSONAL_FIRST_ACCOUNT_TYPES)) {
               const status = inventory
                 ? inventory.find(
-                    (credential) =>
-                      credential.host === host && (credential.accountType ?? "default") === (accountType ?? "default"),
+                    (credential) => credential.host === host && (credential.accountType ?? "default") === accountType,
                   )
                 : await tokens.connectorTokenStatus(host, actor.id, accountType);
               const healthy = status?.connected && !status.needsReconnect;
               const operatorFallback =
-                accountType === undefined &&
+                accountType === "default" &&
                 tokens.operatorFallbackHosts?.some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
               if (!healthy && !operatorFallback) continue;
               addCredential(
                 {
-                  handle: `connector:${host}:${accountType ?? "default"}`,
+                  handle: `connector:${host}:${accountType}`,
                   scope: isolateOwnerKeychain ? "owner" : "scoped",
                   resolve: async () => {
                     await authorizeOwnerCredentials();
@@ -1538,7 +1539,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 `${
                   !healthy && operatorFallback
                     ? `${host}, configured operator fallback; availability checked on use`
-                    : `${host} connector, account ${accountType ?? "default"}`
+                    : `${host} connector, account ${accountType}`
                 }; ${connectorTokenNote(host)}`,
                 healthy && status && "credentialId" in status ? status.credentialId : undefined,
                 actor.id,
