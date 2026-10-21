@@ -177,6 +177,32 @@ record. If its injection configuration enables actor attestation, the broker set
 `x-qm-actor` from the stored publisher. Caller-supplied actor headers are rejected.
 The destination receives the configured credential, never the deployment token.
 
+### Lending a publisher's connected apps to their app
+
+A publisher can let their app call a connected app (for example their mailbox) as them.
+Nothing is lent by default. The publisher opts in per app and per host with
+`POST /v1/deployments/:id/connectors` and `{"connectors": ["<connected-app host>"]}`;
+`[]` withdraws every loan at once. Only the publisher may call it, from a live turn or
+a signed-in session, and each change is audited as `deploy_connectors`. An app that had
+no broker token gets one on its next deploy.
+
+The app's server sends the broker `connector` (the host) instead of `credential`, with
+the same `url`, `method`, `headers` and `body`. The broker checks the loan on every
+call, pins the URL to that exact host over standard HTTPS, injects the publisher's
+OAuth token and returns only the response; the app never sees the token.
+
+`GET` and `HEAD` calls are honoured for whoever is using the app. Any other method acts
+as the publisher, so the broker honours it only when the call carries `viewer`: the
+`x-qm-viewer-attestation` request header that the app gateway adds, for one minute,
+when the signed-in viewer is the publisher. The gateway signs it with a key the app
+never holds, unlike `x-portal-identity`, so app code cannot forge it, and other viewers
+never receive one. Apps served only under `/d/<app>/` on the core domain get no
+attestation and can only read.
+
+Every call and refusal is audited as `connector.broker.use`, `connector.broker.denied`
+or `connector.broker.error`, with the app, method, attested viewer and upstream status.
+A missing or expired connection returns `409 connector_unavailable`.
+
 ### Public AWS plugin routes
 
 Plugins stay private by default. An AWS plugin workload can declare

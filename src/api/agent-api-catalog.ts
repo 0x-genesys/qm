@@ -411,6 +411,12 @@ const FAMILIES: AgentApiFamily[] = [
       },
       {
         method: "POST",
+        path: "/v1/deployments/:id/connectors",
+        summary:
+          "publisher only, after they ask: lend an app you published your connected apps — body {connectors:[hosts]}; its server then calls /v1/credentials/broker with {connector:host,url,method,body}; writes need the x-qm-viewer-attestation header from the publisher's own visit sent as viewer; [] withdraws",
+      },
+      {
+        method: "POST",
         path: "/v1/deployments/:id/archive",
         summary: "take down an app you manage (stops it and frees its endpoint; the source is kept)",
       },

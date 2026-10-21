@@ -1,4 +1,9 @@
 import { isComposioHost } from "../credentials/keychain.ts";
+import { verifyPortalIdentity } from "../auth/portal-identity.ts";
+import { VIEWER_ATTESTATION_HEADER } from "../deploy/access-token.ts";
+import type { Deployment } from "../deploy/deploy-store.ts";
+import { samePerson } from "../directory/person.ts";
+import { tokenFor, type ConnectorTokenSource } from "../loops/sources/adapter.ts";
 import { errMessage } from "../util/errors.ts";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { ScopeId } from "../types.ts";
@@ -43,6 +48,15 @@ export interface BrokerRequest {
   body?: unknown;
 }
 
+export type BrokerAudit = (e: {
+  principalId: string;
+  action: string;
+  resource: string;
+  scopeLabel: string;
+  status?: string;
+  detail?: string;
+}) => void;
+
 export interface BrokerResult {
   status: number;
   json: unknown;
@@ -51,6 +65,35 @@ export interface BrokerResult {
 const ALLOWED_CALLER_HEADERS = new Set(["accept", "accept-language", "content-type", "user-agent"]);
 
 const MAX_RESPONSE_BYTES = 5_000_000;
+
+function callerHeaders(raw: unknown): Record<string, string> {
+  const caller: Record<string, string> = {};
+  if (raw && typeof raw === "object") {
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      if (typeof v === "string" && ALLOWED_CALLER_HEADERS.has(k.toLowerCase())) caller[k] = v;
+    }
+  }
+  return caller;
+}
+
+async function relayedResult(resp: BrokerFetchResponse): Promise<BrokerResult> {
+  const text = await resp.text();
+  const truncated = text.length > MAX_RESPONSE_BYTES;
+  return {
+    status: 200,
+    json: {
+      status: resp.status,
+      ...(resp.contentType ? { contentType: resp.contentType } : {}),
+      body: truncated ? text.slice(0, MAX_RESPONSE_BYTES) : text,
+      ...(truncated ? { truncated: true } : {}),
+    },
+  };
+}
+
+const UPSTREAM_UNREACHABLE: BrokerResult = {
+  status: 502,
+  json: { error: "upstream_unreachable", message: "the credential's host could not be reached" },
+};
 
 function brokerHostMatches(requestHost: string, pinnedHost: string): boolean {
   const h = requestHost.toLowerCase();
@@ -130,14 +173,7 @@ export async function brokerCredentialCall(opts: {
   reader: ServiceCredentialReader;
   fetchImpl: BrokerFetch;
   usage?: CredentialUsageSink;
-  audit?: (e: {
-    principalId: string;
-    action: string;
-    resource: string;
-    scopeLabel: string;
-    status?: string;
-    detail?: string;
-  }) => void;
+  audit?: BrokerAudit;
 }): Promise<BrokerResult> {
   const { claims, body, orgScopeId, reader, fetchImpl } = opts;
   const slug = typeof body.credential === "string" ? body.credential : "";
@@ -222,13 +258,7 @@ export async function brokerCredentialCall(opts: {
       );
   }
 
-  const caller: Record<string, string> = {};
-  if (body.headers && typeof body.headers === "object") {
-    for (const [k, v] of Object.entries(body.headers as Record<string, unknown>)) {
-      if (typeof v === "string" && ALLOWED_CALLER_HEADERS.has(k.toLowerCase())) caller[k] = v;
-    }
-  }
-  const headers = brokerRequestHeaders(rec, caller);
+  const headers = brokerRequestHeaders(rec, callerHeaders(body.headers));
   if (rec.injection?.actor) headers["x-qm-actor"] = claims.actorId;
 
   let resp: BrokerFetchResponse;
@@ -253,18 +283,10 @@ export async function brokerCredentialCall(opts: {
       scopeLabel: claims.scopeId,
       status: "error",
     });
-    return {
-      status: 502,
-      json: { error: "upstream_unreachable", message: "the credential's host could not be reached" },
-    };
+    return UPSTREAM_UNREACHABLE;
   }
 
-  let text = await resp.text();
-  let truncated = false;
-  if (text.length > MAX_RESPONSE_BYTES) {
-    text = text.slice(0, MAX_RESPONSE_BYTES);
-    truncated = true;
-  }
+  const result = await relayedResult(resp);
   opts.usage?.record({
     slug,
     host: rec.host,
@@ -281,13 +303,89 @@ export async function brokerCredentialCall(opts: {
     status: "ok",
     ...(claims.deployment ? { detail: `deployment:${claims.deployment}` } : {}),
   });
-  return {
-    status: 200,
-    json: {
-      status: resp.status,
-      ...(resp.contentType ? { contentType: resp.contentType } : {}),
-      body: text,
-      ...(truncated ? { truncated: true } : {}),
-    },
+  return result;
+}
+
+const READ_METHODS = new Set(["GET", "HEAD"]);
+
+interface ConnectorBrokerRequest extends Omit<BrokerRequest, "credential"> {
+  connector?: unknown;
+  viewer?: unknown;
+}
+
+export async function brokerConnectorCall(opts: {
+  claims: CapabilityClaims;
+  body: ConnectorBrokerRequest;
+  deployment: Pick<Deployment, "id" | "createdBy" | "connectors"> | null;
+  tokens: ConnectorTokenSource;
+  attestationKey: string;
+  fetchImpl: BrokerFetch;
+  audit?: BrokerAudit;
+}): Promise<BrokerResult> {
+  const { claims, body, deployment } = opts;
+  const host = typeof body.connector === "string" ? body.connector.toLowerCase() : "";
+  const method = (typeof body.method === "string" ? body.method : "GET").toUpperCase();
+  const rawUrl = typeof body.url === "string" ? body.url : "";
+  const viewer =
+    typeof body.viewer === "string"
+      ? (await verifyPortalIdentity(body.viewer, opts.attestationKey, Date.now()))?.p
+      : undefined;
+  const record = (action: string, status: string, outcome?: string): void =>
+    opts.audit?.({
+      principalId: claims.actorId,
+      action,
+      resource: host || "(none)",
+      scopeLabel: claims.scopeId,
+      status,
+      detail: [
+        `deployment:${claims.deployment ?? "(none)"}`,
+        method,
+        `viewer:${viewer ?? "(unverified)"}`,
+        ...(outcome ? [outcome] : []),
+      ].join(" "),
+    });
+  const deny = (httpStatus: number, code: string, message: string): BrokerResult => {
+    record("connector.broker.denied", "denied", code);
+    return { status: httpStatus, json: { error: code, message } };
   };
+
+  if (!host || !rawUrl)
+    return { status: 400, json: { error: "bad_request", message: "connector (host) and url are required" } };
+  if (!claims.deployment || !deployment || deployment.id !== claims.deployment)
+    return deny(403, "not_entitled", "only a published app can borrow its publisher's connectors");
+  if (!deployment.connectors?.includes(host))
+    return deny(403, "connector_not_lent", "the publisher has not lent this connector to the app");
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    return deny(400, "bad_url", "url is not a valid absolute URL");
+  }
+  if (parsed.protocol !== "https:" || parsed.port || parsed.username || parsed.password)
+    return deny(403, "scheme_not_allowed", "only plain https targets are allowed");
+  if (parsed.hostname.toLowerCase() !== host)
+    return deny(403, "host_not_allowed", "url host is not the connector's host");
+  if (!brokerPathAllowed(parsed.pathname)) return deny(403, "path_not_allowed", "url path is not allowed");
+  if (!READ_METHODS.has(method) && !samePerson(viewer, deployment.createdBy))
+    return deny(
+      403,
+      "publisher_viewer_required",
+      `${method} acts as the publisher, so it needs the publisher's own signed-in visit: forward the ${VIEWER_ATTESTATION_HEADER} request header as "viewer"`,
+    );
+  const token = await tokenFor(opts.tokens, host, deployment.createdBy);
+  if (!token) return deny(409, "connector_unavailable", "the publisher's connection is missing or needs reconnecting");
+
+  let resp: BrokerFetchResponse;
+  try {
+    resp = await opts.fetchImpl(parsed.toString(), {
+      method,
+      headers: { ...callerHeaders(body.headers), authorization: `Bearer ${token}` },
+      ...(typeof body.body === "string" ? { body: body.body } : {}),
+    });
+  } catch {
+    record("connector.broker.error", "error");
+    return UPSTREAM_UNREACHABLE;
+  }
+  record("connector.broker.use", "ok", `upstream:${resp.status}`);
+  return relayedResult(resp);
 }

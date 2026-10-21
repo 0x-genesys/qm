@@ -1,11 +1,26 @@
-import { brokerCredentialCall, realBrokerFetch } from "../credential-broker.ts";
+import { brokerConnectorCall, brokerCredentialCall, realBrokerFetch, type BrokerAudit } from "../credential-broker.ts";
+import { viewerAttestationKey } from "../../deploy/access-token.ts";
 import { scopeId as makeScopeId } from "../../types.ts";
 import { sendJson } from "../http.ts";
 import type { ApiCtx, Route } from "./route.ts";
 import { orgId as configOrgId } from "../../config.ts";
 
 async function brokerCredential(ctx: ApiCtx): Promise<void> {
-  const { res, deps, body, capability } = ctx;
+  const { res, deps, body, capability, app, secret } = ctx;
+  const audit: BrokerAudit = (event) => deps.auditLog?.record({ at: Date.now(), ...event });
+  if ((body as { connector?: unknown }).connector !== undefined) {
+    if (!deps.keychain || !secret) return sendJson(res, 404, { error: "not_found" });
+    const result = await brokerConnectorCall({
+      claims: capability!,
+      body: body as Record<string, unknown>,
+      deployment: capability!.deployment ? await app.getDeployment(capability!.deployment) : null,
+      tokens: deps.keychain,
+      attestationKey: viewerAttestationKey(secret, capability!.deployment ?? ""),
+      fetchImpl: deps.brokerFetch ?? realBrokerFetch,
+      audit,
+    });
+    return sendJson(res, result.status, result.json);
+  }
   if (!deps.serviceCreds) return sendJson(res, 404, { error: "not_found" });
   const orgScope = makeScopeId("org", configOrgId());
   const result = await brokerCredentialCall({
@@ -15,7 +30,7 @@ async function brokerCredential(ctx: ApiCtx): Promise<void> {
     reader: deps.serviceCreds,
     fetchImpl: deps.brokerFetch ?? realBrokerFetch,
     ...(deps.credentialUsage ? { usage: deps.credentialUsage } : {}),
-    audit: (event) => deps.auditLog?.record({ at: Date.now(), ...event }),
+    audit,
   });
   return sendJson(res, result.status, result.json);
 }

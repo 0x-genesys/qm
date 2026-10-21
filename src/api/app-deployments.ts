@@ -34,6 +34,7 @@ export function createDeploymentMethods(
   | "setDeploymentAlwaysOn"
   | "setDeploymentEmbedAncestors"
   | "setDeploymentPublic"
+  | "setDeploymentConnectors"
   | "maintainDeployments"
   | "reachDeployment"
   | "deploymentLogsFor"
@@ -162,6 +163,9 @@ export function createDeploymentMethods(
     },
     setDeploymentPublic(idOrName, isPublic, actor) {
       return deps.deploy.setDeploymentPublic(idOrName, isPublic, actor);
+    },
+    setDeploymentConnectors(idOrName, connectors, actor) {
+      return deps.deploy.setDeploymentConnectors(idOrName, connectors, actor);
     },
     maintainDeployments() {
       return deps.deploy.maintainDeployments();

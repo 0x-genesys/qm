@@ -22,8 +22,13 @@ import { audit, authorizeAdmin, isObj, orgScope } from "./shared.ts";
 import { parseScopeId, scopeId, type Permission } from "../../types.ts";
 import type { ApiCtx, BaseCtx, Route } from "./route.ts";
 import { CONFIG_DEFAULTS } from "../../config.ts";
-import { resolveShareTarget as resolveShareTargetGrammar } from "../artifact-share.ts";
-import { verifyDeployGitAccess, viewerIdentityKey } from "../../deploy/access-token.ts";
+import { livePersonCapability, resolveShareTarget as resolveShareTargetGrammar } from "../artifact-share.ts";
+import {
+  VIEWER_ATTESTATION_HEADER,
+  verifyDeployGitAccess,
+  viewerAttestationKey,
+  viewerIdentityKey,
+} from "../../deploy/access-token.ts";
 import { appAnnotationAsset } from "../../deploy/app-annotate.ts";
 import { APP_SHELL_PATH_PREFIX, appShellHtml } from "../../deploy/app-shell.ts";
 import type { AppViewAuthMode } from "../../deploy/page-views.ts";
@@ -168,6 +173,7 @@ const GATEWAY_AUTH_HEADERS = [
   "x-admin-actor",
   "x-agent-capability",
   PORTAL_IDENTITY_HEADER,
+  VIEWER_ATTESTATION_HEADER,
 ];
 
 const PROXY_BUFFER_MAX_BYTES = 10_000_000;
@@ -523,7 +529,7 @@ async function proxyReach(
   reach: Awaited<ReturnType<App["reachDeployment"]>>,
   subPath: string,
   viewer?: string,
-  opts?: { sandbox?: boolean; frameAncestors?: readonly string[] },
+  opts?: { sandbox?: boolean; frameAncestors?: readonly string[]; attestViewer?: boolean },
 ): Promise<void> {
   const { req, res, deps, url, method } = ctx;
   if (res.destroyed) return;
@@ -556,6 +562,11 @@ async function proxyReach(
       { p: viewer, exp: Date.now() + 60_000 },
       viewerIdentityKey(ctx.secret, reach.id),
     );
+    if (opts?.attestViewer)
+      headers[VIEWER_ATTESTATION_HEADER] = await mintPortalIdentity(
+        { p: viewer, exp: Date.now() + 60_000 },
+        viewerAttestationKey(ctx.secret, reach.id),
+      );
   }
   if (/(?:^|,)\s*chunked\s*$/i.test(String(req.headers["transfer-encoding"] ?? ""))) {
     const chunks: Buffer[] = [];
@@ -1034,6 +1045,7 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
   }
   await proxyReach(ctx, reach, pathname, sub && (canManage || authenticatedPermission) ? sub : undefined, {
     frameAncestors: embedAncestors,
+    attestViewer: Boolean(deployment?.connectors?.length && !session?.appOnly && sub === deployment.createdBy),
   });
   return true;
 }
@@ -1545,6 +1557,25 @@ async function setDeploymentEmbedAncestors(ctx: ApiCtx): Promise<void> {
   }
 }
 
+async function setDeploymentConnectors(ctx: ApiCtx): Promise<void> {
+  const { res, app, params, body, capability, actor } = ctx;
+  const principalId = capability ? capability.actorId : actor?.p;
+  if (!principalId || (capability && !livePersonCapability(capability)))
+    return sendJson(res, 403, {
+      error: "forbidden",
+      message: "only the publisher, in a live conversation or signed in, can lend an app their connectors",
+    });
+  const connectors = (body as { connectors?: unknown }).connectors;
+  if (!Array.isArray(connectors) || !connectors.every((host) => typeof host === "string"))
+    return sendJson(res, 400, { error: "bad_request", message: "connectors (array of connected-app hosts) required" });
+  try {
+    const deployment = await app.setDeploymentConnectors(params.id!, connectors, { createdBy: principalId });
+    return sendJson(res, 200, { deployment: deploymentView(deployment) });
+  } catch (e) {
+    return sendShareFailure(res, e);
+  }
+}
+
 async function setDeploymentAlwaysOn(ctx: ApiCtx): Promise<void> {
   const { res, app, params, body } = ctx;
   const id = await deploymentId(app, params.id!);
@@ -1686,6 +1717,7 @@ const DEPLOY_ACCESS_STATUS: Record<DeployAccessErrorCode, number> = {
   forbidden: 403,
   external_sharing_disabled: 403,
   public_links_unavailable: 409,
+  unknown_connector: 400,
 };
 
 function sendShareFailure(res: ApiCtx["res"], e: unknown): void {
@@ -1724,4 +1756,5 @@ export const deploymentRoutes: ReadonlyArray<Route<ApiCtx>> = [
   { method: "POST", path: "/v1/deployments/:id/display-name", auth: "either", handle: setDeploymentDisplayName },
   { method: "POST", path: "/v1/deployments/:id/always-on", auth: "either", handle: setDeploymentAlwaysOn },
   { method: "POST", path: "/v1/deployments/:id/embed-ancestors", auth: "either", handle: setDeploymentEmbedAncestors },
+  { method: "POST", path: "/v1/deployments/:id/connectors", auth: "either", handle: setDeploymentConnectors },
 ];

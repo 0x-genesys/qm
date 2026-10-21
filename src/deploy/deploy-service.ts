@@ -1,4 +1,5 @@
 import { EXTERNAL_APP_SHARING_OFF } from "../feature-flags.ts";
+import { CONNECTOR_HOSTS } from "../connectors/oauth.ts";
 import { notifyDeploymentShared } from "./share-notice.ts";
 import type { DeliveryStore } from "../delivery/delivery-store.ts";
 import { EMBED_ANCESTORS_HINT, parseEmbedAncestors } from "./embed-ancestors.ts";
@@ -84,6 +85,7 @@ export interface DeployService {
   setDeploymentDisplayName(id: string, displayName: string): Promise<Deployment>;
   setDeploymentAlwaysOn(id: string, alwaysOn: boolean): Promise<Deployment>;
   setDeploymentEmbedAncestors(id: string, embedAncestors: string[]): Promise<Deployment>;
+  setDeploymentConnectors(idOrName: string, connectors: string[], actor: { createdBy: string }): Promise<Deployment>;
   setDeploymentPublic(idOrName: string, isPublic: boolean, actor: { createdBy: string }): Promise<Deployment>;
 
   maintainDeployments(): Promise<number>;
@@ -119,7 +121,7 @@ const PUBLIC_LINKS_UNAVAILABLE =
   "This instance serves apps at /d/<app>/ on its own domain, which always requires sign-in, so a public link would still ask visitors to sign in. Public links need an apps domain: set DEPLOY_APPS_DOMAIN to a domain with a wildcard DNS record routed to the portal, and AWS_DEPLOY_GATE_SECRET.";
 
 export type DeployAccessErrorCode =
-  "not_found" | "forbidden" | "external_sharing_disabled" | "public_links_unavailable";
+  "not_found" | "forbidden" | "external_sharing_disabled" | "public_links_unavailable" | "unknown_connector";
 
 export class DeployAccessError extends Error {
   readonly code: DeployAccessErrorCode;
@@ -559,6 +561,30 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         });
         return (await deps.deployStore.get(id))!;
       });
+    },
+
+    async setDeploymentConnectors(idOrName, connectors, actor) {
+      const d = (await deps.deployStore.get(idOrName)) ?? (await deps.deployStore.getByName(idOrName));
+      if (!d) throw new DeployAccessError("not_found", `no such app: ${idOrName}`);
+      if (d.createdBy !== actor.createdBy)
+        throw new DeployAccessError(
+          "forbidden",
+          `only the person who published "${d.name ?? d.id}" can lend it their connectors`,
+        );
+      const hosts = [...new Set(connectors.map((host) => host.toLowerCase()))].sort();
+      const unknown = hosts.filter((host) => !CONNECTOR_HOSTS.includes(host));
+      if (unknown.length)
+        throw new DeployAccessError("unknown_connector", `not a connected-app host: ${unknown.join(", ")}`);
+      await deps.deployStore.setConnectors(d.id, hosts);
+      deps.auditLog.record({
+        at: Date.now(),
+        principalId: actor.createdBy,
+        action: "deploy_connectors",
+        resource: deploymentRef(d.id),
+        scopeLabel: d.ownerScopeId,
+        detail: hosts.join(",") || "(none)",
+      });
+      return (await deps.deployStore.get(d.id))!;
     },
 
     async setDeploymentPublic(idOrName, isPublic, actor) {

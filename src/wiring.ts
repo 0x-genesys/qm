@@ -1830,7 +1830,7 @@ export function buildApp(
               orgScope,
               acl,
             );
-            if (credentials.length) {
+            if (credentials.length || deployment.connectors?.length) {
               env.AGENT_API_URL = deployGitBase;
               env.AGENT_CREDENTIAL_TOKEN = await mintCapabilityToken(
                 {
