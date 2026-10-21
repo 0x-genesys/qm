@@ -55,6 +55,11 @@ interface DefaultAudienceSnapshot {
   snapshotAt: number;
 }
 
+export interface ConnectorLoan {
+  hosts: string[];
+  version: number;
+}
+
 export interface Deployment {
   id: string;
   ownerScopeId: ScopeId;
@@ -69,7 +74,7 @@ export interface Deployment {
 
   alwaysOn?: boolean;
   embedAncestors?: string[];
-  connectors?: string[];
+  connectors?: ConnectorLoan;
   public?: true;
   lastAccessAt?: number;
   appliedVersion?: number;
@@ -113,7 +118,7 @@ export interface DeployStore {
   setDisplayName(id: string, displayName: string | undefined): Promise<void>;
   setAlwaysOn(id: string, alwaysOn: boolean): Promise<void>;
   setEmbedAncestors(id: string, embedAncestors: string[]): Promise<void>;
-  setConnectors(id: string, connectors: string[]): Promise<void>;
+  setConnectors(id: string, loan: ConnectorLoan | undefined): Promise<void>;
   setPublic(id: string, isPublic: boolean): Promise<void>;
   setDefaultAudience(id: string, snapshot: DefaultAudienceSnapshot): Promise<void>;
   setAppliedVersion(id: string, version: number): Promise<void>;
@@ -442,8 +447,8 @@ export function createDeployStore(backing?: DurableMap<Deployment> | DeployStore
     async setEmbedAncestors(id, embedAncestors) {
       await backingMap.merge(id, { embedAncestors } as Partial<Deployment>);
     },
-    async setConnectors(id, connectors) {
-      await backingMap.merge(id, { connectors: connectors.length ? connectors : undefined });
+    async setConnectors(id, loan) {
+      await backingMap.merge(id, { connectors: loan });
     },
     async setPublic(id, isPublic) {
       await backingMap.merge(id, { public: isPublic ? true : undefined });

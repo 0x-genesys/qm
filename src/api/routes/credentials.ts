@@ -1,4 +1,5 @@
-import { brokerConnectorCall, brokerCredentialCall, realBrokerFetch, type BrokerAudit } from "../credential-broker.ts";
+import { brokerCredentialCall, realBrokerFetch, type BrokerAudit } from "../credential-broker.ts";
+import { brokerConnectorCall } from "../connector-broker.ts";
 import { viewerAttestationKey } from "../../deploy/access-token.ts";
 import { scopeId as makeScopeId } from "../../types.ts";
 import { sendJson } from "../http.ts";
@@ -13,7 +14,7 @@ async function brokerCredential(ctx: ApiCtx): Promise<void> {
     const result = await brokerConnectorCall({
       claims: capability!,
       body: body as Record<string, unknown>,
-      deployment: capability!.deployment ? await app.getDeployment(capability!.deployment) : null,
+      loadDeployment: (id) => app.getDeployment(id),
       tokens: deps.keychain,
       attestationKey: viewerAttestationKey(secret, capability!.deployment ?? ""),
       fetchImpl: deps.brokerFetch ?? realBrokerFetch,

@@ -94,7 +94,7 @@ import { type BotPolicy, type ChannelPolicy, type ChannelPolicyStore } from "../
 import { type AmbientDecision } from "../surface-cache/ambient-judge.ts";
 import type { AmbientJudgmentStore } from "../surface-cache/ambient-judgment-store.ts";
 import type { AckEmojiPickStore } from "../surface-cache/ack-emoji-pick-store.ts";
-import type { Deployment } from "../deploy/deploy-store.ts";
+import type { ConnectorLoan, Deployment } from "../deploy/deploy-store.ts";
 import type { DeploymentLayerRuntime } from "../deployment/load-layer.ts";
 import { type ArtifactHome, type ArtifactType } from "./artifact-share.ts";
 import type {
@@ -133,7 +133,7 @@ export interface DeploymentView {
   status: Deployment["status"];
   alwaysOn?: boolean;
   embedAncestors?: string[];
-  connectors?: string[];
+  connectors?: ConnectorLoan;
   public: boolean;
   lastAccessAt?: number;
   createdAt?: number;
@@ -164,7 +164,7 @@ export function deploymentView(d: Deployment): DeploymentView {
     status: d.status,
     ...(d.alwaysOn ? { alwaysOn: true } : {}),
     ...(d.embedAncestors?.length ? { embedAncestors: d.embedAncestors } : {}),
-    ...(d.connectors?.length ? { connectors: d.connectors } : {}),
+    ...(d.connectors ? { connectors: d.connectors } : {}),
     public: d.public === true,
     ...(d.lastAccessAt !== undefined ? { lastAccessAt: d.lastAccessAt } : {}),
     ...(versions[0] ? { createdAt: versions[0].createdAt } : {}),

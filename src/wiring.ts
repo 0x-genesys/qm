@@ -1820,7 +1820,7 @@ export function buildApp(
     managesArtifactHome,
     ...(deployGitSecret && deployGitBase
       ? {
-          deploymentEnv: async (deployment: Deployment): Promise<Record<string, string>> => {
+          deploymentEnv: async (deployment: Deployment, version: number): Promise<Record<string, string>> => {
             const env: Record<string, string> = {
               VIEWER_IDENTITY_KEY: viewerIdentityKey(deployGitSecret, deployment.id),
             };
@@ -1830,7 +1830,7 @@ export function buildApp(
               orgScope,
               acl,
             );
-            if (credentials.length || deployment.connectors?.length) {
+            if (credentials.length || deployment.connectors) {
               env.AGENT_API_URL = deployGitBase;
               env.AGENT_CREDENTIAL_TOKEN = await mintCapabilityToken(
                 {
@@ -1839,6 +1839,7 @@ export function buildApp(
                   aud: CREDENTIAL_BROKER_AUD,
                   credentials,
                   deployment: deployment.id,
+                  deploymentVersion: version,
                   exp: Date.now() + DEPLOYMENT_CREDENTIAL_TTL_MS,
                 },
                 config.capabilitySecret ?? deployGitSecret,

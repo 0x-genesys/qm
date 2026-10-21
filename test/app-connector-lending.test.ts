@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createHmac } from "node:crypto";
 import { createServer as createHttpServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
-import { createApp, deploymentView } from "../src/api/app.ts";
+import { createApp } from "../src/api/app.ts";
 import { createServer } from "../src/api/server.ts";
 import { createDeployStore } from "../src/deploy/deploy-store.ts";
 import { createDeployService } from "../src/deploy/deploy-service.ts";
@@ -14,8 +14,8 @@ import { createAclStore } from "../src/acl/acl-store.ts";
 import { createDirectoryStore } from "../src/directory/directory-store.ts";
 import { createIdentityService } from "../src/identity/identity-service.ts";
 import { createMemorySessionStore } from "../src/sessions/memory-session-store.ts";
-import { personalScope, scopeId } from "../src/types.ts";
-import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../src/auth/portal-identity.ts";
+import { personalScope } from "../src/types.ts";
+import { mintPortalIdentity } from "../src/auth/portal-identity.ts";
 import { VIEWER_ATTESTATION_HEADER, viewerAttestationKey, viewerIdentityKey } from "../src/deploy/access-token.ts";
 import {
   CONTROL_PLANE_AUD,
@@ -42,14 +42,14 @@ function portalCookie(sub: string): string {
   return `portal_session=${body}.${createHmac("sha256", key).update(body).digest("base64url")}`;
 }
 
-function visit(port: number, sub: string, extra: Record<string, string> = {}): Promise<number> {
+function visit(port: number, sub: string, method: string, extra: Record<string, string> = {}): Promise<number> {
   return new Promise((resolve, reject) => {
     const req = httpRequest(
       {
         host: "localhost",
         port,
         path: "/",
-        method: "GET",
+        method,
         headers: { Host: "mailer.apps.example.com", Cookie: portalCookie(sub), ...extra },
       },
       (res) => {
@@ -87,6 +87,7 @@ async function harness(t: { after: (fn: () => Promise<void>) => void }) {
     },
     auditLog,
     acl,
+    externalSharingAllowed: async () => true,
     deployDir: mkdtempSync(join(tmpdir(), "connector-lending-")),
   });
   const app = createApp({
@@ -97,12 +98,13 @@ async function harness(t: { after: (fn: () => Promise<void>) => void }) {
     identity: createIdentityService(),
   } as unknown as Parameters<typeof createApp>[0]);
   const d = await app.deploy({
-    ownerScopeId: scopeId("org", "default-org"),
+    ownerScopeId: personalScope(PUBLISHER),
     createdBy: PUBLISHER,
     entrypoint: "x",
     files: [],
     name: "mailer",
   });
+  await app.shareDeployment(d.id, personalScope(VIEWER), "read", { createdBy: PUBLISHER });
   let publisherToken: string | null = PUBLISHER_TOKEN;
   const upstreamCalls: Array<{ url: string; method: string; headers: Record<string, string>; body?: string }> = [];
   const server = createServer(app, {
@@ -127,17 +129,20 @@ async function harness(t: { after: (fn: () => Promise<void>) => void }) {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await new Promise<void>((resolve) => upstreamApp.close(() => resolve()));
   });
-  const appToken = await mintCapabilityToken(
-    {
-      actorId: PUBLISHER,
-      scopeId: personalScope(PUBLISHER),
-      aud: CREDENTIAL_BROKER_AUD,
-      credentials: [],
-      deployment: d.id,
-      exp: Date.now() + DEPLOYMENT_CREDENTIAL_TTL_MS,
-    },
-    SIGNING,
-  );
+  const appTokenFor = (deploymentVersion: number) =>
+    mintCapabilityToken(
+      {
+        actorId: PUBLISHER,
+        scopeId: personalScope(PUBLISHER),
+        aud: CREDENTIAL_BROKER_AUD,
+        credentials: [],
+        deployment: d.id,
+        deploymentVersion,
+        exp: Date.now() + DEPLOYMENT_CREDENTIAL_TTL_MS,
+      },
+      SIGNING,
+    );
+  const appToken = await appTokenFor(d.currentVersion);
   const broker = async (body: Record<string, unknown>, token = appToken) => {
     const res = await fetch(`http://localhost:${port}/v1/credentials/broker`, {
       method: "POST",
@@ -166,8 +171,9 @@ async function harness(t: { after: (fn: () => Promise<void>) => void }) {
   };
   return {
     d,
-    port,
     app,
+    appTokenFor,
+    port,
     audits,
     seenByApp,
     upstreamCalls,
@@ -193,9 +199,13 @@ test("only the live publisher can lend an app their connectors, and only real co
   assert.equal((await h.broker(read)).json.error, "connector_not_lent", "nothing is lent by default");
   const lent = await h.lend(PUBLISHER, ["GMAIL.googleapis.com", GMAIL]);
   assert.equal(lent.status, 200);
-  assert.deepEqual((lent.json.deployment as { connectors?: string[] }).connectors, [GMAIL]);
-  assert.deepEqual(deploymentView((await h.app.getDeployment(h.d.id))!).connectors, [GMAIL]);
-  assert.ok(h.audits.some((e) => e.action === "deploy_connectors" && e.detail === GMAIL));
+  assert.deepEqual((lent.json.deployment as { connectors?: unknown }).connectors, {
+    hosts: [GMAIL],
+    version: h.d.currentVersion,
+  });
+  assert.ok(
+    h.audits.some((e) => e.action === "deploy_connectors" && e.detail === `${GMAIL} version:${h.d.currentVersion}`),
+  );
 });
 
 test("a lent connector proxies reads for any viewer without the token ever reaching the app", async (t) => {
@@ -211,14 +221,14 @@ test("a lent connector proxies reads for any viewer without the token ever reach
   const use = h.audits.find((e) => e.action === "connector.broker.use");
   assert.equal(use?.principalId, PUBLISHER);
   assert.equal(use?.resource, GMAIL);
-  assert.equal(use?.detail, `deployment:${h.d.id} GET viewer:(unverified) upstream:200`);
+  assert.equal(use?.detail, `deployment:${h.d.id} GET /gmail/v1/users/me/messages viewer:(none) upstream:200`);
 });
 
 test("a write is honoured only with the gateway's attestation that the publisher is the signed-in viewer", async (t) => {
   const h = await harness(t);
   await h.lend(PUBLISHER, [GMAIL]);
 
-  assert.equal(await visit(h.port, VIEWER, { [VIEWER_ATTESTATION_HEADER]: "forged" }), 200);
+  assert.equal(await visit(h.port, VIEWER, "POST", { [VIEWER_ATTESTATION_HEADER]: "forged" }), 200);
   assert.equal(h.seenByApp.at(-1)![VIEWER_ATTESTATION_HEADER], undefined, "another viewer gets no attestation");
   assert.equal((await h.broker(send)).json.error, "publisher_viewer_required");
   const otherViewer = await mintPortalIdentity(
@@ -236,10 +246,13 @@ test("a write is honoured only with the gateway's attestation that the publisher
     "the app holds the key behind its viewer identity header, so that header cannot authorize a write",
   );
 
-  assert.equal(await visit(h.port, PUBLISHER), 200);
+  assert.equal(await visit(h.port, PUBLISHER, "GET"), 200);
+  assert.equal(h.seenByApp.at(-1)![VIEWER_ATTESTATION_HEADER], undefined, "a navigation can be cross-site, so no");
+  assert.equal(await visit(h.port, PUBLISHER, "POST", { "sec-fetch-dest": "iframe" }), 200);
+  assert.equal(h.seenByApp.at(-1)![VIEWER_ATTESTATION_HEADER], undefined, "nor a framed request");
+  assert.equal(await visit(h.port, PUBLISHER, "POST", { origin: "https://mailer.apps.example.com" }), 200);
   const attestation = h.seenByApp.at(-1)![VIEWER_ATTESTATION_HEADER];
-  assert.equal(typeof attestation, "string", "the publisher's own visit carries an attestation");
-  assert.equal(typeof h.seenByApp.at(-1)![PORTAL_IDENTITY_HEADER], "string");
+  assert.equal(typeof attestation, "string", "the publisher's own same-origin action carries an attestation");
   const sent = await h.broker({ ...send, viewer: attestation });
   assert.equal(sent.status, 200);
   assert.equal(h.upstreamCalls.length, 1, "only the attested write reached the provider");
@@ -248,7 +261,7 @@ test("a write is honoured only with the gateway's attestation that the publisher
   assert.equal(denied, 3, "every refused use is audited");
   assert.equal(
     h.audits.find((e) => e.action === "connector.broker.use")?.detail,
-    `deployment:${h.d.id} POST viewer:${PUBLISHER} upstream:200`,
+    `deployment:${h.d.id} POST /gmail/v1/users/me/messages/send viewer:${PUBLISHER} upstream:200`,
   );
 });
 
@@ -279,4 +292,32 @@ test("the broker pins the connector's host and refuses agent tokens, withdrawn l
   await h.lend(PUBLISHER, []);
   assert.equal((await h.broker(read)).json.error, "connector_not_lent", "withdrawing the loan takes effect at once");
   assert.equal(h.upstreamCalls.length, 0);
+});
+
+test("a loan covers only the version the publisher approved, never a public app, and every Slack call is a write", async (t) => {
+  const h = await harness(t);
+  await h.lend(PUBLISHER, [GMAIL, "slack.com"]);
+  await assert.rejects(h.app.setDeploymentPublic(h.d.id, true, { createdBy: PUBLISHER }), /cannot be public/);
+  const next = await h.app.redeploy(h.d.id, { entrypoint: "x", files: [] });
+  const nextToken = await h.appTokenFor(next.currentVersion);
+  assert.equal(
+    (await h.broker(read, nextToken)).json.error,
+    "loan_for_other_version",
+    "new code, whoever pushed it, cannot use a loan made for the old code",
+  );
+  await h.lend(PUBLISHER, [GMAIL, "slack.com"]);
+  assert.equal((await h.broker(read, nextToken)).status, 200);
+  assert.equal((await h.broker(read)).json.error, "loan_for_other_version", "the old version's token is retired");
+  assert.equal(
+    (
+      await h.broker(
+        { connector: "slack.com", url: "https://slack.com/api/chat.postMessage?channel=C1&text=hi" },
+        nextToken,
+      )
+    ).json.error,
+    "publisher_viewer_required",
+  );
+  await h.lend(PUBLISHER, []);
+  await h.app.setDeploymentPublic(h.d.id, true, { createdBy: PUBLISHER });
+  assert.match(String((await h.lend(PUBLISHER, [GMAIL])).json.message), /public app cannot borrow/);
 });

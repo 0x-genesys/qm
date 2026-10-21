@@ -36,6 +36,7 @@ import { principalDestination } from "../../reach/reach.ts";
 import { FRAME_SESSION_COOKIE, portalSession, portalSessionFrom } from "../../deploy/viewer-session.ts";
 import { EMBED_ANCESTORS_HINT, parseEmbedAncestors } from "../../deploy/embed-ancestors.ts";
 import { proxyHeaders } from "../../util/http-proxy.ts";
+import { samePerson } from "../../directory/person.ts";
 
 function deploymentProxyAgent(port?: number): { agent?: SocksProxyAgent } {
   if (port === undefined) return {};
@@ -864,6 +865,7 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
   const wantsHtml = ctx.method === "GET" && String(req.headers.accept ?? "").includes("text/html");
   let session = sessionSecret ? portalSession(req.headers.cookie, sessionSecret) : null;
   const dest = req.headers["sec-fetch-dest"];
+  const topLevelSession = session !== null && dest !== "iframe";
   const site = req.headers["sec-fetch-site"];
   const framed = dest === "iframe" || site === "same-origin";
   const embedAncestors = framed ? (deployment?.embedAncestors ?? []) : [];
@@ -1045,7 +1047,13 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
   }
   await proxyReach(ctx, reach, pathname, sub && (canManage || authenticatedPermission) ? sub : undefined, {
     frameAncestors: embedAncestors,
-    attestViewer: Boolean(deployment?.connectors?.length && !session?.appOnly && sub === deployment.createdBy),
+    attestViewer: Boolean(
+      deployment?.connectors &&
+      topLevelSession &&
+      !session?.appOnly &&
+      !["GET", "HEAD", "OPTIONS"].includes(ctx.method) &&
+      samePerson(sub, deployment.createdBy),
+    ),
   });
   return true;
 }

@@ -150,7 +150,7 @@ export interface DeployServiceDeps {
   canManageEmail?: (email: string) => Promise<boolean>;
   externalSharingAllowed?: (ownerScopeId: ScopeId) => Promise<boolean>;
   managesArtifactHome?: (homeScopeId: ScopeId, createdBy: string, principalId: string) => Promise<boolean>;
-  deploymentEnv?: (deployment: Deployment) => Promise<Record<string, string>>;
+  deploymentEnv?: (deployment: Deployment, version: number) => Promise<Record<string, string>>;
 }
 
 const NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
@@ -218,7 +218,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
   ): Promise<DeployEndpoint> => {
     const stored = (await deps.deployStore.get(id))!;
     const d = alwaysOn === undefined ? stored : { ...stored, alwaysOn };
-    const deploymentEnv = await deps.deploymentEnv?.(d);
+    const deploymentEnv = await deps.deploymentEnv?.(d, version.version);
     if (deploymentEnv && Object.keys(deploymentEnv).length)
       version = { ...version, env: { ...version.env, ...deploymentEnv } };
     let endpoint: DeployEndpoint;
@@ -566,7 +566,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     async setDeploymentConnectors(idOrName, connectors, actor) {
       const d = (await deps.deployStore.get(idOrName)) ?? (await deps.deployStore.getByName(idOrName));
       if (!d) throw new DeployAccessError("not_found", `no such app: ${idOrName}`);
-      if (d.createdBy !== actor.createdBy)
+      if (!samePerson(d.createdBy, actor.createdBy))
         throw new DeployAccessError(
           "forbidden",
           `only the person who published "${d.name ?? d.id}" can lend it their connectors`,
@@ -575,14 +575,17 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       const unknown = hosts.filter((host) => !CONNECTOR_HOSTS.includes(host));
       if (unknown.length)
         throw new DeployAccessError("unknown_connector", `not a connected-app host: ${unknown.join(", ")}`);
-      await deps.deployStore.setConnectors(d.id, hosts);
+      if (hosts.length && d.public)
+        throw new DeployAccessError("forbidden", "a public app cannot borrow connectors; make it restricted first");
+      const loan = hosts.length ? { hosts, version: d.currentVersion } : undefined;
+      await deps.deployStore.setConnectors(d.id, loan);
       deps.auditLog.record({
         at: Date.now(),
         principalId: actor.createdBy,
         action: "deploy_connectors",
         resource: deploymentRef(d.id),
         scopeLabel: d.ownerScopeId,
-        detail: hosts.join(",") || "(none)",
+        detail: loan ? `${hosts.join(",")} version:${loan.version}` : "(none)",
       });
       return (await deps.deployStore.get(d.id))!;
     },
@@ -595,6 +598,11 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       }
       if (isPublic && !(await externalSharingAllowed(d.ownerScopeId)))
         throw new DeployAccessError("external_sharing_disabled", EXTERNAL_APP_SHARING_OFF);
+      if (isPublic && d.connectors)
+        throw new DeployAccessError(
+          "forbidden",
+          "an app that borrows connectors cannot be public; withdraw them first",
+        );
       if (isPublic && deps.publicLinksAvailable === false)
         throw new DeployAccessError("public_links_unavailable", PUBLIC_LINKS_UNAVAILABLE);
       await deps.deployStore.setPublic(d.id, isPublic);

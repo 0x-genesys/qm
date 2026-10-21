@@ -59,6 +59,7 @@ export interface OAuthProviderConfig {
   refresh?: OAuthRefreshAdapter | null;
   pkce?: boolean;
   mcpLabel?: string;
+  writesOverGet?: true;
 }
 
 export type FetchLike = (
@@ -318,6 +319,7 @@ export const PROVIDERS: Record<string, OAuthProviderConfig> = {
     redirectPath: "slack/callback",
     consentMode: "standard",
     egressRule: ["slack.com"],
+    writesOverGet: true,
     scopeParam: "user_scope",
     exchange: slackExchange,
     refresh: null,
@@ -706,7 +708,7 @@ export async function exchangeCode(
   });
 }
 
-function providerForHost(host: string): { name: string; config: OAuthProviderConfig } | null {
+export function providerForHost(host: string): { name: string; config: OAuthProviderConfig } | null {
   for (const [name, config] of [...Object.entries(PROVIDERS), ...publicProviders]) {
     if (config.hosts.some((h) => host === h || host.endsWith(`.${h}`))) return { name, config };
   }
