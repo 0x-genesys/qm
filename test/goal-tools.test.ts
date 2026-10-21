@@ -385,6 +385,44 @@ test("update reads named workspace files into the governor's evidence", async ()
   assert.equal(ref.goal?.status, "complete");
 });
 
+test("update reads evidence from the named sandbox and says why a file could not be read", async () => {
+  const { ref, create, update } = toolbox();
+  const reads: Array<[string, string | undefined]> = [];
+  ref.current = {
+    read: async (path: string, _signal: AbortSignal | undefined, sandboxId?: string) => {
+      reads.push([path, sandboxId]);
+      if (sandboxId === "gone") throw new Error("sandbox not found: gone");
+      if (path === "report.md") return { content: "on sb1", sourceScopeId: null };
+      return { content: null, sourceScopeId: null, ...(path.startsWith("/home") ? { outsideWorkspace: true } : {}) };
+    },
+  } as unknown as ToolContextRef["current"];
+  let seen = "";
+  ref.governGoal = async (input) => {
+    seen = input.evidence ?? "";
+    return { verdict: "continue", reasons: "not yet" };
+  };
+  await create.execute("c1", { objective: "write the report" });
+  await update.execute("u1", {
+    status: "complete",
+    note: "done",
+    files: ["report.md", "/home/user/code.txt", "typo.md"],
+    sandbox_id: "sb1",
+  });
+  assert.deepEqual(reads, [
+    ["report.md", "sb1"],
+    ["/home/user/code.txt", "sb1"],
+    ["typo.md", "sb1"],
+  ]);
+  assert.match(seen, /<file path="report.md">\non sb1\n<\/file>/);
+  assert.match(
+    seen,
+    /<file path="\/home\/user\/code.txt">\n\[not in the computer's workspace: \/home\/user\/code.txt; only workspace files/,
+  );
+  assert.match(seen, /<file path="typo.md">\n\[missing: no such file\]/);
+  await update.execute("u2", { status: "complete", note: "done", files: ["report.md"], sandbox_id: "gone" });
+  assert.match(seen, /<file path="report.md">\n\[unreadable: sandbox not found: gone\]/);
+});
+
 function nextTurn(goal: GoalRecord) {
   const box = toolbox();
   box.ref.goal = openGoal(structuredClone(goal));
