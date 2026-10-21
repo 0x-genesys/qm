@@ -342,11 +342,11 @@ export function sessionOrigin(threadRef: string | null | undefined): SessionOrig
   return "conversation";
 }
 
-export async function originThroughParents(
-  session: Pick<Session, "id" | "threadRef" | "parentSessionId">,
-  get: (id: string) => Session | null | undefined | Promise<Session | null | undefined>,
-): Promise<{ origin: SessionOrigin; ancestor: Pick<Session, "id" | "threadRef" | "parentSessionId"> }> {
-  let origin = sessionOrigin(session.threadRef);
+export async function originThroughParents<S extends Pick<Session, "id" | "origin" | "parentSessionId">>(
+  session: S,
+  get: (id: string) => S | null | undefined | Promise<S | null | undefined>,
+): Promise<{ origin: SessionOrigin; ancestor: S }> {
+  let origin = session.origin ?? "conversation";
   let ancestor = session;
   const visited = new Set([session.id]);
   while (origin === "conversation" && ancestor.parentSessionId && visited.size < 64) {
@@ -354,7 +354,7 @@ export async function originThroughParents(
     if (!parent || visited.has(parent.id)) break;
     visited.add(parent.id);
     ancestor = parent;
-    origin = sessionOrigin(parent.threadRef);
+    origin = parent.origin ?? "conversation";
   }
   return { origin, ancestor };
 }
@@ -628,7 +628,7 @@ export interface SessionStore {
   participantScopes(principalId: string): Promise<ParticipantScope[]>;
   listParticipantPage(principalId: string, query: ParticipantPageQuery): Promise<ParticipantPage>;
   descendantsOf(rootIds: readonly string[]): Promise<SessionDescendant[]>;
-  inheritedOrigin(session: Pick<Session, "id" | "threadRef" | "parentSessionId">): Promise<SessionOrigin>;
+  inheritedOrigin(session: Pick<Session, "id" | "parentSessionId">): Promise<SessionOrigin>;
   listDescendantsForParticipant(rootId: string, principalId: string, limit: number): Promise<Session[]>;
   getForParticipant(sessionId: string, principalId: string): Promise<Session | null>;
 

@@ -144,6 +144,7 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
         type,
         scopeId,
         threadRef,
+        origin: sessionOrigin(threadRef),
         createdAt: now(),
         ...(clientTools?.length ? { clientTools: structuredClone(clientTools) } : {}),
         ...(channelName ? { channelName } : {}),
@@ -569,7 +570,8 @@ export function createMemorySessionStore(opts: StoreOptions = {}): SessionStore 
     },
 
     async inheritedOrigin(session): Promise<SessionOrigin> {
-      return (await originThroughParents(session, (id) => sessions.get(id))).origin;
+      const stored = sessions.get(session.id);
+      return stored ? (await originThroughParents(stored, (id) => sessions.get(id))).origin : "conversation";
     },
 
     async descendantsOf(rootIds): Promise<SessionDescendant[]> {
