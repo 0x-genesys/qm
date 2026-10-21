@@ -99,6 +99,7 @@ export function normalizeSkill(raw: string, path: string, cfg?: PackConfig): Nor
   }
 
   const connector = typeof attrs.connector === "string" ? attrs.connector.trim() : "";
+  if (attrs.connector !== undefined && !connector) return { skip: true, reason: "malformed" };
 
   let scopeRaw: string | undefined;
   if (typeof attrs.scope === "string") scopeRaw = attrs.scope;

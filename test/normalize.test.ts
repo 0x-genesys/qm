@@ -39,6 +39,10 @@ test("reads a declared connector into the manifest", () => {
   const r = ok(normalizeSkill("---\nname: tracker\nconnector: linear\n---\n# Body", "skills/tracker/SKILL.md"));
   assert.equal(r.manifest.connector, "linear");
   assert.equal(r.meta.connector, undefined);
+  assert.deepEqual(normalizeSkill("---\nname: tracker\nconnector:\n  - a\n---\n# Body", "skills/tracker/SKILL.md"), {
+    skip: true,
+    reason: "malformed",
+  });
 });
 
 test("derives name from the dir when frontmatter omits it", () => {
