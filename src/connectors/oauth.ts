@@ -4,6 +4,7 @@ import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { decodeJwt } from "jose";
 import { mintSignedPayload, verifySignedPayload } from "../auth/signed-token.ts";
 import { swallow } from "../util/errors.ts";
+import { isObj } from "../util/objects.ts";
 
 export const ACCOUNT_TYPES = ["default", "personal", "company"] as const;
 export type AccountType = (typeof ACCOUNT_TYPES)[number];
@@ -95,6 +96,19 @@ function toToken(
   };
 }
 
+function oauthErrorDetail(body: unknown): string {
+  if (!isObj(body)) return "";
+  const nested = isObj(body.error) ? body.error : undefined;
+  const code = nested ? (nested.code ?? nested.type) : body.error;
+  const description = nested ? nested.message : (body.error_description ?? body.reason);
+  return [code, description].filter((part): part is string => typeof part === "string" && part.length > 0).join(": ");
+}
+
+export async function oauthFailure(action: string, res: { status: number; json(): Promise<unknown> }): Promise<Error> {
+  const detail = oauthErrorDetail(await res.json().catch(() => undefined));
+  return new Error(`${action} failed (${res.status})${detail ? `: ${detail}` : ""}`);
+}
+
 const resourceBody = (p: OAuthProviderConfig): Record<string, string> =>
   p.authParams?.resource ? { resource: p.authParams.resource } : {};
 
@@ -120,7 +134,7 @@ function makeTokenAdapters(opts: {
     basic || !client.secret ? { client_id: client.id } : { client_id: client.id, client_secret: client.secret };
   const checkErrorBody = (raw: Record<string, unknown>): void => {
     if (opts.rejectErrorBody && raw.error)
-      throw new Error(`${prefix}oauth error: ${String(raw.error_description ?? raw.error)}`);
+      throw new Error(`${prefix}oauth error: ${oauthErrorDetail(raw) || String(raw.error)}`);
   };
   return {
     async exchange({ provider, client, code, redirectUri, fetchImpl, now, codeVerifier }) {
@@ -136,7 +150,7 @@ function makeTokenAdapters(opts: {
           ...resourceBody(provider),
         }).toString(),
       });
-      if (!res.ok) throw new Error(`${prefix}token exchange failed (${res.status})`);
+      if (!res.ok) throw await oauthFailure(`${prefix}token exchange`, res);
       const raw = (await res.json()) as Record<string, unknown>;
       checkErrorBody(raw);
       return { hosts: provider.hosts, token: toToken(raw, undefined, now), raw };
@@ -152,7 +166,7 @@ function makeTokenAdapters(opts: {
           ...resourceBody(provider),
         }).toString(),
       });
-      if (!res.ok) throw new Error(`${prefix}token refresh failed (${res.status})`);
+      if (!res.ok) throw await oauthFailure(`${prefix}token refresh`, res);
       const raw = (await res.json()) as Record<string, unknown>;
       checkErrorBody(raw);
       return toToken(raw, token.refreshToken, now, token.grantedScopes);
@@ -200,7 +214,7 @@ const slackExchange: OAuthExchangeAdapter = async ({ provider, client, code, red
       client_secret: client.secret,
     }).toString(),
   });
-  if (!res.ok) throw new Error(`slack token exchange failed (${res.status})`);
+  if (!res.ok) throw await oauthFailure("slack token exchange", res);
   const raw = (await res.json()) as Record<string, unknown>;
   if (raw.ok !== true) throw new Error(`slack oauth error: ${String(raw.error ?? "unknown")}`);
   const authedUser = (raw.authed_user ?? {}) as Record<string, unknown>;
@@ -217,7 +231,7 @@ const notionExchange: OAuthExchangeAdapter = async ({ provider, client, code, re
     headers: { "content-type": "application/json", authorization: `Basic ${basic}` },
     body: JSON.stringify({ grant_type: "authorization_code", code, redirect_uri: redirectUri }),
   });
-  if (!res.ok) throw new Error(`notion token exchange failed (${res.status})`);
+  if (!res.ok) throw await oauthFailure("notion token exchange", res);
   const raw = (await res.json()) as Record<string, unknown>;
   const access = String(raw.access_token ?? "");
   if (!access) throw new Error("notion token exchange returned no access_token");
