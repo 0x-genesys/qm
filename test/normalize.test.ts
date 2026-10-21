@@ -32,6 +32,13 @@ requiredCapabilities:
   assert.deepEqual(r.meta.version, "1.1.0");
   assert.deepEqual(r.meta.triggers, ["what's new"]);
   assert.equal(r.meta.scope, undefined);
+  assert.equal("connector" in r.manifest, false);
+});
+
+test("reads a declared connector into the manifest", () => {
+  const r = ok(normalizeSkill("---\nname: tracker\nconnector: linear\n---\n# Body", "skills/tracker/SKILL.md"));
+  assert.equal(r.manifest.connector, "linear");
+  assert.equal(r.meta.connector, undefined);
 });
 
 test("derives name from the dir when frontmatter omits it", () => {

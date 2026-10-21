@@ -87,6 +87,7 @@ export function parseSeedSkillFrontmatter(raw: string): {
   name: string;
   description: string;
   requiredCapabilities: string[];
+  connector?: string;
   body: string;
 } {
   const { attrs, body } = parseFrontmatter(raw);
@@ -100,6 +101,10 @@ export function parseSeedSkillFrontmatter(raw: string): {
   if (!Array.isArray(requiredCapabilities) || !requiredCapabilities.every((c): c is string => typeof c === "string")) {
     throw new Error(`seed skill ${name} requiredCapabilities must be a list of strings`);
   }
+  const connector = attrs.connector;
+  if (connector !== undefined && (typeof connector !== "string" || !connector.trim())) {
+    throw new Error(`seed skill ${name} connector must be a provider name`);
+  }
   if (!body.trim()) throw new Error(`seed skill ${name} requires a body`);
-  return { name, description, requiredCapabilities, body };
+  return { name, description, requiredCapabilities, ...(connector ? { connector: connector.trim() } : {}), body };
 }

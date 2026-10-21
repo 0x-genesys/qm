@@ -21,6 +21,7 @@ const RECOGNIZED = new Set([
   "name",
   "description",
   "requiredCapabilities",
+  "connector",
   "egress",
   "allowed-tools",
   "scope",
@@ -97,6 +98,8 @@ export function normalizeSkill(raw: string, path: string, cfg?: PackConfig): Nor
     requiredCapabilities = asStringArray(attrs.egress).map((h) => (h.includes(":") ? h : `egress:${h}`));
   }
 
+  const connector = typeof attrs.connector === "string" ? attrs.connector.trim() : "";
+
   let scopeRaw: string | undefined;
   if (typeof attrs.scope === "string") scopeRaw = attrs.scope;
   else if (typeof attrs.visibility === "string") scopeRaw = attrs.visibility;
@@ -111,7 +114,7 @@ export function normalizeSkill(raw: string, path: string, cfg?: PackConfig): Nor
   for (const [k, v] of Object.entries(parsed.attrs)) if (!RECOGNIZED.has(k)) meta[k] = v;
 
   return {
-    manifest: { name, description, requiredCapabilities, body },
+    manifest: { name, description, requiredCapabilities, ...(connector ? { connector } : {}), body },
     ...(scopeHint ? { scopeHint } : {}),
     private: isPrivate,
     declaredCreds,

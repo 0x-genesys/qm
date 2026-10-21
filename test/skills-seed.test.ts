@@ -35,6 +35,41 @@ Run the thing.
   assert.match(manifest.body, /^# Demo/);
 });
 
+test("seed skill parser reads an optional connector and rejects a malformed one", () => {
+  const withConnector = parseSeedSkill(`---
+name: demo
+description: demo skill
+connector: linear
+---
+
+# Demo
+`);
+  assert.equal(withConnector.connector, "linear");
+  assert.equal("connector" in parseSeedSkill("---\nname: demo\ndescription: d\n---\n\n# Demo\n"), false);
+  assert.throws(
+    () => parseSeedSkill("---\nname: demo\ndescription: d\nconnector:\n  - a\n---\n\n# Demo\n"),
+    /connector must be a provider name/,
+  );
+});
+
+test("adding a connector to an installed seed skill re-publishes it with the field", async () => {
+  const skills = createSkillStore({ signingSecret: "seed-test-secret" });
+  const org = scopeId("org", "default-org");
+  const dir = mkdtempSync(join(tmpdir(), "seed-connector-"));
+  writeSeedSkill(dir, "tracker", "issue tracker", "# Tracker");
+  await installSeedSkills(skills, { dir, scopeId: org });
+  writeFileSync(
+    join(dir, "tracker", "SKILL.md"),
+    "---\nname: tracker\ndescription: issue tracker\nconnector: linear\n---\n\n# Tracker\n",
+  );
+  const result = await installSeedSkills(skills, { dir, scopeId: org });
+  assert.deepEqual(result, { installed: [], updated: ["tracker"], skipped: [] });
+  const stored = (await skills.list()).find((s) => s.manifest.name === "tracker")!;
+  assert.equal(stored.manifest.connector, "linear");
+  assert.equal(stored.status, "published");
+  assert.ok(skills.verify(stored));
+});
+
 test("installSeedSkills publishes the repository starter catalog into org scope", async () => {
   const skills = createSkillStore({ signingSecret: "seed-test-secret" });
   const result = await installSeedSkills(skills, { dir: "skills-seed", scopeId: scopeId("org", "default-org") });
