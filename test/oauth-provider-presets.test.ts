@@ -11,33 +11,15 @@ import {
   setStoredOAuthProviders,
   type FetchLike,
 } from "../src/connectors/oauth.ts";
-import { parseCustomOAuthProvider } from "../src/connectors/custom-provider.ts";
+import { parseOAuthProviderPreset } from "../src/connectors/custom-provider.ts";
 import { createEnvSecretSource } from "../src/credentials/secret-source.ts";
+import presets from "../src/connectors/oauth-providers.json" with { type: "json" };
 
-const PRESET_ONLY = new Set([
-  "clientIdEnv",
-  "clientSecretEnv",
-  "hostedDomainEnv",
-  "acceptJson",
-  "rejectErrorBody",
-  "tokenAdapter",
-  "consentMode",
-  "setupConsole",
-  "scopesRationale",
-]);
-const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
 const client = { id: "cid", secret: "csec", clientRef: "test" };
 
-test("every preset is a valid provider record that builds a working connector", () => {
+test("every preset builds a working connector", () => {
   for (const preset of OAUTH_PROVIDER_PRESETS) {
-    const record = Object.fromEntries(Object.entries(preset).filter(([k]) => !PRESET_ONLY.has(k)));
-    assert.deepEqual(parseCustomOAuthProvider(record), { clientAuth: "body", ...record }, preset.provider);
-    assert.match(preset.clientIdEnv, ENV_NAME);
-    assert.match(preset.clientSecretEnv, ENV_NAME);
-    assert.ok(!preset.hostedDomainEnv || ENV_NAME.test(preset.hostedDomainEnv));
-    assert.ok([undefined, "slack", "notion"].includes(preset.tokenAdapter), preset.provider);
-    assert.ok([undefined, "standard", "admin", "github_app"].includes(preset.consentMode), preset.provider);
-    assert.ok(preset.setupConsole && preset.setupSteps?.length, preset.provider);
+    assert.ok(preset.setupSteps?.length, preset.provider);
     const consent = new URL(
       authorizeUrl(preset.provider, { redirectUri: "https://app/cb", state: "s", client: { ...client } }),
     );
@@ -51,6 +33,14 @@ test("every preset is a valid provider record that builds a working connector", 
   );
   const hosts = OAUTH_PROVIDER_PRESETS.flatMap((p) => p.hosts);
   assert.equal(new Set(hosts).size, hosts.length, "no two presets claim the same host");
+});
+
+test("a preset is parsed with the stored-provider schema plus its built-in fields", () => {
+  const [google] = presets;
+  assert.deepEqual(parseOAuthProviderPreset(google), OAUTH_PROVIDER_PRESETS[0]);
+  assert.throws(() => parseOAuthProviderPreset({ ...google, clientIdEnv: "lower" }), /clientIdEnv/);
+  assert.throws(() => parseOAuthProviderPreset({ ...google, tokenAdapter: "custom" }), /tokenAdapter/);
+  assert.throws(() => parseOAuthProviderPreset({ ...google, tokenUrl: "http://x.example/t" }), /tokenUrl/);
 });
 
 async function wire(provider: string, host: string, codeVerifier?: string): Promise<unknown[]> {

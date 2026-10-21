@@ -145,6 +145,83 @@ test("revoke clears a connector linked under a non-default account type", async 
   }
 });
 
+test("named connection slots: start, callback, status, and per-account revoke", async () => {
+  let email = "ops@example.com";
+  const srv = start(async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ access_token: `at-${email}`, refresh_token: "rt", expires_in: 3600 }),
+  }));
+  try {
+    const redirectUri = `${srv.base}/v1/connectors/oauth/google/callback`;
+    const startFor = async (accountType: string) => {
+      const path = `/v1/connectors/oauth/google/start?principalId=U1&redirectUri=${encodeURIComponent(redirectUri)}&accountType=${encodeURIComponent(accountType)}`;
+      return fetch(`${srv.base}${path}`, { headers: sign("GET", path) });
+    };
+    const connect = async (accountType: string) => {
+      const res = await startFor(accountType);
+      assert.equal(res.status, 200);
+      const body = (await res.json()) as { authorizeUrl: string; accountType: string };
+      const consent = new URL(body.authorizeUrl);
+      const callbackPath = `/v1/connectors/oauth/google/callback?code=c&state=${encodeURIComponent(consent.searchParams.get("state")!)}`;
+      return { body, consent, callback: await fetch(`${srv.base}${callbackPath}`) };
+    };
+
+    const invalid = await startFor("not/a slot");
+    assert.equal(invalid.status, 400);
+    assert.match(((await invalid.json()) as { message: string }).message, /^accountType must be 1-64 characters/);
+
+    const ops = await connect(" Ops@Example.com ");
+    assert.equal(ops.body.accountType, "ops@example.com");
+    assert.equal(ops.callback.status, 200);
+
+    email = "me@example.com";
+    const fallback = await connect("default");
+    assert.equal(fallback.callback.status, 200);
+
+    const tokens = srv.built.connectorTokens;
+    assert.equal(
+      await tokens.connectorAccessToken("gmail.googleapis.com", "U1", "ops@example.com"),
+      "at-ops@example.com",
+    );
+    assert.equal(await tokens.connectorAccessToken("gmail.googleapis.com", "U1"), "at-me@example.com");
+
+    const revoke = async (body: Record<string, unknown>) => {
+      const raw = JSON.stringify({ principalId: "U1", provider: "google", ...body });
+      return fetch(`${srv.base}/v1/connectors/oauth/revoke`, {
+        method: "POST",
+        headers: sign("POST", "/v1/connectors/oauth/revoke", raw),
+        body: raw,
+      });
+    };
+    assert.equal((await revoke({ accountType: "bad slot" })).status, 400);
+    const one = await revoke({ accountType: "ops@example.com" });
+    assert.equal(one.status, 200);
+    assert.equal(((await one.json()) as { accountType?: string }).accountType, "ops@example.com");
+    assert.equal(await tokens.connectorAccessToken("gmail.googleapis.com", "U1", "ops@example.com"), null);
+    assert.equal(await tokens.connectorAccessToken("gmail.googleapis.com", "U1"), "at-me@example.com");
+
+    await tokens.setConnectorToken("slack.com", "U1", { accessToken: "slack-ws", accountType: "globex" }, "globex");
+    const statusPath = "/v1/connectors/oauth/status?principalId=U1";
+    const status = (await (await fetch(`${srv.base}${statusPath}`, { headers: sign("GET", statusPath) })).json()) as {
+      providers: Record<string, { connected?: boolean }>;
+    };
+    assert.equal(
+      status.providers.slack?.connected,
+      true,
+      "a connector held only under a named slot reads as connected",
+    );
+
+    await tokens.setConnectorToken("gmail.googleapis.com", "U1", { accessToken: "at-x", accountType: "x" }, "x");
+    assert.equal((await revoke({})).status, 200);
+    for (const account of [undefined, "x", "ops@example.com"])
+      assert.equal(await tokens.connectorAccessToken("gmail.googleapis.com", "U1", account), null);
+    assert.equal(await tokens.connectorAccessToken("slack.com", "U1", "globex"), "slack-ws");
+  } finally {
+    await srv.close();
+  }
+});
+
 test("OAuth status reports expired non-refreshable connectors as reconnect-needed", async () => {
   const srv = start(async () => {
     throw new Error("no token exchange expected");

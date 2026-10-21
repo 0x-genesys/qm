@@ -5,7 +5,13 @@
 // model-provider credential, not like a personal connector.
 
 import { isValidMcpServerId, type McpServer, type McpServerAuthMode } from "../../../mcp/mcp-server-store.ts";
-import { connectorProvider, connectorProviderEntries, hostsOverlap, isAccountType } from "../../../connectors/oauth.ts";
+import {
+  accountNameRule,
+  connectorProvider,
+  connectorProviderEntries,
+  hostsOverlap,
+  parseAccountName,
+} from "../../../connectors/oauth.ts";
 import { discoverOAuth, httpsUrl, parseScopes, type DiscoveredOAuth } from "../../../mcp/oauth-discovery.ts";
 import { sendJson } from "../../http.ts";
 import type { ApiCtx } from "../route.ts";
@@ -107,12 +113,11 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
   }
   let oauthAuthorizeUrl = httpsUrl(b.oauthAuthorizeUrl) ?? (oauthUser ? existing?.oauthAuthorizeUrl : undefined);
   let oauthTokenUrl = httpsUrl(b.oauthTokenUrl) ?? (oauthUser ? existing?.oauthTokenUrl : undefined);
-  const credentialAccountType = b.credentialAccountType ?? existing?.credentialAccountType ?? "default";
-  if (!isAccountType(credentialAccountType)) {
-    return sendJson(ctx.res, 400, {
-      error: "bad_request",
-      message: "credentialAccountType must be default, personal, or company",
-    });
+  const credentialAccountType = parseAccountName(
+    b.credentialAccountType ?? existing?.credentialAccountType ?? "default",
+  );
+  if (!credentialAccountType) {
+    return sendJson(ctx.res, 400, { error: "bad_request", message: accountNameRule("credentialAccountType") });
   }
   if (
     credentialScope === "per-user" &&

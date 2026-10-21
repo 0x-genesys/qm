@@ -88,3 +88,29 @@ export function parseCustomOAuthProvider(body: unknown): CustomOAuthProvider | {
     ...(setupSteps?.length ? { setupSteps } : {}),
   };
 }
+
+const envName = z.string().regex(/^[A-Z][A-Z0-9_]*$/, { error: "must be an environment variable name" });
+const presetFieldsSchema = z.object({
+  clientIdEnv: envName,
+  clientSecretEnv: envName,
+  hostedDomainEnv: envName.optional(),
+  acceptJson: z.boolean().optional(),
+  rejectErrorBody: z.boolean().optional(),
+  tokenAdapter: z.enum(["slack", "notion"]).optional(),
+  consentMode: z.enum(["standard", "admin", "github_app"]).optional(),
+  setupConsole: z.string().min(1),
+  scopesRationale: z.string().optional(),
+});
+
+export type OAuthProviderPresetFields = z.infer<typeof presetFieldsSchema>;
+
+export function parseOAuthProviderPreset(raw: unknown): CustomOAuthProvider & OAuthProviderPresetFields {
+  const record = parseCustomOAuthProvider(raw);
+  if ("error" in record) throw new Error(`invalid OAuth provider preset: ${record.error}`);
+  const fields = presetFieldsSchema.safeParse(raw);
+  if (!fields.success) {
+    const issue = fields.error.issues[0]!;
+    throw new Error(`invalid OAuth provider preset ${record.provider}: ${issue.path.join(".")}: ${issue.message}`);
+  }
+  return { ...record, ...fields.data };
+}

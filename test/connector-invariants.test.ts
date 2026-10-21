@@ -318,6 +318,42 @@ test("operator fallback forwards metadata without reading secret values", async 
   assert.equal(reads, 1);
 });
 
+test("named OAuth accounts surface as connector:<host>:<name> handles and resolve to their own token", async () => {
+  const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "named-accounts-")), maxAttempts: 1 }));
+  await selectDefaultSandbox(built, "U1", "personal:U1");
+  const expires = Date.now() + 3600000;
+  await built.connectorTokens.setConnectorToken(
+    "slack.com",
+    "U1",
+    { accessToken: "globex-token", expiresAt: expires, accountType: "globex" },
+    "globex",
+  );
+  await built.connectorTokens.setConnectorToken(
+    "slack.com",
+    "U1",
+    { accessToken: "acme-token", expiresAt: expires, accountType: "acme-eng" },
+    "acme-eng",
+  );
+  await built.connectorTokens.setConnectorToken(
+    "gmail.googleapis.com",
+    "U1",
+    { accessToken: "ops-token", expiresAt: expires, accountType: "ops@example.com" },
+    "ops@example.com",
+  );
+  const prompt = (await built.app.turn({ ...turn("dm", "!sysprompt"), liveActor: true })).reply ?? "";
+  for (const handle of ["slack.com:globex", "slack.com:acme-eng", "gmail.googleapis.com:ops@example.com"])
+    assert.ok(prompt.includes(`connector:${handle}`), handle);
+  assert.doesNotMatch(prompt, /connector:slack\.com:default/);
+  for (const [handle, host, token] of [
+    ["connector:slack.com:globex", "slack.com", "globex-token"],
+    ["connector:slack.com:acme-eng", "slack.com", "acme-token"],
+    ["connector:gmail.googleapis.com:ops@example.com", "gmail.googleapis.com", "ops-token"],
+  ] as const) {
+    const text = `!execute ${JSON.stringify({ command: `test "$${envKey(host)}" = ${token} && echo selected`, credentials: [handle] })}`;
+    assert.equal((await built.app.turn({ ...turn("dm", text), liveActor: true })).reply, "selected", handle);
+  }
+});
+
 test("explicit default OAuth accounts remain discoverable through bulk metadata", async () => {
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "default-account-")), maxAttempts: 1 }));
   await selectDefaultSandbox(built, "U1", "personal:U1");

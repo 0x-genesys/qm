@@ -1,17 +1,35 @@
 import type { OAuthToken, OAuthRefresh } from "../credentials/keychain.ts";
-import type { CustomOAuthProvider } from "./custom-provider.ts";
+import {
+  parseOAuthProviderPreset,
+  type CustomOAuthProvider,
+  type OAuthProviderPresetFields,
+} from "./custom-provider.ts";
 import { createEnvSecretSource, type SecretSource } from "../credentials/secret-source.ts";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { decodeJwt } from "jose";
+import { z } from "zod";
 import presets from "./oauth-providers.json" with { type: "json" };
 import { mintSignedPayload, verifySignedPayload } from "../auth/signed-token.ts";
 import { swallow } from "../util/errors.ts";
 import { isObj } from "../util/objects.ts";
 
-export const ACCOUNT_TYPES = ["default", "personal", "company"] as const;
-export type AccountType = (typeof ACCOUNT_TYPES)[number];
-export const isAccountType = (value: unknown): value is AccountType =>
-  typeof value === "string" && (ACCOUNT_TYPES as readonly string[]).includes(value);
+export type AccountType = string;
+export const MODEL_LOGIN_ACCOUNT_TYPE = "individual-model";
+const accountName = z
+  .string()
+  .max(64)
+  .regex(/^[a-z0-9]([a-z0-9._@+-]*[a-z0-9])?$/)
+  .refine((name) => name !== MODEL_LOGIN_ACCOUNT_TYPE);
+export const accountNameRule = (field = "accountType"): string =>
+  `${field} must be 1-64 characters of lowercase letters, digits, and . _ @ + -, starting and ending with a letter or digit`;
+
+export const isAccountType = (value: unknown): value is AccountType => accountName.safeParse(value).success;
+
+export function parseAccountName(value: unknown): AccountType | null {
+  if (typeof value !== "string") return null;
+  const name = value.trim().toLowerCase();
+  return isAccountType(name) ? name : null;
+}
 
 export function generateCodeVerifier(): string {
   return randomBytes(32).toString("base64url");
@@ -252,24 +270,11 @@ async function lookupWithReload<T>(lookup: () => T | undefined): Promise<T | und
   return lookup();
 }
 
-interface PresetFields {
-  clientIdEnv: string;
-  clientSecretEnv: string;
-  hostedDomainEnv?: string;
-  acceptJson?: boolean;
-  rejectErrorBody?: boolean;
-  tokenAdapter?: keyof typeof TOKEN_ADAPTERS;
-  consentMode?: ConsentMode;
-  setupConsole?: string;
-  scopesRationale?: string;
-}
-
-type OAuthProviderPreset = CustomOAuthProvider & PresetFields;
-type ProviderRecord = CustomOAuthProvider & Partial<PresetFields>;
+type ProviderRecord = CustomOAuthProvider & Partial<OAuthProviderPresetFields>;
 
 const TOKEN_ADAPTERS = { slack: slackExchange, notion: notionExchange };
 
-export const OAUTH_PROVIDER_PRESETS = presets as OAuthProviderPreset[];
+export const OAUTH_PROVIDER_PRESETS = presets.map((p) => parseOAuthProviderPreset(p));
 
 function providerConfig(p: ProviderRecord): OAuthProviderConfig {
   const generic = makeTokenAdapters({
