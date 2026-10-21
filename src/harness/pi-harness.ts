@@ -77,9 +77,15 @@ import {
   codexProviderModelId,
   modelHasPrices,
 } from "../model/pi-models.ts";
-import { customModelsJson, customProvidersVersion, resolveCustomModel } from "../model/custom-providers.ts";
+import {
+  customModelsJson,
+  customProvidersVersion,
+  hasCustomModelPrefix,
+  resolveCustomModel,
+} from "../model/custom-providers.ts";
 import {
   GatewayModelUnavailableError,
+  ModelUnavailableError,
   modelGatewayRequest,
   type ModelGatewayTransportConfig,
   type ModelRequestPurpose,
@@ -126,7 +132,6 @@ import {
   createFloorCapPolicy,
   bankGoalTurn,
   enforceGoal,
-  goalFloorUnmet,
   goalPausedNote,
   goalSteeringNote,
   meterGoalCall,
@@ -1229,10 +1234,12 @@ export async function buildModelRuntime(
   ): { model: Model<Api>; options: T } => {
     const request = modelGatewayRequest(modelGateway, model, purpose);
     if (!request) {
+      const custom = resolveCustomModel(model.id);
       const providerModelId =
         model.provider === CODEX_SUBSCRIPTION_PROVIDER
           ? codexProviderModelId(model.id)
-          : (modelRequestOverrides(model.id)?.model ?? resolveCustomModel(model.id)?.upstreamId ?? model.id);
+          : (modelRequestOverrides(model.id)?.model ?? custom?.upstreamId ?? model.id);
+      const unregistered = !custom && hasCustomModelPrefix(model.id);
       const candidate = withRequestHeaders(model, true, false);
       const passthrough = {
         ...retained(options),
@@ -1244,7 +1251,12 @@ export async function buildModelRuntime(
       return {
         model: candidate,
         options:
-          providerModelId === model.id ? passthrough : wireModelId(passthrough, model, async () => providerModelId),
+          providerModelId === model.id && !unregistered
+            ? passthrough
+            : wireModelId(passthrough, model, async () => {
+                if (unregistered) throw new ModelUnavailableError(model.id);
+                return providerModelId;
+              }),
       };
     }
     const routed = {
@@ -1853,6 +1865,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
 
           entry.ref.goal = turn.goal ?? null;
           entry.ref.goalMeter = grindMeter;
+          entry.ref.goalInbox = turn.goalInbox;
           entry.ref.goalRound = turn.continueTurn ? 1 : 0;
           const activeGoalAtStart = entry.ref.goal?.status === "active" ? entry.ref.goal : null;
           const pausedGoalAtStart = entry.ref.goal?.status === "paused" ? entry.ref.goal : null;
@@ -2242,13 +2255,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             );
             if (wallClock === "ok") await recoverFailedRound();
             const goalAfterPrompt = entry.ref.goal;
-            if (
-              wallClock === "ok" &&
-              goalAfterPrompt &&
-              (goalAfterPrompt.status === "active" || goalFloorUnmet(goalAfterPrompt, grindMeter)) &&
-              !userAborted &&
-              !turn.cancel?.aborted
-            ) {
+            if (wallClock === "ok" && goalAfterPrompt && !userAborted && !turn.cancel?.aborted) {
               wallClock = await enforceGoal({
                 goal: goalAfterPrompt,
                 meter: grindMeter,
@@ -2272,6 +2279,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
                         }),
                     }
                   : {}),
+                ...(turn.goalInbox ? { inbox: turn.goalInbox } : {}),
                 beforePrompt: async (note) => {
                   console.error(
                     `[goal] continuation session=${turn.session.id} round=${(entry.ref.goalRound ?? 0) + 1}`,

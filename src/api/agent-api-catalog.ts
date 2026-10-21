@@ -69,7 +69,7 @@ const FAMILIES: AgentApiFamily[] = [
   {
     when: (view) => view.swarmsEnabled,
     guidance:
-      "Swarm workers are ordinary sessions with private blank computers. Inspect peers and their context, then send to chosen IDs or all; shared history is visible to every member. Notifications queue unattended turns. Each swarm gets one shared board computer (inspect returns board.sandboxId) that the root and every worker reach with execute's sandbox_id; pass forumSandboxId at creation to use an existing shared computer instead. Spawn accepts model, effort and fastMode to choose the runtime for the workers it creates; children inherit it unless they choose again. POST action control with memberId and state active, paused or stopped pauses delivery to, resumes, or stops a descendant worker. To keep a worker going instead of stopping after one reply, give it a goal on spawn or send ({objective, floor?, token_cap?}): its turn then runs like a goal turn, past the swarm turn deadline, until the goal is complete, paused or out of tokens. Only a parent can assign goals, to its own workers; send a goal again to replace a paused one.",
+      "Swarm workers are ordinary sessions with private blank computers. Inspect peers and their context, then send to chosen IDs or all; shared history is visible to every member. Notifications queue unattended turns. Each swarm gets one shared board computer (inspect returns board.sandboxId) that the root and every worker reach with execute's sandbox_id; pass forumSandboxId at creation to use an existing shared computer instead. Spawn accepts model, effort and fastMode to choose the runtime for the workers it creates; children inherit it unless they choose again. POST action control with memberId and state active, paused or stopped pauses delivery to, resumes, or stops a descendant worker. To keep a worker going instead of stopping after one reply, give it a goal on spawn or send ({objective, floor?, token_cap?}): its turn then runs like a goal turn, past the swarm turn deadline, until the goal is complete, paused or out of tokens. Only a parent can assign goals, to its own workers; send a goal again to replace a running, paused or finished one.",
     routes: [
       {
         method: "GET",
@@ -215,13 +215,19 @@ const FAMILIES: AgentApiFamily[] = [
         method: "POST",
         path: "/v1/loops/:id/items/:itemId/action",
         summary:
-          'act on a held item — body {kind, args?}. kind "edit" replaces the proposal ({args:{proposal}}), "dismiss" drops the item, "reopen" un-dismisses it, "replied" ({args:{text}}) closes an item the person already answered themselves outside QM and never demotes one sent from here, and any action the loop\'s source declares (e.g. "send", or Slack\'s "react" with {args:{name}}, which annotates the item without closing it) executes it and records the outcome',
+          'act on a held item — body {kind, args?}. kind "edit" replaces the proposal ({args:{proposal}}), "dismiss" drops the item, "reopen" un-dismisses it, and any action the loop\'s source declares (e.g. "send", or Slack\'s "react" with {args:{name}}, which annotates the item without closing it) executes it and records the outcome',
       },
       {
         method: "POST",
         path: "/v1/loops/:id/items/:itemId/followup",
         summary:
           "chat about one held item — body {message}; the reply lands on the item's thread and may revise its proposal",
+      },
+      {
+        method: "POST",
+        path: "/v1/loops/:id/events",
+        summary:
+          'report new messages in conversations already on the ledger — body {events:[{sourceKey, author:"owner"|"other", at, text?, from?}]}; each event is judged by the loop\'s work stage, which may close or redraft the item',
       },
     ],
   },
@@ -416,17 +422,6 @@ const FAMILIES: AgentApiFamily[] = [
     ],
   },
   {
-    routes: [
-      { method: "GET", path: "/v1/pinned-skills", summary: "list the skills pinned to this conversation's scope" },
-      {
-        method: "PUT",
-        path: "/v1/pinned-skills",
-        summary:
-          "replace this scope's pinned skills — body {names: string[]} in display order (max 6; [] clears); they always lead the per-turn skills shortlist. Personal pins apply to that person's DMs, channel pins to that channel. Live person turns only",
-      },
-    ],
-  },
-  {
     when: (v) => !!v.claims.memory,
     guidance: "Memory bodies and curation rules are documented in the memory skill.",
     routes: [
@@ -493,7 +488,7 @@ const FAMILIES: AgentApiFamily[] = [
         method: "POST",
         path: "/v1/surface-context",
         summary:
-          "fetch recent messages from a channel/DM YOU can see (count/before/match) — a private channel only if you're a member; directory-resolved, never a raw address",
+          "fetch recent messages from a channel/DM YOU can see (count/before/match) — a private channel only if you're a member; live:true reads Slack directly for current reaction counts (reactions:[] means none), with no mirror fallback on failure; omitted uses configured history; directory-resolved, never a raw address",
       },
       {
         method: "POST",

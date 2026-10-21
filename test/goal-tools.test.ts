@@ -4,6 +4,8 @@ import { createAgentTools, type ToolContextRef } from "../src/harness/agent-tool
 import { createGrindMeter } from "../src/harness/grind.ts";
 import { harnessToolContext } from "../src/harness/harness-shared.ts";
 import {
+  GovernorUndecided,
+  supersedeGoal,
   bankGoalTurn,
   goalContinuationPrompt,
   goalFloorUnmet,
@@ -128,13 +130,15 @@ test("agent cannot close a user-paused goal or replace it", async () => {
   assert.match(textOf(conflict as never), /already registered/);
 });
 
-test("the agent cannot self-complete: without a governor the request is rejected", async () => {
-  const { ref, create, update } = toolbox();
+test("the agent cannot self-complete: without a governor the request decides nothing", async () => {
+  const { ref, create, update, saved } = toolbox();
   delete ref.governGoal;
   await create.execute("c1", { objective: "ship it" });
+  const before = structuredClone(saved());
   const res = await update.execute("u1", { status: "complete", note: "trust me" });
-  assert.match(textOf(res as never), /did not accept completion/);
+  assert.match(textOf(res as never), /could not reach a decision \(no independent governor/);
   assert.equal(ref.goal?.status, "active");
+  assert.deepEqual(saved(), before);
 });
 
 test("a governor approval closes the goal and sees only the objective and evidence", async () => {
@@ -188,15 +192,22 @@ test("a completion request can draw a step back, then a pause that ends the goal
   assert.deepEqual(seenWork, ["tool_call execute: sleep 240", "tool_call execute: sleep 240"]);
 });
 
-test("a failing governor never closes the goal", async () => {
-  const { ref, create, update } = toolbox();
-  ref.governGoal = async () => {
-    throw new Error("model down");
-  };
+test("a governor that refuses or fails decides nothing: the goal stays active and nothing is held against it", async () => {
+  const { ref, create, update, saved } = toolbox();
   await create.execute("c1", { objective: "suite green" });
-  const res = await update.execute("u1", { status: "complete", note: "done" });
-  assert.match(textOf(res as never), /governor failed/);
-  assert.equal(ref.goal?.status, "active");
+  const earlier = { verdict: "step_back" as const, reasons: "same test rerun three times" };
+  ref.goal!.governor = earlier;
+  const before = structuredClone(saved());
+  for (const failure of [new Error("provider refusal"), new GovernorUndecided("its reply was not a verdict")]) {
+    ref.governGoal = async () => {
+      throw failure;
+    };
+    const res = await update.execute("u1", { status: "complete", note: "done" });
+    assert.match(textOf(res as never), /could not reach a decision[\s\S]*not a rejection/);
+    assert.equal(ref.goal?.status, "active");
+    assert.deepEqual(ref.goal?.governor, earlier);
+    assert.deepEqual(saved(), before);
+  }
 });
 
 test("update with no active goal errors cleanly", async () => {
@@ -501,4 +512,55 @@ test("goal get says when a spend floor is waived", async () => {
   ref.goalMeter!.unpricedCalls = 1;
   const report = await get.execute("c2", {});
   assert.match(textOf(report as never), /Work floor .*spend floor waived.* — met/);
+});
+
+test("swarm messages ride on the next tool result and can replace the goal", async () => {
+  const { ref, create, get } = toolbox();
+  await create.execute("c1", { objective: "lane A", floor: { minTurns: 5 } });
+  const saved: string[] = [];
+  ref.emit = async (entry) => {
+    if (entry.type === "tool_result") saved.push(JSON.stringify(entry.payload));
+    return undefined;
+  };
+  let pending = [{ id: "m2", text: "Swarm agent message m2: take lane B" }];
+  const acknowledged: string[] = [];
+  ref.goalMeter = createGrindMeter();
+  ref.goalMeter.turns = 9;
+  ref.goalInbox = {
+    async receive() {
+      const out = pending;
+      pending = [];
+      return out;
+    },
+    async acknowledge(ids, goal) {
+      acknowledged.push(...ids);
+      supersedeGoal(goal, { objective: "lane B", assignedAt: goal.createdAt + 1 });
+    },
+  };
+  const result = await get.execute("g1", {});
+  assert.match(textOf(result as never), /take lane B/);
+  assert.match(saved.at(-1)!, /take lane B/, "the message is saved with the tool result that carried it");
+  assert.deepEqual(acknowledged, ["m2"]);
+  assert.equal(ref.goal?.objective, "lane B");
+  assert.equal(ref.goalMeter.turns, 0, "the replacement's turn floor starts from zero");
+  pending = [{ id: "m3", text: "too soon" }];
+  assert.doesNotMatch(
+    textOf((await get.execute("g2", {})) as never),
+    /too soon/,
+    "the inbox is polled at most every few seconds",
+  );
+});
+
+test("a completion decided after the goal was replaced is dropped, not applied to the new goal", async () => {
+  const { ref, create, update } = toolbox();
+  await create.execute("c1", { objective: "lane A" });
+  ref.governGoal = async () => {
+    ref.goal!.objective = "lane B";
+    ref.goal!.createdAt += 1;
+    return { verdict: "complete", reasons: "lane A proven" };
+  };
+  const res = await update.execute("u1", { status: "complete", note: "lane A evidence" });
+  assert.match(textOf(res as never), /replaced this one while the governor was deciding/);
+  assert.equal(ref.goal?.status, "active");
+  assert.equal(ref.goal?.objective, "lane B");
 });

@@ -17,7 +17,7 @@ import type { GapWork } from "../sessions/session-store.ts";
 import { NeedsApproval, CommandDenied } from "../tools/primitives.ts";
 import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import { splitToScope } from "../api/artifact-share.ts";
-import { errMessage } from "../util/errors.ts";
+import { errMessage, swallowAs } from "../util/errors.ts";
 import { MemoryFactsMissing } from "../memory/facts.ts";
 import { MemoryDisclosureDenied } from "../memory/disclosure.ts";
 import { computerVerdict } from "../sandbox/sandbox.ts";
@@ -39,7 +39,12 @@ import {
   goalReport,
   GOAL_STEP_BACK_PROMPT,
   type GoalGovernor,
+  GOAL_INBOX_POLL_MS,
+  type GoalInbox,
   type GoalRecord,
+  type GovernorVerdict,
+  GovernorUndecided,
+  takeGoalMessages,
 } from "./goal.ts";
 import {
   toolLabelOf,
@@ -122,6 +127,7 @@ export interface ToolContextRef {
   goalRound?: number;
 
   goalMeter?: import("./grind.ts").GrindMeter;
+  goalInbox?: GoalInbox;
   modelHasPrices?: () => boolean;
   governGoal?: GoalGovernor;
   /** The agent's recent work for the governor, newest last. */
@@ -408,6 +414,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
 
   const resultQueue = createKeyedQueue();
   const quarantinedMessages = new Set<string>();
+  let goalInboxCheckedAt = 0;
   const recordResult = async <T extends { content: Array<{ type: string; text?: string }>; details?: unknown }>(
     callId: string,
     summary: Record<string, unknown>,
@@ -531,6 +538,18 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         ret.content.push({ type: "text", text });
         result += `\n\n${text}`;
         delivered.push(message.id);
+      }
+      const goal = ref.goal;
+      const goalInbox =
+        goal?.status === "active" && Date.now() - goalInboxCheckedAt >= GOAL_INBOX_POLL_MS ? ref.goalInbox : undefined;
+      if (goalInbox) goalInboxCheckedAt = Date.now();
+      const arrived =
+        goal && goalInbox
+          ? await takeGoalMessages(goalInbox, goal, ref.goalMeter).catch(swallowAs("goal: read the inbox", undefined))
+          : undefined;
+      if (arrived) {
+        ret.content.push({ type: "text", text: arrived });
+        result += `\n\n${arrived}`;
       }
       await log("tool_result", {
         ...(capPayloadStrings(persistedSummary) as Record<string, unknown>),
@@ -1052,9 +1071,9 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     name: "skill",
     label: "skill",
     description:
-      "Load a skill by name before relying on it; use list or search to discover names outside the shortlist. Returns its SKILL.md instructions (or the relative file named by `path`) straight from the published source, without starting a sandbox. When the skill ships scripts or supporting files, this call also syncs them into a stable directory on the computer and reports it; run and read them there with execute and files action read. Reading the skill again refreshes that copy.",
+      "Load a skill by name before relying on it; use list or search for any left out of the per-turn index. Returns its SKILL.md instructions (or the relative file named by `path`) straight from the published source, without starting a sandbox. When the skill ships scripts or supporting files, this call also syncs them into a stable directory on the computer and reports it; run and read them there with execute and files action read. Reading the skill again refreshes that copy.",
     parameters: Type.Object({
-      name: Type.String({ description: "Skill name from the shortlist, list, or search." }),
+      name: Type.String({ description: "Skill name from the skills index, list, or search." }),
       source: Type.Optional(
         Type.String({ description: "Use the same source as the discovery call to read that exact skill." }),
       ),
@@ -2949,9 +2968,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       "context it is shared by ALL of that person's sessions, not tied to the session that " +
       "wrote it. Never store session pins or 'for this session' notes here: ALL pinning goes " +
       "through the pins self-API (POST /v1/pins), which routes by context — the session's own " +
-      "pins in the web UI, native pinning in Slack. To keep a skill in this scope's per-turn skills shortlist, " +
-      'pin it instead of writing guidance: PUT $AGENT_API_URL/v1/pinned-skills with header "x-agent-capability: $AGENT_API_TOKEN" ' +
-      'and body {"names": [...]}, the full list. `edit` swaps one exact passage `old` for `new` ' +
+      "pins in the web UI, native pinning in Slack. `edit` swaps one exact passage `old` for `new` " +
       "and fails unless `old` appears exactly once in that scope's guidance; prefer it for small changes. " +
       "`replace` REPLACES that scope's entire guidance with `content` — include everything that " +
       "should remain. Org-wide policy is always layered above and " +
@@ -4087,27 +4104,41 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
             true,
           );
       }
+      const assignedAt = goal.createdAt;
       const evidence = [
         p.note ?? "",
         ...(await goalEvidenceFiles(ref.current, p.files, ref.abortSignal, p.sandbox_id)),
       ].join("\n");
-      const verdict = ref.governGoal
-        ? await ref
-            .governGoal({
-              objective: goal.objective,
-              trigger: "completion",
-              recentWork: ref.goalRecentWork?.() ?? "",
-              evidence,
-              ...(goal.governor ? { previous: goal.governor } : {}),
-            })
-            .catch((e: unknown) => ({
-              verdict: "continue" as const,
-              reasons: `the governor failed (${errMessage(e)}); request completion again`,
-            }))
-        : {
-            verdict: "continue" as const,
-            reasons: "no independent governor is available on this runtime; keep working",
-          };
+      let verdict: GovernorVerdict;
+      try {
+        if (!ref.governGoal) throw new GovernorUndecided("no independent governor is available on this runtime");
+        verdict = await ref.governGoal({
+          objective: goal.objective,
+          trigger: "completion",
+          recentWork: ref.goalRecentWork?.() ?? "",
+          evidence,
+          ...(goal.governor ? { previous: goal.governor } : {}),
+        });
+      } catch (e) {
+        return recordCoreAuthoredResult(
+          callId,
+          { tool: "goal", action: "update", error: "governor_undecided", goal },
+          text(
+            `The governor could not reach a decision (${errMessage(e)}). This is not a rejection and nothing was recorded against the goal; it stays active. Request completion again with the same evidence.`,
+          ),
+          true,
+        );
+      }
+      if (goal.createdAt !== assignedAt) {
+        return recordCoreAuthoredResult(
+          callId,
+          { tool: "goal", action: "update", error: "goal_replaced", droppedVerdict: verdict, goal },
+          text(
+            `A new goal replaced this one while the governor was deciding, so its decision (${verdict.verdict}: ${verdict.reasons}) was dropped. Your goal is now:\n${goalReport(goal, ref.goalMeter ?? createGrindMeter())}`,
+          ),
+          true,
+        );
+      }
       if (verdict.verdict !== "complete") {
         const applied = applyGovernorVerdict(goal, verdict);
         await ref.saveGoal?.(goal);
