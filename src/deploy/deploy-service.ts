@@ -207,6 +207,13 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
     if ((await deps.canManageEmail?.(ref)) || (await externalSharingAllowed(ownerScopeId))) return;
     throw new DeployAccessError("external_sharing_disabled", EXTERNAL_APP_SHARING_OFF);
   }
+  function creditedPublisher(
+    previous: DeploymentVersion | undefined,
+    publisher: string | undefined,
+    inherits: boolean,
+  ): string | undefined {
+    return publisher && (!inherits || samePerson(previous?.publishedBy, publisher)) ? publisher : undefined;
+  }
   function withDeployLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
     return deployQueue(id, () => advisoryLock.withLock(`deploy:${id}`, fn));
   }
@@ -400,13 +407,19 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         if (input.homeFiles?.length) homeDir = await snapshotFiles(deps.deployDir, input.homeFiles);
         const inherited = input.env ?? current?.env;
         const env = input.stampEnv ? { ...inherited, ...input.stampEnv } : inherited;
+        const publishedBy = creditedPublisher(
+          current,
+          input.publishedBy,
+          (input.env === undefined && current?.env !== undefined) ||
+            (input.homeFiles === undefined && current?.homeDir !== undefined),
+        );
         const v = await deps.deployStore.addVersion(id, {
+          ...(publishedBy ? { publishedBy } : {}),
           entrypoint: input.entrypoint,
           snapshotDir,
           files: input.files,
           ...(homeDir ? { homeDir } : {}),
           ...(env ? { env } : {}),
-          ...(input.publishedBy ? { publishedBy: input.publishedBy } : {}),
         });
         const endpoint = await applyVersion(id, v, before.appliedVersion ?? before.currentVersion, input.alwaysOn);
         await markVersionRunning(id, v.version, endpoint);
@@ -586,7 +599,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       if (hosts.length && !samePerson(approved?.publishedBy, d.createdBy))
         throw new DeployAccessError(
           "forbidden",
-          `version ${d.currentVersion} was not published by the publisher; publish it yourself before lending`,
+          `version ${d.currentVersion} was not published by the publisher alone; publish it yourself, with its env and home files, before lending`,
         );
       const loan = hosts.length ? { hosts, version: d.currentVersion } : undefined;
       await deps.deployStore.setConnectors(d.id, loan);
@@ -688,7 +701,11 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
             tree.map((f) => f.size),
             deps.provider.profile.maxAppBytes,
           );
-          const v = await deps.deployStore.addVersionFromCommit(id, pushed, publishedBy);
+          const v = await deps.deployStore.addVersionFromCommit(
+            id,
+            pushed,
+            creditedPublisher(currentVersionOf(before), publishedBy, true),
+          );
           if (!v) return result;
           const endpoint = await applyVersion(id, v, before.appliedVersion ?? before.currentVersion);
           await markVersionRunning(id, v.version, endpoint);
@@ -767,7 +784,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           await this.redeploy(existing.id, {
             entrypoint,
             files: input.files,
-            publishedBy: createdBy,
+            publishedBy: creditedPublisher(currentVersionOf(existing), createdBy, input.entrypoint === undefined),
             ...(input.alwaysOn !== undefined ? { alwaysOn: input.alwaysOn } : {}),
             ...(input.homeFiles ? { homeFiles: input.homeFiles } : {}),
             ...(input.env ? { env: input.env } : {}),
@@ -808,7 +825,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         await this.redeploy(existing.id, {
           entrypoint,
           files,
-          publishedBy: createdBy,
+          publishedBy: creditedPublisher(currentVersionOf(existing), createdBy, input.entrypoint === undefined),
           ...(input.alwaysOn !== undefined ? { alwaysOn: input.alwaysOn } : {}),
           ...(input.homeFiles ? { homeFiles: input.homeFiles } : {}),
           ...(input.env ? { env: input.env } : {}),

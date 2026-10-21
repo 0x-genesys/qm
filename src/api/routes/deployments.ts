@@ -866,10 +866,9 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
   const wantsHtml = ctx.method === "GET" && String(req.headers.accept ?? "").includes("text/html");
   let session = sessionSecret ? portalSession(req.headers.cookie, sessionSecret) : null;
   const dest = req.headers["sec-fetch-dest"];
-  const ownCookieSession = session !== null;
   const site = req.headers["sec-fetch-site"];
   const framed = dest === "iframe" || site === "same-origin";
-  const embedAncestors = framed ? (deployment?.embedAncestors ?? []) : [];
+  const embedAncestors = framed && !deployment?.connectors ? (deployment?.embedAncestors ?? []) : [];
   if (!session && sessionSecret && embedAncestors.length) {
     session = portalSessionFrom(req.headers.cookie, FRAME_SESSION_COOKIE, sessionSecret);
   }
@@ -1047,10 +1046,9 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
     recordPageView(authMode);
   }
   await proxyReach(ctx, reach, pathname, sub && (canManage || authenticatedPermission) ? sub : undefined, {
-    frameAncestors: deployment?.connectors ? ["'self'", ...(deployment.embedAncestors ?? [])] : embedAncestors,
+    frameAncestors: deployment?.connectors ? ["'self'"] : embedAncestors,
     attestViewer: Boolean(
       deployment?.connectors &&
-      ownCookieSession &&
       !session?.appOnly &&
       !["GET", "HEAD", "OPTIONS"].includes(ctx.method) &&
       samePerson(sub, deployment.createdBy),

@@ -256,16 +256,13 @@ test("a write is honoured only with the gateway's attestation that the publisher
   assert.equal(page.csp, "frame-ancestors 'self'", "only the app's own pages may frame an app that borrows connectors");
   assert.equal(h.seenByApp.at(-1)![VIEWER_ATTESTATION_HEADER], undefined, "a navigation can be cross-site, so no");
   await h.app.setDeploymentEmbedAncestors(h.d.id, ["https://host.example"]);
+  const calls = h.seenByApp.length;
   const embedded = await visit(h.port, PUBLISHER, "POST", {
     Cookie: portalCookie(PUBLISHER).replace("portal_session=", "portal_session_x="),
     "sec-fetch-dest": "iframe",
   });
-  assert.equal(embedded.status, 200);
-  assert.equal(
-    h.seenByApp.at(-1)![VIEWER_ATTESTATION_HEADER],
-    undefined,
-    "nor when another site embeds the app with the cross-site frame cookie",
-  );
+  assert.equal(embedded.status, 401, "while it borrows connectors, the app ignores its embedding sites");
+  assert.equal(h.seenByApp.length, calls);
   assert.equal(
     (await visit(h.port, PUBLISHER, "POST", { origin: "https://mailer.apps.example.com", "sec-fetch-dest": "iframe" }))
       .status,
@@ -322,7 +319,12 @@ test("a loan covers only the version the publisher approved, never a public app,
   const h = await harness(t);
   await h.lend(PUBLISHER, [GMAIL, "slack.com"]);
   await assert.rejects(h.app.setDeploymentPublic(h.d.id, true, { createdBy: PUBLISHER }), /cannot be public/);
-  const byOther = await h.app.redeploy(h.d.id, { entrypoint: "x", files: [], publishedBy: VIEWER });
+  const byOther = await h.app.redeploy(h.d.id, {
+    entrypoint: "x",
+    files: [],
+    env: { NODE_OPTIONS: "--require ./other.js" },
+    publishedBy: VIEWER,
+  });
   assert.match(
     String((await h.lend(PUBLISHER, [GMAIL, "slack.com"])).json.message),
     /not published by the publisher/,
@@ -332,7 +334,13 @@ test("a loan covers only the version the publisher approved, never a public app,
     (await h.broker(read, await h.appTokenFor(byOther.currentVersion))).json.error,
     "loan_for_other_version",
   );
-  const next = await h.app.redeploy(h.d.id, { entrypoint: "x", files: [], publishedBy: PUBLISHER });
+  await h.app.redeploy(h.d.id, { entrypoint: "x", files: [], publishedBy: PUBLISHER });
+  assert.match(
+    String((await h.lend(PUBLISHER, [GMAIL, "slack.com"])).json.message),
+    /not published by the publisher alone/,
+    "a version that inherits someone else's env is not the publisher's alone",
+  );
+  const next = await h.app.redeploy(h.d.id, { entrypoint: "x", files: [], env: {}, publishedBy: PUBLISHER });
   const nextToken = await h.appTokenFor(next.currentVersion);
   assert.equal(
     (await h.broker(read, nextToken)).json.error,
