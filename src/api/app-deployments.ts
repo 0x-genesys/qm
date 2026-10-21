@@ -190,8 +190,8 @@ export function createDeploymentMethods(
     deploymentGitRepoPath(id) {
       return deps.deploy.gitRepoPath(id);
     },
-    runDeploymentGitPush(id, runReceivePack) {
-      return deps.deploy.pushGit(id, runReceivePack);
+    runDeploymentGitPush(id, runReceivePack, publishedBy) {
+      return deps.deploy.pushGit(id, runReceivePack, publishedBy);
     },
     async deploymentGitUrlFor(idOrName, principalId, opts) {
       const d = await deps.deploy.getDeployment(idOrName);

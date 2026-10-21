@@ -55,6 +55,7 @@ function isRedeployInput(b: unknown): b is RedeployInput {
     (b.homeFiles === undefined || Array.isArray(b.homeFiles)) &&
     (b.env === undefined || isStringRecord(b.env)) &&
     b.stampEnv === undefined &&
+    b.publishedBy === undefined &&
     (b.alwaysOn === undefined || typeof b.alwaysOn === "boolean")
   );
 }
@@ -224,7 +225,7 @@ function forwardableHeaders(req: BaseCtx["req"]): Record<string, string | string
 const APP_SANDBOX_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads";
 
 function frameAncestorsDirective(ancestors: readonly string[]): string {
-  return `frame-ancestors 'self' ${ancestors.join(" ")}`;
+  return `frame-ancestors ${[...new Set(["'self'", ...ancestors])].join(" ")}`;
 }
 
 function cspMentionsFrameAncestors(value: string | string[] | undefined): boolean {
@@ -865,7 +866,7 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
   const wantsHtml = ctx.method === "GET" && String(req.headers.accept ?? "").includes("text/html");
   let session = sessionSecret ? portalSession(req.headers.cookie, sessionSecret) : null;
   const dest = req.headers["sec-fetch-dest"];
-  const topLevelSession = session !== null && dest !== "iframe";
+  const ownCookieSession = session !== null;
   const site = req.headers["sec-fetch-site"];
   const framed = dest === "iframe" || site === "same-origin";
   const embedAncestors = framed ? (deployment?.embedAncestors ?? []) : [];
@@ -1046,10 +1047,10 @@ export async function proxyDeploymentSubdomain(ctx: BaseCtx): Promise<boolean> {
     recordPageView(authMode);
   }
   await proxyReach(ctx, reach, pathname, sub && (canManage || authenticatedPermission) ? sub : undefined, {
-    frameAncestors: embedAncestors,
+    frameAncestors: deployment?.connectors ? ["'self'", ...(deployment.embedAncestors ?? [])] : embedAncestors,
     attestViewer: Boolean(
       deployment?.connectors &&
-      topLevelSession &&
+      ownCookieSession &&
       !session?.appOnly &&
       !["GET", "HEAD", "OPTIONS"].includes(ctx.method) &&
       samePerson(sub, deployment.createdBy),
@@ -1276,26 +1277,30 @@ async function serveDeploymentGit(ctx: BaseCtx): Promise<void> {
         body,
       });
     const result = isPush
-      ? await ctx.app.runDeploymentGitPush(parts.id, async () => {
-          if (
-            access?.principalId &&
-            !(await ctx.app.authorizesDeploymentGitAccess(parts.id, access.principalId, "write"))
-          ) {
-            const body = Buffer.from(
-              JSON.stringify({ error: "forbidden", message: "deployment git write access has been revoked" }),
-            );
-            return {
-              result: {
-                status: 403,
-                headers: { "content-type": "application/json", "content-length": String(body.length) },
-                body,
-              },
-              ok: false,
-            };
-          }
-          const r = await runBackend();
-          return { result: r, ok: r.status >= 200 && r.status < 300 };
-        })
+      ? await ctx.app.runDeploymentGitPush(
+          parts.id,
+          async () => {
+            if (
+              access?.principalId &&
+              !(await ctx.app.authorizesDeploymentGitAccess(parts.id, access.principalId, "write"))
+            ) {
+              const body = Buffer.from(
+                JSON.stringify({ error: "forbidden", message: "deployment git write access has been revoked" }),
+              );
+              return {
+                result: {
+                  status: 403,
+                  headers: { "content-type": "application/json", "content-length": String(body.length) },
+                  body,
+                },
+                ok: false,
+              };
+            }
+            const r = await runBackend();
+            return { result: r, ok: r.status >= 200 && r.status < 300 };
+          },
+          access?.principalId,
+        )
       : await runBackend();
     ctx.res.writeHead(result.status, result.headers);
     ctx.res.end(result.body);
@@ -1473,7 +1478,9 @@ async function redeployDeployment(ctx: ApiCtx): Promise<void> {
     });
   }
   try {
-    return sendJson(res, 200, { deployment: deploymentView(await app.redeploy(id, body)) });
+    const publishedBy = ctx.capability?.actorId ?? ctx.actor?.p;
+    const input = publishedBy ? { ...body, publishedBy } : body;
+    return sendJson(res, 200, { deployment: deploymentView(await app.redeploy(id, input)) });
   } catch (e) {
     return sendJson(res, 400, { error: "deploy_failed", message: errMessage(e) });
   }

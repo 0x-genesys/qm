@@ -119,6 +119,7 @@ interface DeploymentVersionView {
   createdAt: number;
   commit?: string;
   parentCommit?: string;
+  publishedBy?: string;
 }
 
 export interface DeploymentView {
@@ -146,11 +147,12 @@ export interface ViewerDeployment extends DeploymentView {
 }
 
 export function deploymentView(d: Deployment): DeploymentView {
-  const versions = d.versions.map(({ version, createdAt, commit, parentCommit }) => ({
+  const versions = d.versions.map(({ version, createdAt, commit, parentCommit, publishedBy }) => ({
     version,
     createdAt,
     ...(commit ? { commit } : {}),
     ...(parentCommit ? { parentCommit } : {}),
+    ...(publishedBy ? { publishedBy } : {}),
   }));
   return {
     id: d.id,
@@ -622,7 +624,11 @@ export interface App {
   }>;
   deploymentGrantees(idOrName: string): Promise<DeploymentGrantee[]>;
   deploymentGitRepoPath(id: string): Promise<string | null>;
-  runDeploymentGitPush<T>(id: string, runReceivePack: () => Promise<{ result: T; ok: boolean }>): Promise<T>;
+  runDeploymentGitPush<T>(
+    id: string,
+    runReceivePack: () => Promise<{ result: T; ok: boolean }>,
+    publishedBy?: string,
+  ): Promise<T>;
   deploymentGitUrlFor(
     idOrName: string,
     principalId: string,

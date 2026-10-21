@@ -22,6 +22,7 @@ export interface DeploymentVersion {
   commit?: string;
   parentCommit?: string;
   env?: Record<string, string>;
+  publishedBy?: string;
 }
 
 export interface DeployEndpoint {
@@ -91,6 +92,7 @@ interface VersionInput {
   homeDir?: string;
   env?: Record<string, string>;
   files?: DeployGitInputFile[];
+  publishedBy?: string;
 }
 
 export interface DeployStore {
@@ -105,7 +107,7 @@ export interface DeployStore {
     } & VersionInput,
   ): Promise<Deployment>;
   addVersion(id: string, input: VersionInput): Promise<DeploymentVersion>;
-  addVersionFromCommit(id: string, commit: string): Promise<DeploymentVersion | null>;
+  addVersionFromCommit(id: string, commit: string, publishedBy?: string): Promise<DeploymentVersion | null>;
   get(id: string): Promise<Deployment | null>;
   getByName(name: string): Promise<Deployment | null>;
   list(): Promise<Deployment[]>;
@@ -307,6 +309,7 @@ export function createDeployStore(backing?: DurableMap<Deployment> | DeployStore
       ...(input.env ? { env: input.env } : {}),
       ...(commit ? { commit } : {}),
       ...(parentCommit ? { parentCommit } : {}),
+      ...(input.publishedBy ? { publishedBy: input.publishedBy } : {}),
     };
   }
 
@@ -353,7 +356,7 @@ export function createDeployStore(backing?: DurableMap<Deployment> | DeployStore
       await updateVersionRef(id, v);
       return v;
     },
-    async addVersionFromCommit(id, commit) {
+    async addVersionFromCommit(id, commit, publishedBy) {
       const d = await backingMap.get(id);
       if (!d) throw new Error(`unknown deployment: ${id}`);
       const current = currentVersionOf(d);
@@ -368,6 +371,7 @@ export function createDeployStore(backing?: DurableMap<Deployment> | DeployStore
         ...(current?.env ? { env: current.env } : {}),
         commit,
         ...(current?.commit ? { parentCommit: current.commit } : {}),
+        ...(publishedBy ? { publishedBy } : {}),
       };
       d.versions.push(v);
       d.currentVersion = version;

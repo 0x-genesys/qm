@@ -40,6 +40,7 @@ export interface RedeployInput {
   env?: Record<string, string>;
   stampEnv?: Record<string, string>;
   alwaysOn?: boolean;
+  publishedBy?: string;
 }
 
 export interface DeployInput extends RedeployInput {
@@ -93,7 +94,7 @@ export interface DeployService {
   /** Recent app output (entrypoint stdout+stderr) for a deployment, newest last; null when the provider keeps none. */
   deploymentLogs(idOrName: string, opts: { tailLines: number }): Promise<string | null>;
   gitRepoPath(idOrName: string): Promise<string | null>;
-  pushGit<T>(id: string, runReceivePack: () => Promise<{ result: T; ok: boolean }>): Promise<T>;
+  pushGit<T>(id: string, runReceivePack: () => Promise<{ result: T; ok: boolean }>, publishedBy?: string): Promise<T>;
   reapIdleDeployments(ttlMs: number, now?: number): Promise<number>;
   deployOrUpdate(input: DeployOrUpdateInput): Promise<Deployment>;
   deploymentGrantees(idOrName: string): Promise<DeploymentGrantee[]>;
@@ -371,6 +372,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         ...(input.createdInScope !== undefined ? { createdInScope: input.createdInScope } : {}),
         ...(env ? { env } : {}),
         ...(input.alwaysOn !== undefined ? { alwaysOn: input.alwaysOn } : {}),
+        publishedBy: input.createdBy,
       });
       const endpoint = await applyVersion(d.id, d.versions[0]!);
       await markVersionRunning(d.id, d.versions[0]!.version, endpoint);
@@ -404,6 +406,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           files: input.files,
           ...(homeDir ? { homeDir } : {}),
           ...(env ? { env } : {}),
+          ...(input.publishedBy ? { publishedBy: input.publishedBy } : {}),
         });
         const endpoint = await applyVersion(id, v, before.appliedVersion ?? before.currentVersion, input.alwaysOn);
         await markVersionRunning(id, v.version, endpoint);
@@ -577,6 +580,14 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         throw new DeployAccessError("unknown_connector", `not a connected-app host: ${unknown.join(", ")}`);
       if (hosts.length && d.public)
         throw new DeployAccessError("forbidden", "a public app cannot borrow connectors; make it restricted first");
+      if (hosts.length && d.appliedVersion !== undefined && d.appliedVersion !== d.currentVersion)
+        throw new DeployAccessError("forbidden", "a deploy is in progress; lend once it is running");
+      const approved = currentVersionOf(d);
+      if (hosts.length && !samePerson(approved?.publishedBy, d.createdBy))
+        throw new DeployAccessError(
+          "forbidden",
+          `version ${d.currentVersion} was not published by the publisher; publish it yourself before lending`,
+        );
       const loan = hosts.length ? { hosts, version: d.currentVersion } : undefined;
       await deps.deployStore.setConnectors(d.id, loan);
       deps.auditLog.record({
@@ -661,7 +672,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
       return d ? await deps.deployStore.repoUrl(d.id) : null;
     },
 
-    async pushGit(id, runReceivePack) {
+    async pushGit(id, runReceivePack, publishedBy) {
       return withDeployLock(id, async () => {
         const { result, ok } = await runReceivePack();
         if (!ok) return result;
@@ -677,7 +688,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
             tree.map((f) => f.size),
             deps.provider.profile.maxAppBytes,
           );
-          const v = await deps.deployStore.addVersionFromCommit(id, pushed);
+          const v = await deps.deployStore.addVersionFromCommit(id, pushed, publishedBy);
           if (!v) return result;
           const endpoint = await applyVersion(id, v, before.appliedVersion ?? before.currentVersion);
           await markVersionRunning(id, v.version, endpoint);
@@ -756,6 +767,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
           await this.redeploy(existing.id, {
             entrypoint,
             files: input.files,
+            publishedBy: createdBy,
             ...(input.alwaysOn !== undefined ? { alwaysOn: input.alwaysOn } : {}),
             ...(input.homeFiles ? { homeFiles: input.homeFiles } : {}),
             ...(input.env ? { env: input.env } : {}),
@@ -796,6 +808,7 @@ export function createDeployService(deps: DeployServiceDeps): DeployService {
         await this.redeploy(existing.id, {
           entrypoint,
           files,
+          publishedBy: createdBy,
           ...(input.alwaysOn !== undefined ? { alwaysOn: input.alwaysOn } : {}),
           ...(input.homeFiles ? { homeFiles: input.homeFiles } : {}),
           ...(input.env ? { env: input.env } : {}),

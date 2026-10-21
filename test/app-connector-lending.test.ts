@@ -42,7 +42,12 @@ function portalCookie(sub: string): string {
   return `portal_session=${body}.${createHmac("sha256", key).update(body).digest("base64url")}`;
 }
 
-function visit(port: number, sub: string, method: string, extra: Record<string, string> = {}): Promise<number> {
+function visit(
+  port: number,
+  sub: string,
+  method: string,
+  extra: Record<string, string> = {},
+): Promise<{ status: number; csp: unknown }> {
   return new Promise((resolve, reject) => {
     const req = httpRequest(
       {
@@ -54,7 +59,7 @@ function visit(port: number, sub: string, method: string, extra: Record<string, 
       },
       (res) => {
         res.resume();
-        res.on("end", () => resolve(res.statusCode ?? 0));
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, csp: res.headers["content-security-policy"] }));
       },
     );
     req.on("error", reject);
@@ -228,7 +233,7 @@ test("a write is honoured only with the gateway's attestation that the publisher
   const h = await harness(t);
   await h.lend(PUBLISHER, [GMAIL]);
 
-  assert.equal(await visit(h.port, VIEWER, "POST", { [VIEWER_ATTESTATION_HEADER]: "forged" }), 200);
+  assert.equal((await visit(h.port, VIEWER, "POST", { [VIEWER_ATTESTATION_HEADER]: "forged" })).status, 200);
   assert.equal(h.seenByApp.at(-1)![VIEWER_ATTESTATION_HEADER], undefined, "another viewer gets no attestation");
   assert.equal((await h.broker(send)).json.error, "publisher_viewer_required");
   const otherViewer = await mintPortalIdentity(
@@ -246,13 +251,32 @@ test("a write is honoured only with the gateway's attestation that the publisher
     "the app holds the key behind its viewer identity header, so that header cannot authorize a write",
   );
 
-  assert.equal(await visit(h.port, PUBLISHER, "GET"), 200);
+  const page = await visit(h.port, PUBLISHER, "GET");
+  assert.equal(page.status, 200);
+  assert.equal(page.csp, "frame-ancestors 'self'", "only the app's own pages may frame an app that borrows connectors");
   assert.equal(h.seenByApp.at(-1)![VIEWER_ATTESTATION_HEADER], undefined, "a navigation can be cross-site, so no");
-  assert.equal(await visit(h.port, PUBLISHER, "POST", { "sec-fetch-dest": "iframe" }), 200);
-  assert.equal(h.seenByApp.at(-1)![VIEWER_ATTESTATION_HEADER], undefined, "nor a framed request");
-  assert.equal(await visit(h.port, PUBLISHER, "POST", { origin: "https://mailer.apps.example.com" }), 200);
+  await h.app.setDeploymentEmbedAncestors(h.d.id, ["https://host.example"]);
+  const embedded = await visit(h.port, PUBLISHER, "POST", {
+    Cookie: portalCookie(PUBLISHER).replace("portal_session=", "portal_session_x="),
+    "sec-fetch-dest": "iframe",
+  });
+  assert.equal(embedded.status, 200);
+  assert.equal(
+    h.seenByApp.at(-1)![VIEWER_ATTESTATION_HEADER],
+    undefined,
+    "nor when another site embeds the app with the cross-site frame cookie",
+  );
+  assert.equal(
+    (await visit(h.port, PUBLISHER, "POST", { origin: "https://mailer.apps.example.com", "sec-fetch-dest": "iframe" }))
+      .status,
+    200,
+  );
   const attestation = h.seenByApp.at(-1)![VIEWER_ATTESTATION_HEADER];
-  assert.equal(typeof attestation, "string", "the publisher's own same-origin action carries an attestation");
+  assert.equal(
+    typeof attestation,
+    "string",
+    "the publisher's own same-origin action carries an attestation, even inside the app shell's frame",
+  );
   const sent = await h.broker({ ...send, viewer: attestation });
   assert.equal(sent.status, 200);
   assert.equal(h.upstreamCalls.length, 1, "only the attested write reached the provider");
@@ -298,12 +322,22 @@ test("a loan covers only the version the publisher approved, never a public app,
   const h = await harness(t);
   await h.lend(PUBLISHER, [GMAIL, "slack.com"]);
   await assert.rejects(h.app.setDeploymentPublic(h.d.id, true, { createdBy: PUBLISHER }), /cannot be public/);
-  const next = await h.app.redeploy(h.d.id, { entrypoint: "x", files: [] });
+  const byOther = await h.app.redeploy(h.d.id, { entrypoint: "x", files: [], publishedBy: VIEWER });
+  assert.match(
+    String((await h.lend(PUBLISHER, [GMAIL, "slack.com"])).json.message),
+    /not published by the publisher/,
+    "lending again cannot rubber-stamp code someone else published",
+  );
+  assert.equal(
+    (await h.broker(read, await h.appTokenFor(byOther.currentVersion))).json.error,
+    "loan_for_other_version",
+  );
+  const next = await h.app.redeploy(h.d.id, { entrypoint: "x", files: [], publishedBy: PUBLISHER });
   const nextToken = await h.appTokenFor(next.currentVersion);
   assert.equal(
     (await h.broker(read, nextToken)).json.error,
     "loan_for_other_version",
-    "new code, whoever pushed it, cannot use a loan made for the old code",
+    "new code cannot use a loan made for the old code",
   );
   await h.lend(PUBLISHER, [GMAIL, "slack.com"]);
   assert.equal((await h.broker(read, nextToken)).status, 200);
