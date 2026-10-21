@@ -41,10 +41,10 @@ const blankProvider = () => ({
   setupSteps: "",
   pkce: false,
 });
-export function callbackUrl(provider: string) {
+function callbackUrl(provider: string) {
   return location.origin + "/v1/connectors/oauth/" + (provider.trim() || "<name>") + "/callback";
 }
-export class ProvidersState {
+class ProvidersState {
   get list() {
     return connectors.providers;
   }
