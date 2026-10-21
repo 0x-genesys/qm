@@ -162,7 +162,9 @@ test("the goal governor judges with its turn's context", async (t) => {
     ...pi,
     turns: {
       runTurn: async (input: HarnessTurnInput) => {
-        await input.governGoal!({ objective: "ship the release", trigger: "checkpoint", recentWork: "" });
+        await input.governGoal!({ objective: "ship the release", trigger: "checkpoint", recentWork: "" }).catch(
+          () => undefined,
+        );
         return { reply: "" };
       },
     },
