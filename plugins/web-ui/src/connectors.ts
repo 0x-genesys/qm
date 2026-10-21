@@ -66,7 +66,7 @@ let keychainConnectorCredentials: KeychainConnectorCredential[] = [];
 let keychainGrants: KeychainGrant[] = [];
 let keychainAsks: KeychainAsk[] = [];
 let keychainScopeNames: Record<string, string> = {};
-let connectorNotice = "";
+let connectorNotice: string | (() => string) = "";
 let loadNotice = "";
 let addingCredential: { service: string; envKey: string; purpose: string } | null = null;
 let secureDropUrl: string | null = null;
@@ -354,8 +354,10 @@ export function clearConnectorNotice(): void {
 }
 
 export function noteConnectorResult(provider: string, status: string): void {
-  const name = connectorName(provider);
-  connectorNotice = status === "connected" ? `${name}: connected.` : `${name}: connection failed.`;
+  connectorNotice = () =>
+    status === "connected"
+      ? `${connectorName(provider)}: connected.`
+      : `${connectorName(provider)}: connection failed.`;
 }
 
 function loadingPlaceholder(label: string): TemplateResult {
@@ -479,7 +481,9 @@ function drawConnectors(): void {
       <div class="kc-resource-list">${content}</div>
     </section>`;
   const rows: TemplateResult[] = [];
-  const notice = [connectorNotice, loadNotice].filter(Boolean).join(" ");
+  const notice = [typeof connectorNotice === "function" ? connectorNotice() : connectorNotice, loadNotice]
+    .filter(Boolean)
+    .join(" ");
   if (notice || loading)
     rows.push(html`<div class="status" role="status">${loading ? "Loading your keychain…" : notice}</div>`);
   if (addingCredential) rows.push(addCredentialCard());

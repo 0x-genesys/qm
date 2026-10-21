@@ -35,7 +35,7 @@ test("keychain and connect cards take names and descriptions from the provider l
   const vite = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom" });
   try {
     const { appState } = await vite.ssrLoadModule("/src/shell.ts");
-    const { renderConnectors } = await vite.ssrLoadModule("/src/connectors.ts");
+    const { noteConnectorResult, renderConnectors } = await vite.ssrLoadModule("/src/connectors.ts");
     const { connectorCard } = await vite.ssrLoadModule("/src/connector-widget.ts");
     const { connectorLinksIn } = await vite.ssrLoadModule("/src/connector-link.ts");
     const { render } = await vite.ssrLoadModule("lit");
@@ -52,7 +52,9 @@ test("keychain and connect cards take names and descriptions from the provider l
     const main = document.getElementById("main")!;
     appState.mainEl = main;
     appState.currentView = "keychain";
+    noteConnectorResult("acme", "connected");
     await renderConnectors();
+    assert.equal(main.querySelector(".status")!.textContent, "Acme CRM: connected.");
     const rows = [...main.querySelectorAll(".kc-account")].map((row) => ({
       name: row.querySelector("h3")!.textContent,
       description: row.querySelector(".kc-resource-meta")?.textContent ?? "",
