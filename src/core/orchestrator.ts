@@ -297,7 +297,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
     createCompaction(deps);
   const originOf = async (session: Session | null) => {
     if (!session) return undefined;
-    if (!session.parentSessionId) return sessionOrigin(session.threadRef);
+    if (!session.parentSessionId && session.origin) return session.origin;
     return deps.sessions.inheritedOrigin(session).catch(swallowAs("orchestrator: session origin", undefined));
   };
 
