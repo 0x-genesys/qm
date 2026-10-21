@@ -10,7 +10,7 @@ import { createHmac } from "node:crypto";
 import { installSeedSkills, parseSeedSkill, upsertSeedSkill } from "../src/skills/seed.ts";
 import { materializeSkillTree } from "../src/skills/materialize.ts";
 import { createSkillStore, safeSkillFilePath } from "../src/skills/skill-store.ts";
-import { PROVIDERS } from "../src/connectors/oauth.ts";
+import { isBuiltInProvider } from "../src/connectors/oauth.ts";
 import type { Sandbox, SandboxHandle } from "../src/sandbox/sandbox.ts";
 import { buildApp } from "./support/build-app.ts";
 import { scopeId, type TurnRequest } from "../src/types.ts";
@@ -59,7 +59,7 @@ test("every seed skill connector names a built-in OAuth provider", () => {
     .filter((connector) => connector !== undefined);
   assert.ok(connectors.length > 0);
   assert.deepEqual(
-    connectors.filter((connector) => !PROVIDERS[connector]),
+    connectors.filter((connector) => !isBuiltInProvider(connector)),
     [],
   );
 });
