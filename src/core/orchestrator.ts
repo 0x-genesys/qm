@@ -295,10 +295,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
   const securitySteersInFlight = new Set<string>();
   const { compactContextIfNeeded, compactRecent, scheduleBackgroundCompaction, documentTokenBudget } =
     createCompaction(deps);
-  const originOf = async (session: Session | null) =>
-    session
-      ? deps.sessions.inheritedOrigin(session).catch(swallowAs("orchestrator: session origin", undefined))
-      : undefined;
+  const originOf = async (session: Session | null) => {
+    if (!session) return undefined;
+    if (!session.parentSessionId) return sessionOrigin(session.threadRef);
+    return deps.sessions.inheritedOrigin(session).catch(swallowAs("orchestrator: session origin", undefined));
+  };
 
   async function approvalSummary(
     scopeId: ScopeId,

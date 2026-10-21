@@ -1686,7 +1686,6 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
     },
 
     async inheritedOrigin(session): Promise<SessionOrigin> {
-      if (!session.parentSessionId) return sessionOrigin(session.threadRef);
       const rows = await q(
         `WITH RECURSIVE ${ancestry("s.id = $1")} SELECT origin FROM ancestry ORDER BY cardinality(path) DESC LIMIT 1`,
         [session.id],
