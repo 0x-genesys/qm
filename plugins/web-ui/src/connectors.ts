@@ -12,7 +12,6 @@ import { isActiveGrant, isExpiredCredential, KeychainOperations } from "./keycha
 import { listPageTpl } from "./list-page";
 
 interface ConnectorProvider extends ConnectorInfo {
-  mcpLabel?: string;
   connected?: boolean;
   needsReconnect?: boolean;
   refreshError?: string;
@@ -546,9 +545,7 @@ export async function renderConnectors(): Promise<void> {
       if (!fresh()) return;
       rememberConnectors(value.providers ?? {});
       connectorProviders = Object.fromEntries(
-        Object.entries(value.providers ?? {}).filter(
-          ([, p]) => (p.available && !p.mcpLabel) || p.connected || p.needsReconnect,
-        ),
+        Object.entries(value.providers ?? {}).filter(([, p]) => p.available || p.connected || p.needsReconnect),
       );
       connectorsEverLoaded = true;
       connectorsLoading = false;
