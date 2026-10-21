@@ -25,7 +25,7 @@ const MEMBERS_SHOW_MAX = 40;
 
 export const slackFileName = (f: SlackFile): string => f.name || f.title || f.id || "file";
 
-export function reactionTallies(
+function reactionTallies(
   raw: unknown,
   nameById: ReadonlyMap<string, string> = new Map(),
   botUserId?: string,
