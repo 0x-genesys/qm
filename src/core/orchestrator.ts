@@ -57,7 +57,7 @@ import { supportsProcessSessions, supportsScopeProfile } from "../sandbox/sandbo
 import { createBackgroundBroker } from "../connectors/background-exec-broker.ts";
 import { createMonitorBroker, readBackgroundOutputTail } from "../monitors/monitor-broker.ts";
 import { isPollSurface } from "../triggers/run-trigger.ts";
-import { envKey } from "../credentials/connector-token.ts";
+import { connectorTokenNote, envKey } from "../credentials/connector-token.ts";
 import {
   credentialHandle,
   renderKeychainManifest,
@@ -154,7 +154,7 @@ import {
   selectOverheardToImport,
   type OverheardEntryPayload,
 } from "../harness/replay.ts";
-import { errMessage, reportFailure, reportFailureAs, swallow, swallowAs } from "../util/errors.ts";
+import { errMessage, reportFailure, swallow, swallowAs } from "../util/errors.ts";
 import { isObj } from "../util/objects.ts";
 import { absoluteAppLinks, jsonbSafeStringify } from "../util/text.ts";
 import {
@@ -1244,8 +1244,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       if (!external && deps.deploymentLayer?.hints.length) {
         systemPrompt += `\n\n## Deployment tool hints\n${deps.deploymentLayer.hints.map((hint) => `- ${hint}`).join("\n")}`;
       }
-      systemPrompt +=
-        "\n\n## Skills\nThe per-turn shortlist is not exhaustive. Use skills action list to browse all or search with query to find omitted or new skills. Read a skill before relying on it.";
       const gatewayBlock = renderGatewayContext(input.surface, input.gatewayContext);
       if (gatewayBlock) turnContextBlocks["Where you are"] = gatewayBlock;
       const homeChannel =
@@ -1536,9 +1534,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                     return { env: [{ key: envKey(host), value: token }] };
                   },
                 },
-                !healthy && operatorFallback
-                  ? `${host}, configured operator fallback; availability checked on use`
-                  : `${host} connector, account ${accountType ?? "default"}`,
+                `${
+                  !healthy && operatorFallback
+                    ? `${host}, configured operator fallback; availability checked on use`
+                    : `${host} connector, account ${accountType ?? "default"}`
+                }; ${connectorTokenNote(host)}`,
                 healthy && status && "credentialId" in status ? status.credentialId : undefined,
                 actor.id,
                 healthy && status && "credentialId" in status ? status.credentialId : undefined,
@@ -2952,16 +2952,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ? [p.name]
             : [];
         });
-        const pinnedSkills = deps.config
-          ? await deps.config.getPinnedSkillsDurable(scopeId).catch(reportFailureAs("orchestrator: pinned skills", []))
-          : [];
-        turnContextBlocks["Skills"] = skillsIndex(
-          nativeSkills,
-          [scopeId, resolution.orgScopeId],
-          input.text,
-          usedSkills,
-          pinnedSkills,
-        );
+        turnContextBlocks["Skills"] = skillsIndex(nativeSkills, [scopeId, resolution.orgScopeId], usedSkills);
         const turnEnvironmentContents = [
           manifest,
           principalDelivered,
