@@ -12,6 +12,7 @@ test("the keychain takes names and descriptions from the provider list", async (
               google: { label: "Google Workspace", description: "Gmail, Calendar, Drive, Sheets", available: true },
               acme: { label: "Acme CRM", description: "Deals & contacts", available: true },
               bare: { available: true },
+              tracker: { label: "Tracker", mcpLabel: "Tracker", available: true },
             },
           })
         : Response.json({}),
