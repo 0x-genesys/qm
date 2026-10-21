@@ -51,6 +51,7 @@ test("branded consent cards require the trusted origin and a provider id", () =>
   );
   assert.equal(connectorLinksIn("https://agent.example.com/connect/redeem/x", "https://agent.example.com").length, 0);
   assert.equal(connectorLinksIn(URL, "https://agent.example.com").length, 1);
+  assert.deepEqual(connectorLinksIn("https://agent.example.com/connect/redeem/x?p=Acme%20CRM"), []);
 });
 
 test("surrounding prose is preserved", () => {

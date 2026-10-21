@@ -6,9 +6,15 @@ export interface ConnectorInfo {
 }
 
 const knownConnectors = new Map<string, ConnectorInfo>();
+let knownConnectorsRevision = 0;
 
 export function rememberConnectors(providers: Record<string, ConnectorInfo>): void {
   for (const [id, info] of Object.entries(providers)) knownConnectors.set(id, info);
+  knownConnectorsRevision++;
+}
+
+export function connectorsRevision(): number {
+  return knownConnectorsRevision;
 }
 
 export function connectorName(id: string): string {

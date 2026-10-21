@@ -1,46 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { JSDOM, VirtualConsole } from "jsdom";
-import { createServer } from "vite";
+import { browserEnv } from "./browser-env.ts";
 import { harness } from "./deep-link-boot-fixture.ts";
 
-test("keychain and connect cards take names and descriptions from the provider list", async () => {
-  const virtualConsole = new VirtualConsole();
-  const dom = new JSDOM('<!doctype html><div id="app"></div><main id="main"></main>', {
-    url: "http://localhost/web-ui/",
-    virtualConsole,
-  });
-  Object.defineProperty(dom.window, "matchMedia", {
-    value: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
-  });
-  for (const key of [
-    "window",
-    "document",
-    "location",
-    "history",
-    "localStorage",
-    "navigator",
-    "HTMLElement",
-    "Node",
-    "DOMParser",
-  ])
-    Object.defineProperty(globalThis, key, {
-      configurable: true,
-      value: key === "window" ? dom.window : dom.window[key as keyof typeof dom.window],
-    });
-  Object.defineProperty(globalThis, "getComputedStyle", {
-    configurable: true,
-    value: dom.window.getComputedStyle.bind(dom.window),
-  });
-  const originalFetch = globalThis.fetch;
-  const vite = await createServer({ server: { middlewareMode: true, hmr: false }, appType: "custom" });
-  try {
-    const { appState } = await vite.ssrLoadModule("/src/shell.ts");
-    const { noteConnectorResult, renderConnectors } = await vite.ssrLoadModule("/src/connectors.ts");
-    const { connectorCard } = await vite.ssrLoadModule("/src/connector-widget.ts");
-    const { connectorLinksIn } = await vite.ssrLoadModule("/src/connector-link.ts");
-    const { render } = await vite.ssrLoadModule("lit");
-    globalThis.fetch = async (input) =>
+test("the keychain takes names and descriptions from the provider list", async () => {
+  const env = await browserEnv({
+    fetch: async (input) =>
       String(input).includes("/api/connectors")
         ? Response.json({
             providers: {
@@ -49,7 +14,11 @@ test("keychain and connect cards take names and descriptions from the provider l
               bare: { available: true },
             },
           })
-        : Response.json({});
+        : Response.json({}),
+  });
+  try {
+    const { appState } = await env.vite.ssrLoadModule("/src/shell.ts");
+    const { noteConnectorResult, renderConnectors } = await env.vite.ssrLoadModule("/src/connectors.ts");
     const main = document.getElementById("main")!;
     appState.mainEl = main;
     appState.currentView = "keychain";
@@ -66,18 +35,8 @@ test("keychain and connect cards take names and descriptions from the provider l
       { name: "Acme CRM", description: "Deals & contacts", logo: null },
       { name: "Bare", description: "", logo: null },
     ]);
-
-    const links = connectorLinksIn("https://agent.example.com/connect/redeem/x?p=acme", "https://agent.example.com");
-    assert.deepEqual(links, [{ provider: "acme", url: "https://agent.example.com/connect/redeem/x?p=acme" }]);
-    const host = document.createElement("div");
-    render(connectorCard(links[0]), host);
-    assert.equal(host.querySelector("strong")!.textContent, "Connect Acme CRM");
-    assert.equal(host.querySelector(".connector-logo")!.hasAttribute("data-service"), false);
-    assert.ok(host.querySelector(".connector-logo svg"));
   } finally {
-    globalThis.fetch = originalFetch;
-    await vite.close();
-    dom.window.close();
+    await env.close();
   }
 });
 
@@ -108,6 +67,7 @@ test("a chat connect card picks up the provider label once the provider list loa
     for (let i = 0; i < 100 && cardTitle() !== "Connect Acme CRM"; i++)
       await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(cardTitle(), "Connect Acme CRM");
+    assert.equal(document.querySelector(".connector-widget .connector-logo")!.hasAttribute("data-service"), false);
   } finally {
     releaseConnectors();
     await h.close();
