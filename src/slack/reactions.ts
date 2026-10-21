@@ -151,13 +151,18 @@ export interface ReactionTally {
   users?: Array<{ id: string; name: string; isSelf?: boolean; ts?: string }>;
 }
 
+const MAX_SUMMARY_REACTORS = 5;
+
 export function summarizeReactions(reactions: readonly ReactionTally[] | undefined): string {
   if (!reactions?.length) return "";
   return reactions
     .filter((r) => r.name && r.count > 0)
     .map((r) => {
       const emoji = r.count > 1 ? `:${r.name}:×${r.count}` : `:${r.name}:`;
-      const users = r.users?.map((user) => {
+      const shown = r.users?.slice(0, MAX_SUMMARY_REACTORS);
+      const self = r.users?.find((user) => user.isSelf);
+      if (self && shown?.length && !shown.some((user) => user.isSelf)) shown[shown.length - 1] = self;
+      const users = shown?.map((user) => {
         const name = user.isSelf ? "you" : user.name;
         return user.ts ? `${name} at ${utcMinute(Number(user.ts) * 1000)}` : name;
       });
