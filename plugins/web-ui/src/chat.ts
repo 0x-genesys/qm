@@ -246,6 +246,7 @@ interface SettledRowKey {
   speakerLabel: string | undefined;
   edited: boolean;
   deleted: boolean;
+  connectorRevision: number;
   tpl: TemplateResult | typeof nothing;
 }
 const settledRowCache = new WeakMap<object, SettledRowKey>();
@@ -272,11 +273,13 @@ function nextChatCta(): string {
 const connectedConnectors = new Set<string>();
 const redrawHooks = new Set<() => void>();
 let connectorCatalogLoad: Promise<void> | null = null;
+let connectorRevision = 0;
 
 function loadConnectorCatalog(): void {
   connectorCatalogLoad ??= api<{ providers?: Record<string, ConnectorInfo> }>("/api/connectors").then(
     (value) => {
       rememberConnectors(value.providers ?? {});
+      connectorRevision++;
       for (const hook of redrawHooks) hook();
     },
     (error) => reportHandledError("web:connector_catalog", error),
@@ -289,6 +292,7 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 export function markConnectorConnected(provider: string): void {
   if (!provider) return;
   connectedConnectors.add(provider);
+  connectorRevision++;
   for (const hook of redrawHooks) hook();
 }
 
@@ -1880,7 +1884,8 @@ export function createChatSurface(
       hit.forking === forking &&
       hit.speakerLabel === speakerLabel &&
       hit.edited === edited &&
-      hit.deleted === deleted
+      hit.deleted === deleted &&
+      hit.connectorRevision === connectorRevision
     ) {
       return hit.tpl;
     }
@@ -1901,6 +1906,7 @@ export function createChatSurface(
       speakerLabel,
       edited,
       deleted,
+      connectorRevision,
       tpl,
     });
     return tpl;

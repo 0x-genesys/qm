@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { JSDOM, VirtualConsole } from "jsdom";
 import { createServer } from "vite";
+import { harness } from "./deep-link-boot-fixture.ts";
 
 test("keychain and connect cards take names and descriptions from the provider list", async () => {
   const virtualConsole = new VirtualConsole();
@@ -77,5 +78,38 @@ test("keychain and connect cards take names and descriptions from the provider l
     globalThis.fetch = originalFetch;
     await vite.close();
     dom.window.close();
+  }
+});
+
+test("a chat connect card picks up the provider label once the provider list loads", async () => {
+  let releaseConnectors = (): void => {};
+  const held = new Promise<void>((resolve) => (releaseConnectors = resolve));
+  const h = await harness({
+    path: "/s/sess-deep",
+    entries: [
+      {
+        seq: 1,
+        type: "assistant",
+        createdAt: 1,
+        payload: { text: "[Connect](http://localhost/connect/redeem/x?p=acme)" },
+      },
+    ],
+    api: (path) =>
+      path === "/api/connectors"
+        ? held.then(() => Response.json({ providers: { acme: { label: "Acme CRM" } } }))
+        : undefined,
+  });
+  const cardTitle = () => document.querySelector(".connector-widget strong")?.textContent;
+  try {
+    await h.boot();
+    for (let i = 0; i < 100 && !cardTitle(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(cardTitle(), "Connect Acme");
+    releaseConnectors();
+    for (let i = 0; i < 100 && cardTitle() !== "Connect Acme CRM"; i++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(cardTitle(), "Connect Acme CRM");
+  } finally {
+    releaseConnectors();
+    await h.close();
   }
 });
