@@ -140,7 +140,13 @@ import {
   type ToolRowModel,
 } from "./timeline";
 import "./slack-setup";
-import { connectorLinksIn, stripConnectorLinks, type ConnectorLink } from "./connector-link";
+import {
+  connectorLinksIn,
+  rememberConnectors,
+  stripConnectorLinks,
+  type ConnectorInfo,
+  type ConnectorLink,
+} from "./connector-link";
 import { deepLinkPath, sessionLink, UI_BASE } from "./deep-link";
 import type { ChatSurface, ConvCtx } from "./conv-types";
 import { errMessage, swallow } from "../../chassis/src/errors";
@@ -265,6 +271,17 @@ function nextChatCta(): string {
 }
 const connectedConnectors = new Set<string>();
 const redrawHooks = new Set<() => void>();
+let connectorCatalogLoad: Promise<void> | null = null;
+
+function loadConnectorCatalog(): void {
+  connectorCatalogLoad ??= api<{ providers?: Record<string, ConnectorInfo> }>("/api/connectors").then(
+    (value) => {
+      rememberConnectors(value.providers ?? {});
+      for (const hook of redrawHooks) hook();
+    },
+    () => undefined,
+  );
+}
 let proactiveOpenerStarted = false;
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -2202,6 +2219,7 @@ export function createChatSurface(
 
   function connectorWidget(link: ConnectorLink): TemplateResult {
     if (link.provider === "slack-bot") return html`<qm-slack-setup></qm-slack-setup>`;
+    if (link.provider !== "composio") loadConnectorCatalog();
     return connectorCard(link, connectedConnectors.has(link.provider), withReturnTo);
   }
 
