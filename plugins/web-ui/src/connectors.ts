@@ -4,15 +4,14 @@ import { api } from "./core-bridge";
 import { errMessage } from "../../chassis/src/errors";
 import { icon } from "./icons";
 import { connectorLogo } from "./connector-logo";
-import { connectorDescription, connectorName, rememberConnectors } from "./connector-link";
+import { connectorDescription, connectorName, rememberConnectors, type ConnectorInfo } from "./connector-link";
 import { appState, replacePanePreservingFocus } from "./shell";
 import { scopedSession, scopedViewTopbar } from "./session-scope";
 import { focusDialogCancel, restoreDialogFocus, trapDialogFocus } from "./dialog-focus";
 import { isActiveGrant, isExpiredCredential, KeychainOperations } from "./keychain-state";
 import { listPageTpl } from "./list-page";
 
-interface ConnectorProvider {
-  mcpLabel?: string;
+interface ConnectorProvider extends ConnectorInfo {
   connected?: boolean;
   needsReconnect?: boolean;
   refreshError?: string;

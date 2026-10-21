@@ -279,7 +279,7 @@ function loadConnectorCatalog(): void {
       rememberConnectors(value.providers ?? {});
       for (const hook of redrawHooks) hook();
     },
-    () => undefined,
+    (error) => reportHandledError("web:connector_catalog", error),
   );
 }
 let proactiveOpenerStarted = false;
@@ -2219,7 +2219,7 @@ export function createChatSurface(
 
   function connectorWidget(link: ConnectorLink): TemplateResult {
     if (link.provider === "slack-bot") return html`<qm-slack-setup></qm-slack-setup>`;
-    if (link.provider !== "composio") loadConnectorCatalog();
+    loadConnectorCatalog();
     return connectorCard(link, connectedConnectors.has(link.provider), withReturnTo);
   }
 

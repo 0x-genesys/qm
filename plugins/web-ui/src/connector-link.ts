@@ -2,7 +2,6 @@ const LINK_RE = /https?:\/\/[^\s<>()[\]]+/gi;
 
 export interface ConnectorInfo {
   label?: string;
-  mcpLabel?: string;
   description?: string;
 }
 
@@ -13,8 +12,7 @@ export function rememberConnectors(providers: Record<string, ConnectorInfo>): vo
 }
 
 export function connectorName(id: string): string {
-  const info = knownConnectors.get(id);
-  return info?.label || info?.mcpLabel || id.charAt(0).toUpperCase() + id.slice(1);
+  return knownConnectors.get(id)?.label || id.charAt(0).toUpperCase() + id.slice(1);
 }
 
 export function connectorDescription(id: string): string {
@@ -60,7 +58,7 @@ export function connectorLinksIn(text: string, trustedOrigin?: string): Connecto
     if (trustedOrigin && parsed.origin !== trustedOrigin) continue;
     if (!/^\/(?:connect\/redeem|v1\/connectors\/oauth\/consent\/redeem)\/[^/]+$/.test(parsed.pathname)) continue;
     const provider = parsed.searchParams.get("p") ?? "";
-    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider) || provider === "composio" || provider === "slack-bot") continue;
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(provider)) continue;
     if (!out.some((l) => l.url === url)) out.push({ provider, url });
   }
   return out;
