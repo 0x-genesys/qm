@@ -10,7 +10,7 @@ import { createServer } from "../src/api/server.ts";
 import { type BuiltApp } from "../src/wiring.ts";
 import { buildApp } from "./support/build-app.ts";
 import { signRequest } from "../src/auth/source-auth.ts";
-import { PROVIDERS, setPublicOAuthClients, type FetchLike } from "../src/connectors/oauth.ts";
+import { oauthProvider, setPublicOAuthClients, type FetchLike } from "../src/connectors/oauth.ts";
 import { testConfig } from "./support/test-config.ts";
 
 const SECRET = "oauth-route-test-secret".repeat(3);
@@ -55,7 +55,7 @@ test("OAuth start, unsigned callback, status, and revoke are principal-bound", a
   let exchanged = false;
   const fetchImpl: FetchLike = async (url, init) => {
     exchanged = true;
-    assert.equal(url, PROVIDERS.google!.tokenUrl);
+    assert.equal(url, oauthProvider("google")!.tokenUrl);
     assert.match(init.body, /grant_type=authorization_code/);
     assert.match(init.body, /code=code-123/);
     return {
@@ -72,7 +72,7 @@ test("OAuth start, unsigned callback, status, and revoke are principal-bound", a
     const startRes = await fetch(`${srv.base}${startPath}`, { headers: sign("GET", startPath) });
     assert.equal(startRes.status, 200);
     const startBody = (await startRes.json()) as { authorizeUrl: string; hosts: string[] };
-    assert.deepEqual(startBody.hosts, PROVIDERS.google!.hosts);
+    assert.deepEqual(startBody.hosts, oauthProvider("google")!.hosts);
     const consent = new URL(startBody.authorizeUrl);
     const state = consent.searchParams.get("state");
     assert.ok(state);

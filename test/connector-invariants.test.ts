@@ -9,7 +9,7 @@ import type { AddressInfo } from "node:net";
 import { type BuiltApp } from "../src/wiring.ts";
 import { buildApp } from "./support/build-app.ts";
 import { createInsecureTestServer, createServer } from "../src/api/server.ts";
-import { PROVIDERS, sealOAuthState } from "../src/connectors/oauth.ts";
+import { connectorProviderEntries, sealOAuthState } from "../src/connectors/oauth.ts";
 import { credentialHandle } from "../src/credentials/keychain.ts";
 import { envKey, withOperatorTokenFallback } from "../src/credentials/connector-token.ts";
 import type { ConnectorTokenStore } from "../src/credentials/keychain.ts";
@@ -18,7 +18,7 @@ import { fakeSprites } from "./support/auto-fake-sprites.ts";
 import { testConfig } from "./support/test-config.ts";
 import { selectDefaultSandbox } from "./support/default-sandbox.ts";
 
-const CATALOG_HOSTS = Object.values(PROVIDERS).flatMap((p) => p.hosts);
+const CATALOG_HOSTS = connectorProviderEntries().flatMap(([, p]) => p.hosts);
 
 test("C3 — no catalog host appears in serviceHosts / egressServiceHosts (least privilege)", () => {
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "c3-")) }));
