@@ -414,19 +414,20 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
   const hasOrigin = (alias: string, origin: SessionOrigin): string => `${alias}.origin = '${origin}'`;
   const originFilterClause = (alias: string, origin: SessionOriginFilter): string =>
     origin === "other_background" ? `${alias}.origin NOT IN ('conversation', 'cron')` : hasOrigin(alias, origin);
-  const spendSql = `WITH RECURSIVE ancestry AS (
+  const ancestry = (seed: string): string => `ancestry AS (
            SELECT s.id AS session_id, s.parent_session_id, s.origin AS origin, s.origin_id AS cron_id,
                   ARRAY[s.id] AS path
              FROM sessions s
-            WHERE s.parent_session_id IS NOT NULL AND s.origin = 'conversation'
-              AND EXISTS (SELECT 1 FROM session_llm_requests r
-                           WHERE r.session_id = s.id AND r.created_at >= $1 AND r.created_at < $2
-                             AND r.usage_json IS NOT NULL)
+            WHERE ${seed}
            UNION ALL
            SELECT a.session_id, p.parent_session_id, p.origin, p.origin_id, a.path || p.id
              FROM ancestry a JOIN sessions p ON p.id = a.parent_session_id
             WHERE a.origin = 'conversation' AND NOT p.id = ANY(a.path) AND cardinality(a.path) < 64
-         ), origins AS (
+         )`;
+  const spendSql = `WITH RECURSIVE ${ancestry(`s.parent_session_id IS NOT NULL AND s.origin = 'conversation'
+              AND EXISTS (SELECT 1 FROM session_llm_requests r
+                           WHERE r.session_id = s.id AND r.created_at >= $1 AND r.created_at < $2
+                             AND r.usage_json IS NOT NULL)`)}, origins AS (
            SELECT DISTINCT ON (session_id) session_id, origin, cron_id
              FROM ancestry ORDER BY session_id, cardinality(path) DESC
          ), rollup AS MATERIALIZED (
@@ -1686,14 +1687,7 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
 
     async inheritedOrigin(session): Promise<SessionOrigin> {
       const rows = await q(
-        `WITH RECURSIVE up(id, parent_session_id, origin, depth) AS (
-           SELECT id, parent_session_id, origin, 1 FROM sessions WHERE id = $1
-           UNION ALL
-           SELECT p.id, p.parent_session_id, p.origin, up.depth + 1
-             FROM up JOIN sessions p ON p.id = up.parent_session_id
-            WHERE up.origin = 'conversation' AND up.depth < 64
-         )
-         SELECT origin FROM up ORDER BY depth DESC LIMIT 1`,
+        `WITH RECURSIVE ${ancestry("s.id = $1")} SELECT origin FROM ancestry ORDER BY cardinality(path) DESC LIMIT 1`,
         [session.id],
       );
       return (rows[0]?.origin as SessionOrigin | undefined) ?? "conversation";
