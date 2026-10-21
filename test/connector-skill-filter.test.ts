@@ -25,22 +25,21 @@ function skill(name: string, connector?: string): SkillResolution {
 
 const names = (resolved: SkillResolution[]) => resolved.map((entry) => entry.skill?.manifest.name);
 
-test("a skill declaring a connector is hidden until the admin configures that provider", () => {
+test("a skill declaring a connector is hidden until the admin configures that provider; others are always listed", () => {
   const all = [
     skill("memory"),
+    skill("linear"),
     skill("google-workspace", "google"),
     skill("dropbox", "dropbox"),
-    skill("linear", "linear"),
+    skill("tracker", "linear"),
     skill("slack-drafts", "slack"),
   ];
-  assert.deepEqual(names(filterConnectorSkills(all, [])), ["memory"]);
-  assert.deepEqual(names(filterConnectorSkills(all, ["google", "linear"])), ["memory", "google-workspace", "linear"]);
-  assert.deepEqual(names(filterConnectorSkills(all, ["slack"])), ["memory", "slack-drafts"]);
-});
-
-test("visibility follows the manifest field, not the skill name", () => {
-  assert.deepEqual(names(filterConnectorSkills([skill("google-workspace"), skill("notes", "notion")], [])), [
+  assert.deepEqual(names(filterConnectorSkills(all, [])), ["memory", "linear"]);
+  assert.deepEqual(names(filterConnectorSkills(all, ["google", "linear"])), [
+    "memory",
+    "linear",
     "google-workspace",
+    "tracker",
   ]);
-  assert.deepEqual(names(filterConnectorSkills([skill("notes", "notion")], ["notion"])), ["notes"]);
+  assert.deepEqual(names(filterConnectorSkills(all, ["slack"])), ["memory", "linear", "slack-drafts"]);
 });

@@ -10,6 +10,7 @@ import { createHmac } from "node:crypto";
 import { installSeedSkills, parseSeedSkill, upsertSeedSkill } from "../src/skills/seed.ts";
 import { materializeSkillTree } from "../src/skills/materialize.ts";
 import { createSkillStore, safeSkillFilePath } from "../src/skills/skill-store.ts";
+import { PROVIDERS } from "../src/connectors/oauth.ts";
 import type { Sandbox, SandboxHandle } from "../src/sandbox/sandbox.ts";
 import { buildApp } from "./support/build-app.ts";
 import { scopeId, type TurnRequest } from "../src/types.ts";
@@ -49,6 +50,17 @@ connector: linear
   assert.throws(
     () => parseSeedSkill("---\nname: demo\ndescription: d\nconnector:\n  - a\n---\n\n# Demo\n"),
     /connector must be a provider name/,
+  );
+});
+
+test("every seed skill connector names a built-in OAuth provider", () => {
+  const connectors = readdirSync("skills-seed")
+    .map((name) => parseSeedSkill(readFileSync(join("skills-seed", name, "SKILL.md"), "utf8")).connector)
+    .filter((connector) => connector !== undefined);
+  assert.ok(connectors.length > 0);
+  assert.deepEqual(
+    connectors.filter((connector) => !PROVIDERS[connector]),
+    [],
   );
 });
 

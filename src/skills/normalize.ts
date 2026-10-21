@@ -1,4 +1,4 @@
-import { parseFrontmatter } from "./frontmatter.ts";
+import { parseConnector, parseFrontmatter } from "./frontmatter.ts";
 import type { SkillManifest } from "./skill-store.ts";
 
 export interface PackConfig {
@@ -98,8 +98,8 @@ export function normalizeSkill(raw: string, path: string, cfg?: PackConfig): Nor
     requiredCapabilities = asStringArray(attrs.egress).map((h) => (h.includes(":") ? h : `egress:${h}`));
   }
 
-  const connector = typeof attrs.connector === "string" ? attrs.connector.trim() : "";
-  if (attrs.connector !== undefined && !connector) return { skip: true, reason: "malformed" };
+  const connector = parseConnector(attrs.connector);
+  if (connector === null) return { skip: true, reason: "malformed" };
 
   let scopeRaw: string | undefined;
   if (typeof attrs.scope === "string") scopeRaw = attrs.scope;
