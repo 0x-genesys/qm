@@ -23,7 +23,6 @@ export interface HarnessToolPlumbing {
   execTimeoutCeilingMs?: number;
   backgroundJobTtlMs?: number;
   backgroundJobTtlMaxMs?: number;
-  sandboxCapabilityTtlMs?: number;
 }
 
 export type BridgedTool = {

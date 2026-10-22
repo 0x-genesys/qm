@@ -1626,6 +1626,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         ...(conversation.publishMembers ? { members: conversation.publishMembers } : {}),
         ...(liveTurn ? { liveActor: true } : {}),
         ...(input.botActor ? { botActor: true } : {}),
+        ...(input.runId ? { runId: input.runId } : {}),
       };
       if (!strictReadOnly && deps.signingSecret && deps.apiBaseUrl) {
         const destination = defaultDestination;
@@ -1675,7 +1676,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           ...(liveAuthorTurn ? { liveAuthor: true } : {}),
           ...(automatedTurn ? { triggered: true } : {}),
           ...(!liveTurn && input.unattendedGrants ? { grants: input.unattendedGrants } : {}),
-          ...(input.runId ? { runId: input.runId } : {}),
           sessionId: session.id,
           runAttempt: input.attempt,
           runLeaseToken: input.runLeaseToken,
@@ -1758,7 +1758,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 aud: CREDENTIAL_BROKER_AUD,
                 ...(external
                   ? {
-                      runId: input.runId,
                       runAttempt: input.attempt,
                       runLeaseToken: input.runLeaseToken,
                       threadRef: conversation.threadRef,

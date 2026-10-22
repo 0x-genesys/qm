@@ -48,7 +48,7 @@ async function liveWebTurn(ctx: ApiCtx): Promise<UiTurn | null> {
     });
     return null;
   }
-  if (cap.surface !== "web" || !livePersonCapability(cap)) {
+  if (cap.surface !== "web" || !livePersonCapability(cap) || cap.liveActor !== true) {
     sendJson(res, 403, {
       error: "not_live_web_turn",
       message: "Only available during a turn the person started from the web UI.",

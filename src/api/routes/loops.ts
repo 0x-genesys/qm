@@ -51,7 +51,8 @@ export function actingPrincipal(ctx: ApiCtx): ActingPrincipal | null {
       actorId: ctx.capability.actorId,
       scopeId: ctx.capability.scopeId as ScopeId,
       capability: ctx.capability,
-      liveHuman: ctx.actor?.p !== undefined || livePersonCapability(ctx.capability),
+      liveHuman:
+        ctx.actor?.p !== undefined || (livePersonCapability(ctx.capability) && ctx.capability.liveActor === true),
     };
   }
   if (ctx.actor?.p) return { actorId: ctx.actor.p, liveHuman: true };

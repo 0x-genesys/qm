@@ -40,6 +40,7 @@ passed, which is exactly how long a job launched by that turn can still be runni
 As a self-contained backstop for verifiers without a run store, such as a separately
 deployed egress proxy, the token also expires after the run's own bound
 (`TURN_WALL_CLOCK_SEC`, or `RUN_MAX_AGE_MS` for unbounded turns) plus that ceiling.
-There is no separate lifetime setting and no non-expiring mode. Tokens already issued
+Tokens minted outside a run (direct API turns) carry no run id and are bounded by
+their expiry alone. There is no separate lifetime setting and no non-expiring mode. Tokens already issued
 keep the lifetime they were minted with; rotate the signing secret if issued tokens
 must be invalidated sooner.

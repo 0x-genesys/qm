@@ -28,7 +28,7 @@ export async function unattendedGrantRefusal(
   capability: Pick<CapabilityClaims, "actorId" | "liveActor" | "liveAuthor" | "triggered" | "botActor">,
 ): Promise<UnattendedGrantRefusal | null> {
   const forbidden = (message: string): UnattendedGrantRefusal => ({ code: "forbidden", message });
-  if (!livePersonCapability(capability))
+  if (!livePersonCapability(capability) || capability.liveActor !== true)
     return forbidden("unattended grants require a live turn started by the cron owner");
   if (!(await app.samePerson(cron.owner, capability.actorId)))
     return forbidden("only the cron owner may set unattended grants");
