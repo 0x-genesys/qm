@@ -157,7 +157,7 @@ import {
 } from "../harness/replay.ts";
 import { errMessage, reportFailure, swallow, swallowAs } from "../util/errors.ts";
 import { isObj } from "../util/objects.ts";
-import { absoluteAppLinks, jsonbSafeStringify } from "../util/text.ts";
+import { absoluteAppLinks, headSlice, jsonbSafeStringify } from "../util/text.ts";
 import {
   isModelBudget,
   isNonRetryable,
@@ -208,7 +208,6 @@ import { createTurnSandboxes } from "./orchestrator/sandboxes.ts";
 import type { EgressPolicy } from "../types.ts";
 import { isOpenScopeMember } from "../resolution/sharing-access.ts";
 import { createSurfaceToolDeps, type SpineState } from "./orchestrator/surface-tools.ts";
-import { GATED_TOOL_APPROVALS } from "../harness/agent-tools.ts";
 import { createAttachStaging } from "./orchestrator/attach-tool.ts";
 import { reconcileMessageRevisions, revisionAnchorAt } from "./message-revisions.ts";
 
@@ -2043,6 +2042,17 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               }),
             );
             await mirrorRunActivity(decisionEntry);
+            if (p.kind !== "input" && !p.screenedOutput)
+              await withManagedRosterVersion(() =>
+                deps.sessions.append(lease, {
+                  type: "user",
+                  payload: {
+                    hidden: true,
+                    text: `The requesting human denied this pending operation, so it did not run: ${headSlice(p.summary ?? p.command, 2_000)}\nDo not retry it unless they ask again.`,
+                  },
+                  scopeLabel: scopeId as ScopeId,
+                }),
+              );
             await pending.delete(input.approval.requestId);
             deps.auditLog.record({
               at: Date.now(),
@@ -2064,13 +2074,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             const quarantineRelease =
               p.approvalKey?.startsWith("security-screen-release:") === true ||
               p.approvalKey?.startsWith("quarantine:") === true;
-            const recordDisallowsScope =
-              scope !== "once" &&
-              (quarantineRelease ||
-                (p.grantModes?.[scope] === false && p.approvalKey?.startsWith("sandbox:") === true));
+            const recordDisallowsScope = scope !== "once" && (quarantineRelease || p.grantModes?.[scope] === false);
             if (scope !== "once" && (!resolution.approvalGrantModes[scope] || recordDisallowsScope)) {
               let reason = `the "${scope}" approval option is disabled by an admin here — approve once or deny`;
-              if (recordDisallowsScope) {
+              if (recordDisallowsScope && resolution.approvalGrantModes[scope]) {
                 reason = quarantineRelease
                   ? `quarantined content can only be released once — approve once or deny`
                   : `this approval does not allow the "${scope}" option — approve once or deny`;
@@ -3613,10 +3620,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                   },
                 }
               : {}),
-            toolApprovalGate:
-              securityPolicy.toolApprovals === "all"
-                ? authorizeToolCall
-                : (tool: string) => !GATED_TOOL_APPROVALS[tool] || authorizeToolCall(tool),
+            toolApprovalGate: (tool: string, callKey?: string) => {
+              if (callKey) return consumeApproval(callKey);
+              return securityPolicy.toolApprovals !== "all" || authorizeToolCall(tool);
+            },
             systemPrompt,
             history: continuation?.history ?? history,
             tools,
@@ -3909,6 +3916,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               pa.screenedOutput
                 ? `${command}:${hashId([pa.screenedOutput.tool, pa.screenedOutput.text, pa.screenedOutput.sourceScopeId ?? scopeId], 64)}`
                 : command,
+              pa.approvalKey,
             );
             const summary = pa.summary ?? (await approvalSummary(scopeId, command, pa.reason, pa.purpose));
             prepared.push({
