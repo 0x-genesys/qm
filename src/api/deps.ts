@@ -159,6 +159,7 @@ export interface ServerDeps {
   crons?: CronStore;
   loops?: LoopServiceDeps;
   runs?: RunStore;
+  backgroundJobTtlMaxMs?: number;
   signals?: RunSignalStore;
   sessionStateBus?: SessionStateBus;
   workspace?: WorkspaceStore;

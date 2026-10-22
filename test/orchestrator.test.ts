@@ -1165,9 +1165,12 @@ test("turn timezone rides the prompt and control-plane capability token", async 
   assert.equal(invalidClaims!.timezone, undefined, "invalid surface timezones are omitted from the token");
 });
 
-for (const hours of [undefined, "72", "0", "none"]) {
-  test(`sandbox-facing turn tokens honor deployment TTL ${hours ?? "default"}`, async () => {
-    const ttl = loadConfig({ SANDBOX_CAPABILITY_TTL_HOURS: hours }).sandboxCapabilityTtlMs;
+for (const [name, env] of [
+  ["an unbounded turn", {}],
+  ["a bounded turn", { TURN_WALL_CLOCK_SEC: "600", BACKGROUND_JOB_TTL_MAX_SEC: "60" }],
+] as const) {
+  test(`sandbox-facing turn tokens expire with the run bound and job ceiling of ${name}`, async () => {
+    const ttl = loadConfig(env).sandboxCapabilityTtlMs;
     const { app, sandbox, serviceCreds, acl } = freshApp({
       signingSecret: "test-secret",
       apiBaseUrl: "https://core.example.com",
@@ -1206,14 +1209,9 @@ for (const hours of [undefined, "72", "0", "none"]) {
     for (const [name, token] of Object.entries(tokens)) {
       const claims = await verifyCapabilityToken(token, TEST_CAPABILITY_SECRET);
       assert.ok(claims, `${name} verifies`);
-      if (ttl === 0) {
-        assert.equal(claims.exp, 0);
-        assert.ok(await verifyCapabilityToken(token, TEST_CAPABILITY_SECRET, Number.MAX_SAFE_INTEGER));
-      } else {
-        assert.ok(claims.exp >= before + ttl && claims.exp <= Date.now() + ttl, name);
-        assert.ok(await verifyCapabilityToken(token, TEST_CAPABILITY_SECRET, claims.exp - 1));
-        assert.equal(await verifyCapabilityToken(token, TEST_CAPABILITY_SECRET, claims.exp), null);
-      }
+      assert.ok(claims.exp >= before + ttl && claims.exp <= Date.now() + ttl, name);
+      assert.ok(await verifyCapabilityToken(token, TEST_CAPABILITY_SECRET, claims.exp - 1));
+      assert.equal(await verifyCapabilityToken(token, TEST_CAPABILITY_SECRET, claims.exp), null);
     }
   });
 }

@@ -986,11 +986,11 @@ test("the spend export token is optional, strong, trimmed and never shared with 
   }
 });
 
-test("sandbox capability TTL is deployment-configurable with a 48-hour default", () => {
-  assert.equal(loadConfig({}).sandboxCapabilityTtlMs, 48 * 3_600_000);
-  assert.equal(loadConfig({ SANDBOX_CAPABILITY_TTL_HOURS: "168" }).sandboxCapabilityTtlMs, 168 * 3_600_000);
-  assert.equal(loadConfig({ SANDBOX_CAPABILITY_TTL_HOURS: "none" }).sandboxCapabilityTtlMs, 0);
-  assert.throws(() => loadConfig({ SANDBOX_CAPABILITY_TTL_HOURS: "-5" }), /SANDBOX_CAPABILITY_TTL_HOURS/);
+test("sandbox capability lifetime follows the run bound and the background-job ceiling", () => {
+  const unbounded = loadConfig({});
+  assert.equal(unbounded.sandboxCapabilityTtlMs, unbounded.runMaxAgeMs + unbounded.backgroundJobTtlMaxMs);
+  const bounded = loadConfig({ TURN_WALL_CLOCK_SEC: "600", BACKGROUND_JOB_TTL_MAX_SEC: "120" });
+  assert.equal(bounded.sandboxCapabilityTtlMs, 720_000);
 });
 
 test("a subscription-only company ChatGPT deployment defaults pi to the plain Codex model id", () => {

@@ -68,6 +68,35 @@ test("an overridden guest classifies internal by email even when the id differs"
   assert.equal(other.actor.isExternalGuest, true);
 });
 
+test("a Slack Connect account from another workspace is overridden by id but never by its self-reported email", async () => {
+  const dir = createDirectory({
+    core: CORE,
+    ids: IDS,
+    internalOverrides: async () => new Set(["contractor@example.com", "u-partner"]),
+  });
+  const connect = (id: string, email: string) => ({ id, team_id: "T-OTHER", profile: { email } });
+  const client = fakeClient([
+    connect("U-IMPOSTER", "contractor@example.com"),
+    connect("U-PARTNER", "partner@other.example"),
+    guest("U-STAFF-GUEST", "contractor@example.com"),
+  ]);
+  assert.equal((await dir.classifyUserCached(client, "U-IMPOSTER")).actor.isExternalGuest, true);
+  assert.equal((await dir.classifyUserCached(client, "U-PARTNER")).actor.isExternalGuest, false);
+  assert.equal((await dir.classifyUserCached(client, "U-STAFF-GUEST")).actor.isExternalGuest, false);
+});
+
+test("in email identity mode the override still ignores another workspace's self-reported email", async () => {
+  const dir = createDirectory({
+    core: CORE,
+    ids: { ...IDS, identityMode: "email" },
+    internalOverrides: async () => new Set(["contractor@example.com"]),
+  });
+  const client = fakeClient([{ id: "U-IMPOSTER", team_id: "T-OTHER", profile: { email: "contractor@example.com" } }]);
+  const imposter = await dir.classifyUserCached(client, "U-IMPOSTER");
+  assert.equal(imposter.actor.externalId, "contractor@example.com");
+  assert.equal(imposter.actor.isExternalGuest, true);
+});
+
 test("the users.info fallback path honors the override for a user missing from the snapshot", async () => {
   const listed = fakeClient([guest("U-LISTED")]);
   const dir = createDirectory({

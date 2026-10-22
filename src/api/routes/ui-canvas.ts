@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isTerminal } from "../../runs/run-store.ts";
+import { livePersonCapability } from "../artifact-share.ts";
 import { waitForClientResult } from "../../runs/run-signal-store.ts";
 import type { UiSignal } from "../../runs/session-state-bus.ts";
 import {
@@ -47,7 +48,7 @@ async function liveWebTurn(ctx: ApiCtx): Promise<UiTurn | null> {
     });
     return null;
   }
-  if (cap.surface !== "web" || !cap.liveActor || cap.triggered || cap.botActor) {
+  if (cap.surface !== "web" || !livePersonCapability(cap)) {
     sendJson(res, 403, {
       error: "not_live_web_turn",
       message: "Only available during a turn the person started from the web UI.",

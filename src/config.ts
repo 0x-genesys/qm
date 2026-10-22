@@ -6,7 +6,7 @@ import {
 import { errMessage } from "./util/errors.ts";
 import type { ExternalSlackPolicies } from "./resolution/external-slack.ts";
 import { isBearerSecret, isStrongSigningSecret } from "./auth/source-auth.ts";
-import { parseSandboxCapabilityTtlMs } from "./auth/capability-token.ts";
+import { sandboxCapabilityTtlMs } from "./auth/capability-token.ts";
 import { parseScopeId } from "./types.ts";
 import type { LegacySandboxScopeDefaults } from "./sandbox/sandbox-resource-upgrade.ts";
 import type { SandboxBackendName } from "./sandbox/sandbox-routing.ts";
@@ -1457,6 +1457,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const runMaxAgeMs =
     numEnvStrict("RUN_MAX_AGE_MS", env.RUN_MAX_AGE_MS) ??
     (turnWallClockMs > 0 ? 2 * turnWallClockMs : CONFIG_DEFAULTS.runMaxAgeMs);
+  const backgroundJobTtlMaxMs =
+    (numEnvStrict("BACKGROUND_JOB_TTL_MAX_SEC", env.BACKGROUND_JOB_TTL_MAX_SEC) ??
+      CONFIG_DEFAULTS.backgroundJobTtlMaxSec) * 1000;
   const slack = slackPluginConfigFromEnv(env);
   const externalSlackPolicies = Object.fromEntries(
     [...(slack ? [slack] : []), ...slackAccountConfigsFromEnv(env)]
@@ -1575,13 +1578,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     swarmDefaults,
     runMaxAgeMs,
     runWaitMs: (turnWallClockMs > 0 ? turnWallClockMs : runMaxAgeMs) + 60_000,
-    sandboxCapabilityTtlMs: parseSandboxCapabilityTtlMs(env.SANDBOX_CAPABILITY_TTL_HOURS),
+    sandboxCapabilityTtlMs: sandboxCapabilityTtlMs({ turnWallClockMs, runMaxAgeMs, backgroundJobTtlMaxMs }),
     backgroundJobTtlMs:
       (numEnvStrict("BACKGROUND_JOB_TTL_SEC", env.BACKGROUND_JOB_TTL_SEC) ?? CONFIG_DEFAULTS.backgroundJobTtlSec) *
       1000,
-    backgroundJobTtlMaxMs:
-      (numEnvStrict("BACKGROUND_JOB_TTL_MAX_SEC", env.BACKGROUND_JOB_TTL_MAX_SEC) ??
-        CONFIG_DEFAULTS.backgroundJobTtlMaxSec) * 1000,
+    backgroundJobTtlMaxMs,
     backgroundWorkEnabled:
       boolEnvStrict("BACKGROUND_WORK_ENABLED", env.BACKGROUND_WORK_ENABLED) ?? CONFIG_DEFAULTS.backgroundWorkEnabled,
     ...(env.BACKGROUND_DEPLOYMENT_ID

@@ -27,10 +27,12 @@ describe("ui canvas and ui observe", () => {
   let agentBase: string;
   let sourceBase: string;
   let sessionId: string;
-  const runs = new Map<string, { id: string; status: string; request: { actor: { id: string } } }>([
-    ["run-live", { id: "run-live", status: "running", request: { actor: { id: "U1" } } }],
-    ["run-done", { id: "run-done", status: "done", request: { actor: { id: "U1" } } }],
-  ]);
+  const runs = new Map<string, { id: string; status: string; finishedAt?: number; request: { actor: { id: string } } }>(
+    [
+      ["run-live", { id: "run-live", status: "running", request: { actor: { id: "U1" } } }],
+      ["run-done", { id: "run-done", status: "done", finishedAt: Date.now(), request: { actor: { id: "U1" } } }],
+    ],
+  );
   const events: SessionStateEvent[] = [];
 
   const token = (extra: Partial<CapabilityClaims> = {}) =>

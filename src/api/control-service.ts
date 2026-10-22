@@ -702,7 +702,7 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
     },
 
     async createWebhook(req, capability, publicBase): Promise<WebhookCreateResult> {
-      if (capability.triggered || !livePersonCapability(capability)) {
+      if (!livePersonCapability(capability)) {
         return {
           ok: false,
           code: "forbidden",
@@ -760,7 +760,7 @@ export function createControlService(app: App, scheduler?: Scheduler, admin?: Ad
     },
 
     async updateWebhook(id, patch, capability) {
-      if (capability.triggered || !livePersonCapability(capability))
+      if (!livePersonCapability(capability))
         return { ok: false, code: "forbidden", message: "editing a webhook requires a live turn started by its owner" };
       return editWebhookTask(app, id, patch.action, capability.actorId);
     },

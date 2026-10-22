@@ -53,8 +53,7 @@ export function createRuntimeService(deps: RuntimeDeps, app: Pick<App, "authoriz
       };
     const lifetime = request.lifetime ?? "task";
     const cronTask = cronFire && claims.triggered === true && !claims.botActor && lifetime === "task";
-    if (!cronTask && (!livePersonCapability(claims) || claims.triggered || claims.botActor))
-      return { ok: false, error: "live_actor_required" };
+    if (!cronTask && !livePersonCapability(claims)) return { ok: false, error: "live_actor_required" };
     if (request.action === "inherit") {
       const purposeConfigured = purpose && (await deps.config.getPurposeRuntimeDurable(purpose));
       const choice = lifetime === "scope" && !purposeConfigured ? snapshot.orgDefault : snapshot.effective;

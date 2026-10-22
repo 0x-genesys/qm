@@ -1,6 +1,7 @@
 import { LOOP_ICON_ERROR, validLoopIcon } from "../../loops/loop-store.ts";
 import { boundLoopCron } from "../../loops/authority.ts";
 import { unattendedGrantRefusal } from "../../cron/authority.ts";
+import { livePersonCapability } from "../artifact-share.ts";
 import type { AdvisoryLock } from "../../persistence/advisory-lock.ts";
 import type { Loop, LoopState, LoopTriageConfig } from "../../types.ts";
 import { scopeId, type ScopeId } from "../../types.ts";
@@ -50,7 +51,7 @@ export function actingPrincipal(ctx: ApiCtx): ActingPrincipal | null {
       actorId: ctx.capability.actorId,
       scopeId: ctx.capability.scopeId as ScopeId,
       capability: ctx.capability,
-      liveHuman: ctx.actor?.p !== undefined || ctx.capability.liveActor === true,
+      liveHuman: ctx.actor?.p !== undefined || livePersonCapability(ctx.capability),
     };
   }
   if (ctx.actor?.p) return { actorId: ctx.actor.p, liveHuman: true };

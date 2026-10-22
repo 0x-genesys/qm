@@ -65,12 +65,13 @@ const NO_INTERNAL_OVERRIDES: ReadonlySet<string> = new Set();
 
 function withInternalOverride(
   actor: ActorAssertion,
-  email: string | undefined,
+  user: SlackUser | undefined,
+  ownTeamId: string,
   overrides: ReadonlySet<string>,
 ): ActorAssertion {
-  if (!actor.isExternalGuest || overrides.size === 0) return actor;
-  const mail = (email ?? "").trim().toLowerCase();
-  if (overrides.has(actor.externalId.toLowerCase()) || (mail && overrides.has(mail))) {
+  if (!actor.isExternalGuest || overrides.size === 0 || !user?.id) return actor;
+  const ownWorkspaceEmail = user.team_id === ownTeamId ? (user.profile?.email ?? "").trim().toLowerCase() : "";
+  if (overrides.has(user.id.toLowerCase()) || (ownWorkspaceEmail && overrides.has(ownWorkspaceEmail))) {
     return { ...actor, isExternalGuest: false };
   }
   return actor;
@@ -153,7 +154,8 @@ export function createDirectory(deps: {
           deps.externalAccess
             ? companySlackActor(u, deps.externalAccess)
             : classifyUser(u, ids.ownTeamId, ids.identityMode),
-          u.profile?.email,
+          u,
+          ids.ownTeamId,
           overrides,
         );
         if (ids.identityMode === "email" && !u.is_bot && actor.externalId === u.id && u.team_id === ids.ownTeamId)
@@ -597,7 +599,8 @@ export function createDirectory(deps: {
         deps.externalAccess
           ? companySlackActor(user, deps.externalAccess)
           : classifyUser(user, ids.ownTeamId, ids.identityMode),
-        user?.profile?.email,
+        user,
+        ids.ownTeamId,
         await internalOverrides(),
       );
       const timezone = slackUserTimezone(user);

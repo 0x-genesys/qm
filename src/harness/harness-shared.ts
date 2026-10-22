@@ -137,7 +137,6 @@ export function harnessToolOptions(opts: HarnessToolPlumbing, turn?: HarnessTurn
     execTimeoutCeilingMs: opts.execTimeoutCeilingMs,
     backgroundJobTtlMs: opts.backgroundJobTtlMs,
     backgroundJobTtlMaxMs: opts.backgroundJobTtlMaxMs,
-    sandboxCapabilityTtlMs: opts.sandboxCapabilityTtlMs,
     ...(turn
       ? {
           readOnly: turn.readOnly,

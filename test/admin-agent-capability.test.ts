@@ -71,7 +71,15 @@ function start(withConfig = true) {
 
 const capFor = async (
   actorId: string,
-  opts: { aud?: string | null; live?: boolean; liveAuthor?: boolean; scope?: string; grants?: string[] } = {},
+  opts: {
+    aud?: string | null;
+    live?: boolean;
+    liveAuthor?: boolean;
+    triggered?: boolean;
+    botActor?: boolean;
+    scope?: string;
+    grants?: string[];
+  } = {},
 ) => {
   const aud = opts.aud === undefined ? CONTROL_PLANE_AUD : opts.aud;
   return await mintCapabilityToken(
@@ -81,6 +89,8 @@ const capFor = async (
       ...(aud === null ? {} : { aud }),
       ...(opts.live === false ? {} : { liveActor: true }),
       ...(opts.liveAuthor ? { liveAuthor: true } : {}),
+      ...(opts.triggered ? { triggered: true } : {}),
+      ...(opts.botActor ? { botActor: true } : {}),
       ...(opts.grants ? { grants: opts.grants } : {}),
       exp: Date.now() + CAPABILITY_TTL_MS,
     },
@@ -236,6 +246,22 @@ test("a wrong-audience token never reaches the admin plane", async () => {
   }
 });
 
+test("internal member overrides are portal-only, like every other identity decision", async () => {
+  const s = start();
+  try {
+    const res = await fetch(`${s.base}/v1/admin/scopes/${encodeURIComponent(ORG)}/internal-member-overrides`, {
+      method: "PUT",
+      headers: { "x-agent-capability": await capFor("admin-alice"), "content-type": "application/json" },
+      body: JSON.stringify({ members: ["U-OUTSIDER"] }),
+    });
+    assert.equal(res.status, 403);
+    assert.match(((await res.json()) as any).message, /portal-only/);
+    assert.deepEqual(s.built.config.getInternalMemberOverrides(), []);
+  } finally {
+    await s.close();
+  }
+});
+
 test("an autonomous turn's token cannot act as an admin, even when its actor holds the grant", async () => {
   const s = start();
   try {
@@ -245,13 +271,20 @@ test("an autonomous turn's token cannot act as an admin, even when its actor hol
     assert.equal(((await whoami.json()) as any).isAdmin, true, "whoami stays answerable — introspection, not reach");
 
     await s.built.memory.capture(ORG, ["seed"], 0);
-    const write = await fetch(`${s.base}/v1/admin/memory?scope=${encodeURIComponent(ORG)}`, {
-      method: "PATCH",
-      headers: { "x-agent-capability": cap, "content-type": "application/json" },
-      body: JSON.stringify({ facts: [{ id: "1", text: "planted by a 3am cron" }] }),
-    });
-    assert.equal(write.status, 403);
-    assert.match(((await write.json()) as any).message, /turn the admin started themselves/);
+    const reducedPower = [
+      cap,
+      await capFor("admin-alice", { live: false, liveAuthor: true, triggered: true }),
+      await capFor("admin-alice", { botActor: true }),
+    ];
+    for (const token of reducedPower) {
+      const write = await fetch(`${s.base}/v1/admin/memory?scope=${encodeURIComponent(ORG)}`, {
+        method: "PATCH",
+        headers: { "x-agent-capability": token, "content-type": "application/json" },
+        body: JSON.stringify({ facts: [{ id: "1", text: "planted by a 3am cron" }] }),
+      });
+      assert.equal(write.status, 403);
+      assert.match(((await write.json()) as any).message, /turn the admin started themselves/);
+    }
     assert.doesNotMatch(await s.built.memory.read(ORG), /planted/);
   } finally {
     await s.close();

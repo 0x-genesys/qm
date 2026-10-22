@@ -82,7 +82,6 @@ import { estimateCostUsd } from "../ratelimit/budget.ts";
 import {
   mintCapabilityToken,
   CAPABILITY_TTL_MS,
-  SANDBOX_CAPABILITY_TTL_MS,
   CONTROL_PLANE_AUD,
   BROWSER_MODEL_AUD,
   OAUTH_CONSENT_AUD,
@@ -1618,8 +1617,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       let actorIsOrgAdmin = false;
       let orgMemoryWrite: ScopeId | undefined;
       let controlClaims: CapabilityClaims | undefined;
-      const sandboxTokenTtlMs = deps.sandboxCapabilityTtlMs ?? SANDBOX_CAPABILITY_TTL_MS;
-      const sandboxTokenExpiry = sandboxTokenTtlMs === 0 ? 0 : Date.now() + sandboxTokenTtlMs;
+      const sandboxTokenExpiry = Date.now() + (deps.sandboxCapabilityTtlMs ?? CAPABILITY_TTL_MS);
       const scopeAttestation = {
         ...(external ? { externalSlack: true as const } : {}),
         actorId: actor.id,

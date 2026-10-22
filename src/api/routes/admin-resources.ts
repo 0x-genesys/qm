@@ -120,6 +120,7 @@ export interface AdminResource {
   secret?: boolean;
   clearable?: boolean;
   authz?: "scope-admin" | "org-admin";
+  portalOnly?: string;
   label?: string;
   enumValues?: readonly unknown[];
   refreshesModels?: true;
@@ -432,8 +433,9 @@ export const ADMIN_RESOURCES: readonly AdminResource[] = [
     kind: "string-list",
     target: "org",
     clearable: true,
+    portalOnly: "internal member overrides are portal-only — the agent cannot decide who counts as an internal member",
     label:
-      "Members listed here (lowercased emails or Slack user ids) are treated as internal even if Slack marks them guest/restricted or the directory sync removed them; use it for contractor accounts that are genuinely internal.",
+      "Members listed here (Slack user ids, or lowercased emails of accounts in this workspace) are treated as internal even if Slack marks them guest/restricted or the directory sync removed them; use it for contractor accounts that are genuinely internal.",
     readKey: "internalMemberOverrides",
     get: (deps) => deps.config!.getInternalMemberOverrides(),
     apply: async (ctx, actor, scope) => {

@@ -32,6 +32,8 @@ import { proxyDeploymentSubdomain } from "./routes/deployments.ts";
 import { CAPABILITY_HEADER } from "./contract.ts";
 import { livePersonCapability } from "./artifact-share.ts";
 import { canonicalPerson, samePerson } from "../directory/person.ts";
+import { isTerminal } from "../runs/run-store.ts";
+import { CONFIG_DEFAULTS } from "../config.ts";
 
 async function capabilityAdminDenied(
   access: AdminAccess,
@@ -127,6 +129,14 @@ async function verifyCapability(
     await deps.identity.refresh();
     if (deps.identity.classify(capability.actorId).type !== "internal") {
       sendJson(res, 401, { error: "unauthorized", message: "principal is no longer active" });
+      return null;
+    }
+  }
+  if (capability.runId !== undefined && deps.runs) {
+    const run = await deps.runs.get(capability.runId);
+    const graceMs = deps.backgroundJobTtlMaxMs ?? CONFIG_DEFAULTS.backgroundJobTtlMaxSec * 1000;
+    if (!run || (isTerminal(run.status) && (run.finishedAt ?? 0) + graceMs <= Date.now())) {
+      sendJson(res, 401, { error: "unauthorized", message: "the turn that issued this token has ended" });
       return null;
     }
   }

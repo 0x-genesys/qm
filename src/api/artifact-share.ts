@@ -12,8 +12,10 @@ export function triggerBlocksSharedSkill(homeScope: ScopeId, liveActor: boolean)
   return isSharedScope(homeScope) && !liveActor;
 }
 
-export function livePersonCapability(c: { liveActor?: boolean; liveAuthor?: boolean } | undefined): boolean {
-  return c?.liveAuthor === true || c?.liveActor === true;
+export function livePersonCapability(
+  c: { liveActor?: boolean; liveAuthor?: boolean; triggered?: boolean; botActor?: boolean } | undefined,
+): boolean {
+  return (c?.liveAuthor === true || c?.liveActor === true) && c?.triggered !== true && c?.botActor !== true;
 }
 
 export const ARTIFACT_TYPES = ["file", "skill", "deploy", "cron"] as const;

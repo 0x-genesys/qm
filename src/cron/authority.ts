@@ -4,6 +4,7 @@ import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { App } from "../api/app.ts";
 import type { AdminService } from "../admin/admin-service.ts";
 import { errMessage } from "../util/errors.ts";
+import { livePersonCapability } from "../api/artifact-share.ts";
 
 type TriggerAuthority = Pick<TriggerSpec, "owner" | "ownerScopeId" | "unattendedGrants">;
 
@@ -24,10 +25,10 @@ export async function unattendedGrantRefusal(
   app: App,
   admin: AdminService | undefined,
   cron: Pick<Cron, "owner" | "ownerScopeId">,
-  capability: Pick<CapabilityClaims, "actorId" | "liveActor">,
+  capability: Pick<CapabilityClaims, "actorId" | "liveActor" | "liveAuthor" | "triggered" | "botActor">,
 ): Promise<UnattendedGrantRefusal | null> {
   const forbidden = (message: string): UnattendedGrantRefusal => ({ code: "forbidden", message });
-  if (capability.liveActor !== true)
+  if (!livePersonCapability(capability))
     return forbidden("unattended grants require a live turn started by the cron owner");
   if (!(await app.samePerson(cron.owner, capability.actorId)))
     return forbidden("only the cron owner may set unattended grants");

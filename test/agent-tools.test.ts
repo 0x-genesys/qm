@@ -1869,7 +1869,7 @@ test("background dispatches each action and emits tool_call/tool_result", async 
   assert.ok(background);
   assert.match(background.description, /same environment a foreground `execute` does/);
   assert.match(background.description, /\$AGENT_CREDENTIAL_TOKEN all work/);
-  assert.match(background.description, /expire 48 hours after the turn/);
+  assert.match(background.description, /stop working 60 minutes after the turn that launched the job ends/);
 
   const started = textOf(
     await call(
@@ -4041,16 +4041,13 @@ test("sessions is a web UI tool: Slack turns get subagents only", () => {
   assert.ok(!createAgentTools({ current: fakeToolContext() }).some((tool) => tool.name === "sessions"));
 });
 
-test("background process guidance reflects the configured sandbox token lifetime", () => {
-  const guidance = (opts?: { sandboxCapabilityTtlMs?: number }) =>
+test("background process guidance reflects the configured background-job ceiling", () => {
+  const guidance = (opts?: { backgroundJobTtlMaxMs?: number }) =>
     createAgentTools({ current: fakeToolContext() }, { sandboxResources: true, ...opts })
       .map((tool) => tool.description)
       .join("\n");
-  assert.match(guidance(), /turn tokens expire 48 hours/);
-  assert.match(guidance({ sandboxCapabilityTtlMs: 72 * 3_600_000 }), /turn tokens expire 72 hours/);
-  const unlimited = guidance({ sandboxCapabilityTtlMs: 0 });
-  assert.match(unlimited, /does not expire those turn tokens/);
-  assert.doesNotMatch(unlimited, /turn tokens expire \d+ hours/);
+  assert.match(guidance(), /turn tokens stop working 60 minutes after the turn that launched the job ends/);
+  assert.match(guidance({ backgroundJobTtlMaxMs: 120 * 60_000 }), /turn tokens stop working 120 minutes after/);
 });
 
 test("core tools carry retrySafe while client tools cannot advertise automatic replay", async () => {
