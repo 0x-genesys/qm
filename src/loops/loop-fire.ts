@@ -14,6 +14,7 @@ import type { Loop, LoopItem, LoopOutput, TurnRequest, TurnResult } from "../typ
 import { destinationVisible, runTrigger, type TriggerDeps, type TriggerOutcome } from "../triggers/run-trigger.ts";
 import { reachEnqueue } from "../reach/reach.ts";
 import { hashId } from "../util/crypto.ts";
+import { fencedCodeBlocks, type FencedCodeBlock } from "../util/markdown.ts";
 import { errMessage } from "../util/errors.ts";
 import { userFacingFailureClause } from "../core/failure-copy.ts";
 import { isRunnable, type LoopStore } from "./loop-store.ts";
@@ -175,13 +176,28 @@ function itemActionPrompt(loop: Loop, item: LoopItem, kind: string, args: Record
   ].join("\n");
 }
 
+function parsedBlock(blocks: FencedCodeBlock[]): { block: FencedCodeBlock; value: unknown } | undefined {
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    try {
+      return { block: blocks[i]!, value: JSON.parse(blocks[i]!.body) };
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
 function splitProposalReply(reply: string): { text: string; proposal?: Record<string, unknown> } {
-  const parsed = fencedJson(reply);
+  const hit = parsedBlock(fencedCodeBlocks(reply));
+  const parsed = hit ? hit.value : bareJson(reply);
   const proposal =
     parsed && typeof parsed === "object" && !Array.isArray(parsed)
       ? (parsed as Record<string, unknown>).proposal
       : undefined;
-  const text = reply.replace(/```(?:json)?\s*\n[\s\S]*?\n\s*```\s*$/, "").trim();
+  const text =
+    hit && proposal
+      ? `${reply.slice(0, hit.block.start).trimEnd()}\n\n${reply.slice(hit.block.end).trimStart()}`.trim()
+      : reply.trim();
   return {
     text: text || reply.trim(),
     ...(proposal && typeof proposal === "object" && !Array.isArray(proposal)
@@ -191,14 +207,10 @@ function splitProposalReply(reply: string): { text: string; proposal?: Record<st
 }
 
 function fencedJson(reply: string): unknown {
-  const fences = [...reply.matchAll(/```(?:json)?\s*\n([\s\S]*?)\n\s*```/g)];
-  for (let i = fences.length - 1; i >= 0; i--) {
-    try {
-      return JSON.parse(fences[i]![1]!);
-    } catch {
-      continue;
-    }
-  }
+  return parsedBlock(fencedCodeBlocks(reply))?.value ?? bareJson(reply);
+}
+
+function bareJson(reply: string): unknown {
   const bare = reply.trim();
   if (bare.startsWith("[") || bare.startsWith("{")) {
     try {
