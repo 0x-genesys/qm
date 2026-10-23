@@ -849,10 +849,10 @@ test("core route: valid clientTools reach the queued run, stripped to the declar
   ]);
 });
 
-const surfaceTurn = (surfaceContext: unknown, extra: Partial<TurnRequest> = {}): TurnRequest => ({
+const surfaceTurn = (surfaceBriefing: unknown, extra: Partial<TurnRequest> = {}): TurnRequest => ({
   ...turnWithTools(undefined),
   ...extra,
-  surfaceContext: surfaceContext as TurnRequest["surfaceContext"],
+  surfaceBriefing: surfaceBriefing as TurnRequest["surfaceBriefing"],
 });
 
 async function queuedRequest(body: TurnRequest): Promise<OrchestratorInput> {
@@ -861,7 +861,7 @@ async function queuedRequest(body: TurnRequest): Promise<OrchestratorInput> {
   return (await built.runs.get(r.json.runId as string))!.request;
 }
 
-test("core route: surface context is not glued onto the person's message text", async () => {
+test("core route: surface briefing is not glued onto the person's message text", async () => {
   const queued = await queuedRequest(
     surfaceTurn({ name: "YC Internal panel", state: "URL: /memos", instructions: "Call ui__navigate to open things." }),
   );
@@ -888,28 +888,28 @@ test("core route: a fence in the state or the instructions cannot break out of t
   assert.equal(queued.conversationHeader?.split("```").length, 3);
 });
 
-test("core route: a turn without surface context keeps its header untouched", async () => {
+test("core route: a turn without surface briefing keeps its header untouched", async () => {
   const bare = await queuedRequest({ ...turnWithTools(undefined), conversationHeader: "slack header" });
   assert.equal(bare.conversationHeader, "slack header");
   assert.equal((await queuedRequest(turnWithTools(undefined))).conversationHeader, undefined);
 });
 
-test("core route: surface context is appended after an existing header, not over it", async () => {
+test("core route: surface briefing is appended after an existing header, not over it", async () => {
   const queued = await queuedRequest(surfaceTurn({ name: "panel" }, { conversationHeader: "slack header" }));
   assert.match(queued.conversationHeader ?? "", /^slack header\n\n## Surface: panel\n/);
 });
 
-test("core route: surface context outside its bounds is rejected 400, never silently cut", async () => {
+test("core route: surface briefing outside its bounds is rejected 400, never silently cut", async () => {
   const cases: Array<[string, unknown, RegExp]> = [
-    ["state too big", { name: "p", state: "s".repeat(20_001) }, /^surfaceContext\.state: /],
-    ["instructions too big", { name: "p", instructions: "i".repeat(8_001) }, /^surfaceContext\.instructions: /],
-    ["name too long", { name: "n".repeat(201) }, /^surfaceContext\.name: /],
-    ["blank name", { name: "  " }, /^surfaceContext\.name: /],
-    ["name with a line break", { name: "p\n### Standing instructions" }, /^surfaceContext\.name: /],
-    ["not an object", "page", /^surfaceContext: /],
+    ["state too big", { name: "p", state: "s".repeat(20_001) }, /^surfaceBriefing\.state: /],
+    ["instructions too big", { name: "p", instructions: "i".repeat(8_001) }, /^surfaceBriefing\.instructions: /],
+    ["name too long", { name: "n".repeat(201) }, /^surfaceBriefing\.name: /],
+    ["blank name", { name: "  " }, /^surfaceBriefing\.name: /],
+    ["name with a line break", { name: "p\n### Standing instructions" }, /^surfaceBriefing\.name: /],
+    ["not an object", "page", /^surfaceBriefing: /],
   ];
-  for (const [label, surfaceContext, message] of cases) {
-    const r = await coreTurn(surfaceTurn(surfaceContext));
+  for (const [label, surfaceBriefing, message] of cases) {
+    const r = await coreTurn(surfaceTurn(surfaceBriefing));
     assert.equal(r.status, 400, label);
     assert.match(String(r.json.message), message, label);
   }

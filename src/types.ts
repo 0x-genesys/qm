@@ -76,7 +76,7 @@ export interface Conversation {
 
 export type SessionType = "dm" | "channel" | "group";
 
-export interface SurfaceContext {
+export interface SurfaceBriefing {
   name: string;
   state?: string;
   instructions?: string;
@@ -736,7 +736,7 @@ export interface TurnRequest {
   redeliveryKey?: string;
   async?: boolean;
   clientTools?: ClientToolDeclaration[];
-  surfaceContext?: SurfaceContext;
+  surfaceBriefing?: SurfaceBriefing;
 }
 
 export interface ActorAssertion {
