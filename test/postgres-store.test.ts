@@ -399,7 +399,7 @@ test(
   },
 );
 
-test("pg spend report recomputes only the days it has not saved", { skip }, async (t) => {
+test("pg spend report recomputes only the days it has not saved, adjacent days in one read", { skip }, async (t) => {
   const pg = (await import("pg")).default;
   const admin = new pg.Pool({ connectionString: URL });
   const schema = `spend_gaps_${randomUUID().replaceAll("-", "")}`;
@@ -413,7 +413,7 @@ test("pg spend report recomputes only the days it has not saved", { skip }, asyn
   const raw = new pg.Pool({ connectionString: url.toString() });
   const scope = scopeId("personal", "spend-gaps");
   const session = await store.getOrCreateByThread("spend-gaps", "dm", scope);
-  const range = { from: base, to: base + 3 * day };
+  const range = { from: base, to: base + 4 * day };
   const live: number[][] = [];
   const query = pg.Client.prototype.query;
   t.mock.method(pg.Client.prototype, "query", function (this: unknown, ...args: any[]): any {
@@ -421,7 +421,7 @@ test("pg spend report recomputes only the days it has not saved", { skip }, asyn
     return Reflect.apply(query, this, args);
   });
   try {
-    for (const offset of [0, 1, 2]) {
+    for (const offset of [0, 1, 2, 3]) {
       at = base + offset * day + 1;
       await store.recordLlmRequest(session.id, {
         turnSeq: null,
@@ -431,15 +431,16 @@ test("pg spend report recomputes only the days it has not saved", { skip }, asyn
         usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, costUsd: 1 },
       });
     }
-    at = base + 3 * day;
+    at = base + 4 * day;
     await store.refreshSpendRollup!();
-    await raw.query("DELETE FROM session_spend_days WHERE day = ANY($1)", [[base / day, base / day + 2]]);
-    await raw.query("INSERT INTO session_spend_dirty(day) VALUES ($1), ($2)", [base / day, base / day + 2]);
+    const unsaved = [base / day, base / day + 2, base / day + 3];
+    await raw.query("DELETE FROM session_spend_days WHERE day = ANY($1)", [unsaved]);
+    await raw.query("INSERT INTO session_spend_dirty(day) SELECT unnest($1::bigint[])", [unsaved]);
     live.length = 0;
     const report = await store.spendReport!(range);
     assert.deepEqual(live, [
       [base, base + day],
-      [base + 2 * day, base + 3 * day],
+      [base + 2 * day, base + 4 * day],
     ]);
     assert.deepEqual(report.rows, await store.spendRollup(range));
     assert.equal(report.asOf, at);

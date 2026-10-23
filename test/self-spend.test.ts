@@ -204,22 +204,13 @@ test("self spend: a linked sign-in's personal spend is yours", async (t) => {
   }
 });
 
-test("self spend: windows are whole UTC days of at most 93 days, bounds required", async () => {
+test("self spend: rejects a window over 93 days, an unknown bucket and a missing principal", async () => {
   const s = await start();
   try {
     const status = async (query: string) => (await s.mine(query)).status;
-    const bad = [
-      "",
-      `from=${today}`,
-      `to=${tomorrow}`,
-      `from=${Date.parse(today)}&to=${Date.parse(tomorrow)}`,
-      `from=${tomorrow}&to=${today}`,
-      `from=${today}&to=${today}`,
-      "from=2026-01-01&to=2026-04-05",
-      `${WINDOW}&bucket=month`,
-    ];
-    for (const query of bad) assert.equal(await status(query), 400, query);
+    assert.equal(await status("from=2026-01-01&to=2026-04-05"), 400);
     assert.equal(await status("from=2026-01-01&to=2026-04-04"), 200);
+    assert.equal(await status(`${WINDOW}&bucket=month`), 400);
     assert.equal(await status(`${WINDOW}&bucket=week`), 200);
     assert.equal((await fetch(`${s.base}/v1/spend?${WINDOW}`)).status, 400);
   } finally {

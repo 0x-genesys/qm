@@ -1,7 +1,7 @@
 import { html } from "lit";
 import { keyed } from "lit/directives/keyed.js";
 import { BACKGROUND_SOURCES, spendChart } from "../../web-ui/src/spend-chart.ts";
-import { spendCustomRange, spendWindowTabs } from "../../web-ui/src/spend-window.ts";
+import { spendAsOf, spendCustomRange, spendWindowTabs } from "../../web-ui/src/spend-window.ts";
 import { table, card, renderer } from "./shared.ts";
 
 type Services = Record<string, any>;
@@ -205,11 +205,7 @@ export class SpendView {
     const org = this.data.org || {};
     this.paint(
       html`${spendCustomRange(s.window, s.setCustomRange)}${
-        this.data.asOf == null
-          ? null
-          : html`<p class="subline">
-              Totals as of ${new Date(this.data.asOf).toLocaleString()}. Updated every minute.
-            </p>`
+        this.data.asOf == null ? null : html`<p class="subline">${spendAsOf(this.data.asOf)}</p>`
       }${card(
         "Spend over time",
         series.length

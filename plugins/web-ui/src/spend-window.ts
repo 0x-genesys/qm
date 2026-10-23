@@ -44,6 +44,10 @@ export function lastSpendDay(window: { to: string }): string {
   return isoDay(Date.parse(window.to) - DAY);
 }
 
+export function spendAsOf(asOf: number): string {
+  return `Totals as of ${new Date(asOf).toLocaleString()}. Updated every minute.`;
+}
+
 export function spendWindowTabs(
   current: SpendWindow,
   setRange: (range: string) => void,

@@ -161,8 +161,12 @@ function backgroundTally(bySource: Record<SpendSource, Tally>): Tally {
   return total;
 }
 
+function costOf(r: SpendRow): number {
+  return Number.isFinite(r.costUsd) ? r.costUsd : 0;
+}
+
 function addRow(t: Tally, r: SpendRow): void {
-  t.costUsd += Number.isFinite(r.costUsd) ? r.costUsd : 0;
+  t.costUsd += costOf(r);
   t.calls += r.calls;
   t.input += r.input;
   t.output += r.output;
@@ -306,8 +310,8 @@ export function summarizeSpend(rows: readonly SpendRow[], opts: SpendSummaryOpti
       buckets.set(bucketKey, bucket);
     }
     addRow(bucket.bySource[source], row);
-    bucket.models.set(row.model, (bucket.models.get(row.model) ?? 0) + row.costUsd);
-    bucket.people.set(person, (bucket.people.get(person) ?? 0) + row.costUsd);
+    bucket.models.set(row.model, (bucket.models.get(row.model) ?? 0) + costOf(row));
+    bucket.people.set(person, (bucket.people.get(person) ?? 0) + costOf(row));
   }
 
   const entities = [...accumulators.values()].map((acc) => entityOf(acc, opts.label));
@@ -482,12 +486,12 @@ function spendBucket(url: URL): SpendBucket | null {
   return bucket === "day" || bucket === "week" ? bucket : null;
 }
 
-function spendDays(url: URL, maxDays: number): { from: number; to: number } | string {
+function spendDays(url: URL): { from: number; to: number } | string {
   const from = parseDay(url.searchParams.get("from") ?? "");
   const to = parseDay(url.searchParams.get("to") ?? "");
   if (from === null || to === null) return "from and to must be YYYY-MM-DD dates (UTC)";
-  if (to <= from || to - from > maxDays * DAY_MS)
-    return `to must be later than from and at most ${maxDays} days after it`;
+  if (to <= from || to - from > MAX_SPEND_DAYS * DAY_MS)
+    return `to must be later than from and at most ${MAX_SPEND_DAYS} days after it`;
   return { from, to };
 }
 
@@ -524,7 +528,7 @@ export async function spendExport(ctx: BaseCtx): Promise<void> {
   if (typeof authorization !== "string" || !constantTimeEqual(authorization, `Bearer ${token}`))
     return sendJson(res, 401, { error: "unauthorized" });
   if (!deps.sessions) return sendJson(res, 503, { error: "spend_unavailable" });
-  const days = spendDays(url, MAX_SPEND_DAYS);
+  const days = spendDays(url);
   if (typeof days === "string") return sendJson(res, 400, { error: "bad_request", message: days });
   const { from, to } = days;
   const { rows, asOf } = await loadSpendRows(deps.sessions, days);
@@ -619,7 +623,7 @@ export async function selfSpend(ctx: ApiCtx): Promise<void> {
   const bad = (message: string) => sendJson(res, 400, { error: "bad_request", message });
   const principalId = url.searchParams.get("principalId");
   if (!principalId) return bad("principalId required");
-  const days = spendDays(url, MAX_SPEND_DAYS);
+  const days = spendDays(url);
   if (typeof days === "string") return bad(days);
   const bucket = spendBucket(url);
   if (!bucket) return bad('bucket must be "day" or "week"');

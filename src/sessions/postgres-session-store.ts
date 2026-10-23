@@ -2000,17 +2000,20 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
         [range.from / dayMs, range.to / dayMs],
       );
       const rows: SpendRow[] = [];
-      const uncached: number[] = [];
+      const gaps: [number, number][] = [];
       for (const day of days) {
         if (day.rows === null) {
-          uncached.push(Number(day.day));
+          const start = Number(day.day);
+          const last = gaps.at(-1);
+          if (last?.[1] === start) last[1] = start + 1;
+          else gaps.push([start, start + 1]);
           continue;
         }
         for (const row of day.rows as Record<string, unknown>[]) rows.push(rowToSpendRow(row));
         if (day.pending) asOf = Math.min(asOf, Number(day.updated_at));
       }
-      for (const day of uncached)
-        for (const row of await q(spendSql, [day * dayMs, (day + 1) * dayMs])) rows.push(rowToSpendRow(row));
+      for (const [from, to] of gaps)
+        for (const row of await q(spendSql, [from * dayMs, to * dayMs])) rows.push(rowToSpendRow(row));
       return { rows: rows.sort((a, b) => a.day - b.day), asOf };
     },
 

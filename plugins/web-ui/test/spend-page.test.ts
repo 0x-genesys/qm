@@ -123,8 +123,8 @@ test("shows your spend, your shared spaces, your crons apart from others', and m
 
   assert.deepEqual(text(".spend-stats strong"), ["$2.50", "$3.00"]);
   assert.deepEqual(panelRows("By shared space"), [["#general", "Live $3.00", "$3.00"]]);
-  assert.deepEqual(panelRows("Your crons"), [["Morning digest", "cron 0 9 * * *", "$0.50"]]);
-  assert.deepEqual(panelRows("Crons others made"), [["Standup notes", "Bob Smith general every 1d", "$1.00"]]);
+  assert.deepEqual(panelRows("Your crons"), [["Morning digest", "cron 0 9 * * * Open", "$0.50"]]);
+  assert.deepEqual(panelRows("Crons others made"), [["Standup notes", "Bob Smith general every 1d Open", "$1.00"]]);
   assert.deepEqual(panelRows("By model"), [["model-a", "2 calls · 1.5K tokens · 50% cache hit", "$5.50"]]);
   assert.deepEqual(panelRows("Deleted or private crons"), [["Cron gone", "", "$0.25"]]);
   assert.equal(

@@ -191,8 +191,9 @@ these, not through them.
 - **Everyone sees the spend of the spaces they can see.** The web Spend page shows each
   signed-in person their own model-call spend plus the spend of every channel, group DM
   and project their Projects page lists, which for internal users includes every public
-  channel the bot is in, and the cost of every cron their Crons page lists, including
-  crons that run in another person's own space. It shows no conversation content.
+  channel the bot is in. It splits that spend by the crons that ran there, naming only
+  crons their Crons page lists and showing the rest by a short id. It shows no
+  conversation content.
 - **Portal sessions have residual risk.** A signed portal session defaults to eight
   hours and renews on use. Logout clears the browser cookie but cannot revoke an
   already copied session token before its expiration.

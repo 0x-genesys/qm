@@ -10,7 +10,7 @@ import { friendlyPrincipal } from "./deploy-view";
 import { chipTabs } from "./list-page";
 import { appState, switchView } from "./shell";
 import { BACKGROUND_SOURCES, spendChart, usd } from "./spend-chart";
-import { lastSpendDay, spendCustomRange, spendWindow, spendWindowTabs } from "./spend-window";
+import { lastSpendDay, spendAsOf, spendCustomRange, spendWindow, spendWindowTabs } from "./spend-window";
 
 interface SpendTotals {
   costUsd: number;
@@ -130,20 +130,20 @@ function rows(items: TemplateResult[], empty: string): TemplateResult {
 function cronRow(c: SpendCron, shared: ReadonlySet<string>): TemplateResult {
   const chip = shared.has(c.scopeId) ? scopeChip(c.scopeId, c.scopeName) : nothing;
   if (!c.info) return row(`Cron ${c.cronId.slice(0, 8)}`, chip, c.costUsd);
-  const title = html`<a
-    class="context-resource-link"
-    href=${deepLinkPath(UI_BASE, "crons", null, null, c.cronId)}
-    @click=${(event: MouseEvent) => {
-      if (!isPlainLeftClick(event)) return;
-      event.preventDefault();
-      openCronById(c.cronId);
-      switchView("crons");
-    }}
-    >${cronTitle(c.info)}</a
-  >`;
   const meta = html`${c.owned ? nothing : html`<span>${friendlyPrincipal(c.info.owner)}</span>`} ${chip}
-    <span class="badge">${cronScheduleSummary(c.info)}</span>`;
-  return row(title, meta, c.costUsd);
+    <span class="badge">${cronScheduleSummary(c.info)}</span>
+    <a
+      class="context-resource-link"
+      href=${deepLinkPath(UI_BASE, "crons", null, null, c.cronId)}
+      @click=${(event: MouseEvent) => {
+        if (!isPlainLeftClick(event)) return;
+        event.preventDefault();
+        openCronById(c.cronId);
+        switchView("crons");
+      }}
+      >Open</a
+    >`;
+  return row(cronTitle(c.info), meta, c.costUsd);
 }
 
 function body(r: SpendReport): TemplateResult {
@@ -234,7 +234,7 @@ function body(r: SpendReport): TemplateResult {
 function statusLine(): TemplateResult | typeof nothing {
   if (notice || loading) return html`<div class="status">${notice || "Loading…"}</div>`;
   if (report?.asOf == null) return nothing;
-  return html`<div class="status">Totals as of ${new Date(report.asOf).toLocaleString()}. Updated every minute.</div>`;
+  return html`<div class="status">${spendAsOf(report.asOf)}</div>`;
 }
 
 function drawSpend(): void {
