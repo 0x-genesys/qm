@@ -899,6 +899,11 @@ test("core route: surface briefing is appended after an existing header, not ove
   assert.match(queued.conversationHeader ?? "", /^slack header\n\n## Surface: panel\n/);
 });
 
+test("core route: a briefing with only a name renders no empty state or instructions sections", async () => {
+  const queued = await queuedRequest(surfaceTurn({ name: "panel" }));
+  assert.doesNotMatch(queued.conversationHeader ?? "", /###|```/);
+});
+
 test("core route: surface briefing outside its bounds is rejected 400, never silently cut", async () => {
   const cases: Array<[string, unknown, RegExp]> = [
     ["state too big", { name: "p", state: "s".repeat(20_001) }, /^surfaceBriefing\.state: /],
