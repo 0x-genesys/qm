@@ -100,6 +100,19 @@ const summarize = (rows: SpendRow[], over: Partial<Parameters<typeof summarizeSp
 const conserved = (report: SpendReport, pick: (e: SpendReport["people"][number]) => number): number =>
   [...report.people, ...report.scopes].reduce((sum, e) => sum + pick(e), 0);
 
+test("summarizeSpend counts a call whose cost could not be priced as free instead of voiding every total", () => {
+  const report = summarizeSpend(
+    [
+      row({ day: MON, scopeId: "personal:alice", origin: "conversation", costUsd: 2 }),
+      row({ day: MON, scopeId: "personal:alice", origin: "conversation", costUsd: Number.NaN }),
+    ],
+    { from: MON * DAY, to: TUE * DAY, bucket: "day", label: () => "", cron: () => null },
+  );
+  assert.equal(report.org.costUsd, 2);
+  assert.equal(report.org.calls, 2);
+  assert.equal(report.people[0]!.costUsd, 2);
+});
+
 test("summarizeSpend: people plus non-person scopes conserve the org totals", () => {
   const report = summarize(ROWS);
   assert.deepEqual(
