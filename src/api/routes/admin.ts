@@ -56,6 +56,7 @@ import { deleteCustomProvider, getCustomProviders, putCustomProvider } from "./a
 import { deleteMcpServer, getMcpServers, putMcpServer } from "./admin/mcp-servers.ts";
 import { listSecurityFlags } from "./admin/security.ts";
 import { spend } from "./admin/spend.ts";
+import { listUnattendedGrants } from "./admin/unattended-grants.ts";
 import { createPrincipalLink, deletePrincipalLink, listPrincipalLinks } from "./admin/principal-links.ts";
 
 const timed =
@@ -144,8 +145,20 @@ const routes: Route<ApiCtx>[] = [
       handle: getCredentialUsageSummary,
     },
     { method: "GET", path: "/v1/admin/resources", auth: "either", handle: getAdminResources },
+    {
+      method: "GET",
+      path: "/v1/admin/unattended-grants",
+      auth: "either",
+      handle: (ctx) => listUnattendedGrants(ctx, routes),
+    },
     { method: "GET", path: "/v1/admin/retention", auth: "either", handle: retention },
-    { method: "GET", path: "/v1/admin/spend", auth: "either", handle: spend },
+    {
+      method: "GET",
+      path: "/v1/admin/spend",
+      auth: "either",
+      admin: { unattended: { grant: "admin.spend.read", summary: "read the org spend report" } },
+      handle: spend,
+    },
     {
       method: "GET",
       path: "/v1/admin/egress",
@@ -287,7 +300,7 @@ const routes: Route<ApiCtx>[] = [
       method: "GET",
       path: "/v1/admin/crons",
       auth: "either",
-      admin: { privateRead: "always" },
+      admin: { privateRead: "always", unattended: { grant: "admin.crons.read", summary: "list a scope's crons" } },
       handle: listAdminArtifacts,
     },
     {

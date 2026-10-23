@@ -9,6 +9,7 @@ import { reachEnqueue } from "../reach/reach.ts";
 import { isVisible, type VisibilityDirectory } from "../directory/visibility.ts";
 import type { DirectoryMember, DirectoryStore, RecipientResolution } from "../directory/directory-store.ts";
 import { samePerson } from "../directory/person.ts";
+import { grantsStayWithOwner } from "../cron/authority.ts";
 import type { CurrentScopeMembers } from "../resolution/scope-membership.ts";
 import { isProjectGroupRef } from "../projects/project-store.ts";
 import { reportFailureAs, swallowAs } from "../util/errors.ts";
@@ -284,7 +285,7 @@ export async function runTrigger(deps: TriggerDeps, spec: TriggerSpec): Promise<
         text: typeof spec.input === "string" ? spec.input : spec.input(roster),
         ...(spec.securityScreenData !== undefined ? { securityScreenData: spec.securityScreenData } : {}),
         triggered: true,
-        ...(ownerKind === "personal" && spec.unattendedGrants ? { unattendedGrants: spec.unattendedGrants } : {}),
+        ...(spec.unattendedGrants && grantsStayWithOwner(spec) ? { unattendedGrants: spec.unattendedGrants } : {}),
         ...(spec.runtime ? { model: spec.runtime.modelId, harness: spec.runtime.harnessId } : {}),
         ...turnModelOptions({
           triggered: true,

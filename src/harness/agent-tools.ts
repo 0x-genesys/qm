@@ -61,7 +61,7 @@ import {
   type ToolResultScreenInput,
 } from "../security/security-posture.ts";
 import { SANDBOX_CAPABILITY_TTL_MS } from "../auth/capability-token.ts";
-import { CRON_FIRE_NOTE_MAX_CHARS } from "../api/control-service.ts";
+import { CRON_FIRE_NOTE_MAX_CHARS, UNATTENDED_ADMIN_GRANTS } from "../api/control-service.ts";
 import { utcMinute } from "../util/time.ts";
 
 function describePublishAudience(a: PublishAudienceDescriptor | undefined): string {
@@ -219,6 +219,7 @@ interface CronLike {
   nextFireAt?: number;
   destination?: { type: string; target: string };
   lastFireNote?: { text: string; at: number; by?: string };
+  unattendedGrants?: string[];
 }
 
 const LIST_PAGE_SIZE = 25;
@@ -285,7 +286,8 @@ function fmtCronLine(c: CronLike, preview = false): string {
   const runtime = c.runtime
     ? `\n    runtime: ${c.runtime.harnessId}/${c.runtime.modelId}${c.runtime.effortLevel ? ` (${c.runtime.effortLevel})` : ""}`
     : "";
-  return `${c.id}${c.title ? ` "${c.title}"` : ""} — ${fmtCronSchedule(c)}${dest}${state}${next}${what ? `\n    ${what}` : ""}${runtime}${note}`;
+  const grants = c.unattendedGrants?.length ? `\n    unattended grants: ${c.unattendedGrants.join(", ")}` : "";
+  return `${c.id}${c.title ? ` "${c.title}"` : ""} — ${fmtCronSchedule(c)}${dest}${state}${next}${what ? `\n    ${what}` : ""}${runtime}${grants}${note}`;
 }
 
 function fmtCronCreated(r: {
@@ -2386,6 +2388,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       "plus, where they share Open with it, their own keychain. Everyone in the conversation " +
       "can see it; only its owner can change it unless they share write access (action=share, permission=write). " +
       "If the owner leaves the conversation, the cron is deleted.\n" +
+      'A cron whose fires read admin data (admin tool or API) needs `unattendedGrants`, and many admin reads have none: before creating it, follow the admin skill\'s "Scheduling admin-reading work", which fetches the live grant list.\n' +
       "action=list pages through your crons (and ones visible through shared scopes), 25 per page — enabled first, " +
       "newest first, long task text trimmed; when there's more, a footer line names the offset for the next page. " +
       "action=get inspects one in full; " +
@@ -2522,6 +2525,12 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           },
         ),
       ),
+      unattendedGrants: Type.Optional(
+        Type.Array(Type.Union(UNATTENDED_ADMIN_GRANTS.map((grant) => Type.Literal(grant))), {
+          description:
+            "create/patch: read-only admin grants for this cron's fires (org admins only; the cron must live in and deliver to their own DM); the admin tool's unattended_grants action lists which read needs which. patch replaces; [] removes.",
+        }),
+      ),
       enabled: Type.Optional(Type.Boolean({ description: "patch only: false pauses the cron, true resumes it." })),
       archived: Type.Optional(Type.Boolean({ description: "patch only: true archives the cron." })),
       limit: Type.Optional(
@@ -2573,6 +2582,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
             ...(params.destinationKey !== undefined ? { destinationKey: params.destinationKey } : {}),
             ...(params.unfurlLinks !== undefined ? { unfurlLinks: params.unfurlLinks } : {}),
             ...(params.session !== undefined ? { session: params.session } : {}),
+            ...(params.unattendedGrants !== undefined ? { unattendedGrants: params.unattendedGrants } : {}),
           });
           if (isUnavailable(r)) return unavailable(callId, "cron");
           if (!r.ok) {
@@ -2703,6 +2713,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
             ...(params.archived !== undefined ? { archived: params.archived } : {}),
             ...(params.unfurlLinks !== undefined ? { unfurlLinks: params.unfurlLinks } : {}),
             ...(params.session !== undefined ? { session: params.session } : {}),
+            ...(params.unattendedGrants !== undefined ? { unattendedGrants: params.unattendedGrants } : {}),
           });
           if (isUnavailable(r)) return unavailable(callId, "cron");
           if (!r.ok) return recordResult(callId, { tool: "cron", error: r.code }, text(`[error] ${r.message}`), true);
