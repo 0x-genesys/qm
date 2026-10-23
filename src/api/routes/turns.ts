@@ -58,7 +58,12 @@ const clientToolsSchema = z
   });
 
 const surfaceContextSchema = z.object({
-  name: z.string().trim().min(1).max(200),
+  name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .regex(/^[^\r\n]+$/),
   state: z.string().max(20_000).optional(),
   instructions: z.string().max(8_000).optional(),
 });
