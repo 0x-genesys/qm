@@ -47,11 +47,8 @@ const core = createServer((req: IncomingMessage, res) => {
       return;
     }
     if (req.method === "POST") turns.push(JSON.parse(raw) as Record<string, unknown>);
-    if (
-      req.method === "POST" &&
-      typeof turns.at(-1)?.surfaceBriefing === "object" &&
-      !turns.at(-1)?.surfaceBriefing?.name
-    ) {
+    const briefing = turns.at(-1)?.surfaceBriefing as { name?: string } | undefined;
+    if (req.method === "POST" && briefing && !briefing.name) {
       res.writeHead(400, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "surfaceBriefing.name: Required" }));
       return;
