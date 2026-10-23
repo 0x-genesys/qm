@@ -2656,7 +2656,7 @@ const apiRoutes: readonly WebRoute[] = [
         if (typeof p.fastMode === "boolean") fastMode = p.fastMode;
         if (typeof p.timezone === "string" && p.timezone.trim()) timezone = p.timezone.trim().slice(0, 64);
         if (Array.isArray(p.clientTools)) clientTools = p.clientTools;
-        if (typeof p.surfaceBriefing === "object" && !Array.isArray(p.surfaceBriefing))
+        if (p.surfaceBriefing && typeof p.surfaceBriefing === "object" && !Array.isArray(p.surfaceBriefing))
           surfaceBriefing = p.surfaceBriefing;
         if (Array.isArray(p.attachments)) {
           for (const raw of p.attachments as unknown[]) {
@@ -2688,7 +2688,7 @@ const apiRoutes: readonly WebRoute[] = [
         ...(typeof fastMode === "boolean" ? { fastMode } : {}),
         ...(timezone ? { timezone } : {}),
         ...(clientTools ? { clientTools } : {}),
-        ...(surfaceBriefing ? { surfaceBriefing } : {}),
+        ...(surfaceBriefing !== undefined ? { surfaceBriefing } : {}),
         ...(attachments.length ? { attachments } : {}),
         ...(approval ? { approval } : {}),
         ...(proactiveOpener ? { proactiveOpener: true } : {}),
