@@ -4076,7 +4076,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
             { tool: "goal", action: "update", error: "wait_unavailable" },
             text(
               goal?.status === "active"
-                ? "Waiting is only for swarm workers on a goal their parent assigned; this goal stays active. Keep working, or poll the swarm for the reply you need."
+                ? "Waiting is only for swarm workers on a goal sent in a swarm message; this goal stays active. Keep working, or poll the swarm for the reply you need."
                 : "No active goal to wait on.",
             ),
             true,
