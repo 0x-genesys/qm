@@ -76,6 +76,12 @@ export interface Conversation {
 
 export type SessionType = "dm" | "channel" | "group";
 
+export interface SurfaceContext {
+  name: string;
+  state?: string;
+  instructions?: string;
+}
+
 export interface SpawnMeta {
   slackSource?: TurnRequest["slackSource"];
   externalSlack?: TurnRequest["externalSlack"];
@@ -730,6 +736,7 @@ export interface TurnRequest {
   redeliveryKey?: string;
   async?: boolean;
   clientTools?: ClientToolDeclaration[];
+  surfaceContext?: SurfaceContext;
 }
 
 export interface ActorAssertion {
