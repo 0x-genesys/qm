@@ -1,4 +1,5 @@
 import { DEFAULT_CRON_TIMEZONE } from "../cron/schedule.ts";
+import { SECURITY_FLAGGED, SECURITY_TOOL_RESULT_QUARANTINE } from "../audit/audit-log.ts";
 import { createAdminCall } from "../tools/admin.ts";
 import { scopeTeamsToTurn } from "../teams/teams.ts";
 import { externalSlackRequestAllowed, currentExternalSlackRun } from "../resolution/external-slack.ts";
@@ -899,7 +900,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             deps.auditLog.record({
               at: Date.now(),
               principalId: actor.id,
-              action: "security_posture.flagged",
+              action: SECURITY_FLAGGED,
               resource: input.surface ?? "unknown",
               scopeLabel: scopeId,
               status: "pending_approval",
@@ -3568,7 +3569,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                       deps.auditLog.record({
                         at: Date.now(),
                         principalId: actor.id,
-                        action: "security_posture.tool_result_quarantine",
+                        action: SECURITY_TOOL_RESULT_QUARANTINE,
                         resource: input.surface ?? "unknown",
                         scopeLabel: scopeId,
                         status: "refused",
