@@ -60,6 +60,7 @@ import { coreClaimStore, claimOnce, withinRateLimit, ClaimStoreUnavailableError 
 import { coreEmailAdmission } from "../../chassis/src/external-members.ts";
 import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { errMessage } from "../../chassis/src/errors.ts";
+import { isUiChannel, UI_CHANNEL_COOKIE } from "../../chassis/src/ui-release.ts";
 import {
   json,
   escapeHtml,
@@ -1368,8 +1369,23 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
     }
   }
 
+  const requestedChannel = key === "web-ui" && method === "GET" && wantsHtml(req) ? url.searchParams.get("ui") : null;
+  if (requestedChannel !== null) {
+    if (!isUiChannel(requestedChannel)) return json(res, 400, { error: "bad_request", message: "unknown ui channel" });
+    url.searchParams.delete("ui");
+    setSession(res, [
+      requestedChannel === "live"
+        ? clearCookie(UI_CHANNEL_COOKIE, "/", SECURE_COOKIES)
+        : setCookie(UI_CHANNEL_COOKIE, requestedChannel, { secure: SECURE_COOKIES }),
+    ]);
+    res.writeHead(302, { location: `${pathname}${url.search}`, "cache-control": "no-store" });
+    return void res.end();
+  }
+  const uiChannel = key === "web-ui" ? readCookie(req.headers.cookie, UI_CHANNEL_COOKIE) : null;
+
   const forwardPath = key === "web-ui" ? pathname : pathname.slice(`/${key}`.length) || "/";
   return proxyToSurface(req, res, {
+    ...(uiChannel && isUiChannel(uiChannel) ? { uiChannel } : {}),
     upstreamBase: UPSTREAMS[key]!,
     forwardPath,
     search: url.search,
