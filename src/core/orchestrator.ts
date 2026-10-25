@@ -3083,7 +3083,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           let userProviderKeys: ProviderKeys | undefined;
           let userModelOverride: string | undefined;
           let userHarnessOverride: string | undefined;
-          let claudeOauthToken: string | undefined;
+          let authLabel = "api-key";
           const userCredStore = external ? undefined : deps.userModelCredentials;
           const account = external
             ? "company"
@@ -3107,7 +3107,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             } else if (routing?.kind === "oauth" && routing.provider === "anthropic" && anthCred?.oauth) {
               const derived = await userCredStore.derivedOAuth(actor.id, "anthropic");
               if (derived) {
-                claudeOauthToken = derived.accessToken;
+                userProviderKeys = { anthropic: derived.accessToken };
+                authLabel = "claude-oauth-pi";
                 userHarnessOverride = routing.harness;
                 userModelOverride = routing.model;
               }
@@ -3115,6 +3116,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               const derived = await userCredStore.derivedOAuth(actor.id, "openai");
               if (derived) {
                 userProviderKeys = { [CODEX_SUBSCRIPTION_PROVIDER]: derived.accessToken };
+                authLabel = "codex-oauth-pi";
                 userHarnessOverride = routing.harness;
                 userModelOverride = routing.model;
               }
@@ -3125,7 +3127,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               );
             }
           }
-          return { userProviderKeys, userModelOverride, userHarnessOverride, claudeOauthToken };
+          return { userProviderKeys, userModelOverride, userHarnessOverride, authLabel };
         };
         const servesModel = (requested: string, routed: string | undefined, keys: ProviderKeys | undefined) =>
           (keys?.[CODEX_SUBSCRIPTION_PROVIDER] ? codexSubscriptionModelId(requested) : requested) === routed;
@@ -3133,7 +3135,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           throw new NonRetryableTurnError(`runtime ${input.harness} is not approved`);
         const inputHarness = input.harness && isHarnessId(input.harness) ? input.harness : undefined;
         const requestedModel = input.model ?? purposeDefault?.modelId;
-        let { userProviderKeys, userModelOverride, userHarnessOverride, claudeOauthToken } = await loadRuntimeAuth({});
+        let { userProviderKeys, userModelOverride, userHarnessOverride, authLabel } = await loadRuntimeAuth({});
         if (
           (input.surface === "web" || purposeDefault) &&
           userHarnessOverride &&
@@ -3145,9 +3147,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         const effectiveModel = userModelOverride ?? input.model;
         const effectiveHarness = userHarnessOverride ?? inputHarness;
         if (userHarnessOverride) {
-          let authLabel = "api-key";
-          if (claudeOauthToken) authLabel = "claude-oauth";
-          else if (userProviderKeys?.[CODEX_SUBSCRIPTION_PROVIDER]) authLabel = "codex-oauth-pi";
           console.log(
             `[individual-auth] user=${actor.id} harness=${userHarnessOverride} model=${effectiveModel} auth=${authLabel}`,
           );
@@ -3188,8 +3187,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           const error = await checkRuntimeAuth(choice);
           if (error) throw new NonRetryableTurnError(error);
           agentSwitch = lifetime;
-          ({ userProviderKeys, userModelOverride, userHarnessOverride, claudeOauthToken } =
-            await loadRuntimeAuth(choice));
+          ({ userProviderKeys, userModelOverride, userHarnessOverride, authLabel } = await loadRuntimeAuth(choice));
           requestedRuntime = userModelOverride ? { ...choice, modelId: userModelOverride } : choice;
         };
         if (restoredRuntime) await adoptRuntime(restoredRuntime.choice, restoredRuntime.lifetime);
@@ -3437,7 +3435,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               };
             },
             ...(userProviderKeys ? { providerKeys: userProviderKeys } : {}),
-            ...(claudeOauthToken ? { claudeOauthToken } : {}),
             ...(userHarnessOverride && !purposeDefault && !restoredRuntime && runtimeHandoffs === 0
               ? { runtimePinned: true }
               : {}),
