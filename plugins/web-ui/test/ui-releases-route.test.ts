@@ -17,12 +17,15 @@ const objects: Record<string, string> = {
   "/releases/bbbbbbbbbbbbbbbb/index.html": "<html><head><title>preview</title></head><body></body></html>",
   "/assets/app-1234.js": "console.log('bundle')",
 };
+let bucketDenies = false;
 const bucket = createServer((req, res) => {
-  const body = objects[req.url ?? ""];
-  res.writeHead(body === undefined ? 403 : 200, {
-    "content-type": (req.url ?? "").endsWith(".js") ? "text/javascript" : "text/html",
-  });
-  res.end(body ?? "AccessDenied");
+  const body = bucketDenies ? undefined : objects[req.url ?? ""];
+  if (bucketDenies || body === undefined) {
+    res.writeHead(bucketDenies ? 403 : 404);
+    return void res.end(bucketDenies ? "AccessDenied" : "NoSuchKey");
+  }
+  res.writeHead(200, { "content-type": (req.url ?? "").endsWith(".js") ? "text/javascript" : "text/html" });
+  res.end(body);
 });
 await new Promise<void>((r) => bucket.listen(0, r));
 
@@ -30,7 +33,12 @@ process.env.CORE_API_URL = `http://localhost:${(core.address() as AddressInfo).p
 process.env.WEB_UI_RELEASES_URL = `http://localhost:${(bucket.address() as AddressInfo).port}/`;
 
 const { handler } = await import("../server/index.ts");
-const surface = createServer((req, res) => void handler(req, res));
+const surface = createServer((req, res) => {
+  handler(req, res).catch(() => {
+    res.writeHead(502);
+    res.end();
+  });
+});
 await new Promise<void>((r) => surface.listen(0, r));
 const base = `http://localhost:${(surface.address() as AddressInfo).port}`;
 
@@ -68,6 +76,23 @@ test("assets the CDN did not answer are relayed from the bucket", async () => {
   assert.equal(await r.text(), "console.log('bundle')");
   assert.equal(r.headers.get("cache-control"), "public, max-age=31536000, immutable");
   assert.equal((await fetch(`${base}/assets/missing.js`)).status, 404);
+});
+
+test("a bucket that starts refusing keeps serving the last good release, and a cold refusal is an error", async () => {
+  const warm = await fetch(`${base}/`, { headers: { cookie: "qm_ui_channel=pr-7" } });
+  assert.match(await warm.text(), /content="bbbbbbbbbbbbbbbb"/);
+  bucketDenies = true;
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 10_100));
+    const kept = await fetch(`${base}/`, { headers: { cookie: "qm_ui_channel=pr-7" } });
+    assert.equal(kept.status, 200);
+    assert.match(await kept.text(), /content="bbbbbbbbbbbbbbbb"/);
+    const cold = await fetch(`${base}/`, { headers: { cookie: "qm_ui_channel=never-read" } });
+    assert.equal(cold.status, 502);
+    assert.equal((await fetch(`${base}/assets/app-1234.js`)).status, 502);
+  } finally {
+    bucketDenies = false;
+  }
 });
 
 test("an API call from a UI older than the server's minimum is refused with ui_outdated", async () => {

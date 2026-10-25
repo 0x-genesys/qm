@@ -7,14 +7,8 @@ import { appEditSlug } from "../src/app-edit.ts";
 import { composioCallbackUrl } from "./composio-return.ts";
 import { sharedSessionHtml } from "./shared-session.ts";
 import { uiCanvasRoutes } from "./ui-canvas-routes.ts";
-import {
-  createUiReleases,
-  parseUiRelease,
-  uiProtocolSupported,
-  UiReleaseError,
-  withReleaseMeta,
-} from "./ui-releases.ts";
-import { isUiChannel, UI_CHANNEL_COOKIE, UI_VERSION_HEADER } from "../../chassis/src/ui-release.ts";
+import { createUiDocuments, releaseErrorPage, uiProtocolSupported } from "./ui-releases.ts";
+import { UI_VERSION_HEADER } from "../../chassis/src/ui-release.ts";
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Readable } from "node:stream";
@@ -40,7 +34,6 @@ import {
   PayloadTooLargeError,
   sendBuffered,
   serveFavicon,
-  escapeHtml,
 } from "../../chassis/src/http.ts";
 import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { createBrandingCache, injectBranding } from "../../chassis/src/branding.ts";
@@ -94,54 +87,12 @@ async function hasInboxLoopPreview(user: string): Promise<boolean> {
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = join(ROOT, "dist-web");
-const UI_RELEASES = process.env.WEB_UI_RELEASES_URL
-  ? createUiReleases(new URL(process.env.WEB_UI_RELEASES_URL).href.replace(/\/$/, ""))
-  : undefined;
-let localReleaseId: string | undefined;
-
-function uiChannel(req: IncomingMessage): string {
-  const channel = cookie(req, UI_CHANNEL_COOKIE);
-  return channel && isUiChannel(channel) ? channel : "live";
-}
-
-async function uiDocument(req: IncomingMessage, name: "index.html" | "shared.html"): Promise<string | null> {
-  if (UI_RELEASES) return UI_RELEASES.document(uiChannel(req), name);
-  const filePath = join(DIST, name);
-  if (!existsSync(filePath)) return null;
-  localReleaseId ??= (() => {
-    try {
-      return parseUiRelease(JSON.parse(readFileSync(join(DIST, "release.json"), "utf8"))).id;
-    } catch {
-      return undefined;
-    }
-  })();
-  return withReleaseMeta(readFileSync(filePath, "utf8"), localReleaseId);
-}
+const UI = createUiDocuments(DIST, process.env.WEB_UI_RELEASES_URL);
+const uiDocument = UI.document;
 
 function sendReleaseError(res: ServerResponse, error: unknown): void {
-  if (!(error instanceof UiReleaseError)) throw error;
-  sendHtml(
-    res,
-    error.status,
-    `<!doctype html><meta charset="utf-8"><title>Web UI unavailable</title><body style="font-family:system-ui;max-width:32rem;margin:4rem auto"><p>${escapeHtml(error.message)}</p><p><a href="/?ui=live">Open the current release</a></p></body>`,
-  );
-}
-
-async function serveReleaseAsset(res: ServerResponse, path: string): Promise<void> {
-  const upstream = await fetch(UI_RELEASES!.assetUrl(path), { signal: AbortSignal.timeout(15_000) });
-  if (!upstream.ok || !upstream.body) {
-    await upstream.body?.cancel();
-    return void json(res, upstream.status === 403 ? 404 : upstream.status, { error: "not_found" });
-  }
-  res.writeHead(200, {
-    "content-type": upstream.headers.get("content-type") ?? CONTENT_TYPES[extname(path)] ?? "application/octet-stream",
-    "cache-control": "public, max-age=31536000, immutable",
-    "x-content-type-options": "nosniff",
-  });
-  const stream = Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]);
-  res.on("close", () => stream.destroy());
-  stream.on("error", () => res.destroy());
-  stream.pipe(res);
+  const page = releaseErrorPage(error);
+  sendHtml(res, page.status, page.html);
 }
 
 const brandingCache = createBrandingCache(async () => {
@@ -3578,7 +3529,7 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
   if (method === "GET" && path === "/app-edit" && (await serveAppEditHtml(req, res, url))) return;
 
   if (method === "GET") {
-    if (path.startsWith("/assets/")) return await (UI_RELEASES ? serveReleaseAsset(res, path) : serveStatic(res, path));
+    if (path.startsWith("/assets/")) return await (UI.relayAsset ? UI.relayAsset(res, path) : serveStatic(res, path));
     if (await serveVite(req, res, path)) return;
     return await serveStatic(res, path === "/" ? "/index.html" : path);
   }
