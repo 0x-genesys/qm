@@ -9,9 +9,10 @@ import { createAclStore } from "../src/acl/acl-store.ts";
 import type { DeployProvider } from "../src/deploy/deploy-provider.ts";
 import { scopeId } from "../src/types.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
+import { testDeployBackings } from "./support/test-database.ts";
 
 function svc(managedScaleToZero: boolean) {
-  const deployStore = createDeployStore();
+  const deployStore = createDeployStore(testDeployBackings());
   let destroys = 0;
   const provider: DeployProvider = {
     profile: { managedScaleToZero },

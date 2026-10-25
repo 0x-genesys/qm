@@ -7,6 +7,7 @@ import { createDeliveryStore } from "../src/delivery/delivery-store.ts";
 import { createIdempotencyStore } from "../src/idempotency/idempotency-store.ts";
 import { createIdentityService } from "../src/identity/identity-service.ts";
 import { scopeId, type TurnRequest, type TurnResult } from "../src/types.ts";
+import { testMap } from "./support/test-database.ts";
 
 const SECRET = "topsecret";
 const flush = () => new Promise((r) => setImmediate(r));
@@ -16,9 +17,9 @@ const _deliverStatusIsNot413: AssertNo413 = true;
 void _deliverStatusIsNot413;
 
 function harness(runResult: TurnResult = { status: "ok", reply: "DID-THE-WORK" }) {
-  const webhooks = createWebhookStore();
+  const webhooks = createWebhookStore(testMap(), testMap());
   const deliveries = createDeliveryStore();
-  const identity = createIdentityService();
+  const identity = createIdentityService(testMap(), { externalMembers: testMap() });
   const calls: TurnRequest[] = [];
   const run = async (req: TurnRequest): Promise<TurnResult> => {
     calls.push(req);
@@ -27,7 +28,7 @@ function harness(runResult: TurnResult = { status: "ok", reply: "DID-THE-WORK" }
   const receiver = createWebhookReceiver({
     webhooks,
     deliveries,
-    idempotency: createIdempotencyStore(),
+    idempotency: createIdempotencyStore(testMap()),
     identity,
     run,
   });

@@ -8,9 +8,10 @@ import type { ToolContext } from "../src/tools/primitives.ts";
 import type { SessionEntry } from "../src/types.ts";
 import { createMemoryRunSignalStore, type RunSignalStore } from "../src/runs/run-signal-store.ts";
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
-import { createMemoryFileArtifactStore } from "../src/files/file-artifact-store.ts";
 import { artifactImageLoader } from "../src/harness/replay-images.ts";
 import { createPostgresToolOutputStore, type ToolOutputStore } from "../src/sessions/tool-output.ts";
+import { createPostgresFileArtifactStore } from "../src/files/postgres-file-artifact-store.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 type Body = { messages?: unknown[]; input?: unknown[] };
 type Reply = Array<Record<string, unknown>>;
@@ -336,7 +337,7 @@ const PNG_A = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQD
 const PNG_B = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
 
 test("user and steer images replay as the exact image blocks the model saw, restored from their durable files", async () => {
-  const files = createMemoryFileArtifactStore(createMemoryDurableByteStore());
+  const files = createPostgresFileArtifactStore(testDatabaseUrl(), createMemoryDurableByteStore());
   for (const [id, data] of [
     ["art-photo", PNG_A],
     ["art-steer", PNG_B],
@@ -475,7 +476,7 @@ test("a parallel call's result is recorded as soon as its tool returns, while a 
 });
 
 test("a replayed image is read from the file store once, not on every turn", async () => {
-  const files = createMemoryFileArtifactStore(createMemoryDurableByteStore());
+  const files = createPostgresFileArtifactStore(testDatabaseUrl(), createMemoryDurableByteStore());
   await files.put({
     id: "art-once",
     ownerScopeId: "personal:tester" as never,

@@ -8,13 +8,14 @@ import { createDeployStore, type DeployStore } from "../src/deploy/deploy-store.
 import { createAclStore } from "../src/acl/acl-store.ts";
 import { scopeId } from "../src/types.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
+import { testDeployBackings } from "./support/test-database.ts";
 
 function harness(failRestore = false) {
   let applies = 0;
   let destroys = 0;
   const deploy = createDeployService({
     ...singleProcessDeps(),
-    deployStore: createDeployStore(),
+    deployStore: createDeployStore(testDeployBackings()),
     provider: {
       profile: { managedScaleToZero: false },
       apply: async () => {
@@ -34,7 +35,7 @@ function harness(failRestore = false) {
 }
 
 function persistenceFailureHarness(failMethod: "setVersionImage" | "setEndpoint" | "setStatus" | "setAppliedVersion") {
-  const base = createDeployStore();
+  const base = createDeployStore(testDeployBackings());
   let armed = false;
   let failed = false;
   const store = new Proxy(base, {

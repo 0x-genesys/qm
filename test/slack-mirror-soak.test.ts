@@ -1,5 +1,4 @@
 import { test } from "node:test";
-import { createMemorySurfaceCache } from "../src/surface-cache/surface-cache.ts";
 import assert from "node:assert/strict";
 import { createSlackHistoryReader } from "../src/slack/history.ts";
 import { parseSlackContextSource, slackAccountConfigsFromEnv } from "../src/slack/config.ts";
@@ -7,6 +6,8 @@ import { createSurfaceToolDeps, type SurfaceToolsContext } from "../src/core/orc
 import type { SlackCoreClient } from "../src/api/slack-core-client.ts";
 import type { ReadMessagesOpts } from "../src/surface-cache/types.ts";
 import type { BotIdentity } from "../src/slack/directory.ts";
+import { createPostgresSurfaceCache } from "../src/surface-cache/surface-cache.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 const ids = { botUserId: "UBOT", ownBotId: "BBOT" } as BotIdentity;
 
@@ -163,7 +164,7 @@ test("secondary Slack accounts inherit the explicitly selected shadow mode", () 
 
 test("shadow distinguishes stored messages with wrong parents from ingestion loss", async (t) => {
   const { createMemorySurfaceCache } = await import("../src/surface-cache/surface-cache.ts");
-  const cache = createMemorySurfaceCache();
+  const cache = createPostgresSurfaceCache(testDatabaseUrl());
   await cache.ingest([
     { container: "C1", ts: "1", text: "root" },
     { container: "C1", ts: "2", sub: "wrong", text: "reply" },
@@ -206,7 +207,7 @@ test("shadow distinguishes stored messages with wrong parents from ingestion los
 
 test("shadow compares canonical mention IDs without erasing literal entity or attachment differences", async (t) => {
   const { createMemorySurfaceCache } = await import("../src/surface-cache/surface-cache.ts");
-  const cache = createMemorySurfaceCache();
+  const cache = createPostgresSurfaceCache(testDatabaseUrl());
   await cache.ingest([
     { container: "C1", ts: "1", text: "Hi <@U1> &lt;", mentions: { U1: "Alice" } },
     { container: "C1", ts: "2", text: "<" },
@@ -243,7 +244,7 @@ test("shadow compares canonical mention IDs without erasing literal entity or at
 
 test("mirror selects newest channel roots and the first thread page", async () => {
   const { createMemorySurfaceCache } = await import("../src/surface-cache/surface-cache.ts");
-  const cache = createMemorySurfaceCache();
+  const cache = createPostgresSurfaceCache(testDatabaseUrl());
   const ts = (n: number) => String(n).padStart(6, "0");
   await cache.ingest(Array.from({ length: 205 }, (_, i) => ({ container: "C1", ts: ts(i), text: "root" })));
   await cache.ingest(
@@ -269,7 +270,7 @@ test("mirror selects newest channel roots and the first thread page", async () =
 
 test("shadow never certifies failed or truncated live thread expansion as complete", async (t) => {
   const { createMemorySurfaceCache } = await import("../src/surface-cache/surface-cache.ts");
-  const cache = createMemorySurfaceCache();
+  const cache = createPostgresSurfaceCache(testDatabaseUrl());
   await cache.ingest([{ container: "C1", ts: "1", text: "root" }]);
   const logs: string[] = [];
   t.mock.method(console, "info", (line: string) => logs.push(line));
@@ -306,7 +307,7 @@ test("shadow never certifies failed or truncated live thread expansion as comple
 test("shadow and mirror use the live first-page thread contract without fallback", async (t) => {
   const logs: string[] = [];
   t.mock.method(console, "info", (line: string) => logs.push(line));
-  const cache = createMemorySurfaceCache();
+  const cache = createPostgresSurfaceCache(testDatabaseUrl());
   const messages = Array.from({ length: 220 }, (_, index) => ({
     ts: `1000.${String(index).padStart(6, "0")}`,
     text: `message-${index}`,
@@ -386,7 +387,7 @@ test("shadow freezes live messages and attachments before callers modify their c
 
 test("shadow reports legacy rewritten mentions as a difference", async (t) => {
   const { createMemorySurfaceCache } = await import("../src/surface-cache/surface-cache.ts");
-  const cache = createMemorySurfaceCache();
+  const cache = createPostgresSurfaceCache(testDatabaseUrl());
   await cache.ingest([{ container: "C", ts: "1", text: "Hi @Alice", mentions: { U1: "Alice" } }]);
   const logs: string[] = [];
   t.mock.method(console, "info", (line: string) => logs.push(line));

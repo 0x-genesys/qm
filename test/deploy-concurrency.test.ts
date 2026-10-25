@@ -11,6 +11,7 @@ import type { AdvisoryLock } from "../src/persistence/advisory-lock.ts";
 import type { DeployProvider } from "../src/deploy/deploy-provider.ts";
 import { scopeId } from "../src/types.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
+import { testDeployBackings } from "./support/test-database.ts";
 
 const nonLeaderLease: LeaderLease = {
   async hold() {
@@ -19,7 +20,7 @@ const nonLeaderLease: LeaderLease = {
 };
 
 function svc(opts: { lease?: LeaderLease; lock?: AdvisoryLock; managed?: boolean } = {}) {
-  const deployStore = createDeployStore();
+  const deployStore = createDeployStore(testDeployBackings());
   let destroys = 0;
   const provider: DeployProvider = {
     profile: { managedScaleToZero: opts.managed ?? false },
@@ -108,7 +109,7 @@ test("withDeployLock: redeploy/rollback/archive each acquire the advisory mutex 
 });
 
 test("withDeployLock: same-instance lifecycle ops still serialize (no overlap)", async () => {
-  const deployStore = createDeployStore();
+  const deployStore = createDeployStore(testDeployBackings());
   let active = 0;
   let maxActive = 0;
   const provider: DeployProvider = {

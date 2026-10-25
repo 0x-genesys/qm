@@ -7,15 +7,15 @@ import { createToolContext } from "../src/tools/primitives.ts";
 import { createDeployStore, type DeployStore, type Deployment } from "../src/deploy/deploy-store.ts";
 import { createDeployService, type DeployService, type DeployOrUpdateInput } from "../src/deploy/deploy-service.ts";
 import { createAclStore, type AclStore } from "../src/acl/acl-store.ts";
-import { createMemoryConfigStore } from "../src/resolution/config-store.ts";
 import type { ToolLedger } from "../src/runs/tool-ledger.ts";
 import { CapabilityUnsupportedError } from "../src/sandbox/sandbox.ts";
 import type { AgentComputerExportEntry, Sandbox, SandboxHandle } from "../src/sandbox/sandbox.ts";
 import { scopeId } from "../src/types.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
+import { testConfigStore, testDeployBackings } from "./support/test-database.ts";
 
 function svc() {
-  const deployStore: DeployStore = createDeployStore();
+  const deployStore: DeployStore = createDeployStore(testDeployBackings());
   const acl: AclStore = createAclStore();
   let starts = 0;
   const deploy: DeployService = createDeployService({
@@ -621,7 +621,7 @@ const RESIDENT_HOME: AgentComputerExportEntry[] = [
 ];
 
 test("publish always splits: bakes NO resident creds and injects no acting-as env", async () => {
-  const config = createMemoryConfigStore("default-org");
+  const config = testConfigStore("default-org");
   const { deploy, captured } = spyDeploy();
   const tc = createToolContext({
     sandbox: exportSandbox(RESIDENT_HOME),

@@ -7,9 +7,10 @@ import { createDirectory, type BotIdentity } from "../src/slack/directory.ts";
 import { createTurnHandler, type TurnHandler } from "../src/slack/turn-handler.ts";
 import { toEvent } from "../src/api/routes/surface-cache.ts";
 import { createSlackHistoryReader } from "../src/slack/history.ts";
-import { createMemorySurfaceCache } from "../src/surface-cache/surface-cache.ts";
 import { createDeduper, createThreadTracker } from "../src/slack/lib.ts";
 import { createDeferredEnvelopeAck } from "../src/slack/deferred-ack.ts";
+import { createPostgresSurfaceCache } from "../src/surface-cache/surface-cache.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 const ids: BotIdentity = {
   botUserId: "UBOT",
@@ -457,7 +458,7 @@ test("thread broadcast snapshots retain broadcast membership through metadata up
 });
 
 test("real message handler checks prior stake before ingesting the current reply without a shadow miss", async (t) => {
-  const cache = createMemorySurfaceCache();
+  const cache = createPostgresSurfaceCache(testDatabaseUrl());
   await cache.ingest([
     { container: "C1", ts: "1.000001", text: "root", authorId: "U1" },
     { container: "C1", ts: "2.000001", sub: "1.000001", text: "prior reply", authorId: "UBOT", self: true },
@@ -545,7 +546,7 @@ test("stake fallback bounds Slack replies while omitted cutoff and negative trac
 });
 
 test("reaction turns preserve the reacted message in the mirror", async () => {
-  const cache = createMemorySurfaceCache();
+  const cache = createPostgresSurfaceCache(testDatabaseUrl());
   const f = fixture({
     ingest: async (events) => {
       await cache.ingest(events);
@@ -588,7 +589,7 @@ test("reaction turns preserve the reacted message in the mirror", async () => {
 });
 
 test("synthetic reaction turns preserve the canonical message snapshot", async () => {
-  const cache = createMemorySurfaceCache();
+  const cache = createPostgresSurfaceCache(testDatabaseUrl());
   const directory = {
     getChannelInfo: async () => ({ id: "D1" }),
     allInternalRosters: async () => new Map([["D1", []]]),
@@ -654,7 +655,7 @@ test("synthetic reaction turns preserve the canonical message snapshot", async (
 });
 
 test("broadcast metadata survives reduced remirroring and partial edits across HTTP ingestion", async () => {
-  const cache = createMemorySurfaceCache();
+  const cache = createPostgresSurfaceCache(testDatabaseUrl());
   const f = fixture({
     ingest: async (events) => {
       await cache.ingest(events.map((e) => toEvent(e)!));
@@ -702,7 +703,7 @@ test("dispatch retains known ordinary and file-share subtypes for direct message
 
 test("untyped attachment-only updates and deletions resolve room kind without dispatch", async () => {
   for (const info of [{ is_im: true }, { is_mpim: true }, { is_private: true }, {}]) {
-    const cache = createMemorySurfaceCache();
+    const cache = createPostgresSurfaceCache(testDatabaseUrl());
     const f = fixture({
       directory: {
         getChannelInfo: async () => info,

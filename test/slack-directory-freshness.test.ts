@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
 import { test, type TestContext } from "node:test";
-import { createDirectoryStore } from "../src/directory/directory-store.ts";
 import { createDirectory } from "../src/slack/directory.ts";
 import type { SlackCoreClient } from "../src/api/slack-core-client.ts";
+import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 const channel = (id: string, isPrivate = false) => ({
   id,
@@ -18,7 +19,7 @@ function fixture(t: TestContext) {
   const advance = (ms = 301_000) => {
     now += ms;
   };
-  const store = createDirectoryStore();
+  const store = createPostgresDirectoryStore(testDatabaseUrl());
   function core(channels = [channel("C_ONE")]) {
     const state = {
       channels,

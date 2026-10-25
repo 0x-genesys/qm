@@ -2,11 +2,10 @@ import { wireRunResultDeliveries, runResultDelivery } from "../src/delivery/run-
 import { createDeliveryStore } from "../src/delivery/delivery-store.ts";
 import { createControlService } from "../src/api/control-service.ts";
 import { deliveryCandidatesFor } from "../src/core/orchestrator/turn-helpers.ts";
-import { createMemoryMap, jsonbStringify } from "../src/persistence/durable-map.ts";
+import { jsonbStringify } from "../src/persistence/durable-map.ts";
 import { createSessionMailbox, type SessionMailbox, type SessionMessage } from "../src/sessions/session-mailbox.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createMemorySessionStore } from "../src/sessions/memory-session-store.ts";
 import { createMemoryRunStore } from "../src/runs/memory-run-store.ts";
 import { createMemoryRunSignalStore } from "../src/runs/run-signal-store.ts";
 import {
@@ -25,6 +24,8 @@ import { scopeId, type Conversation, type Principal, type ScopeId, type Session 
 import type { SessionStore } from "../src/sessions/session-store.ts";
 import type { RunStore } from "../src/runs/run-store.ts";
 import type { OrchestratorInput } from "../src/core/orchestrator.ts";
+import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
+import { testDatabaseUrl, testMap } from "./support/test-database.ts";
 
 const actor: Principal = { id: "U1", type: "internal", displayName: "Alex" };
 const scope: ScopeId = scopeId("personal", "U1");
@@ -43,10 +44,10 @@ async function rig(opts?: {
   treeRunCap?: number;
   prepareRequest?: (request: OrchestratorInput) => Promise<OrchestratorInput>;
 }): Promise<Rig> {
-  const sessions = createMemorySessionStore();
+  const sessions = createPostgresSessionStore(testDatabaseUrl());
   const { runs } = createMemoryRunStore();
   const signals = createMemoryRunSignalStore();
-  const mailbox = createSessionMailbox(createMemoryMap<SessionMessage>());
+  const mailbox = createSessionMailbox(testMap<SessionMessage>());
   const factory = createSessionSyscalls({
     mailbox,
     sessions,
@@ -839,7 +840,7 @@ test("follow-up retries recover the accepted run before checking full capacity",
 });
 
 test("mailbox survives recreation and rejects acknowledgements for another recipient", async () => {
-  const backing = createMemoryMap<SessionMessage>();
+  const backing = testMap<SessionMessage>();
   const mail = createSessionMailbox(backing);
   const message: SessionMessage = {
     id: "one",
@@ -1677,10 +1678,10 @@ test("children of a Slack group turn keep its source so external-workspace polic
   const policies = { ext: access };
   const admitted = (request: OrchestratorInput) =>
     externalSlackRequestAllowed({ ...request, surface: request.surface ?? "" }, policies);
-  const sessions = createMemorySessionStore();
+  const sessions = createPostgresSessionStore(testDatabaseUrl());
   const { runs } = createMemoryRunStore();
   const factory = createSessionSyscalls({
-    mailbox: createSessionMailbox(createMemoryMap<SessionMessage>()),
+    mailbox: createSessionMailbox(testMap<SessionMessage>()),
     sessions,
     runs,
     signals: createMemoryRunSignalStore(),
@@ -1720,7 +1721,7 @@ test("children of a Slack group turn keep its source so external-workspace polic
 });
 
 test("sessions list shows only sidebar sessions the whole audience can see and create needs a live turn", async () => {
-  const sessions = createMemorySessionStore();
+  const sessions = createPostgresSessionStore(testDatabaseUrl());
   const { runs } = createMemoryRunStore();
   const started: Array<{ forkOf?: string; text?: string; title?: string; scopeId: ScopeId }> = [];
   const room = await sessions.getOrCreateByThread("web:U1:room", "dm", scope, undefined, "web");
@@ -1733,7 +1734,7 @@ test("sessions list shows only sidebar sessions the whole audience can see and c
   const guest: Principal = { id: "G1", type: "guest", displayName: "Guest" };
   await sessions.addParticipant(room.id, guest.id);
   const factory = createSessionSyscalls({
-    mailbox: createSessionMailbox(createMemoryMap<SessionMessage>()),
+    mailbox: createSessionMailbox(testMap<SessionMessage>()),
     sessions,
     runs,
     signals: createMemoryRunSignalStore(),

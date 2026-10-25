@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createAclStore, type GrantPersistence } from "../src/acl/acl-store.ts";
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
-import { createMemoryFileArtifactStore, type FileArtifactRef } from "../src/files/file-artifact-store.ts";
+import { type FileArtifactRef } from "../src/files/file-artifact-store.ts";
 import { principalEntitledToScope } from "../src/resolution/context-filter.ts";
 import type { Grant, Principal } from "../src/types.ts";
+import { createPostgresFileArtifactStore } from "../src/files/postgres-file-artifact-store.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 const owner = "personal:alice";
 const recipient = "personal:bob";
@@ -19,7 +21,7 @@ const grant: Grant = {
 };
 
 async function fixture() {
-  const files = createMemoryFileArtifactStore(createMemoryDurableByteStore());
+  const files = createPostgresFileArtifactStore(testDatabaseUrl(), createMemoryDurableByteStore());
   await files.put({
     id: "F1",
     ownerScopeId: owner,
