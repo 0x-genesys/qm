@@ -26,3 +26,16 @@ export function tenant(): Tenant {
 export function withTenant<T>(t: Tenant, fn: () => T): T {
   return current.run(t, fn);
 }
+
+export function perTenant<T>(create: () => T): () => T {
+  const states = new Map<string, T>();
+  return () => {
+    const { orgId } = tenant();
+    let state = states.get(orgId);
+    if (state === undefined) {
+      state = create();
+      states.set(orgId, state);
+    }
+    return state;
+  };
+}
