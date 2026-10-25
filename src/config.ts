@@ -1473,6 +1473,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error("SLACK_EVENTS_PORT must be an integer from 1 through 65535");
   }
   const memoryProviderConfig = parseMemoryProviderConfig(env.MEMORY_PROVIDER_CONFIG, env);
+  const publicPort = numEnvStrict("PUBLIC_PORT", env.PUBLIC_PORT);
   return {
     suggestedActivitiesEnabled: boolEnvStrict("SUGGESTED_ACTIVITIES_ENABLED", env.SUGGESTED_ACTIVITIES_ENABLED) ?? true,
     ...(env.SUGGESTED_ACTIVITIES_CONTEXT
@@ -1481,9 +1482,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     production: env.NODE_ENV === "production",
     allowUnauthenticatedCore: boolEnvStrict("ALLOW_UNAUTHENTICATED_CORE", env.ALLOW_UNAUTHENTICATED_CORE) ?? false,
     port: numEnvStrict("PORT", env.PORT) ?? CONFIG_DEFAULTS.port,
-    ...(numEnvStrict("PUBLIC_PORT", env.PUBLIC_PORT) !== undefined
-      ? { publicPort: numEnvStrict("PUBLIC_PORT", env.PUBLIC_PORT) }
-      : {}),
+    ...(publicPort !== undefined ? { publicPort } : {}),
     dataDir,
     orgId: env.ORG_ID ?? DEFAULT_ORG_ID,
     ...(env.POSTHOG_API_KEY?.trim()

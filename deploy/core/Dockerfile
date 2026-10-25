@@ -11,6 +11,8 @@ RUN npm ci --prefix deploy/connector-sdk --ignore-scripts --no-audit --no-fund \
 
 FROM node:24-alpine@sha256:a0b9bf06e4e6193cf7a0f58816cc935ff8c2a908f81e6f1a95432d679c54fbfd AS web-ui-build
 WORKDIR /app/plugins/web-ui
+ARG WEB_UI_BASE=/
+ENV WEB_UI_BASE=$WEB_UI_BASE
 COPY plugins/web-ui/package.json plugins/web-ui/package-lock.json ./
 RUN npm ci
 COPY plugins/web-ui/index.html plugins/web-ui/shared.html plugins/web-ui/vite.config.ts plugins/web-ui/tsconfig.json ./
