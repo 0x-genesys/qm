@@ -1,5 +1,5 @@
 import { isSubagentThreadRef } from "../sessions/session-syscalls.ts";
-import type { Destination } from "../types.ts";
+import { type Destination, sourceDestination, turnSource } from "../types.ts";
 import type { Item } from "../sessions/items.ts";
 import type { Run, RunStore } from "./run-store.ts";
 import { turnPostProvenance, type Outbound, type OutboundPost } from "../surfaces/outbound.ts";
@@ -37,12 +37,7 @@ export function runResultPost(run: Run, adminUrlFor?: AdminUrlFor): OutboundPost
   const destination: Destination = {
     type: surface,
     target,
-    ...(run.request.slackSource
-      ? { slackAccountId: run.request.slackSource.accountId, slackTeamId: run.request.slackSource.teamId }
-      : {}),
-    ...(run.request.slackSource?.externalPolicyNamespace
-      ? { slackPolicyNamespace: run.request.slackSource.externalPolicyNamespace }
-      : {}),
+    ...sourceDestination(turnSource(run.request)),
     ...(editRef ? { editRef } : {}),
     ...(webTranscript ? { webTranscript } : {}),
   };
