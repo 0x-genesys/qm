@@ -50,7 +50,7 @@ built.runtime.start();
 
 server.listen(config.port, () => {
   console.log(
-    `[qm] listening on :${config.port} (org=${config.orgId}, store=${config.sessionStore}, ` +
+    `[qm] listening on :${config.port} (org=${config.orgId}, ` +
       `runStore=${config.runStore}, workers=${config.workers}, backgroundWork=${config.backgroundWorkEnabled})`,
   );
 });
@@ -66,7 +66,7 @@ if (config.deployAppsDomain) {
   });
 }
 
-if (config.databaseUrl && !config.adminGrants) {
+if (!config.adminGrants) {
   console.warn(
     "[qm] ADMIN_GRANTS is unset with a durable store — if this deployment has never named an admin, the admin console is unreachable and cannot be unlocked from inside the product; set ADMIN_GRANTS=<email>:org_admin (ignore this if an admin was already promoted in the Users tab).",
   );

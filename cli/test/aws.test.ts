@@ -600,7 +600,6 @@ test("AWS environment derives identity, public URLs, private wiring, and MicroVM
   assert.equal(microvm.AWS_SANDBOX_IMAGE_VERSION, "1");
   assert.equal(microvm.AWS_SANDBOX_EXEC_ROLE_ARN, "arn:aws:iam::123456789012:role/acme-qm-microvm-exec");
   assert.equal(microvm.AWS_SANDBOX_S3_BUCKET, awsObjectStoreBucket(config));
-  assert.equal(core.SESSION_STORE, "postgres");
   assert.equal(core.RUN_STORE, "postgres");
   assert.equal(core.SNAPSHOT_STORE, "s3");
   assert.equal(core.TRANSFER_STORE, "s3");
@@ -621,7 +620,6 @@ test("AWS hosting preserves an explicit publishing provider independently of san
       const core = serviceEnvironment(selected, "core");
       assert.equal(core.DEPLOY_PROVIDER, provider);
       assert.equal(core.SANDBOX_BACKEND, sandbox?.backend ?? "aws");
-      assert.equal(core.SESSION_STORE, "postgres");
       assert.equal(core.SNAPSHOT_STORE, "s3");
       assert.equal(serviceEnvironment(selected, "portal").DEPLOY_PROVIDER, undefined);
     }
@@ -727,18 +725,16 @@ test("AWS required runtime settings cannot be overridden by config env", () => {
       ...config.env,
       core: {
         ...config.env.core,
-        SESSION_STORE: "memory",
         RUN_STORE: "memory",
       },
     },
   };
   const core = serviceEnvironment(overridden, "core");
-  assert.equal(core.SESSION_STORE, "postgres");
   assert.equal(core.RUN_STORE, "postgres");
   assert.equal(core.SANDBOX_BACKEND, "sprites");
   const { sandbox: _sandbox, ...rest } = overridden;
   const microvm = serviceEnvironment(rest as QmConfig, "core");
-  assert.equal(microvm.SESSION_STORE, "postgres");
+  assert.equal(microvm.RUN_STORE, "postgres");
   assert.equal(microvm.SANDBOX_BACKEND, "aws");
 });
 
