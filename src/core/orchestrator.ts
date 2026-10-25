@@ -47,8 +47,9 @@ import { applyPromptVars, loadProtocolFile, type PromptVars } from "../resolutio
 import { cleanBrandingLabel, resolveBranding } from "../resolution/branding.ts";
 import { resolveTurnContext } from "../resolution/turn-context.ts";
 import { resolveReachableChannel } from "../resolution/scope-reach.ts";
-import { reachEnqueue } from "../reach/reach.ts";
-import { turnDeliveryProvenance } from "../delivery/delivery-store.ts";
+import { reachPost } from "../reach/reach.ts";
+import { turnPostProvenance } from "../surfaces/outbound.ts";
+import { recentPrincipalDeliveryNote } from "../surfaces/recent-dm-posts.ts";
 import type { DirectoryStore, DirectoryChannel, DirectoryMember } from "../directory/directory-store.ts";
 import { resolveEnvironmentId } from "../environments/environment-store.ts";
 import type { GapPhase, Lease, LeaseAttempt } from "../sessions/session-store.ts";
@@ -188,7 +189,6 @@ import {
   filterConnectorSkills,
   isScreenableTextAttachment,
   loadActiveBundles,
-  recentPrincipalDeliveryNote,
   renderTitleTranscript,
   replayableRequest,
   stripAckPrefix,
@@ -2527,7 +2527,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ),
         };
         const postProvenance = (deliveryKey: string): DeliveryProvenance =>
-          turnDeliveryProvenance({
+          turnPostProvenance({
             origin: input.origin,
             surface: input.surface,
             fireKey: deliveryKey,
@@ -2555,12 +2555,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             return;
           spineFirstBlockOpen = false;
           const ack = spineFirstBlock.trim();
-          if (deliberatePost || !ack || !defaultDestination || !deps.deliveries) return;
+          if (deliberatePost || !ack || !defaultDestination || !deps.outbound) return;
           spineAckText = ack;
           const runId = input.runId;
           const ackKey = `ack:${turnKey}`;
-          void reachEnqueue({
-            deliveries: deps.deliveries,
+          void reachPost({
+            outbound: deps.outbound,
             destination: defaultDestination,
             text: ack,
             idempotencyKey: ackKey,
@@ -2623,7 +2623,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         });
         if (input.surfaceTools && input.origin.kind === "automation" && input.origin.destination && !surfaceToolDeps)
           console.error(
-            `[orchestrator] trigger delivery has no surface tools (missing deliveries store?) — reply would be lost session=${session.id}`,
+            `[orchestrator] trigger delivery has no surface tools (no outbound sender?) — reply would be lost session=${session.id}`,
           );
 
         const canInstallCanvas =
@@ -2944,7 +2944,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         let remainingDocumentCount = 10 - documentInputs.documents.length;
         let remainingDocumentTokens = documentBudget - documentInputs.tokens;
         const principalDelivered = await recentPrincipalDeliveryNote(
-          deps.deliveries,
+          deps.recentDmPosts,
           session.threadRef,
           visibleHistory.findLast((e) => e.type === "user" && !isOverheardEntry(e))?.createdAt,
         );
@@ -3771,11 +3771,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           // directly instead of nudging it to re-post (a nudge here re-sends near-identical
           // text, which surfaces that render assistant entries show twice).
           const primaryReply = stripAckPrefix(result.reply ?? "", spineAckText).trim();
-          if (primaryReply && defaultDestination && deps.deliveries) {
+          if (primaryReply && defaultDestination && deps.outbound) {
             try {
               const directKey = postKeys.key(defaultDestination, postKeys.take());
-              await reachEnqueue({
-                deliveries: deps.deliveries,
+              await reachPost({
+                outbound: deps.outbound,
                 destination: defaultDestination,
                 text: primaryReply,
                 idempotencyKey: directKey,
@@ -3796,11 +3796,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             );
             if (spine.surfaceOutboundCount === 0 && !result.silent && !result.stopped) {
               const fallback = stripAckPrefix(result.reply ?? "", spineAckText).trim();
-              if (fallback && defaultDestination && deps.deliveries) {
+              if (fallback && defaultDestination && deps.outbound) {
                 try {
                   const fallbackKey = postKeys.key(defaultDestination, postKeys.take());
-                  await reachEnqueue({
-                    deliveries: deps.deliveries,
+                  await reachPost({
+                    outbound: deps.outbound,
                     destination: defaultDestination,
                     text: fallback,
                     idempotencyKey: fallbackKey,

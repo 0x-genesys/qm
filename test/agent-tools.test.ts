@@ -304,19 +304,19 @@ function fakeToolContext(sink?: { lastExecOpts?: Parameters<ToolContext["execute
       };
     },
     async post() {
-      return { ok: true, deliveryId: "d1" };
+      return { ok: true };
     },
     async reach() {
-      return { ok: true, deliveryId: "rc1", matched: "#somewhere" };
+      return { ok: true, matched: "#somewhere" };
     },
     async react() {
-      return { ok: true, deliveryId: "r1" };
+      return { ok: true };
     },
     async edit() {
-      return { ok: true, deliveryId: "e1" };
+      return { ok: true };
     },
     async delete() {
-      return { ok: true, deliveryId: "x1" };
+      return { ok: true };
     },
     async readThread() {
       return { ok: true, messages: [] };
@@ -1129,7 +1129,6 @@ test("the surface tool registers only when surfaceTools is on, and post/read_thr
   await call(slack, { action: "post", text: "hello there" });
   const posted = emitted.find((e) => e.type === "tool_result" && e.payload.action === "post")!.payload;
   assert.equal(posted.ok, true);
-  assert.equal(posted.deliveryId, "d1");
   assert.equal(posted.tool, "slack");
 
   await call(slack, { action: "read_thread" });
@@ -1268,7 +1267,6 @@ test("the surface tool's react/edit/delete actions delegate to the tool context"
     tool: "slack",
     action: "react",
     ok: true,
-    deliveryId: "r1",
     callId: "t",
     isError: false,
     result: "[reacted]",
@@ -1277,7 +1275,6 @@ test("the surface tool's react/edit/delete actions delegate to the tool context"
     tool: "slack",
     action: "edit",
     ok: true,
-    deliveryId: "e1",
     callId: "t",
     isError: false,
     result: "[edited]",
@@ -1286,7 +1283,6 @@ test("the surface tool's react/edit/delete actions delegate to the tool context"
     tool: "slack",
     action: "delete",
     ok: true,
-    deliveryId: "x1",
     callId: "t",
     isError: false,
     result: "[deleted]",
@@ -1304,11 +1300,11 @@ test("post replies HERE only (placement via ts/broadcast, cross-targets rejected
     ...fakeToolContext(),
     async post(_text: string, opts?: unknown) {
       posts.push(opts);
-      return { ok: true, deliveryId: "d1" };
+      return { ok: true };
     },
     async reach(_text: string, target?: unknown) {
       reaches.push(target);
-      return { ok: true, deliveryId: "rc1", matched: "x" };
+      return { ok: true, matched: "x" };
     },
   };
   const ref: ToolContextRef = { current: capturing, scopeLabel: "channel:C1" };
@@ -1437,7 +1433,7 @@ test("the post delivery ack is never screened — a classifier false positive ca
   const screened: string[] = [];
   const tc = {
     ...fakeToolContext(),
-    post: () => Promise.resolve({ ok: true, deliveryId: "d1" }),
+    post: () => Promise.resolve({ ok: true }),
   } as unknown as ToolContext;
   const ref: ToolContextRef = {
     current: tc,
@@ -1477,11 +1473,11 @@ test("each action dispatches to exactly its matching tool-context method", async
     };
   const tc = {
     ...fakeToolContext(),
-    post: spy("post", { ok: true, deliveryId: "d1" }),
-    reach: spy("reach", { ok: true, deliveryId: "rc1", matched: "x" }),
-    react: spy("react", { ok: true, deliveryId: "r1" }),
-    edit: spy("edit", { ok: true, deliveryId: "e1" }),
-    delete: spy("delete", { ok: true, deliveryId: "x1" }),
+    post: spy("post", { ok: true }),
+    reach: spy("reach", { ok: true, matched: "x" }),
+    react: spy("react", { ok: true }),
+    edit: spy("edit", { ok: true }),
+    delete: spy("delete", { ok: true }),
     readThread: spy("readThread", { ok: true, messages: [] }),
     whatsNew: spy("whatsNew", { ok: true, hereNew: 0, activeSubConversations: 0 }),
     search: spy("search", { ok: true, hits: [], source: "live" }),

@@ -147,11 +147,10 @@ import { createLoopOutputStore } from "./loops/output-store.ts";
 import { createShipGrantStore } from "./loops/ship-grant-store.ts";
 import { createLoopFireService, type LoopFireService } from "./loops/loop-fire.ts";
 import type { LoopServiceDeps } from "./api/routes/loops.ts";
-import { createDeliveryStore, type DeliveryStore } from "./delivery/delivery-store.ts";
-import { createPostgresDeliveryStore } from "./delivery/postgres-delivery-store.ts";
-import { wireRunResultDeliveries } from "./delivery/run-result-delivery.ts";
+import { createOutbound, createWebSender, type Outbound, type QueuedPost } from "./surfaces/outbound.ts";
+import { rememberDmPost, type RecentDmPosts } from "./surfaces/recent-dm-posts.ts";
+import { wireRunResultPosts } from "./runs/run-results.ts";
 import { adminSessionUrl } from "./util/admin-links.ts";
-import { withWebTranscriptDeliveries } from "./delivery/web-transcript-delivery.ts";
 import { createDirectoryStore, type DirectoryStore } from "./directory/directory-store.ts";
 import { createPostgresDirectoryStore } from "./directory/postgres-directory-store.ts";
 import {
@@ -518,7 +517,7 @@ export interface BuiltApp {
   composioReturns: DurableMap<ComposioReturn>;
   keychain?: Keychain;
   serviceCreds: ServiceCredentialStore;
-  deliveries: DeliveryStore;
+  outbound: Outbound;
   keychainApprovals?: KeychainApprovals;
   fireAskResolution?: (ask: KeychainAsk, grant?: KeychainGrant) => Promise<unknown>;
   fireDropResolution?: (drop: DropResolution) => Promise<unknown>;
@@ -1791,12 +1790,42 @@ export function buildApp(
   membership.managesArtifactHome = managesArtifactHome;
   const deployGitSecret = config.signingSecret;
   const deployGitBase = config.apiBaseUrl;
-  const deliveries = withWebTranscriptDeliveries(
-    config.databaseUrl ? createPostgresDeliveryStore(config.databaseUrl) : createDeliveryStore(),
-    sessions,
-  );
+  const idempotency = createIdempotencyStore(artifactMap<IdempotencyRecord>("idempotency"));
+  const transcripts = { sessions, sessionStates: sessionStateBus };
+  const recentDmPosts = artifactMap<RecentDmPosts>("recent_dm_posts");
+  const outbound = createOutbound({
+    idempotency,
+    retries: artifactMap<QueuedPost>("queued_posts"),
+    afterSend: (post, receipt) => {
+      const recipientId = post.destination.target;
+      const threadRef = receipt.recipientThreadRef;
+      if (post.destination.type !== "principal" || !threadRef) return;
+      void (async () => {
+        const session = await sessions.getOrCreateByThread(
+          threadRef,
+          "dm",
+          scopeId("personal", recipientId),
+          undefined,
+          "slack",
+        );
+        await sessions.addParticipant(session.id, recipientId);
+        await rememberDmPost(recentDmPosts, threadRef, {
+          key: post.idempotencyKey,
+          text: post.text,
+          at: Date.now(),
+          ...(post.destination.onBehalfOf ? { onBehalfOf: post.destination.onBehalfOf } : {}),
+          ...(post.provenance?.trigger ? { trigger: post.provenance.trigger } : {}),
+        });
+      })().catch(swallowAs("outbound: remember DM post", undefined));
+    },
+  });
+  outbound.register(["web"], createWebSender(transcripts));
+  pgArtifactMap?.pool.registerMigration({
+    id: "delivery/store/0007-drop",
+    statements: ["DROP TABLE IF EXISTS deliveries"],
+  });
   const deployService = createDeployService({
-    deliveries,
+    outbound,
     deployAppsDomain: config.awsDeploy.appsDomain,
     publicLinksAvailable: !!(config.awsDeploy.appsDomain && config.awsDeploy.gateSecret),
     publicWebUrl: config.publicWebUrl,
@@ -1944,7 +1973,7 @@ export function buildApp(
       `UPDATE webhooks SET json = jsonb_set(json, '{enabled}', 'false'::jsonb) WHERE (json ->> 'enabled')::boolean`,
     ],
   });
-  const approvals = createApprovalStore(artifactMap<PendingApprovalRecord>("approvals", ["sessionId"]), deliveries);
+  const approvals = createApprovalStore(artifactMap<PendingApprovalRecord>("approvals", ["sessionId"]), outbound);
   let securityScreener = overrides.securityScreener;
   if (!securityScreener && config.securityScreen !== "off" && config.securityScreenProxy) {
     securityScreener = createSecurityScreenProxy({
@@ -2113,7 +2142,8 @@ export function buildApp(
     resolveConnectorClient: resolveClient,
     ...(keychain ? { keychain } : {}),
     serviceCreds,
-    deliveries,
+    outbound,
+    recentDmPosts,
     approvals,
     approvalGrants: artifactMap<CommandApprovalGrant>("approval_grants"),
     ...(processes ? { processes } : {}),
@@ -2143,8 +2173,10 @@ export function buildApp(
     ? (sessionId: string): string | undefined =>
         uuidId.test(sessionId) ? adminSessionUrl(recoveryAdminBase, sessionId) : undefined
     : undefined;
-  const runResultRecovery = wireRunResultDeliveries(runs, deliveries, recoveryAdminUrlFor, sessions);
-  const idempotency = createIdempotencyStore(artifactMap<IdempotencyRecord>("idempotency"));
+  const runResultRecovery = wireRunResultPosts(runs, outbound, {
+    ...(recoveryAdminUrlFor ? { adminUrlFor: recoveryAdminUrlFor } : {}),
+    sessions,
+  });
   const skillFetcher = createGitFetcher(
     keychain
       ? {
@@ -2280,7 +2312,7 @@ export function buildApp(
     config: configStore,
     crons,
     webhooks,
-    deliveries,
+    outbound,
     directory,
     ...(config.emailAuthPrincipals?.length
       ? {
@@ -2334,7 +2366,7 @@ export function buildApp(
         identity,
         sessions,
         audit: auditLog,
-        deliveries,
+        outbound,
         resume: (ask, grant) => askResolution!(ask, grant),
       })
     : undefined;
@@ -2354,7 +2386,7 @@ export function buildApp(
     config: configStore,
     runtimeFallback: fallback,
     blobTransfer,
-    deliveries,
+    outbound,
     errors,
     runs,
     turnStream,
@@ -2413,7 +2445,7 @@ export function buildApp(
             mailbox: sessionMailbox,
             prepareRequest: prepareSessionRequest,
             delegationEnabled: (actorId) => featureFlags.enabled("responsive_spine", scopeId("personal", actorId)),
-            deliveries,
+            outbound,
             signals: runSignals,
           },
           run,
@@ -2452,6 +2484,14 @@ export function buildApp(
         : advisoryLock.withLock("session-return-sweep", sweepSessionReturns),
     1_000,
     { label: "session-returns", immediate: true },
+  );
+  const queuedPostSweeper = createSweeper(
+    () =>
+      advisoryLock.tryWithLock
+        ? advisoryLock.tryWithLock("queued-post-retry", () => outbound.retryQueued())
+        : advisoryLock.withLock("queued-post-retry", () => outbound.retryQueued()),
+    30_000,
+    { label: "queued-posts" },
   );
   const runResultSweeper = createSweeper(
     () =>
@@ -2514,7 +2554,7 @@ export function buildApp(
     ? (ask: KeychainAsk, grant?: KeychainGrant) =>
         fireAskResolution(
           {
-            deliveries,
+            outbound,
             idempotency,
             identity,
             run: (req) => app.turn(req),
@@ -2533,7 +2573,7 @@ export function buildApp(
   const dropResolution = keychain
     ? (drop: DropResolution) =>
         fireDropResolution(
-          { deliveries, idempotency, identity, run: (req) => app.turn(req), directory, resolveRecipient },
+          { outbound, idempotency, identity, run: (req) => app.turn(req), directory, resolveRecipient },
           drop,
         )
     : undefined;
@@ -2548,7 +2588,7 @@ export function buildApp(
     outputs: loopOutputs,
     grants: loopGrants,
     trigger: {
-      deliveries,
+      outbound,
       idempotency,
       identity,
       run: (req) => app.turn(req),
@@ -2599,7 +2639,7 @@ export function buildApp(
     requireQueueStart: Boolean(config.backgroundDeploymentId),
     advisoryLock,
     crons,
-    deliveries,
+    outbound,
     idempotency,
     identity,
     run: (req) => app.turn(req),
@@ -2673,7 +2713,7 @@ export function buildApp(
           monitors,
           processes,
           sandbox,
-          deliveries,
+          outbound,
           idempotency,
           identity,
           run: (req) => app.turn(req),
@@ -2694,7 +2734,7 @@ export function buildApp(
   });
   const webhookReceiver = createWebhookReceiver({
     webhooks,
-    deliveries,
+    outbound,
     idempotency,
     identity,
     run: (req) => app.turn(req),
@@ -2858,6 +2898,7 @@ export function buildApp(
       orphanedSignalSweeper.start();
       sessionReturnSweeper.start();
       runResultSweeper.start();
+      queuedPostSweeper.start();
       approvalDeliverySweeper.start();
     };
     if (backgroundStopping)
@@ -2890,6 +2931,7 @@ export function buildApp(
       orphanedSignalSweeper.stop(),
       sessionReturnSweeper.stop(),
       runResultSweeper.stop(),
+      queuedPostSweeper.stop(),
       approvalDeliverySweeper.stop(),
       preemptionSweeper.stop(),
       ...workers.map((worker) => worker.stopClaims()),
@@ -3022,7 +3064,7 @@ export function buildApp(
     memory,
     ...(keychain ? { keychain } : {}),
     serviceCreds,
-    deliveries,
+    outbound,
     ...(keychainApprovals ? { keychainApprovals } : {}),
     ...(askResolution ? { fireAskResolution: askResolution } : {}),
     ...(dropResolution ? { fireDropResolution: dropResolution } : {}),
@@ -3163,7 +3205,7 @@ export function serverDeps(
     composioReturns: built.composioReturns,
     ...(built.keychain ? { keychain: built.keychain } : {}),
     serviceCreds: built.serviceCreds,
-    deliveries: built.deliveries,
+    outbound: built.outbound,
     ...(built.keychainApprovals ? { keychainApprovals: built.keychainApprovals } : {}),
     ...(built.fireAskResolution ? { fireAskResolution: built.fireAskResolution } : {}),
     runs: built.runs,
