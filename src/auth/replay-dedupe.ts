@@ -7,25 +7,6 @@ export interface ReplayDedupe {
 
 const PRUNE_INTERVAL_MS = 60_000;
 
-export function createMemoryReplayDedupe(now: () => number = Date.now): ReplayDedupe {
-  const seen = new Map<string, number>();
-  let nextPruneAt = Number.NEGATIVE_INFINITY;
-  return {
-    durable: false,
-    async claim(eventId, expiresAtMs) {
-      const t = now();
-      if (t >= nextPruneAt) {
-        nextPruneAt = t + PRUNE_INTERVAL_MS;
-        for (const [id, exp] of seen) if (exp < t) seen.delete(id);
-      }
-      const existing = seen.get(eventId);
-      if (existing !== undefined && existing >= t) return false;
-      seen.set(eventId, expiresAtMs);
-      return true;
-    },
-  };
-}
-
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS source_auth_replay (
   event_id TEXT PRIMARY KEY,
