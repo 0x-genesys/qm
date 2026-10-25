@@ -83,9 +83,8 @@ export function createSurfaceRegistry(adapters: readonly ChatSurfaceAdapter[], c
 
   async function deliver(adapter: ChatSurfaceAdapter, delivery: Delivery): Promise<void> {
     const account = destinationSource(delivery.destination).account;
-    if (account !== undefined && account !== adapter.account) return;
     const target = parseSurfaceDeliveryTarget(delivery.destination.target);
-    if (!target || !delivery.text.trim()) {
+    if ((account !== undefined && account !== adapter.account) || !target || !delivery.text.trim()) {
       console.error(`[chat-surface] ${adapter.surface}: dropping undeliverable delivery ${delivery.id}`);
       await core.ackDelivery(delivery.id);
       return;

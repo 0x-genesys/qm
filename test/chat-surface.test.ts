@@ -25,6 +25,7 @@ function config(apiUrl = "http://forum.invalid/agent"): HttpChatConfig {
     apiUrl,
     apiToken: "synthetic-forum-api-token",
     signingSecret: SECRET,
+    internalEmailDomains: ["example.com"],
   };
 }
 
@@ -99,6 +100,23 @@ test("http-chat accepts only events signed with its own secret inside the replay
   );
   const other = await adapter.receive(signed({ type: "reaction_added" }));
   assert.deepEqual(other, { status: 200, messages: [] });
+});
+
+test("http-chat treats authors as guests unless their email is in an internal domain, and takes DMs only", async () => {
+  const adapter = createHttpChatAdapter(config());
+  const authorOf = async (author: Record<string, unknown>) => {
+    const out = await adapter.receive(signed(dmEvent({ author })));
+    return out.status === 200 ? out.messages[0]?.author : undefined;
+  };
+  assert.equal((await authorOf({ id: 1, email: "a@example.com" }))?.guest, undefined);
+  assert.equal((await authorOf({ id: 1, email: "a@EXAMPLE.com" }))?.guest, undefined);
+  assert.equal((await authorOf({ id: 1, email: "a@example.com", guest: true }))?.guest, true);
+  assert.equal((await authorOf({ id: 1, email: "a@other.test" }))?.guest, true);
+  assert.equal((await authorOf({ id: 1 }))?.guest, true);
+  const channel = dmEvent({ chat: { id: 42, kind: "channel" }, message: { id: 1, text: "hi", mentions_bot: true } });
+  assert.deepEqual(await adapter.receive(signed(channel)), { status: 200, messages: [] });
+  assert.equal((await adapter.receive(signed(dmEvent({ chat: { id: "4:2", kind: "dm" } })))).status, 400);
+  assert.equal((await adapter.receive(signed(dmEvent({ chat: { id: 2 ** 60, kind: "dm" } })))).status, 400);
 });
 
 test("http-chat configuration rejects reserved surface names and weak secrets", () => {

@@ -9,14 +9,15 @@ queue. Nothing product-specific lives in QM; the contract below is all a product
 
 `HTTP_CHAT_SURFACES` is a JSON array. Each entry:
 
-| Field           | Meaning                                                                                 |
-| --------------- | --------------------------------------------------------------------------------------- |
-| `surface`       | Surface name, `^[a-z][a-z0-9-]{0,31}$`. Not `slack`, `web` or another built-in name.    |
-| `account`       | Account or workspace id within the surface. Default `default`.                          |
-| `label`         | Product name the model is told it is talking over, e.g. "over Acme Chat".               |
-| `apiUrl`        | Base URL of the product's agent API.                                                    |
-| `apiToken`      | Bearer token QM sends to `apiUrl`.                                                      |
-| `signingSecret` | At least 32 characters. Signs events sent to QM. Distinct from QM's own signing secret. |
+| Field                  | Meaning                                                                                   |
+| ---------------------- | ----------------------------------------------------------------------------------------- |
+| `surface`              | Surface name, `^[a-z][a-z0-9-]{0,31}$`. Not `slack`, `web` or another built-in name.      |
+| `account`              | Account or workspace id within the surface. Default `default`.                            |
+| `label`                | Product name the model is told it is talking over, e.g. "over Acme Chat".                 |
+| `apiUrl`               | Base URL of the product's agent API.                                                      |
+| `apiToken`             | Bearer token QM sends to `apiUrl`.                                                        |
+| `signingSecret`        | At least 32 characters. Signs events sent to QM. Distinct from QM's own signing secret.   |
+| `internalEmailDomains` | Email domains whose authors are internal members. Everyone else is a guest. Default none. |
 
 ## Events in: `POST /v1/surfaces/<surface>/events`
 
@@ -47,10 +48,16 @@ and ignored.
 }
 ```
 
-`chat.kind` is `dm`, `group` or `channel`. A DM message always starts a turn; other messages
-start one only when `mentions_bot` or `thread_has_bot` is true. `message.id` is the
-idempotency key, so redelivering an event does not start a second turn. `author.email`
-becomes the QM principal; an author without one, or with `guest: true`, is a guest.
+Only `chat.kind: "dm"` starts turns for now; `group` and `channel` events are accepted and
+ignored, because QM's channel handling still answers through a Slack-shaped posting tool.
+`message.id` is the idempotency key, so redelivering an event does not start a second turn.
+`author.email` becomes the QM principal. An author is an internal member only when the email's
+domain is in `internalEmailDomains` and `guest` is not true; everyone else, including an
+author without an email, is a guest.
+
+Trust model: whoever holds `signingSecret` can speak as any author on this surface, the same
+trust QM extends to Slack's user ids. Keep the secret server-side in the product, and keep
+`internalEmailDomains` to the domains that product authenticates.
 
 Conversation references are qualified by surface and account: a DM in chat 42 is thread
 `<surface>:<account>:dm:42` with scope `personal:<email>`; a channel thread is

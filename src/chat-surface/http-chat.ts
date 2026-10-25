@@ -3,10 +3,28 @@ import { canonicalPayload } from "../../plugins/chassis/src/source-auth-sign.ts"
 import { isStrongSigningSecret, SOURCE_AUTH_REPLAY_WINDOW_MS, verifySignature } from "../auth/source-auth.ts";
 import type { ChatSurfaceAdapter, InboundMessage, InboundOutcome } from "./adapter.ts";
 
-const RESERVED_SURFACES = new Set(["slack", "web", "principal", "group", "cron", "webhook", "monitor", "unknown"]);
+const RESERVED_SURFACES = new Set([
+  "slack",
+  "slack-account",
+  "external-slack",
+  "web",
+  "principal",
+  "group",
+  "dm",
+  "cron",
+  "webhook",
+  "monitor",
+  "swarm",
+  "loop",
+  "inbox",
+  "agent",
+  "unknown",
+]);
 const POST_TIMEOUT_MS = 15_000;
 
-const id = z.union([z.string().min(1).max(128), z.number().int().nonnegative()]).transform(String);
+const id = z
+  .union([z.string().regex(/^[A-Za-z0-9_.-]{1,128}$/), z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)])
+  .transform(String);
 
 const userSchema = z.object({
   id,
@@ -48,6 +66,7 @@ const configSchema = z.object({
   apiUrl: z.url().refine((url) => /^https?:\/\//.test(url), { message: "must be http(s)" }),
   apiToken: z.string().min(16),
   signingSecret: z.string().refine(isStrongSigningSecret, { message: "must be at least 32 characters" }),
+  internalEmailDomains: z.array(z.string().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/)).default([]),
 });
 
 export type HttpChatConfig = z.output<typeof configSchema>;
@@ -75,12 +94,16 @@ export function createHttpChatAdapter(
   const now = opts.now ?? Date.now;
   const apiBase = config.apiUrl.replace(/\/+$/, "");
 
+  const internalDomains = new Set(config.internalEmailDomains);
+  const internal = (u: z.output<typeof userSchema>): boolean =>
+    u.guest !== true && internalDomains.has(u.email?.trim().toLowerCase().split("@")[1] ?? "");
+
   function normalize(event: z.output<typeof messageEventSchema>): InboundMessage {
     const user = (u: z.output<typeof userSchema>) => ({
       id: u.id,
       ...(u.email ? { email: u.email } : {}),
       ...(u.name ? { displayName: u.name } : {}),
-      ...(u.guest ? { guest: true } : {}),
+      ...(internal(u) ? {} : { guest: true }),
       ...(u.bot ? { bot: true } : {}),
       ...(u.timezone ? { timezone: u.timezone } : {}),
     });
@@ -124,6 +147,7 @@ export function createHttpChatAdapter(
         return { status: 200, messages: [] };
       const event = messageEventSchema.safeParse(body);
       if (!event.success) return { status: 400, reason: event.error.issues[0]?.message ?? "invalid event" };
+      if (event.data.chat.kind !== "dm") return { status: 200, messages: [] };
       return { status: 200, messages: [normalize(event.data)] };
     },
     async post(target, message) {
@@ -138,7 +162,7 @@ export function createHttpChatAdapter(
         signal: AbortSignal.timeout(POST_TIMEOUT_MS),
       });
       if (!response.ok) throw new Error(`${config.surface} post failed: HTTP ${response.status}`);
-      const out = (await response.json()) as { id?: unknown };
+      const out = (await response.json().catch(() => ({}))) as { id?: unknown };
       return { messageId: String(out.id ?? "") };
     },
   };
