@@ -6,6 +6,14 @@ import { appEditSlug } from "../src/app-edit.ts";
 import { composioCallbackUrl } from "./composio-return.ts";
 import { sharedSessionHtml } from "./shared-session.ts";
 import { uiCanvasRoutes } from "./ui-canvas-routes.ts";
+import {
+  createUiReleases,
+  parseUiRelease,
+  uiProtocolSupported,
+  UiReleaseError,
+  withReleaseMeta,
+} from "./ui-releases.ts";
+import { isUiChannel, UI_CHANNEL_COOKIE, UI_VERSION_HEADER } from "../../chassis/src/ui-release.ts";
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Readable } from "node:stream";
@@ -31,6 +39,7 @@ import {
   PayloadTooLargeError,
   sendBuffered,
   serveFavicon,
+  escapeHtml,
 } from "../../chassis/src/http.ts";
 import { verifyPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { createBrandingCache, injectBranding } from "../../chassis/src/branding.ts";
@@ -84,6 +93,55 @@ async function hasInboxLoopPreview(user: string): Promise<boolean> {
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const DIST = join(ROOT, "dist-web");
+const UI_RELEASES = process.env.WEB_UI_RELEASES_URL
+  ? createUiReleases(new URL(process.env.WEB_UI_RELEASES_URL).href.replace(/\/$/, ""))
+  : undefined;
+let localReleaseId: string | undefined;
+
+function uiChannel(req: IncomingMessage): string {
+  const channel = cookie(req, UI_CHANNEL_COOKIE);
+  return channel && isUiChannel(channel) ? channel : "live";
+}
+
+async function uiDocument(req: IncomingMessage, name: "index.html" | "shared.html"): Promise<string | null> {
+  if (UI_RELEASES) return UI_RELEASES.document(uiChannel(req), name);
+  const filePath = join(DIST, name);
+  if (!existsSync(filePath)) return null;
+  localReleaseId ??= (() => {
+    try {
+      return parseUiRelease(JSON.parse(readFileSync(join(DIST, "release.json"), "utf8"))).id;
+    } catch {
+      return undefined;
+    }
+  })();
+  return withReleaseMeta(readFileSync(filePath, "utf8"), localReleaseId);
+}
+
+function sendReleaseError(res: ServerResponse, error: unknown): void {
+  if (!(error instanceof UiReleaseError)) throw error;
+  sendHtml(
+    res,
+    error.status,
+    `<!doctype html><meta charset="utf-8"><title>Web UI unavailable</title><body style="font-family:system-ui;max-width:32rem;margin:4rem auto"><p>${escapeHtml(error.message)}</p><p><a href="/?ui=live">Open the current release</a></p></body>`,
+  );
+}
+
+async function serveReleaseAsset(res: ServerResponse, path: string): Promise<void> {
+  const upstream = await fetch(UI_RELEASES!.assetUrl(path), { signal: AbortSignal.timeout(15_000) });
+  if (!upstream.ok || !upstream.body) {
+    await upstream.body?.cancel();
+    return void json(res, upstream.status === 403 ? 404 : upstream.status, { error: "not_found" });
+  }
+  res.writeHead(200, {
+    "content-type": upstream.headers.get("content-type") ?? CONTENT_TYPES[extname(path)] ?? "application/octet-stream",
+    "cache-control": "public, max-age=31536000, immutable",
+    "x-content-type-options": "nosniff",
+  });
+  const stream = Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]);
+  res.on("close", () => stream.destroy());
+  stream.on("error", () => res.destroy());
+  stream.pipe(res);
+}
 
 const brandingCache = createBrandingCache(async () => {
   const r = await coreFetch("GET", "/v1/surface-config", "", 2_000);
@@ -935,22 +993,23 @@ async function uploadFileFromRequest(
 
 async function serveStatic(res: ServerResponse, urlPath: string): Promise<void> {
   const rel = normalize(decodeURIComponent(urlPath)).replace(/^(\.\.[/\\])+/, "");
-  let filePath = join(DIST, rel);
+  const filePath = join(DIST, rel);
   if (!filePath.startsWith(DIST)) return void json(res, 403, { error: "forbidden" });
 
   const isFile = existsSync(filePath) && statSync(filePath).isFile();
   const immutable = isFile && /(?:^|[/\\])assets[/\\]/.test(rel);
-  if (!isFile) {
-    if (extname(rel)) return void json(res, 404, { error: "not_found" });
-    filePath = join(DIST, "index.html");
-    if (!existsSync(filePath)) {
-      return void json(res, 503, { error: "not_built", message: "run `npm run build` to produce dist-web/" });
+  if (!isFile || filePath.endsWith("index.html")) {
+    if (!isFile && extname(rel)) return void json(res, 404, { error: "not_found" });
+    let html: string | null;
+    try {
+      html = await uiDocument(res.req, "index.html");
+    } catch (error) {
+      return sendReleaseError(res, error);
     }
-  }
-  if (filePath.endsWith("index.html")) {
-    const branded = await brandIndexHtml(readFileSync(filePath, "utf8"));
+    if (html === null)
+      return void json(res, 503, { error: "not_built", message: "run `npm run build` to produce dist-web/" });
     const headers = withSecurityHeaders({ "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" });
-    return sendBuffered(res, 200, headers, branded);
+    return sendBuffered(res, 200, headers, await brandIndexHtml(html));
   }
   const headers = withSecurityHeaders({
     "content-type": CONTENT_TYPES[extname(filePath)] ?? "application/octet-stream",
@@ -981,9 +1040,15 @@ async function serveAppEditHtml(req: IncomingMessage, res: ServerResponse, url: 
     const raw = readFileSync(join(ROOT, "index.html"), "utf8").replace("%BASE_URL%favicon.svg", "favicon.svg");
     html = await vite.transformIndexHtml(req.url ?? "/", raw);
   } else {
-    const filePath = join(DIST, "index.html");
-    if (!existsSync(filePath)) return false;
-    html = readFileSync(filePath, "utf8");
+    let document: string | null;
+    try {
+      document = await uiDocument(req, "index.html");
+    } catch (error) {
+      sendReleaseError(res, error);
+      return true;
+    }
+    if (document === null) return false;
+    html = document;
   }
   const headers = withSecurityHeaders({ "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" });
   const csp = SPA_CSP.replace("frame-ancestors 'self'", `frame-ancestors 'self' ${slug}.${APPS_FRAME_DOMAIN}`);
@@ -3374,9 +3439,15 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
     }
     const result = await coreFetch("GET", corePath);
     const dev = vite && !external;
-    const template = dev
-      ? await vite!.transformIndexHtml("/shared.html", readFileSync(join(ROOT, "shared.html"), "utf8"))
-      : readFileSync(join(DIST, "shared.html"), "utf8");
+    let template: string | null;
+    try {
+      template = dev
+        ? await vite!.transformIndexHtml("/shared.html", readFileSync(join(ROOT, "shared.html"), "utf8"))
+        : await uiDocument(req, "shared.html");
+    } catch (error) {
+      return sendReleaseError(res, error);
+    }
+    if (template === null) return json(res, 503, { error: "not_built" });
     res.writeHead(result.status, {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
@@ -3391,6 +3462,8 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
   }
 
   if (path === "/me" || path.startsWith("/api/")) {
+    if (!uiProtocolSupported(req.headers[UI_VERSION_HEADER]))
+      return json(res, 409, { error: "ui_outdated", message: "This page is out of date. Reload to continue." });
     const user = cookieUser(req);
     if (!user) return unauthorized(res, req);
     if (["/api/dictation", "/api/voice", "/api/voice/sessions"].includes(path)) {
@@ -3445,7 +3518,7 @@ const routeRequest = async (req: IncomingMessage, res: ServerResponse) => {
   if (method === "GET" && path === "/app-edit" && (await serveAppEditHtml(req, res, url))) return;
 
   if (method === "GET") {
-    if (path.startsWith("/assets/")) return await serveStatic(res, path);
+    if (path.startsWith("/assets/")) return await (UI_RELEASES ? serveReleaseAsset(res, path) : serveStatic(res, path));
     if (await serveVite(req, res, path)) return;
     return await serveStatic(res, path === "/" ? "/index.html" : path);
   }
