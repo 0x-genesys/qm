@@ -13,8 +13,14 @@ export function tenantFor(orgId: string): Tenant {
   return { orgId, orgScope: scopeId("org", orgId) };
 }
 
+let processTenant: Tenant | undefined;
+
 export function tenant(): Tenant {
-  return current.getStore() ?? tenantFor(processOrgId());
+  const scoped = current.getStore();
+  if (scoped) return scoped;
+  const orgId = processOrgId();
+  if (processTenant?.orgId !== orgId) processTenant = tenantFor(orgId);
+  return processTenant;
 }
 
 export function withTenant<T>(t: Tenant, fn: () => T): T {
