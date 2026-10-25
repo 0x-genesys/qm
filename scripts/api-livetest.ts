@@ -17,7 +17,6 @@ const built = buildApp({
   ...loadConfig(),
   port: 0,
   dataDir: DATA,
-  sessionStore: "memory",
   runStore: "memory",
   harness: "pi",
 });
