@@ -1057,8 +1057,9 @@ async function serveStatic(res: ServerResponse, urlPath: string): Promise<void> 
 
   const isFile = existsSync(filePath) && statSync(filePath).isFile();
   const immutable = isFile && /(?:^|[/\\])assets[/\\]/.test(rel);
-  if (!isFile || filePath.endsWith("index.html")) {
-    if (!isFile && extname(rel)) return void json(res, 404, { error: "not_found" });
+  const isDocument = filePath === join(DIST, "index.html") || (!isFile && !extname(rel));
+  if (!isFile && !isDocument) return void json(res, 404, { error: "not_found" });
+  if (isDocument) {
     let html: string | null;
     try {
       html = await uiDocument(res.req, "index.html");
