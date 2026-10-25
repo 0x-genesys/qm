@@ -1797,7 +1797,7 @@ export function renderKeychainManifest(input: KeychainManifestInput, now: number
   }
   const lines = [
     "## Credentials",
-    `Execution handles are shown in backticks; select them in execute.credentials.${input.privateBox ? " In this shared conversation, a command that names a personal, granted or org environment credential runs on this turn's private box (see execute.credentials)." : ""} Credential IDs identify entries for access requests, not execution handles.`,
+    `Execution handles are shown in backticks; select them in execute.credentials.${input.privateBox ? " In this shared conversation, a command that names any credential except a brokered org service runs on this turn's private box (see execute.credentials)." : ""} Credential IDs identify entries for access requests, not execution handles.`,
   ];
   for (const [ownerId, group] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
     const member = input.members.find((member) => personKey(member.id) === ownerId);

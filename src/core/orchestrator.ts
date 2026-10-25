@@ -1409,13 +1409,20 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       const credentialIdentities = new Map<string, string>();
 
       const authorizeOwnerCredentials = async (): Promise<void> => {
+        if (!openSpeakerKeychain && !openAutomationKeychain) return;
         if (
-          (openSpeakerKeychain || openAutomationKeychain) &&
-          (!(await isCurrentSharedScopeMember(actor.id, scopeId)) ||
-            (await deps.config?.resolveSharingPostureDurable(personalScope(actor.id), scopeId)) !== "open")
+          !(await isCurrentSharedScopeMember(actor.id, scopeId)) ||
+          (await deps.config?.resolveSharingPostureDurable(personalScope(actor.id), scopeId)) !== "open"
         ) {
           throw new Error("Open speaker keychain access is no longer authorized");
         }
+        deps.auditLog.record({
+          at: Date.now(),
+          principalId: actor.id,
+          action: "keychain.open_speaker_use",
+          resource: "private box execution",
+          scopeLabel: scopeId,
+        });
       };
       const resolvedCredential = (materialized: import("../credentials/keychain.ts").MaterializedCred) => {
         if (materialized.kind === "env") return { env: materialized.env };

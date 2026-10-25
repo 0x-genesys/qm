@@ -82,16 +82,11 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     "AWS_REGION",
     "AWS_DEFAULT_REGION",
   ];
+  const privateBoxEnv = Object.fromEntries(
+    Object.entries(connectorEnv).filter(([key]) => !privateBoxUnsetKeys.includes(key)),
+  );
   if (privateBoxAvailable) {
     privateBoxCommand = (command, env = {}) => {
-      if (openSpeakerKeychain)
-        deps.auditLog.record({
-          at: Date.now(),
-          principalId: actor.id,
-          action: "keychain.open_speaker_use",
-          resource: "private box execution",
-          scopeLabel: scopeId,
-        });
       const keys = privateBoxUnsetKeys.filter((key) => !(key in env));
       return keys.length ? `unset ${keys.join(" ")}; ${command}` : command;
     };
@@ -462,7 +457,7 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
           const handle = await deps.sandbox.provision(
             resolution.layers.filter((l) => l.mode === "ro" && l.mountPath === "global"),
             {
-              ...(connectorEnv.AGENT_API_URL ? { env: { AGENT_API_URL: connectorEnv.AGENT_API_URL } } : {}),
+              env: privateBoxEnv,
               egress: resolution.egress,
               ...(egressTokenForTurn ? { egressToken: egressTokenForTurn } : {}),
               scratch: { key: `private-box:${session.id}:${transferId}` },
