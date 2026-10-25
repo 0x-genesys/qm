@@ -32,12 +32,6 @@ export interface McpServer {
     annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean };
   }>;
   approval?: McpApprovalPolicy;
-  /**
-   * Under the "annotations" policy, a server tool that answers whether one call needs
-   * approval when its annotations leave the answer to the arguments. Called with
-   * `{ tool, arguments }`; replies with JSON text `{"needsApproval": boolean}`.
-   * Never listed or offered to the model.
-   */
   approvalCheckTool?: string;
   catalog?: boolean;
   attestActor?: boolean;

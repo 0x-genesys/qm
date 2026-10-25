@@ -4283,14 +4283,13 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           }
         },
       }),
-      needsApproval:
-        d.catalog || d.approvalCheck
-          ? async (params: unknown) => {
-              const tc = ref.current;
-              if (!tc) return true;
-              return tc.mcpToolNeedsApproval(d.name, (isObj(params) ? params : {}) as Record<string, unknown>);
-            }
-          : d.needsApproval === true,
+      needsApproval: d.catalog
+        ? async (params: unknown) => {
+            const tc = ref.current;
+            if (!tc) return true;
+            return tc.mcpToolNeedsApproval(d.name, (isObj(params) ? params : {}) as Record<string, unknown>);
+          }
+        : d.needsApproval === true,
     }));
 
   const clientTools = [...(opts?.clientTools ?? [])]

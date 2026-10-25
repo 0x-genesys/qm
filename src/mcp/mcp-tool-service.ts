@@ -73,8 +73,6 @@ export interface McpToolDescriptor {
   needsApproval: boolean;
   signIn?: true;
   catalog?: true;
-  /** Whether a call needs approval is asked per call (McpServer.approvalCheckTool). */
-  approvalCheck?: true;
 }
 
 export interface McpToolService {
@@ -125,10 +123,6 @@ function catalogDescriptor(server: McpServer): McpToolDescriptor {
     readOnly: server.readOnly,
     needsApproval: false,
   };
-}
-
-function checksApprovalPerCall(server: McpServer): boolean {
-  return Boolean(server.approvalCheckTool) && (server.approval ?? "annotations") === "annotations";
 }
 
 function resultText(result: CallToolResult): string {
@@ -259,21 +253,24 @@ export function createMcpToolService(opts: {
     annotations: RemoteTool["annotations"],
   ): Promise<boolean> {
     if (mcpToolNeedsApproval(server, annotations)) return true;
-    if (!checksApprovalPerCall(server)) return false;
+    if (!server.approvalCheckTool) return false;
     const client = await callerClient(server, principalId);
     const result = await client.callTool(
-      server.approvalCheckTool!,
+      server.approvalCheckTool,
       { tool, arguments: args && typeof args === "object" && !Array.isArray(args) ? args : {} },
       headersFor(server, principalId),
     );
-    let answer: unknown;
+    const reply = resultText(result);
+    let needs: unknown;
     try {
-      answer = JSON.parse(resultText(result));
-    } catch {
-      answer = undefined;
+      needs = (JSON.parse(reply) as { needsApproval?: unknown } | null)?.needsApproval;
+    } catch (e) {
+      throw new Error(`${server.name} approval check for ${tool} replied with invalid JSON: ${reply.slice(0, 200)}`, {
+        cause: e,
+      });
     }
-    const needs = (answer as { needsApproval?: unknown } | undefined)?.needsApproval;
-    if (typeof needs !== "boolean") throw new Error(`${server.name} did not say whether ${tool} needs approval`);
+    if (typeof needs !== "boolean")
+      throw new Error(`${server.name} approval check for ${tool} did not give needsApproval: ${reply.slice(0, 200)}`);
     return needs;
   }
 
@@ -289,12 +286,10 @@ export function createMcpToolService(opts: {
     }
     const entry = await catalogEntry(server, principalId, args.tool);
     if (args.operation === "describe") {
-      let needsApproval: boolean | string = mcpToolNeedsApproval(server, entry.annotations);
-      if (!needsApproval && checksApprovalPerCall(server)) needsApproval = "depends on the arguments";
       return JSON.stringify({
         name: entry.name,
         description: entry.description,
-        needsApproval,
+        needsApproval: mcpToolNeedsApproval(server, entry.annotations),
         parameters: modelInputSchema(entry.inputSchema),
       });
     }
@@ -343,7 +338,6 @@ export function createMcpToolService(opts: {
           if (!tools.length) continue;
         } else tools = await clientFor(server).listTools({ headers: headersFor(server, undefined) });
         for (const tool of tools) {
-          if (tool.name === server.approvalCheckTool) continue;
           next.push({
             name: `${server.id}_${tool.name}`.replace(/[^a-zA-Z0-9_-]/g, "_"),
             serverId: server.id,
@@ -352,7 +346,6 @@ export function createMcpToolService(opts: {
             inputSchema: modelInputSchema(tool.inputSchema),
             readOnly: server.readOnly,
             needsApproval: mcpToolNeedsApproval(server, tool.annotations),
-            ...(checksApprovalPerCall(server) ? { approvalCheck: true as const } : {}),
           });
         }
         record("list", server.id, `ok tools=${tools.length}`);
@@ -402,12 +395,11 @@ export function createMcpToolService(opts: {
     async needsApproval(name, args, principalId) {
       const def = snapshot.find((t) => t.name === name);
       if (!def) throw new Error(`unknown MCP tool: ${name}`);
-      if (!def.catalog && (def.needsApproval || !def.approvalCheck)) return def.needsApproval;
-      if (def.catalog && args.operation !== "invoke") return false;
+      if (!def.catalog) return def.needsApproval;
+      if (args.operation !== "invoke") return false;
       try {
         const server = await opts.servers.get(def.serverId);
         if (!server || !server.enabled) throw new Error(`MCP server ${def.serverId} is not available`);
-        if (!def.catalog) return await callNeedsApproval(server, principalId, def.remoteName, args, undefined);
         const entry = await catalogEntry(server, principalId, args.tool);
         return await callNeedsApproval(server, principalId, entry.name, args.arguments, entry.annotations);
       } catch (e) {

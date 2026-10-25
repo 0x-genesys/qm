@@ -299,15 +299,14 @@ test("an approval check tool decides calls the annotations leave to the argument
     ],
     call: (name, args) => {
       if (name !== "check-approval") return { content: [{ type: "text", text: `ran ${name}` }] };
-      const call = args as { tool: string; arguments: { publish?: boolean; broken?: boolean } };
-      if (call.arguments.broken) return { content: [{ type: "text", text: "not json" }] };
+      const call = args as { tool: string; arguments: { publish?: boolean; reply?: string } };
+      if (call.arguments.reply) return { content: [{ type: "text", text: call.arguments.reply }] };
       return { content: [{ type: "text", text: JSON.stringify({ needsApproval: call.arguments.publish === true }) }] };
     },
   });
   const store = createMcpServerStore(createMemoryMap<McpServer>());
   const service = createMcpToolService({ servers: store, refreshIntervalMs: 3600_000 });
-  const checks = () => mcp.requests.filter((r) => r.rpc === "tools/call").length;
-
+  const calls = () => mcp.requests.filter((r) => r.rpc === "tools/call");
   await store.put(
     server({
       id: "records",
@@ -321,42 +320,19 @@ test("an approval check tool decides calls the annotations leave to the argument
   await service.refresh();
   const ask = (tool: string, args: Record<string, unknown>) =>
     service.needsApproval("records", { operation: "invoke", tool, arguments: args }, "alice@example.com");
+
   assert.equal(await ask("update-settings", { publish: true }), true);
   assert.equal(await ask("update-settings", { publish: false }), false);
   assert.deepEqual(
-    mcp.requests.filter((r) => r.rpc === "tools/call").map((r) => r.actor),
+    calls().map((r) => r.actor),
     ["alice@example.com", "alice@example.com"],
   );
-  const before = checks();
+  const before = calls().length;
   assert.equal(await ask("send-message", {}), true);
-  assert.equal(checks(), before, "an annotated tool needs no check");
-  await assert.rejects(ask("update-settings", { broken: true }), /did not say whether update-settings needs approval/);
+  assert.equal(calls().length, before, "an annotated tool needs no check");
+  await assert.rejects(ask("update-settings", { reply: "not json" }), /replied with invalid JSON: not json/);
+  await assert.rejects(ask("update-settings", { reply: '{"ok":true}' }), /did not give needsApproval: \{"ok":true\}/);
   assert.doesNotMatch(await service.call("records", { operation: "search" }, "alice@example.com"), /check-approval/);
-  assert.match(
-    await service.call("records", { operation: "describe", tool: "update-settings" }, "alice@example.com"),
-    /"needsApproval":"depends on the arguments"/,
-  );
-
-  await store.put(server({ id: "direct", name: "Direct", url: mcp.url, approvalCheckTool: "check-approval" }));
-  await service.refresh();
-  const direct = service.toolDefs().filter((d) => d.serverId === "direct");
-  assert.deepEqual(
-    direct.map((d) => [d.remoteName, d.approvalCheck ?? false]),
-    [
-      ["update-settings", true],
-      ["send-message", true],
-    ],
-  );
-  assert.equal(await service.needsApproval("direct_update-settings", { publish: true }), true);
-  assert.equal(await service.needsApproval("direct_update-settings", { publish: false }), false);
-
-  await store.put(
-    server({ id: "direct", name: "Direct", url: mcp.url, approval: "none", approvalCheckTool: "check-approval" }),
-  );
-  await service.refresh();
-  const quiet = checks();
-  assert.equal(await service.needsApproval("direct_update-settings", { publish: true }), false);
-  assert.equal(checks(), quiet, "a server whose policy is not annotations is never asked");
 });
 
 test("per-user calls resolve only the caller's fresh token while discovery uses catalog auth", async (t) => {

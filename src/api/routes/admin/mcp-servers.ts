@@ -96,6 +96,9 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
       message: `approval must be one of ${APPROVAL_POLICIES.join(", ")}`,
     });
   }
+  const oauthUser = auth === "oauth-user";
+  const catalog = (b.catalog ?? existing?.catalog) === true;
+  const attestActor = (b.attestActor ?? existing?.attestActor) === true;
   const approvalCheckTool =
     b.approvalCheckTool === undefined ? existing?.approvalCheckTool : b.approvalCheckTool || undefined;
   if (
@@ -107,9 +110,12 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
       message: "approvalCheckTool must be an MCP tool name of 1-128 letters, digits, _, - or .",
     });
   }
-  const oauthUser = auth === "oauth-user";
-  const catalog = (b.catalog ?? existing?.catalog) === true;
-  const attestActor = (b.attestActor ?? existing?.attestActor) === true;
+  if (approvalCheckTool && (!catalog || approval !== "annotations")) {
+    return sendJson(ctx.res, 400, {
+      error: "bad_request",
+      message: "approvalCheckTool requires a catalog server with the annotations approval policy",
+    });
+  }
   if ((catalog || attestActor) && oauthUser) {
     return sendJson(ctx.res, 400, {
       error: "bad_request",

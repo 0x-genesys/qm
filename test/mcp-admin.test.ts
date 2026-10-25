@@ -94,13 +94,7 @@ test("MCP admin validates and preserves credential scope, without returning secr
   assert.equal((await store.get("crm"))?.approval, "all", "an update that omits the policy keeps it");
   assert.equal((await put({ approval: "annotations" })).status, 200);
   assert.equal((await store.get("crm"))?.approval, undefined);
-  assert.equal((await put({ approvalCheckTool: "check approval" })).status, 400);
-  assert.equal((await put({ approvalCheckTool: "check_approval" })).status, 200);
-  assert.equal((await store.get("crm"))?.approvalCheckTool, "check_approval");
-  assert.equal((await put({})).status, 200);
-  assert.equal((await store.get("crm"))?.approvalCheckTool, "check_approval", "an update that omits it keeps it");
-  assert.equal((await put({ approvalCheckTool: "" })).status, 200);
-  assert.equal((await store.get("crm"))?.approvalCheckTool, undefined);
+  assert.equal((await put({ approvalCheckTool: "check_approval" })).status, 400, "only a catalog asks per call");
   assert.equal((await put({ attestActor: true })).status, 400);
   assert.equal(
     (await put({ catalog: true, attestActor: true })).status,
@@ -127,6 +121,21 @@ test("MCP admin validates and preserves credential scope, without returning secr
     200,
   );
   assert.deepEqual([(await store.get("crm"))?.catalog, (await store.get("crm"))?.attestActor], [true, true]);
+  const catalogServer = {
+    catalog: true,
+    attestActor: true,
+    auth: "bearer",
+    bearerToken: "t",
+    credentialScope: "shared",
+  };
+  assert.equal((await put({ ...catalogServer, approvalCheckTool: "check approval" })).status, 400);
+  assert.equal((await put({ ...catalogServer, approvalCheckTool: "check_approval", approval: "all" })).status, 400);
+  assert.equal((await put({ ...catalogServer, approvalCheckTool: "check_approval" })).status, 200);
+  assert.equal((await store.get("crm"))?.approvalCheckTool, "check_approval");
+  assert.equal((await put(catalogServer)).status, 200);
+  assert.equal((await store.get("crm"))?.approvalCheckTool, "check_approval", "an update that omits it keeps it");
+  assert.equal((await put({ ...catalogServer, approvalCheckTool: "" })).status, 200);
+  assert.equal((await store.get("crm"))?.approvalCheckTool, undefined);
 });
 
 test("production wiring never uses operator fallback tokens for per-user MCP calls", async (t) => {
