@@ -15,14 +15,16 @@ export interface UiPublishOptions {
 const IMMUTABLE = "public, max-age=31536000, immutable";
 
 function parseRelease(text: string, source: string): { id: string; protocol: number } {
+  let parsed: { id?: unknown; protocol?: unknown } | undefined;
+  let cause: unknown;
   try {
-    const { id, protocol } = JSON.parse(text) as { id?: unknown; protocol?: unknown };
-    if (typeof id === "string" && /^[a-f0-9]{8,64}$/.test(id) && Number.isSafeInteger(protocol))
-      return { id, protocol: protocol as number };
-  } catch {
-    void 0;
+    parsed = JSON.parse(text) as { id?: unknown; protocol?: unknown };
+  } catch (error) {
+    cause = error;
   }
-  throw new CliError(`${source} is not a web UI release manifest; build the web UI first (npm run build)`);
+  if (typeof parsed?.id === "string" && /^[a-f0-9]{8,64}$/.test(parsed.id) && Number.isSafeInteger(parsed.protocol))
+    return { id: parsed.id, protocol: parsed.protocol as number };
+  throw new CliError(`${source} is not a web UI release manifest; build the web UI first (npm run build)`, { cause });
 }
 
 export function runUiPublish(o: UiPublishOptions): void {
@@ -38,8 +40,8 @@ export function runUiPublish(o: UiPublishOptions): void {
     const local = join(o.dir, "release.json");
     try {
       manifest = readFileSync(local, "utf8");
-    } catch {
-      throw new CliError(`${local} not found; build the web UI first (npm run build)`);
+    } catch (error) {
+      throw new CliError(`${local} not found; build the web UI first (npm run build)`, { cause: error });
     }
   }
   const release = parseRelease(manifest, o.release ? `release ${o.release}` : join(o.dir, "release.json"));

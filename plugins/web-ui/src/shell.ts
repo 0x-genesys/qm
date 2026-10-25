@@ -165,6 +165,7 @@ window.addEventListener(UI_OUTDATED_EVENT, () => {
     </div>`,
     host,
   );
+  document.querySelector(".layout")?.classList.add("bannered");
 });
 
 export const ADMIN_BASE = (() => {
