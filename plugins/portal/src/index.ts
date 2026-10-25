@@ -10,7 +10,7 @@ import { reportBackendError } from "../../chassis/src/error-reporting.ts";
 import "./instrument.ts";
 import { provisionTrustedAdmin } from "./trusted-admin.ts";
 import { createHash } from "node:crypto";
-import { createServer, METHODS, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, METHODS, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { pathToFileURL } from "node:url";
 import { ADMIN_LOGIN_SCRIPT, ADMIN_LOGIN_SCRIPT_HASH, openAdminLogin } from "./admin-login.ts";
 import { LRUCache } from "lru-cache";
@@ -1902,7 +1902,7 @@ function validEmailDomain(value: string): boolean {
     );
 }
 
-export async function startServer(port = PORT): Promise<void> {
+export async function startServer(port = PORT): Promise<Server> {
   bootChecks();
   if (process.env.AUTH_EMBEDDED === "1") {
     if (AUTH_BROKER_UPSTREAM !== "http://127.0.0.1:8099") {
@@ -1944,6 +1944,7 @@ export async function startServer(port = PORT): Promise<void> {
       );
     });
   });
+  return server;
 }
 
 export { handle, server };
