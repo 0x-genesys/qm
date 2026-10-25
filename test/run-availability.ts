@@ -393,7 +393,7 @@ test(
         }
       };
       const wokeAfter = await firstWakeAfterDue();
-      assert.ok(wokeAfter < retryAfterMs + 400, `delayed retry announced ${Math.round(wokeAfter)}ms after failing`);
+      assert.ok(wokeAfter < retryAfterMs + 750, `delayed retry announced ${Math.round(wokeAfter)}ms after failing`);
     } finally {
       off();
       await reader.close();

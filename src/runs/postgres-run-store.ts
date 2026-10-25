@@ -19,6 +19,7 @@ import {
   withTraceCarrier,
 } from "./run-store.ts";
 import { errMessage, swallow } from "../util/errors.ts";
+import { withTimeout } from "../util/async.ts";
 import type { LedgerBegin, ToolLedger } from "./tool-ledger.ts";
 
 export interface PostgresRuntime {
@@ -232,8 +233,10 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
     availabilityTimer = undefined;
     availabilityStale = false;
     const now = Date.now();
-    availabilityProbe = q(
-      `SELECT EXISTS (
+    availabilityProbe = withTimeout(
+      () =>
+        q(
+          `SELECT EXISTS (
           SELECT 1 FROM runs r WHERE r.status='pending' AND r.retry_after <= $1
           AND NOT EXISTS (
             SELECT 1 FROM runs blocked WHERE blocked.session_id=r.session_id
@@ -241,7 +244,10 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
           )
         ) AS available,
         (SELECT min(retry_after) FROM runs WHERE status='pending' AND retry_after > $1) AS next_retry_at`,
-      [now],
+          [now],
+        ),
+      AVAILABILITY_IDLE_PROBE_MS,
+      "run availability probe",
     )
       .then(({ rows }) => {
         if (rows[0]?.available) for (const listener of availabilityListeners.keys()) listener();
