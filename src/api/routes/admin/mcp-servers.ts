@@ -18,6 +18,7 @@ import { audit, authorizeAdmin, orgScope } from "../shared.ts";
 
 const AUTH_MODES: McpServerAuthMode[] = ["none", "bearer", "client-credentials", "oauth-user"];
 const APPROVAL_POLICIES: McpApprovalPolicy[] = ["annotations", "all", "none"];
+const TOOL_NAME = /^[A-Za-z0-9_.-]{1,128}$/;
 
 async function actor(ctx: ApiCtx) {
   const scope = orgScope(ctx.deps);
@@ -93,6 +94,17 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
     return sendJson(ctx.res, 400, {
       error: "bad_request",
       message: `approval must be one of ${APPROVAL_POLICIES.join(", ")}`,
+    });
+  }
+  const approvalCheckTool =
+    b.approvalCheckTool === undefined ? existing?.approvalCheckTool : b.approvalCheckTool || undefined;
+  if (
+    approvalCheckTool !== undefined &&
+    (typeof approvalCheckTool !== "string" || !TOOL_NAME.test(approvalCheckTool))
+  ) {
+    return sendJson(ctx.res, 400, {
+      error: "bad_request",
+      message: "approvalCheckTool must be an MCP tool name of 1-128 letters, digits, _, - or .",
     });
   }
   const oauthUser = auth === "oauth-user";
@@ -199,6 +211,7 @@ export async function putMcpServer(ctx: ApiCtx): Promise<void> {
         }
       : {}),
     ...(approval === "annotations" ? {} : { approval }),
+    ...(approvalCheckTool ? { approvalCheckTool } : {}),
     ...(catalog ? { catalog } : {}),
     ...(attestActor ? { attestActor } : {}),
     readOnly: b.readOnly !== false,

@@ -10,6 +10,12 @@ arguments and good for one call: `annotations` (the default; tools annotated
 `destructiveHint: true` and not `readOnlyHint: true`), `all`, or `none`. An update
 that omits `approval` keeps the current policy.
 
+Under `annotations`, `approvalCheckTool` names a server tool that decides the calls
+whose annotations do not already ask, when the answer depends on the arguments. Before
+each such call QM calls it with `{"tool": "<name>", "arguments": {...}}` and expects
+JSON text `{"needsApproval": true|false}`; any other reply blocks the call. The check
+tool is never offered to the model, and an empty string clears it.
+
 `credentialScope` selects the identity used for `tools/call`:
 
 - `shared` (the default for existing and new registrations): all callers use the
