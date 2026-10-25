@@ -66,6 +66,7 @@ export interface Config {
   production: boolean;
   allowUnauthenticatedCore: boolean;
   port: number;
+  publicPort?: number;
   dataDir: string;
   orgId: string;
   sessionStore: "memory" | "postgres";
@@ -1480,6 +1481,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     production: env.NODE_ENV === "production",
     allowUnauthenticatedCore: boolEnvStrict("ALLOW_UNAUTHENTICATED_CORE", env.ALLOW_UNAUTHENTICATED_CORE) ?? false,
     port: numEnvStrict("PORT", env.PORT) ?? CONFIG_DEFAULTS.port,
+    ...(numEnvStrict("PUBLIC_PORT", env.PUBLIC_PORT) !== undefined
+      ? { publicPort: numEnvStrict("PUBLIC_PORT", env.PUBLIC_PORT) }
+      : {}),
     dataDir,
     orgId: env.ORG_ID ?? DEFAULT_ORG_ID,
     ...(env.POSTHOG_API_KEY?.trim()
