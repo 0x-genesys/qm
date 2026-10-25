@@ -10,10 +10,11 @@ import type { Config } from "../src/config.ts";
 import type { TurnRequest } from "../src/types.ts";
 import { scopeId } from "../src/types.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
-import { createMemoryService } from "../src/memory/memory-service.ts";
 import { MemoryFactsMissing } from "../src/memory/facts.ts";
 import { testConfig } from "./support/test-config.ts";
 import { recallText } from "./support/recall-text.ts";
+import { createPostgresMemoryService } from "../src/memory/postgres-memory-service.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 function freshApp(overrides: Partial<Config> = {}) {
   const dataDir = mkdtempSync(join(tmpdir(), "ap-mem-"));
@@ -74,11 +75,17 @@ test("default memory policy recalls visible org memory without crossing into per
   const ws = createLocalWorkspaceStore(dataDir);
   const org = scopeId("org", "default-org");
   await ws.ensureScope(org);
-  await createMemoryService(ws).capture(org, ["Org launch metric is revenue quality"], Date.now(), "admin", {
-    mode: "explicit",
-    inheritedFacts: [],
-    sensitivity: "ordinary",
-  });
+  await createPostgresMemoryService(testDatabaseUrl()).capture(
+    org,
+    ["Org launch metric is revenue quality"],
+    Date.now(),
+    "admin",
+    {
+      mode: "explicit",
+      inheritedFacts: [],
+      sensitivity: "ordinary",
+    },
+  );
 
   const inDm = await app.turn(dm("!sysprompt", "dm:U1:tOrg"));
   assert.equal(inDm.status, "ok");
@@ -94,11 +101,17 @@ test("memory recall policy can be tightened to writable scope only", async () =>
   const ws = createLocalWorkspaceStore(dataDir);
   const org = scopeId("org", "default-org");
   await ws.ensureScope(org);
-  await createMemoryService(ws).capture(org, ["Org launch metric is revenue quality"], Date.now(), "admin", {
-    mode: "explicit",
-    inheritedFacts: [],
-    sensitivity: "ordinary",
-  });
+  await createPostgresMemoryService(testDatabaseUrl()).capture(
+    org,
+    ["Org launch metric is revenue quality"],
+    Date.now(),
+    "admin",
+    {
+      mode: "explicit",
+      inheritedFacts: [],
+      sensitivity: "ordinary",
+    },
+  );
 
   const res = await app.turn(dm("!sysprompt", "dm:U1:tWritable"));
   assert.equal(res.status, "ok");
@@ -122,7 +135,7 @@ test("memory discovery remains in the system orientation", async () => {
 
 test("capture dedupes, dates, and recall returns the stored memory", async () => {
   const ws = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "ws-mem-")));
-  const mem = createMemoryService(ws);
+  const mem = createPostgresMemoryService(testDatabaseUrl());
   const sid = scopeId("personal", "U1");
   await ws.ensureScope(sid);
 
@@ -155,7 +168,7 @@ test("lossy scope names cannot share a local workspace directory", async () => {
 
 test("query() retrieves matching facts and is scope-keyed (boundary-safe)", async () => {
   const ws = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "ws-q-")));
-  const mem = createMemoryService(ws);
+  const mem = createPostgresMemoryService(testDatabaseUrl());
   const personal = scopeId("personal", "U1");
   const channel = scopeId("channel", "C1");
   await ws.ensureScope(personal);

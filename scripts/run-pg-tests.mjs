@@ -23,14 +23,15 @@ if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
 if (files.length === 0) throw new Error("Pass the Postgres test files to run");
 
 const baseUrl = process.env.DATABASE_URL;
+if (!baseUrl) throw new Error("Set DATABASE_URL to a Postgres server the tests may create databases on");
 const runId = `qmt_${process.pid}_${randomBytes(4).toString("hex")}`;
 const children = new Set();
-const admin = baseUrl ? new pg.Pool({ connectionString: baseUrl, max: jobs }) : null;
+const admin = new pg.Pool({ connectionString: baseUrl, max: jobs });
 let stopping = false;
 let ended = null;
 
 function endPool() {
-  ended ??= admin?.end();
+  ended ??= admin.end();
   return ended;
 }
 
@@ -92,7 +93,6 @@ function runFile(file, env) {
 }
 
 async function runIsolated(file, index) {
-  if (!admin) return runFile(file, {});
   const name = `${runId}_${index}`;
   try {
     await admin.query(`CREATE DATABASE ${name}`);

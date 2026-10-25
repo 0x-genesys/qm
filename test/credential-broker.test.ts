@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { brokerCredentialCall, type BrokerFetch } from "../src/api/credential-broker.ts";
 import type { CapabilityClaims } from "../src/auth/capability-token.ts";
 import type { DecryptedServiceCredential, ServiceCredentialReader } from "../src/credentials/keychain.ts";
-import { createCredentialUsageSink } from "../src/admin/credential-usage-sink.ts";
+import { createPostgresCredentialUsageSink } from "../src/admin/postgres-credential-usage-sink.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 const SECRET = "super-secret-bearer";
 
@@ -56,7 +57,7 @@ const base = (over: Partial<Parameters<typeof brokerCredentialCall>[0]> = {}) =>
 
 test("happy path: injects the secret as Bearer, never exposes it in the result", async () => {
   const cap = captureFetch();
-  const usage = createCredentialUsageSink();
+  const usage = createPostgresCredentialUsageSink(testDatabaseUrl());
   const r = await brokerCredentialCall(base({ fetchImpl: cap.fetch, usage }));
   assert.equal(r.status, 200);
   assert.deepEqual(r.json, { status: 200, contentType: "application/json", body: '{"ok":true}' });
@@ -298,7 +299,7 @@ test("a custom injection header + scheme is honored", async () => {
 });
 
 test("an upstream fetch error is reported generically (never leaks the URL/headers) + recorded", async () => {
-  const usage = createCredentialUsageSink();
+  const usage = createPostgresCredentialUsageSink(testDatabaseUrl());
   const r = await brokerCredentialCall(
     base({
       usage,

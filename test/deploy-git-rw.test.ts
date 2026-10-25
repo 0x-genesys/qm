@@ -13,13 +13,14 @@ import { createServer } from "../src/api/server.ts";
 import { createDeployStore } from "../src/deploy/deploy-store.ts";
 import { createDeployService } from "../src/deploy/deploy-service.ts";
 import { createAclStore, type AclStore } from "../src/acl/acl-store.ts";
-import { createDirectoryStore } from "../src/directory/directory-store.ts";
 import { createIdentityService } from "../src/identity/identity-service.ts";
-import { createMemorySessionStore } from "../src/sessions/memory-session-store.ts";
 import { mintDeployGitAccess, verifyDeployGitAccess } from "../src/deploy/access-token.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS, CONTROL_PLANE_AUD } from "../src/auth/capability-token.ts";
 import { scopeId } from "../src/types.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
+import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
+import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
+import { testDatabaseUrl, testDeployBackings, testMap } from "./support/test-database.ts";
 
 const execFileP = promisify(execFile);
 const SECRET = "deploy-git-rw-secret".repeat(3);
@@ -32,7 +33,9 @@ const GIT_ENV = {
 };
 
 function fixture(urls: { apiBaseUrl?: string; publicUrl?: string } = {}) {
-  const deployStore = createDeployStore({ git: { repoRoot: mkdtempSync(join(tmpdir(), "git-rw-repo-")) } });
+  const deployStore = createDeployStore(
+    testDeployBackings({ git: { repoRoot: mkdtempSync(join(tmpdir(), "git-rw-repo-")) } }),
+  );
   const acl: AclStore = createAclStore();
   const deploy = createDeployService({
     ...singleProcessDeps(),
@@ -46,12 +49,12 @@ function fixture(urls: { apiBaseUrl?: string; publicUrl?: string } = {}) {
     acl,
     deployDir: mkdtempSync(join(tmpdir(), "git-rw-deploy-")),
   });
-  const identity = createIdentityService();
+  const identity = createIdentityService(testMap(), { externalMembers: testMap() });
   const app = createApp({
     deploy,
     acl,
-    directory: createDirectoryStore(),
-    sessions: createMemorySessionStore(),
+    directory: createPostgresDirectoryStore(testDatabaseUrl()),
+    sessions: createPostgresSessionStore(testDatabaseUrl()),
     identity,
   } as unknown as Parameters<typeof createApp>[0]);
   const server: Server = createServer(app, { signingSecret: SECRET, identity, ...urls });

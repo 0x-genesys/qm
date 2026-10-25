@@ -12,8 +12,8 @@ import type { App } from "../src/api/app.ts";
 import { mintDeployGitAccess } from "../src/deploy/access-token.ts";
 import { createDeployStore, type Deployment } from "../src/deploy/deploy-store.ts";
 import type { DeployGitArchive } from "../src/deploy/deploy-git-store.ts";
-import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { scopeId } from "../src/types.ts";
+import { testMap, testDeployBackings } from "./support/test-database.ts";
 
 const execFileP = promisify(execFile);
 const SECRET = "deploy-git-remote-secret".repeat(3);
@@ -23,12 +23,14 @@ async function fixture(): Promise<{
   close: () => Promise<void>;
   deployment: Deployment;
 }> {
-  const deployments = createMemoryMap<Deployment>();
-  const archiveStore = createMemoryMap<DeployGitArchive>();
-  const writerStore = createDeployStore({
-    deployments,
-    git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-remote-writer-")), archiveStore },
-  });
+  const deployments = testMap<Deployment>();
+  const archiveStore = testMap<DeployGitArchive>();
+  const writerStore = createDeployStore(
+    testDeployBackings({
+      deployments,
+      git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-remote-writer-")), archiveStore },
+    }),
+  );
   const deployment = await writerStore.create({
     ownerScopeId: scopeId("personal", "U1"),
     createdBy: "U1",
@@ -41,10 +43,12 @@ async function fixture(): Promise<{
     name: "git-remote",
   });
   await writerStore.setAppliedVersion(deployment.id, 1);
-  const readerStore = createDeployStore({
-    deployments,
-    git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-remote-reader-")), archiveStore },
-  });
+  const readerStore = createDeployStore(
+    testDeployBackings({
+      deployments,
+      git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-remote-reader-")), archiveStore },
+    }),
+  );
   const app = {
     listDeployments: async () => [deployment],
     deploymentGitRepoPath: async (id: string) => (id === deployment.id ? await readerStore.repoUrl(id) : null),

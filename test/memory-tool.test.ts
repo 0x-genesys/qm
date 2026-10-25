@@ -6,9 +6,10 @@ import { join } from "node:path";
 import { createToolContext } from "../src/tools/primitives.ts";
 import { createAgentTools, type ToolContextRef } from "../src/harness/agent-tools.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
-import { createMemoryService } from "../src/memory/memory-service.ts";
 import { scopeId, type ScopeId, type WorkspaceLayer } from "../src/types.ts";
 import type { Sandbox, SandboxHandle } from "../src/sandbox/sandbox.ts";
+import { createPostgresMemoryService } from "../src/memory/postgres-memory-service.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 const at = Date.UTC(2026, 4, 31);
 
@@ -42,7 +43,7 @@ function ctxFor(opts: {
 
 test("memorySearch() queries ONLY the session's resolved memory scope, and is boundary-safe", async () => {
   const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "ws-recall-")));
-  const memory = createMemoryService(workspace);
+  const memory = createPostgresMemoryService(testDatabaseUrl());
   const personal = scopeId("personal", "U1");
   const channel = scopeId("channel", "C1");
   await workspace.ensureScope(personal);
@@ -59,7 +60,7 @@ test("memorySearch() queries ONLY the session's resolved memory scope, and is bo
 
 test("memorySearch() honors the explicit limit and never the model's scope (no scope param exists)", async () => {
   const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "ws-recall-lim-")));
-  const memory = createMemoryService(workspace);
+  const memory = createPostgresMemoryService(testDatabaseUrl());
   const personal = scopeId("personal", "U1");
   await workspace.ensureScope(personal);
   await memory.capture(personal, ["likes go", "likes golang", "likes good docs"], at);
@@ -102,7 +103,7 @@ const textOf = (r: unknown): string => (r as { content: Array<{ text: string }> 
 
 test("createAgentTools exposes ONE `memory` tool: search returns scope-keyed hits + emits a trace", async () => {
   const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "ws-recall-pi-")));
-  const memory = createMemoryService(workspace);
+  const memory = createPostgresMemoryService(testDatabaseUrl());
   const personal = scopeId("personal", "U1");
   await workspace.ensureScope(personal);
   await memory.capture(personal, ["Owns the billing service"], at);
@@ -144,7 +145,7 @@ test("createAgentTools exposes ONE `memory` tool: search returns scope-keyed hit
 
 test("the `memory` tool adds, reads with ids, edits and deletes, all-or-nothing", async () => {
   const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "ws-mem-pi-")));
-  const memory = createMemoryService(workspace);
+  const memory = createPostgresMemoryService(testDatabaseUrl());
   const personal = scopeId("personal", "U1");
   const ref: ToolContextRef = {
     current: ctxFor({ scope: personal, workspace, memory }),
@@ -185,7 +186,7 @@ test("the `memory` tool adds, reads with ids, edits and deletes, all-or-nothing"
 
 test("a read-only wake keeps `memory` but refuses its write actions", async () => {
   const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "ws-mem-ro-")));
-  const memory = createMemoryService(workspace);
+  const memory = createPostgresMemoryService(testDatabaseUrl());
   const personal = scopeId("personal", "U1");
   await workspace.ensureScope(personal);
   await memory.capture(personal, ["Owns the billing service"], at);
@@ -212,7 +213,7 @@ test("the `memory` tool exposes a scope selector for authorized reads", () => {
 
 test("capture-off policy: search/read work, but add/edit/delete are unavailable", async () => {
   const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "ws-mem-policy-")));
-  const memory = createMemoryService(workspace);
+  const memory = createPostgresMemoryService(testDatabaseUrl());
   const personal = scopeId("personal", "U1");
   await workspace.ensureScope(personal);
   await memory.capture(personal, ["Owns the billing service"], at);
@@ -242,7 +243,7 @@ test("capture-off policy: search/read work, but add/edit/delete are unavailable"
 
 test("memorySearch spans every readable notebook, tagging hits when more than one is in reach", async () => {
   const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "ws-mem-multi-")));
-  const memory = createMemoryService(workspace);
+  const memory = createPostgresMemoryService(testDatabaseUrl());
   const personal = scopeId("personal", "U1");
   const org = scopeId("org", "default-org");
   await workspace.ensureScope(personal);
@@ -296,7 +297,7 @@ test("memorySearch spans every readable notebook, tagging hits when more than on
 
 test("explicit capture uses the conversation origin rather than the notebook destination", async () => {
   const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "memory-origin-")));
-  const memory = createMemoryService(workspace);
+  const memory = createPostgresMemoryService(testDatabaseUrl());
   const capture = memory.capture;
   let context: Parameters<typeof capture>[4];
   memory.capture = async (scope, facts, at, author, metadata) => {

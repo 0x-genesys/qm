@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createMemoryFileArtifactStore } from "../src/files/file-artifact-store.ts";
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
 import { createAclStore } from "../src/acl/acl-store.ts";
 import { cronRef, deployRef, encodeRef, parseRef, serviceCredRef, skillRef } from "../src/acl/resource-ref.ts";
 import { principalEntitledToScope } from "../src/resolution/context-filter.ts";
 import { scopeId, type Principal } from "../src/types.ts";
+import { createPostgresFileArtifactStore } from "../src/files/postgres-file-artifact-store.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 const ORG = scopeId("org", "default-org");
 const P = (id: string, teamIds: string[] = []): Principal => ({ id, type: "internal", teamIds });
@@ -192,7 +193,7 @@ test("the prefix filters: a deployment grant is never returned for the service-c
 });
 
 test("file handles exclude non-file grants — a skill/cron/deploy grant never becomes a bogus shared/ file", async () => {
-  const files = createMemoryFileArtifactStore(createMemoryDurableByteStore());
+  const files = createPostgresFileArtifactStore(testDatabaseUrl(), createMemoryDurableByteStore());
   await files.put({
     id: "F1",
     ownerScopeId: ORG,

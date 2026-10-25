@@ -6,6 +6,7 @@ import { createLoopOutputStore } from "../src/loops/output-store.ts";
 import { buildShipGrant } from "../src/loops/ship-gate.ts";
 import { fireNeedsAttention, runLoopFire, type LoopRunnerEffects, type LoopStores } from "../src/loops/runner.ts";
 import { scopeId, type Loop } from "../src/types.ts";
+import { testMap } from "./support/test-database.ts";
 
 const base = {
   owner: "U1",
@@ -18,7 +19,11 @@ const base = {
 };
 
 function stores(): LoopStores {
-  return { loops: createLoopStore(), items: createLoopItemLedger(), outputs: createLoopOutputStore() };
+  return {
+    loops: createLoopStore(testMap()),
+    items: createLoopItemLedger(testMap()),
+    outputs: createLoopOutputStore(testMap()),
+  };
 }
 
 function shipVia(s: LoopStores): LoopRunnerEffects["ship"] {

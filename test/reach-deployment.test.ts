@@ -9,16 +9,17 @@ import { createInsecureTestServer, createServer } from "../src/api/server.ts";
 import { createDeployStore } from "../src/deploy/deploy-store.ts";
 import { createDeployService } from "../src/deploy/deploy-service.ts";
 import { createAclStore, type AclStore } from "../src/acl/acl-store.ts";
-import { createDirectoryStore } from "../src/directory/directory-store.ts";
 import { createIdentityService } from "../src/identity/identity-service.ts";
-import { createMemorySessionStore } from "../src/sessions/memory-session-store.ts";
 import { scopeId } from "../src/types.ts";
 import { signedRequestHeaders } from "../plugins/chassis/src/source-auth-sign.ts";
 import { verifyDeployGitAccess } from "../src/deploy/access-token.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
+import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
+import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
+import { testDatabaseUrl, testDeployBackings, testMap } from "./support/test-database.ts";
 
 function appWithFakeRuntime() {
-  const deployStore = createDeployStore();
+  const deployStore = createDeployStore(testDeployBackings());
   const acl: AclStore = createAclStore();
   const deploy = createDeployService({
     ...singleProcessDeps(),
@@ -32,14 +33,14 @@ function appWithFakeRuntime() {
     acl,
     deployDir: mkdtempSync(join(tmpdir(), "reach-")),
   });
-  const directory = createDirectoryStore();
-  const sessions = createMemorySessionStore();
+  const directory = createPostgresDirectoryStore(testDatabaseUrl());
+  const sessions = createPostgresSessionStore(testDatabaseUrl());
   const app = createApp({
     deploy,
     acl,
     directory,
     sessions,
-    identity: createIdentityService(),
+    identity: createIdentityService(testMap(), { externalMembers: testMap() }),
   } as unknown as Parameters<typeof createApp>[0]);
   return { app, acl, directory, sessions };
 }

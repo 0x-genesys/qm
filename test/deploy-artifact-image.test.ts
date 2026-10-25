@@ -14,13 +14,14 @@ import type { DeployReconcileInput } from "../src/deploy/deploy-provider.ts";
 import { createAclStore } from "../src/acl/acl-store.ts";
 import { scopeId } from "../src/types.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
+import { testDeployBackings } from "./support/test-database.ts";
 
 interface ProviderProbe {
   appliedImages: Array<string | undefined>;
 }
 
 function flyLikeService(): { deploy: DeployService; deployStore: DeployStore; probe: ProviderProbe } {
-  const deployStore = createDeployStore();
+  const deployStore = createDeployStore(testDeployBackings());
   const probe: ProviderProbe = { appliedImages: [] };
   const deploy = createDeployService({
     ...singleProcessDeps(),
@@ -93,7 +94,7 @@ test("rollback reuses the stored image — the provider gets the recorded ref, n
 });
 
 test("a runtime-mount provider (no image) leaves versions image-less — Docker behavior unchanged", async () => {
-  const deployStore = createDeployStore();
+  const deployStore = createDeployStore(testDeployBackings());
   const deploy = createDeployService({
     ...singleProcessDeps(),
     deployStore,
@@ -120,7 +121,7 @@ test("a runtime-mount provider (no image) leaves versions image-less — Docker 
 });
 
 test("a reconcile-capable provider receives the git diff and marks the applied version", async () => {
-  const deployStore = createDeployStore();
+  const deployStore = createDeployStore(testDeployBackings());
   const reconciles: DeployReconcileInput[] = [];
   const deploy = createDeployService({
     ...singleProcessDeps(),
@@ -166,7 +167,7 @@ test("a reconcile-capable provider receives the git diff and marks the applied v
 });
 
 test("applied version is marked only after endpoint metadata is persisted", async () => {
-  const baseStore = createDeployStore();
+  const baseStore = createDeployStore(testDeployBackings());
   const deployStore: DeployStore = {
     ...baseStore,
     setEndpoint: async () => {
@@ -201,7 +202,7 @@ test("applied version is marked only after endpoint metadata is persisted", asyn
 });
 
 test("a failed redeploy does not move the hosted git current ref", async () => {
-  const deployStore = createDeployStore();
+  const deployStore = createDeployStore(testDeployBackings());
   let applies = 0;
   const deploy = createDeployService({
     ...singleProcessDeps(),
