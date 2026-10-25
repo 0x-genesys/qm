@@ -38,8 +38,6 @@ export function verifyPortalIdentity(token: string, secret: string, nowMs: numbe
   if (!claims || typeof claims.p !== "string" || !claims.p || typeof claims.exp !== "number") return null;
   if (claims.authenticatedAs !== undefined && (typeof claims.authenticatedAs !== "string" || !claims.authenticatedAs))
     return null;
-  const tenant = coreTenant();
-  if (claims.t !== undefined && tenant !== undefined && claims.t !== tenant) return null;
   if (nowMs > claims.exp) return null;
   return claims;
 }

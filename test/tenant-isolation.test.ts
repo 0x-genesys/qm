@@ -83,17 +83,23 @@ test("custom providers, Slack mention names and MCP sign-in clients do not cross
   );
 });
 
-test("a signed portal identity naming another tenant is refused", async () => {
+test("a portal identity naming another tenant is reported and still accepted while every process serves one tenant", async (t) => {
+  const reports = t.mock.method(console, "error", () => {});
   const secret = "portal-identity-tenant-secret";
   const now = 1_000_000;
   const forAlpha = await mintPortalIdentity({ p: "alice@example.com", t: "tenant-alpha", exp: now + 60_000 }, secret);
-  const untagged = await mintPortalIdentity({ p: "alice@example.com", exp: now + 60_000 }, secret);
   assert.equal((await withTenant(alpha, () => verifyPortalIdentity(forAlpha, secret, now)))?.p, "alice@example.com");
-  assert.equal(await withTenant(beta, () => verifyPortalIdentity(forAlpha, secret, now)), null);
-  assert.equal((await withTenant(beta, () => verifyPortalIdentity(untagged, secret, now)))?.p, "alice@example.com");
+  assert.equal(reports.mock.callCount(), 0);
+  assert.equal((await withTenant(beta, () => verifyPortalIdentity(forAlpha, secret, now)))?.p, "alice@example.com");
+  assert.equal(reports.mock.callCount(), 1);
+  assert.match(
+    String(reports.mock.calls[0]!.arguments[0]),
+    /credential issued for another tenant.*portal identity names tenant tenant-alpha; this process serves tenant-beta/,
+  );
 });
 
-test("the API refuses a capability token minted for another tenant", async () => {
+test("the API reports a capability token minted for another tenant", async (t) => {
+  const reports = t.mock.method(console, "error", () => {});
   const secret = "tenant-capability-secret".repeat(2);
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "tenant-cap-")), signingSecret: secret }));
   const server = createServer(built.app, { admin: built.admin, memory: built.memory, signingSecret: secret });
@@ -108,7 +114,13 @@ test("the API refuses a capability token minted for another tenant", async () =>
     (await fetch(`${base}/v1/apis`, { headers: { "x-agent-capability": cap } })).status;
   try {
     assert.equal(await status(await mint()), 200);
-    assert.equal(await status(await withTenant(alpha, mint)), 401);
+    assert.equal(reports.mock.calls.filter((call) => /another tenant/.test(String(call.arguments[0]))).length, 0);
+    assert.equal(await status(await withTenant(alpha, mint)), 200);
+    assert.equal(
+      reports.mock.calls.filter((call) => /capability token names tenant tenant-alpha/.test(String(call.arguments[0])))
+        .length,
+      1,
+    );
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
