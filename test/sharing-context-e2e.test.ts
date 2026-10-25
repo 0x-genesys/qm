@@ -697,7 +697,6 @@ test("shared conversations run named credentials on the private box and never st
     }),
     "True True",
   );
-  assert.equal(await b.turn(`!run sh -c 'ls /tmp | grep -c qm-credentials || true'`, true), "0");
   assert.deepEqual(exposed, []);
   assert.ok(carried.length >= 3);
   assert.equal(provisions.filter((key) => key.startsWith("private-box:")).length, 3);

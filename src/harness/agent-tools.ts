@@ -632,7 +632,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     credentials: Type.Optional(
       Type.Array(Type.String(), {
         description:
-          "Exact authorized credential handles to materialize for this command only (for a background job, until it exits). Newly granted handles are accepted. In a shared conversation, a command that names any credential except a brokered org service runs on a private box for this turn instead of the shared computer: org-global files plus the requested credentials, no shared workspace or $AGENT_API_* tokens, destroyed after the turn, so return what you need in its output or push it with git. Background jobs there cannot use those credentials yet.",
+          "Exact authorized credential handles to materialize for this command only (for a background job, until it exits). Newly granted handles are accepted. In a shared conversation, a command that names any credential except a brokered org service runs on a private box for this turn instead of the shared computer: org-global files plus the requested credentials, no shared workspace, skill files or $AGENT_API_* tokens, destroyed after the turn, so return what you need in its output or push it with git. Background jobs there cannot use those credentials yet.",
       }),
     ),
   };
