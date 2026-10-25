@@ -23,7 +23,18 @@ Commands use `execute(command, sandbox_id?, credentials?, background?)`. Set
 with the job and displayed instead of the command; the raw command remains available
 in expanded output. `timeout_seconds` is the foreground wall-clock timeout or the
 background job lifetime. Background jobs require scoped, durable execution; disposable
-scratch, owner-auth and reached-room routing remain foreground-only.
+scratch, private-box and reached-room routing remain foreground-only.
+
+In a shared conversation (anything other than the acting person's personal scope), a
+command that names a personal, granted, connector, role-broker or org environment
+credential runs on a private box for that turn instead of the conversation's computer,
+whether it asked for scoped or scratch execution. The private box mounts only org-global
+files, gets the requested credentials plus `AGENT_API_URL`, unsets the platform capability
+tokens the command did not request, and is destroyed when the turn ends. Brokered org
+service handles (`AGENT_CREDENTIAL_TOKEN`) carry no secret and stay on the requested
+computer unless the same command also names a private credential. A command naming a
+private credential cannot target `sandbox_id`, and background jobs cannot use one yet.
+Personal conversations stage credentials on their own computer as before.
 
 The `background` tool controls existing jobs with `poll`, `send_input`, `stop`, `list`,
 `watch`, and `unwatch`. Process IDs retain their durable saved target even after the
@@ -45,6 +56,6 @@ The old routing table is retained only as upgrade input. It is never read when s
 
 Before upgrading from a release without resource-aware readers, drain its cores and workers. Rollback must use a resource-aware release that honors the permanent completion marker. A missing default after import means no default, not permission to recreate an old scoped computer.
 
-Scoped commands require an explicit target or selected default. Disposable scratch and owner-auth computers use the selected computer's provider without reusing its disk or resource identity; with no selection they use the installation provider, without creating a default. An unavailable selected provider fails explicitly rather than substituting another provider.
+Scoped commands require an explicit target or selected default. Disposable scratch and private-box computers use the selected computer's provider without reusing its disk or resource identity; with no selection they use the installation provider, without creating a default. An unavailable selected provider fails explicitly rather than substituting another provider.
 
 To move work between providers, create a computer, restore the required work from git or Files, verify it, and select it as the new default. Selection does not copy files or migrate running jobs.

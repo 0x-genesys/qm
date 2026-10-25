@@ -907,7 +907,6 @@ test("manifest: explains itself in a bare channel, lists credentials + protocol 
         ownerId: "U1",
         handle: credentialHandle(cred),
         description: "github",
-        scope: "scoped",
       },
     ],
   });
@@ -932,7 +931,6 @@ test("manifest: explains itself in a bare channel, lists credentials + protocol 
         ownerId: "U1",
         handle: "doordash:c1",
         description: "provides `DOORDASH_EMAIL` + `DOORDASH_PASSWORD`",
-        scope: "scoped",
       },
     ],
   });
@@ -958,6 +956,7 @@ test("manifest: own credentials need no grant but require explicit execution req
     scopeGrants: [],
   });
   assert.match(own, /### Alice \(U1\) — own; no grant needed \(including background turns\)\n.*file-login/);
+  assert.doesNotMatch(own, /runs on a private box|execute scope/);
   assert.doesNotMatch(own, /Teammate keychains/);
   assert.ok(!own.includes("no grant for this conversation"));
   assert.match(
@@ -1623,6 +1622,7 @@ test("manifest merges credential representations without conflating login identi
     scopeId: "channel:C1",
     conversationKind: "channel",
     openSpeakerKeychain: true,
+    privateBox: true,
     actorId: "alice@example.com",
     members: [{ id: "alice@example.com", displayName: "Alice" }],
     entriesByOwner: new Map([["alice@example.com", [first, second]]]),
@@ -1633,21 +1633,18 @@ test("manifest merges credential representations without conflating login identi
         handle: credentialHandle(credential),
         ownerId,
         credentialId: credential.id,
-        scope: "scoped",
         description: "mail grant",
       },
       {
         handle: "connector:gmail.googleapis.com:default",
         ownerId,
         credentialId: credential.id,
-        scope: "owner",
         description: "own mail",
       },
       ...[first, second].map((c) => ({
         handle: credentialHandle(c),
         ownerId,
         credentialId: c.id,
-        scope: "owner" as const,
         description: "aws",
       })),
     ],
@@ -1655,9 +1652,11 @@ test("manifest merges credential representations without conflating login identi
   const rendered = renderKeychainManifest(input, 1000);
   assert.equal(rendered.split("### ").length - 1, 1);
   assert.equal(rendered.split("connected app gmail.googleapis.com").length - 1, 1);
-  assert.match(rendered, /run in execute scope `owner` unless marked/);
-  assert.ok(rendered.includes(`\`${credentialHandle(credential)}\` (execute scope \`scoped\`)`));
-  assert.match(rendered, /`connector:gmail\.googleapis\.com:default`(?! \(execute scope)/);
+  assert.match(
+    rendered,
+    /In this shared conversation, a command that names a personal, granted or org environment credential runs on a private box for this turn/,
+  );
+  assert.doesNotMatch(rendered, /execute scope/);
   assert.match(rendered, /NEEDS RECONNECT/);
   assert.match(rendered, /token expires at/);
   assert.ok(rendered.includes("token in `$VAULT_TOKEN_GMAIL_GOOGLEAPIS_COM`"));

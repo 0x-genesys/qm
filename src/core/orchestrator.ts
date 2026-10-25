@@ -1400,8 +1400,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           config: deps.config,
           isCurrentSharedScopeMember: deps.isCurrentSharedScopeMember,
         }));
-      const isolateOwnerKeychain = !external && (openSpeakerKeychain || openAutomationKeychain);
-      const ownerAuthAvailable = isolateOwnerKeychain;
+      const privateBoxAvailable = !external && scopeId !== personalScope(actor.id);
       const connectorEnv: Record<string, string> = {};
       const commandCredentials: CommandCredential[] = [];
       const credentialDescriptions: NonNullable<KeychainManifestInput["execution"]> = [];
@@ -1433,6 +1432,10 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           },
         };
       };
+      const placeCredential = (credential: CommandCredential): CommandCredential => ({
+        privateBox: privateBoxAvailable,
+        ...credential,
+      });
       const addCredentialToCatalog = (
         credential: CommandCredential,
         description: string,
@@ -1446,14 +1449,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           return;
         }
         credentialIdentities.set(credential.handle, identity);
-        commandCredentials.push(credential);
-        credentialDescriptions.push({
-          handle: credential.handle,
-          ownerId,
-          description,
-          credentialId,
-          scope: credential.scope ?? "scoped",
-        });
+        commandCredentials.push(placeCredential(credential));
+        credentialDescriptions.push({ handle: credential.handle, ownerId, description, credentialId });
       };
       const registerKeychainCredentials = async (addCredential: typeof addCredentialToCatalog): Promise<void> => {
         if (external || strictReadOnly || !deps.keychain) return;
@@ -1478,14 +1475,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             credential.id,
           );
         }
-        const ownAllowed = scopeId === personalScope(actor.id) || isolateOwnerKeychain;
+        const ownAllowed = scopeId === personalScope(actor.id) || openSpeakerKeychain || openAutomationKeychain;
         if (ownAllowed) {
           for (const credential of await keychain.listByOwner(actor.id)) {
             if (credential.kind === "broker" || isBackendCredential(credential)) continue;
             addCredential(
               {
                 handle: credentialHandle(credential),
-                scope: isolateOwnerKeychain ? "owner" : "scoped",
                 resolve: async () => {
                   await authorizeOwnerCredentials();
                   return resolvedCredential(
@@ -1529,7 +1525,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               addCredential(
                 {
                   handle: `connector:${host}:${accountType ?? "default"}`,
-                  scope: isolateOwnerKeychain ? "owner" : "scoped",
                   resolve: async () => {
                     await authorizeOwnerCredentials();
                     const token = await tokens.connectorAccessToken(host, actor.id, accountType);
@@ -1807,6 +1802,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             addCredential(
               {
                 handle: credential.slug,
+                privateBox: false,
                 resolve: async () => ({ env: [{ key: "AGENT_CREDENTIAL_TOKEN", value: await resolveBrokerToken() }] }),
               },
               `${credential.name}; proxy ${credential.host}; ${(credential.allowedMethods?.length ? credential.allowedMethods : ["GET"]).toSorted().join("/")}; ${credential.allowedPathPrefixes?.length ? `paths ${credential.allowedPathPrefixes.toSorted().join(", ")}` : "any path"}; use the use-shared-credential skill`,
@@ -1905,12 +1901,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       }
 
       const {
-        ownerAuthCommand,
+        privateBoxCommand,
         provision,
         provisionScratch,
         accessResource,
         provisionResource,
-        provisionOwnerAuth,
+        provisionPrivateBox,
         useSkill,
         provisionForReach,
         reclaimBox,
@@ -1931,7 +1927,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         egressTokenForPolicy,
         openSpeakerKeychain: openSpeakerKeychain || openAutomationKeychain,
         openResourceAccess: !external && (liveAuthorTurn || openAutomationKeychain),
-        ownerAuthAvailable,
+        privateBoxAvailable,
         visibleSkillsForTurn,
         emitGapWork,
       });
@@ -2304,6 +2300,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             scopeId,
             conversationKind: conversation.kind,
             openSpeakerKeychain,
+            privateBox: privateBoxAvailable,
             actorId: actor.id,
             members,
             entriesByOwner,
@@ -2648,8 +2645,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           provisionScratch,
           provisionResource,
           accessSandboxResource: accessResource,
-          ...(provisionOwnerAuth ? { provisionOwnerAuth } : {}),
-          ...(ownerAuthCommand ? { ownerAuthCommand } : {}),
+          ...(provisionPrivateBox ? { provisionPrivateBox } : {}),
+          ...(privateBoxCommand ? { privateBoxCommand } : {}),
           useSkill,
           listSkills: (source) => visibleSkillsForTurn(source ? [source] : [scopeId, resolution.orgScopeId]),
           ...(reachAvailable
@@ -2684,7 +2681,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 return;
               }
               identities.set(credential.handle, identity);
-              refreshed.set(credential.handle, credential);
+              refreshed.set(credential.handle, placeCredential(credential));
             };
             await registerKeychainCredentials(add);
             await registerConnectorCredentials(add);

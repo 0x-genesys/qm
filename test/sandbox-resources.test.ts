@@ -230,7 +230,7 @@ test("turn default changes invalidate cached provisioning while explicit calls d
     turnSessionDir: "turn/s",
     turnFilesDir: "turn/s/t",
     connectorEnv: { AGENT_API_TOKEN: "scope-token" },
-    ownerAuthAvailable: false,
+    privateBoxAvailable: false,
     visibleSkills: [],
     visibleSkillsForTurn: async () => [],
     emitGapWork: () => {},
@@ -889,7 +889,7 @@ test("two concurrent turns on one parking computer: only the last turn to finish
       turnSessionDir: `turn/${sessionId}`,
       turnFilesDir: `turn/${sessionId}/${runId}`,
       connectorEnv: {},
-      ownerAuthAvailable: false,
+      privateBoxAvailable: false,
       visibleSkills: [],
       visibleSkillsForTurn: async () => [],
       emitGapWork: () => {},
@@ -924,7 +924,7 @@ test("same-name skills from distinct sources keep their materialized assets sepa
     turnSessionDir: "turn/s",
     turnFilesDir: "turn/s/t",
     connectorEnv: {},
-    ownerAuthAvailable: false,
+    privateBoxAvailable: false,
     emitGapWork: () => {},
     visibleSkillsForTurn: async (sources: readonly string[] = ["org:example", "personal:alice"]) =>
       sources.map((source) => ({

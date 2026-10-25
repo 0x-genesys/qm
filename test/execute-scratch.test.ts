@@ -83,7 +83,7 @@ const schemaProps = (tool: ReturnType<typeof createAgentTools>[number]): string[
 const schemaRequired = (tool: ReturnType<typeof createAgentTools>[number]): string[] =>
   (tool as unknown as { parameters: { required?: string[] } }).parameters.required ?? [];
 
-test("flag OFF: the execute surface is exactly the legacy one (no scope/durable, scoped box)", async () => {
+test("flag OFF: execute offers only the scoped box (no scratch or durable)", async () => {
   const { tc, seen } = sinkToolContext();
   const [execute] = createAgentTools({ current: tc });
   assert.deepEqual(schemaProps(execute!), [
@@ -93,6 +93,7 @@ test("flag OFF: the execute surface is exactly the legacy one (no scope/durable,
     "purpose",
     "timeout_seconds",
     "credentials",
+    "scope",
     "retrySafe",
   ]);
   assert.deepEqual(schemaRequired(execute!), ["command", "purpose"]);
@@ -305,7 +306,7 @@ test("execute rejects unavailable, conflicting, and reached credential requests"
   );
   await assert.rejects(
     ctx.execute("true", { reachTarget: "#other", credentials: ["kc_one12345678"] }),
-    /scoped, scratch, or owner computers/,
+    /scoped or scratch computers/,
   );
 });
 
@@ -348,6 +349,7 @@ test("execute schema lists exact command credential handles", async () => {
     "purpose",
     "timeout_seconds",
     "credentials",
+    "scope",
     "retrySafe",
   ]);
 
@@ -482,10 +484,13 @@ test("execute respects secret metadata even for configuration-named credentials"
   assert.equal((await ctx.execute("diagnose", { credentials: ["kc_config1234"] })).stdout, "<redacted:credential>");
 });
 
-test("owner execute masks selected credentials and inherited proxy credentials", async () => {
+test("private box execute masks selected credentials and inherited proxy credentials", async () => {
   const { ctx } = routingCtx({
-    provisionOwnerAuth: async () => ({ ...scopedHandle, env: { HTTPS_PROXY: "https://user:proxy-secret@proxy.test" } }),
-    commandCredentials: [{ handle: "owner-token", scope: "owner", env: [{ key: "TOKEN", value: "owner-secret" }] }],
+    provisionPrivateBox: async () => ({
+      ...scopedHandle,
+      env: { HTTPS_PROXY: "https://user:proxy-secret@proxy.test" },
+    }),
+    commandCredentials: [{ handle: "owner-token", privateBox: true, env: [{ key: "TOKEN", value: "owner-secret" }] }],
     sandbox: {
       async run() {
         return { stdout: "owner-secret https://user:proxy-secret@proxy.test", stderr: "", code: 0, timedOut: false };
@@ -493,7 +498,7 @@ test("owner execute masks selected credentials and inherited proxy credentials",
     } as unknown as Sandbox,
   });
   assert.equal(
-    (await ctx.execute("diagnose", { ownerAuth: true, credentials: ["owner-token"] })).stdout,
+    (await ctx.execute("diagnose", { credentials: ["owner-token"] })).stdout,
     "<redacted:credential> <redacted:credential>",
   );
 });
@@ -505,7 +510,7 @@ test("scratch credentials are selected per command and masked before returning",
     commandCredentials: [
       { handle: "selected", env: [{ key: "TOKEN", value: "selected-secret" }] },
       { handle: "unselected", env: [{ key: "OTHER_TOKEN", value: "other-secret" }] },
-      { handle: "owner", scope: "owner", env: [{ key: "OWNER_TOKEN", value: "owner-secret" }] },
+      { handle: "granted", privateBox: true, env: [{ key: "GRANTED_TOKEN", value: "granted-secret" }] },
     ],
     sandbox: {
       async run(handle: SandboxHandle) {
@@ -520,7 +525,8 @@ test("scratch credentials are selected per command and masked before returning",
   assert.equal(environments[0]?.OTHER_TOKEN, undefined);
   await ctx.execute("env", { scratch: true });
   assert.equal(environments[1]?.TOKEN, undefined);
-  await assert.rejects(ctx.execute("env", { scratch: true, credentials: ["owner"] }), /requires scope:owner/);
+  await assert.rejects(ctx.execute("env", { scratch: true, credentials: ["granted"] }), /no private box/);
+  assert.ok(environments.every((env) => env?.GRANTED_TOKEN === undefined));
 });
 
 function turnBoxes(sandbox: Partial<Sandbox>, transferId = "turn-a") {

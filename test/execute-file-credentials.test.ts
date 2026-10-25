@@ -75,11 +75,11 @@ async function fixture(t: TestContext) {
     },
   } as unknown as Sandbox;
   let resolutions = 0;
-  const context = (extra: Partial<ToolContextDeps> = {}, ownerScope = false) =>
+  const context = (extra: Partial<ToolContextDeps> = {}, privateBox = false) =>
     createToolContext({
       sandbox,
       provision: async () => handle,
-      provisionOwnerAuth: async () => ({ ...handle, id: "owner" }),
+      provisionPrivateBox: async () => ({ ...handle, id: "private" }),
       provisionScratch: async () => ({ ...handle, id: "scratch" }),
       layers: [{ scopeId: scope, mountPath: "", mode: "rw" }],
       commandPolicy: () => ({ mode: "denylist", rules: [] }),
@@ -87,7 +87,7 @@ async function fixture(t: TestContext) {
       commandCredentials: [
         {
           handle: "aws",
-          scope: ownerScope ? "owner" : "scoped",
+          privateBox,
           async resolve() {
             resolutions++;
             const materialized = await keychain.materializeOwnById(owner, credential.id, scope);
@@ -105,7 +105,6 @@ async function fixture(t: TestContext) {
         },
         {
           handle: "token",
-          scope: "scoped",
           async resolve() {
             return { env: [{ key: "API_TOKEN", value: SECRET_TOKEN }] };
           },
@@ -121,7 +120,7 @@ async function fixture(t: TestContext) {
   return { keychain, credential, handle, sandbox, commands, context, resolutions: () => resolutions };
 }
 
-for (const target of ["default", "owner", "scratch", "selected"] as const) {
+for (const target of ["default", "private", "scratch", "selected"] as const) {
   test(`${target} execution persists refreshed files and cleans its temporary home`, async (t) => {
     const f = await fixture(t);
     const selected = { ...f.handle, id: "selected" };
@@ -138,11 +137,10 @@ for (const target of ["default", "owner", "scratch", "selected"] as const) {
             },
           }
         : {},
-      target === "owner",
+      target === "private",
     );
     const result = await ctx.execute('printf refreshed > "$HOME/.aws/sso/cache/session.json"; printf "%s" "$HOME"', {
       credentials: ["aws"],
-      ...(target === "owner" ? { ownerAuth: true } : {}),
       ...(target === "scratch" ? { scratch: true } : {}),
       ...(target === "selected" ? { sandboxId: "selected" } : {}),
     });

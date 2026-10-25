@@ -186,15 +186,83 @@ test("newly available handles are resolved from the current catalog and revocati
   assert.equal(runs.length, 2);
 });
 
-test("owner credentials cannot be requested on scoped or scratch workspaces", async () => {
+function privateBoxContext(events: string[], extra: Partial<ToolContextDeps> = {}) {
+  const commands: Array<[string, string, Record<string, string> | undefined]> = [];
+  const sandbox = {
+    async run(target: SandboxHandle, command: string) {
+      commands.push([target.id, command, target.env]);
+      return { code: 0, stdout: "ok", stderr: "", timedOut: false };
+    },
+  } as unknown as Sandbox;
+  const { ctx } = context(
+    events,
+    [
+      {
+        ...credential(events, "granted", { env: [{ key: "GRANTED_TOKEN", value: "granted-secret" }] }),
+        privateBox: true,
+      },
+      {
+        ...credential(events, "brokered", { env: [{ key: "AGENT_CREDENTIAL_TOKEN", value: "room-capability" }] }),
+        privateBox: false,
+      },
+    ],
+    {
+      sandbox,
+      async provisionScratch() {
+        events.push("scratch");
+        return { ...handle, id: "scratch" };
+      },
+      async provisionPrivateBox() {
+        events.push("private");
+        return { id: "private-box", rootDir: "/private" };
+      },
+      privateBoxCommand: (command, env = {}) => `${Object.keys(env).sort().join(",")}|${command}`,
+      ...extra,
+    },
+  );
+  return { ctx, commands };
+}
+
+test("private-box credentials move scoped and scratch commands off the shared computer", async () => {
   const events: string[] = [];
-  const selected = { ...credential(events, "owner"), scope: "owner" as const };
-  const { ctx, runs } = context(events, [selected], { provisionOwnerAuth: async () => handle });
-  await assert.rejects(ctx.execute("true", { credentials: ["owner"] }), /requires scope:owner/);
-  await assert.rejects(ctx.execute("true", { credentials: ["owner"], scratch: true }), /requires scope:owner/);
+  const { ctx, commands } = privateBoxContext(events);
+  for (const route of [{}, { scratch: true }]) {
+    const result = await ctx.execute("whoami", { ...route, credentials: ["granted", "brokered"] });
+    assert.equal(result.privateBox, true);
+  }
+  const both = { GRANTED_TOKEN: "granted-secret", AGENT_CREDENTIAL_TOKEN: "room-capability" };
+  assert.deepEqual(commands, [
+    ["private-box", "AGENT_CREDENTIAL_TOKEN,GRANTED_TOKEN|whoami", both],
+    ["private-box", "AGENT_CREDENTIAL_TOKEN,GRANTED_TOKEN|whoami", both],
+  ]);
+  assert.ok(!events.includes("provision") && !events.includes("scratch"));
+  const brokered = await ctx.execute("whoami", { credentials: ["brokered"] });
+  assert.equal(brokered.privateBox, undefined);
+  assert.deepEqual(commands[2], ["credential-preparation", "whoami", { AGENT_CREDENTIAL_TOKEN: "room-capability" }]);
+  await assert.rejects(ctx.execute("whoami", { sandboxId: "box-a", credentials: ["granted"] }), /drop sandbox_id/);
+  assert.equal(commands.length, 3);
+});
+
+test("background jobs refuse private-box credentials before provisioning or staging", async () => {
+  const events: string[] = [];
+  const started: string[] = [];
+  const { ctx, commands } = privateBoxContext(events, {
+    backgroundBroker: {
+      async start(_target: SandboxHandle, command: string) {
+        started.push(command);
+        return { processId: "p1", output: "", cursor: 0, status: "running" };
+      },
+    } as unknown as ToolContextDeps["backgroundBroker"],
+  });
+  await assert.rejects(
+    ctx.backgroundStart("sleep 60", { purpose: "Wait", credentials: ["granted"] }),
+    /background jobs in a shared conversation cannot use these credentials yet/,
+  );
   assert.deepEqual(events, []);
-  await ctx.execute("true", { credentials: ["owner"], ownerAuth: true });
-  assert.equal(runs.length, 1);
+  assert.deepEqual(started, []);
+  await ctx.backgroundStart("gh auth login", { purpose: "Log in" });
+  assert.deepEqual(started, ["gh auth login"]);
+  assert.deepEqual(commands, []);
 });
 
 test("replay returns cached masked bytes without resolving a consumed single-use credential", async () => {

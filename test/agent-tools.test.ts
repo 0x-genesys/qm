@@ -3,7 +3,13 @@ import { createGoalRecord } from "../src/harness/goal.ts";
 import assert from "node:assert/strict";
 import { Check } from "typebox/value";
 import { fromJSONSchema, z, type ZodObject } from "zod";
-import { createAgentTools, pauseStampAfterToolCall, type ToolContextRef } from "../src/harness/agent-tools.ts";
+import {
+  coreToolOptions,
+  createAgentTools,
+  pauseStampAfterToolCall,
+  type ToolContextRef,
+} from "../src/harness/agent-tools.ts";
+import { loadConfig } from "../src/config.ts";
 import { resumeStrategy } from "../src/core/turn-resume.ts";
 import { reconstructMessagesFromHistory } from "../src/harness/replay.ts";
 import { createMemoryRunSignalStore, waitForClientResult } from "../src/runs/run-signal-store.ts";
@@ -1735,15 +1741,41 @@ test("execute forwards the agent's timeout_seconds into tc.execute; omitting it 
   assert.equal(sink.lastExecOpts, undefined);
 });
 
-test('execute scope:"owner" routes only when the owner-auth surface is enabled', async () => {
-  const sink: { lastExecOpts?: Parameters<ToolContext["execute"]>[1] } = {};
-  const execute = createAgentTools({ current: fakeToolContext(sink) }, { ownerAuthExec: true })[0]!;
-  await call(execute, { command: "acmecli me", scope: "owner", purpose: "Run test command" });
-  assert.deepEqual(sink.lastExecOpts, { ownerAuth: true });
+test('execute offers no owner scope and rejects scope:"owner" without running it', async () => {
+  for (const env of [{}, { EXECUTE_SCRATCH: "true" }]) {
+    const options = coreToolOptions(loadConfig(env));
+    const sink: { lastExecOpts?: Parameters<ToolContext["execute"]>[1] } = {};
+    let ran = 0;
+    const tc = fakeToolContext(sink);
+    const execute = tc.execute.bind(tc);
+    tc.execute = async (command, opts) => {
+      ran++;
+      return execute(command, opts);
+    };
+    const tool = createAgentTools({ current: tc }, options)[0]!;
+    assert.equal(Check(tool.parameters, { command: "acmecli me", scope: "owner", purpose: "Run test command" }), false);
+    const result = await call(tool, { command: "acmecli me", scope: "owner", purpose: "Run test command" });
+    assert.match((result as { content: Array<{ text: string }> }).content[0]?.text ?? "", /invalid execute arguments/);
+    assert.equal(ran, 0);
+  }
+});
 
-  const unavailable = createAgentTools({ current: fakeToolContext() }, { scratchExec: true })[0]!;
-  const result = await call(unavailable, { command: "acmecli me", scope: "owner", purpose: "Run test command" });
-  assert.match((result as { content: Array<{ text: string }> }).content[0]?.text ?? "", /invalid execute arguments/);
+test("execute labels a command that ran on the private box", async () => {
+  const entries: Array<Record<string, unknown>> = [];
+  const tc = fakeToolContext();
+  tc.execute = async () => ({ stdout: "ok", stderr: "", code: 0, timedOut: false, privateBox: true });
+  const tool = createAgentTools(
+    {
+      current: tc,
+      emit: (entry) => void entries.push(entry.payload as Record<string, unknown>),
+      scopeLabel: "channel:C1",
+    },
+    { scratchExec: true },
+  )[0]!;
+  await call(tool, { command: "gh api user", credentials: ["gh"], purpose: "Check login" });
+  const result = entries.find((entry) => entry.tool === "execute" && entry.code === 0);
+  assert.equal(result?.scope, "private");
+  assert.equal(result?.privateBox, undefined);
 });
 
 test("publish instructions prevent malformed app configs", () => {
@@ -2769,7 +2801,7 @@ test("only execute advertises command starts and sandbox is lifecycle-only", asy
       throw new Error("must not start");
     },
   };
-  for (const options of [{}, { scratchExec: true }, { ownerAuthExec: true }, { reachExec: true }]) {
+  for (const options of [{}, { scratchExec: true }, { reachExec: true }]) {
     const tools = createAgentTools({ current }, { ...options, sandboxResources: true });
     const execute = tools.find((t) => t.name === "execute")!;
     const sandbox = tools.find((t) => t.name === "sandbox")!;
@@ -2827,7 +2859,6 @@ test("execute preserves routing, credentials, abort and external output provenan
     {
       sandboxResources: true,
       scratchExec: true,
-      ownerAuthExec: true,
       reachExec: true,
       commandCredentialHandles: ["git"],
     },
@@ -2835,7 +2866,6 @@ test("execute preserves routing, credentials, abort and external output provenan
   for (const [scope, route] of [
     ["scoped", {}],
     ["scratch", { scratch: true }],
-    ["owner", { ownerAuth: true }],
     ["#room", { reachTarget: "#room" }],
   ] as const) {
     await call(tool, {
@@ -2849,7 +2879,7 @@ test("execute preserves routing, credentials, abort and external output provenan
   }
   assert.deepEqual(
     screens,
-    Array.from({ length: 4 }, () => ["execute", "external"]),
+    Array.from({ length: 3 }, () => ["execute", "external"]),
   );
 });
 

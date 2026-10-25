@@ -227,15 +227,11 @@ const schemaProps = (tool: ReturnType<typeof createAgentTools>[number]): string[
 
 test("reachExec OFF: the execute scope never accepts a room", () => {
   const ref: ToolContextRef = { current: null };
-  const [legacy] = createAgentTools(ref);
-  assert.ok(!schemaProps(legacy!).includes("scope"), "legacy surface has no scope param");
-  const [scratchOnly] = createAgentTools(ref, { scratchExec: true });
-  const scopeSchema = (scratchOnly as unknown as { parameters: { properties: { scope?: { anyOf?: unknown[] } } } })
-    .parameters.properties.scope;
-  assert.ok(
-    Array.isArray(scopeSchema?.anyOf),
-    "scratch-only scope is a closed union (scratch|scoped), not a free room string",
-  );
+  for (const tool of [createAgentTools(ref)[0], createAgentTools(ref, { scratchExec: true })[0]]) {
+    const scopeSchema = (tool as unknown as { parameters: { properties: { scope?: { anyOf?: unknown[] } } } })
+      .parameters.properties.scope;
+    assert.ok(Array.isArray(scopeSchema?.anyOf), "scope is a closed union, not a free room string");
+  }
 });
 
 test("reachExec ON (no scratch): scope is a free string; a room routes to reachTarget; default is scoped", async () => {

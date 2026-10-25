@@ -173,7 +173,7 @@ interface ReachedProvenance {
 
 export interface CommandCredential {
   handle: string;
-  scope?: "scoped" | "owner";
+  privateBox?: boolean;
   env?: Array<{ key: string; value: string; secret?: boolean }>;
   resolve?: () => Promise<{
     commit?: () => Promise<void>;
@@ -210,12 +210,11 @@ export interface ToolContext extends SurfaceToolDeps {
       timeoutSeconds?: number;
       sandboxId?: string;
       scratch?: boolean;
-      ownerAuth?: boolean;
       reachTarget?: string;
       signal?: AbortSignal;
       credentials?: string[];
     },
-  ): Promise<ExecResult & { reached?: ReachedProvenance }>;
+  ): Promise<ExecResult & { reached?: ReachedProvenance; privateBox?: boolean }>;
   sandboxResources?(
     action: "list" | "create" | "default" | "retire",
     input?: { backend?: string; name?: string; sandboxId?: string | null },
@@ -490,8 +489,8 @@ export interface ToolContextDeps {
     authorize?: (access: SandboxAccessPlan) => void,
   ) => Promise<SandboxHandle>;
   accessSandboxResource?: (id: string) => Promise<SandboxAccessPlan>;
-  provisionOwnerAuth?: () => Promise<SandboxHandle>;
-  ownerAuthCommand?: (command: string, env?: Record<string, string>) => string;
+  provisionPrivateBox?: () => Promise<SandboxHandle>;
+  privateBoxCommand?: (command: string, env?: Record<string, string>) => string;
   listSkills?: (source?: string) => Promise<SkillResolution[]>;
   useSkill?: (name: string, path: string, sandboxId?: string, source?: string) => Promise<SkillResult>;
   reach?: {
@@ -690,7 +689,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     return cache ? once(call, cache) : call();
   }
 
-  const selectCredentials = async (handles: readonly string[], ownerAuth: boolean) => {
+  const selectCredentials = async (handles: readonly string[]) => {
     const available = new Map(
       (
         (handles.length ? await deps.resolveCommandCredentials?.(handles) : undefined) ??
@@ -701,8 +700,6 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     return handles.map((handle) => {
       const credential = available.get(handle);
       if (!credential) throw new Error(`credential handle is not available on this turn: ${handle}`);
-      if ((credential.scope ?? "scoped") !== (ownerAuth ? "owner" : "scoped"))
-        throw new Error(`credential ${handle} requires scope:${credential.scope ?? "scoped"}`);
       return credential;
     });
   };
@@ -862,31 +859,33 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         timeoutSeconds?: number;
         sandboxId?: string;
         scratch?: boolean;
-        ownerAuth?: boolean;
         reachTarget?: string;
         signal?: AbortSignal;
         credentials?: string[];
       },
-    ): Promise<ExecResult & { reached?: ReachedProvenance }> {
+    ): Promise<ExecResult & { reached?: ReachedProvenance; privateBox?: boolean }> {
       return once(async () => {
         const scratch = execOpts?.scratch === true;
-        const ownerAuth = execOpts?.ownerAuth === true;
         const requestedCredentials = execOpts?.credentials ?? [];
         if (requestedCredentials.length && (execOpts?.reachTarget !== undefined || !writableScopeId)) {
-          throw new Error("command credentials are available only on scoped, scratch, or owner computers");
+          throw new Error("command credentials are available only on scoped or scratch computers");
         }
-        const requested = await selectCredentials(requestedCredentials, ownerAuth);
+        const requested = await selectCredentials(requestedCredentials);
+        const privateBox = requested.some((credential) => credential.privateBox);
         const reachTarget = execOpts?.reachTarget;
-        if (
-          [scratch, ownerAuth, reachTarget !== undefined, execOpts?.sandboxId !== undefined].filter(Boolean).length > 1
-        ) {
-          throw new Error("a command runs on one computer — choose scoped, scratch, owner, or a reached room");
+        if ([scratch, reachTarget !== undefined, execOpts?.sandboxId !== undefined].filter(Boolean).length > 1) {
+          throw new Error("a command runs on one computer — choose scoped, scratch, or a reached room");
         }
         if (scratch && !deps.provisionScratch) {
           throw new Error('scratch execution is not available on this computer — run without scope:"scratch"');
         }
-        if (ownerAuth && !deps.provisionOwnerAuth) {
-          throw new Error('an owner-auth box is not available on this turn — use scope:"scoped"');
+        if (privateBox && execOpts?.sandboxId !== undefined) {
+          throw new Error(
+            "in a shared conversation, a command that names these credentials runs on this turn's private box — drop sandbox_id",
+          );
+        }
+        if (privateBox && !deps.provisionPrivateBox) {
+          throw new Error("this turn has no private box for these credentials");
         }
         let reached: ReachedProvenance | undefined;
         if (reachTarget !== undefined) {
@@ -912,8 +911,8 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         } else {
           authorizeExecution(command, undefined, executionPolicy());
           if (reached) handle = await deps.reach!.provisionFor(reached.scopeId);
+          else if (privateBox) handle = await deps.provisionPrivateBox!();
           else if (scratch) handle = await deps.provisionScratch!();
-          else if (ownerAuth) handle = await deps.provisionOwnerAuth!();
           else handle = await deps.provision();
         }
         const resolvedMs = execOpts?.timeoutSeconds != null ? execOpts.timeoutSeconds * 1000 : deps.execTimeoutMs;
@@ -947,7 +946,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           );
           const r = await withCleanup(
             async (): Promise<ExecResult> => {
-              const sandboxCommand = ownerAuth ? (deps.ownerAuthCommand?.(command, commandEnv) ?? command) : command;
+              const sandboxCommand = privateBox ? (deps.privateBoxCommand?.(command, commandEnv) ?? command) : command;
               const commandHandle = Object.keys(commandEnv).length
                 ? { ...handle, env: { ...handle.env, ...commandEnv } }
                 : handle;
@@ -967,7 +966,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
               await fileExecution?.finish();
             },
           );
-          return reached ? { ...r, reached } : r;
+          return { ...r, ...(reached ? { reached } : {}), ...(privateBox ? { privateBox } : {}) };
         });
       });
     },
@@ -1273,7 +1272,11 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       const requestedCredentials = opts.credentials ?? [];
       if (requestedCredentials.length && !writableScopeId)
         throw new Error("command credentials are available only on scoped computers");
-      const requested = await selectCredentials(requestedCredentials, false);
+      const requested = await selectCredentials(requestedCredentials);
+      if (requested.some((credential) => credential.privateBox))
+        throw new Error(
+          "background jobs in a shared conversation cannot use these credentials yet; run the command in the foreground, where they go to this turn's private box",
+        );
       const policy = deps.commandPolicy;
       let handle: SandboxHandle;
       if (opts?.sandboxId !== undefined) {

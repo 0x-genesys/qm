@@ -15,7 +15,6 @@ import { INTERRUPTED_TOOL_RESULT } from "./context-compaction.ts";
 
 export interface HarnessToolPlumbing {
   scratchExec?: boolean;
-  ownerAuthExec?: boolean;
   reachExec?: boolean;
   controlTools?: boolean;
   sandboxResources?: boolean;
@@ -128,7 +127,6 @@ export function harnessToolContext(turn: HarnessTurnInput): ToolContextRef {
 export function harnessToolOptions(opts: HarnessToolPlumbing, turn?: HarnessTurnInput): AgentToolsOptions {
   return {
     scratchExec: opts.scratchExec,
-    ownerAuthExec: opts.ownerAuthExec,
     reachExec: opts.reachExec,
     ...(turn?.mcpTools?.length ? { mcpTools: turn.mcpTools } : {}),
     controlTools: opts.controlTools,
