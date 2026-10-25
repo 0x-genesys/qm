@@ -27,58 +27,58 @@ for (const backend of ["memory", "postgres"] as const) {
       const { lease } = await sessions.acquireLease(session.id, "turn");
       assert.ok(lease);
       const receipt = await sessions.append(lease, {
-        type: "user",
-        scopeLabel: scope,
-        payload: { text: "Receipt text", ts: "100.123", slackReplyReceipt: true, deliveryKey: "sent-1" },
+        kind: "UserMessage",
+        text: "Receipt text",
+        externalId: "100.123",
+        body: { slackReplyReceipt: true, deliveryKey: "sent-1" },
       });
       const middle = await sessions.append(lease, {
-        type: "assistant",
-        scopeLabel: scope,
-        payload: { text: "Intervening reply" },
+        kind: "AgentMessage",
+        text: "Intervening reply",
       });
       const source = createTranscriptSource(sessions);
       assert.deepEqual(
-        (await source.forViewer(session.id, "alice")).entries.map((e) => e.seq),
+        (await source.forViewer(session.id, "alice")).items.map((e) => e.seq),
         [receipt.seq, middle.seq],
       );
       assert.deepEqual(
-        forModelContext(await sessions.getEntries(session.id)).map((e) => e.seq),
+        forModelContext(await sessions.getItems(session.id)).map((e) => e.seq),
         [middle.seq],
       );
       assert.deepEqual(
-        forSearchView(await sessions.getEntries(session.id)).map((e) => e.seq),
+        forSearchView(await sessions.getItems(session.id)).map((e) => e.seq),
         [middle.seq],
       );
       await sessions.removeParticipant(session.id, "alice");
       await sessions.addParticipant(session.id, "bob");
       const event = await sessions.append(lease, {
-        type: "user",
-        scopeLabel: scope,
-        payload: { text: "Receipt text", ts: "100.123" },
+        kind: "UserMessage",
+        text: "Receipt text",
+        externalId: "100.123",
       });
       await sessions.releaseLease(lease);
       const page = await source.forRender(session.id, { limit: 1 });
       assert.deepEqual(
-        page.entries.map((e) => e.seq),
+        page.items.map((e) => e.seq),
         [event.seq],
       );
       assert.equal(page.earlier, 1);
       const previous = await source.forRender(session.id, { limit: 1, beforeSeq: event.seq });
       assert.deepEqual(
-        previous.entries.map((e) => e.seq),
+        previous.items.map((e) => e.seq),
         [middle.seq],
       );
       assert.equal(previous.earlier, 0);
       assert.deepEqual(
-        (await source.forViewer(session.id, "alice")).entries.map((e) => e.seq),
+        (await source.forViewer(session.id, "alice")).items.map((e) => e.seq),
         [receipt.seq, middle.seq],
       );
       assert.deepEqual(
-        forModelContext(await sessions.getEntries(session.id)).map((e) => e.seq),
+        forModelContext(await sessions.getItems(session.id)).map((e) => e.seq),
         [middle.seq, event.seq],
       );
       assert.deepEqual(
-        (await source.forViewer(session.id, "bob")).entries.map((e) => e.seq),
+        (await source.forViewer(session.id, "bob")).items.map((e) => e.seq),
         [event.seq],
       );
     },
@@ -100,14 +100,10 @@ for (const backend of ["memory", "postgres"] as const) {
           { sessions },
           session,
           {
-            type: "user",
-            payload: {
-              text: "Durable receipt",
-              name: "Alice",
-              ts: "200.123",
-              slackReplyReceipt: true,
-              deliveryKey: key,
-            },
+            kind: "UserMessage",
+            text: "Durable receipt",
+            externalId: "200.123",
+            body: { name: "Alice", slackReplyReceipt: true, deliveryKey: key },
           },
           key,
           () => sessions.hasDeliveryEntry(session.id, key, "200.123"),
@@ -116,23 +112,19 @@ for (const backend of ["memory", "postgres"] as const) {
       assert.ok(lease);
       const pending = record();
       await sleep(50);
-      assert.equal((await sessions.getEntries(session.id)).length, 0, "nothing lands while a turn holds the session");
+      assert.equal((await sessions.getItems(session.id)).length, 0, "nothing lands while a turn holds the session");
       await sessions.releaseLease(lease);
       await pending;
       const next = await sessions.acquireLease(session.id, "turn");
       assert.ok(next.lease);
       await sessions.appendMany(
         next.lease,
-        Array.from({ length: 210 }, (_, i) => ({
-          type: "assistant" as const,
-          scopeLabel: scope,
-          payload: { text: `Reply ${i}` },
-        })),
+        Array.from({ length: 210 }, (_, i) => ({ kind: "AgentMessage" as const, text: `Reply ${i}` })),
       );
       await sessions.releaseLease(next.lease);
       await record();
-      const entries = (await createTranscriptSource(sessions).forRender(session.id)).entries;
-      assert.equal(entries.filter((e) => (e.payload as { slackReplyReceipt?: boolean }).slackReplyReceipt).length, 1);
+      const items = (await createTranscriptSource(sessions).forRender(session.id)).items;
+      assert.equal(items.filter((e) => e.body.slackReplyReceipt).length, 1);
     },
   );
 }

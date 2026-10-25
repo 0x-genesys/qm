@@ -1,8 +1,9 @@
 import type { App } from "../../app.ts";
 import type { ServerDeps } from "../../deps.ts";
-import { parseScopeId, type Session, type SessionEntry } from "../../../types.ts";
+import { parseScopeId, type Session } from "../../../types.ts";
 import { sessionCategory, type SessionCategory, type SessionSummary } from "../../../sessions/session-store.ts";
 import { createTranscriptSource } from "../../../sessions/transcript-source.ts";
+import { isUserMessage, type Item } from "../../../sessions/items.ts";
 import { sendJson } from "../../http.ts";
 import { audit, requireScopedAdmin } from "../shared.ts";
 import { type ApiCtx } from "../route.ts";
@@ -14,6 +15,7 @@ const SESSIONS_PAGE_LIMIT_MAX = 200;
 const SESSIONS_PAGE_LIMIT_DEFAULT = 50;
 const TRANSCRIPT_LIMIT_MAX = 50000;
 const TRANSCRIPT_LIMIT_DEFAULT = 500;
+
 async function displayNameForPrincipal(app: App, deps: ServerDeps, principalId: string): Promise<string> {
   return (await app.directoryMember(principalId))?.displayName?.trim() || principalId;
 }
@@ -24,23 +26,16 @@ async function inferSingleParticipantName(app: App, deps: ServerDeps, sessionId:
   return displayNameForPrincipal(app, deps, [...participantIds][0]!);
 }
 
-function withEntryName(entry: SessionEntry, name: string): SessionEntry {
-  if (entry.type !== "user" || !name.trim() || typeof entry.payload !== "object" || entry.payload === null)
-    return entry;
-  const payload = entry.payload as Record<string, unknown>;
-  if (typeof payload.name === "string" && payload.name.trim()) return entry;
-  return { ...entry, payload: { ...payload, name } };
+function withAuthorName(item: Item, name: string): Item {
+  if (!isUserMessage(item) || !name.trim()) return item;
+  if (typeof item.body.name === "string" && item.body.name.trim()) return item;
+  return { ...item, body: { ...item.body, name } };
 }
 
-async function labelTranscriptEntries(
-  app: App,
-  deps: ServerDeps,
-  session: Session,
-  entries: SessionEntry[],
-): Promise<SessionEntry[]> {
+async function labelTranscriptItems(app: App, deps: ServerDeps, session: Session, items: Item[]): Promise<Item[]> {
   const fallbackName = await inferSingleParticipantName(app, deps, session.id);
-  if (!fallbackName) return entries;
-  return entries.map((entry) => withEntryName(entry, fallbackName));
+  if (!fallbackName) return items;
+  return items.map((item) => withAuthorName(item, fallbackName));
 }
 
 function requireAdminSession(ctx: ApiCtx, id: string) {
@@ -181,13 +176,13 @@ export async function getAdminSession(ctx: ApiCtx): Promise<void> {
   const all = want >= TRANSCRIPT_LIMIT_MAX;
   const limit = Math.min(want, TRANSCRIPT_LIMIT_MAX);
   const raw = deps.sessions
-    ? (await createTranscriptSource(deps.sessions).forRender(id, all ? undefined : { limit: limit + 1 })).entries
+    ? (await createTranscriptSource(deps.sessions).forRender(id, all ? undefined : { limit: limit + 1 })).items
     : [];
   const hasMore = !all && raw.length > limit;
-  const entries = await labelTranscriptEntries(app, deps, session, hasMore ? raw.slice(raw.length - limit) : raw);
+  const items = await labelTranscriptItems(app, deps, session, hasMore ? raw.slice(raw.length - limit) : raw);
   return sendJson(res, 200, {
     session,
-    entries,
+    items,
     hasMore,
     limit,
     origin: await sessionOrigin(app, session, scope),

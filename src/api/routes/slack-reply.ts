@@ -49,7 +49,12 @@ export async function slackReply(ctx: ApiCtx, send: boolean): Promise<void> {
           ...(leaseWaitMs !== undefined ? { leaseWaitMs } : {}),
         },
         source.session,
-        { type: "user", payload: { text: body.text, name, ts, slackReplyReceipt: true, deliveryKey: key } },
+        {
+          kind: "UserMessage",
+          text: String(body.text),
+          externalId: ts,
+          body: { name, slackReplyReceipt: true, deliveryKey: key },
+        },
         key,
         () => sessions!.hasDeliveryEntry(source.session.id, key, ts),
       );

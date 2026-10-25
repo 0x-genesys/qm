@@ -58,12 +58,12 @@ test("an org admin sees conversations, transcripts, files, and runs top-down", a
     const tx = await get(s.base, `/v1/admin/sessions/${encodeURIComponent(conv.id)}?scope=org:default-org`);
     assert.equal(tx.status, 200);
     const txd = await tx.json();
-    const transcript = txd as { entries: { type: string }[] };
+    const transcript = txd as { items: { kind: string }[] };
     assert.ok(
-      transcript.entries.some((e) => e.type === "user"),
+      transcript.items.some((e) => e.kind === "UserMessage"),
       "transcript includes the user message",
     );
-    assert.ok(!transcript.entries.some((e) => e.type === "soul"), "resolved prompt context is not a transcript entry");
+    assert.ok(!transcript.items.some((e) => e.kind === "soul"), "resolved prompt context is not a transcript entry");
 
     await s.built.files.put({
       id: "todo-art-1",
@@ -270,7 +270,7 @@ test("a cron-fired transcript carries its originating cron", async () => {
     const session = await s.built.sessions.getOrCreateByThread(`cron:${cron.id}:42`, "channel", scope, "security");
     const { lease } = await s.built.sessions.acquireLease(session.id);
     assert.ok(lease);
-    await s.built.sessions.append(lease, { type: "user", payload: { text: cron.action }, scopeLabel: scope });
+    await s.built.sessions.append(lease, { kind: "UserMessage", text: cron.action });
     await s.built.sessions.releaseLease(lease);
 
     const tx = await get(
@@ -286,7 +286,7 @@ test("a cron-fired transcript carries its originating cron", async () => {
     assert.equal(body.origin.fireSlot, "42");
     assert.equal(body.origin.cron.title, "Daily security audit");
     assert.equal(body.origin.cron.ownerScopeId, scope);
-    assert.equal(body.entries[0].type, "user");
+    assert.equal(body.items[0].kind, "UserMessage");
   } finally {
     await s.close();
   }
@@ -315,7 +315,7 @@ test("a Slack DM post joins the recipient's DM conversation and shows up in thei
     }
     assert.ok(session, "recipient session exists");
     assert.equal(
-      (await s.built.sessions.getEntries(session!.id)).some((e) => e.type === "assistant"),
+      (await s.built.sessions.getItems(session!.id)).some((e) => e.kind === "AgentMessage"),
       false,
       "the post is not written into the recipient's chat history",
     );
@@ -408,9 +408,8 @@ test("history separates background cron monologues from human conversations", as
     const { lease: humanLease } = await s.built.sessions.acquireLease(human.id);
     assert.ok(humanLease);
     await s.built.sessions.append(humanLease, {
-      type: "user",
-      payload: { text: "what happened in prod?" },
-      scopeLabel: scope,
+      kind: "UserMessage",
+      text: "what happened in prod?",
     });
     await s.built.sessions.releaseLease(humanLease);
 
@@ -422,7 +421,7 @@ test("history separates background cron monologues from human conversations", as
     );
     const { lease: monologueLease } = await s.built.sessions.acquireLease(monologue.id);
     assert.ok(monologueLease);
-    await s.built.sessions.append(monologueLease, { type: "user", payload: { text: cron.action }, scopeLabel: scope });
+    await s.built.sessions.append(monologueLease, { kind: "UserMessage", text: cron.action });
     await s.built.sessions.releaseLease(monologueLease);
 
     const conversations = await getJson(s.base, `/v1/admin/sessions?scope=${encodeURIComponent(scope)}`);
@@ -474,7 +473,7 @@ test("the Crons history lists cron fires as session rows; ?cron= paginates one c
         const sess = await s.built.sessions.getOrCreateByThread(`cron:${cronId}:slot${i}`, "channel", scope, "eng");
         const { lease } = await s.built.sessions.acquireLease(sess.id);
         assert.ok(lease);
-        await s.built.sessions.append(lease, { type: "user", payload: { text: "fire " + i }, scopeLabel: scope });
+        await s.built.sessions.append(lease, { kind: "UserMessage", text: "fire " + i });
         await s.built.sessions.releaseLease(lease);
       }
     };
@@ -540,9 +539,8 @@ test("cron fire rows carry the fire's result digest from the cron's fire log", a
       const { lease } = await s.built.sessions.acquireLease(sess.id);
       assert.ok(lease);
       await s.built.sessions.append(lease, {
-        type: "user",
-        payload: { text: "Stored cron task: Check yna's watched stickies" },
-        scopeLabel: scope,
+        kind: "UserMessage",
+        text: "Stored cron task: Check yna's watched stickies",
       });
       await s.built.sessions.releaseLease(lease);
       return sess;
@@ -1048,7 +1046,7 @@ test("the sessions listing digests cron fires from the fire table, even after th
     const session = await s.built.sessions.getOrCreateByThread(threadRef, "channel", scope, "ops");
     const { lease } = await s.built.sessions.acquireLease(session.id);
     assert.ok(lease);
-    await s.built.sessions.append(lease, { type: "user", payload: { text: "count signups" }, scopeLabel: scope });
+    await s.built.sessions.append(lease, { kind: "UserMessage", text: "count signups" });
     await s.built.sessions.releaseLease(lease);
     await s.built.crons.recordFire(cron.id, {
       fireKey: `cron:${cron.id}:1000`,

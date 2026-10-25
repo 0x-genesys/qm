@@ -1,21 +1,20 @@
 import { isSubagentThreadRef } from "../sessions/session-syscalls.ts";
-import type { Destination, SessionEntry } from "../types.ts";
+import type { Destination } from "../types.ts";
+import type { Item } from "../sessions/items.ts";
 import type { Run, RunStore } from "./run-store.ts";
 import { turnPostProvenance, type Outbound, type OutboundPost } from "../surfaces/outbound.ts";
 import { isSessionTurn, resolveTurnOrigin } from "../core/turn-origin.ts";
-import type { TurnFailurePayload } from "../core/turn-error.ts";
+import { turnFailureItem } from "../core/turn-error.ts";
 import { standaloneFailureText, userFacingFailureClause } from "../core/failure-copy.ts";
 import { conversationScope } from "../resolution/resolution-service.ts";
 import { acquireLeaseWithin, type SessionStore } from "../sessions/session-store.ts";
 import { reportFailureAs } from "../util/errors.ts";
 
-function turnRecordedFailure(tail: readonly SessionEntry[], note: { notBefore: number; runId?: string }): boolean {
-  return tail.some((entry) => {
-    if (entry.type !== "system") return false;
-    const payload = entry.payload as { kind?: unknown; runId?: unknown } | null;
-    if (payload?.kind !== "turn_failure") return false;
-    if (typeof payload.runId === "string") return payload.runId === note.runId;
-    return entry.createdAt >= note.notBefore;
+function turnRecordedFailure(tail: readonly Item[], note: { notBefore: number; runId?: string }): boolean {
+  return tail.some((item) => {
+    if (item.kind !== "Error") return false;
+    if (item.turnId !== null) return item.turnId === note.runId;
+    return item.createdAt >= note.notBefore;
   });
 }
 
@@ -98,7 +97,7 @@ export function runResultPost(run: Run, adminUrlFor?: AdminUrlFor): OutboundPost
 
 export type TurnFailureSessions = Pick<
   SessionStore,
-  "append" | "getByThread" | "acquireLease" | "peekLease" | "releaseLease" | "getEntries"
+  "append" | "getByThread" | "acquireLease" | "peekLease" | "releaseLease" | "getItems"
 >;
 
 const FAILURE_RECORD_SCAN_LIMIT = 200;
@@ -119,14 +118,15 @@ export async function recordRunFailureEntry(sessions: TurnFailureSessions, run: 
     return false;
   }
   try {
-    const tail = await sessions.getEntries(session.id, { limit: FAILURE_RECORD_SCAN_LIMIT });
+    const tail = await sessions.getItems(session.id, { limit: FAILURE_RECORD_SCAN_LIMIT });
     if (turnRecordedFailure(tail, { notBefore: run.startedAt ?? run.createdAt, runId: run.id })) return false;
-    const payload: TurnFailurePayload = {
-      kind: "turn_failure",
-      message: `I couldn't finish that turn: ${userFacingFailureClause(run.result ?? { status: "failed" })}`,
-      runId: run.id,
-    };
-    await sessions.append(lease, { type: "system", payload, scopeLabel: session.scopeId });
+    await sessions.append(
+      lease,
+      turnFailureItem(
+        `I couldn't finish that turn: ${userFacingFailureClause(run.result ?? { status: "failed" })}`,
+        run.id,
+      ),
+    );
     return true;
   } finally {
     await sessions.releaseLease(lease);

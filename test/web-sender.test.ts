@@ -52,10 +52,10 @@ test("a cron post to a web conversation becomes one assistant message there, how
   };
   await outbound.send(post);
   await outbound.send(post);
-  const entries = (await createTranscriptSource(sessions).forRender(session.id)).entries;
+  const items = (await createTranscriptSource(sessions).forRender(session.id)).items;
   assert.deepEqual(
-    entries.map((e) => [e.type, (e.payload as { text?: string }).text]),
-    [["assistant", "Reminder: standup in 10 minutes"]],
+    items.map((e) => [e.kind, e.text]),
+    [["AgentMessage", "Reminder: standup in 10 minutes"]],
   );
   assert.equal(states.length, 1, "open web views are told to reload once");
   assert.deepEqual(
@@ -88,7 +88,7 @@ test("a conversation's own posts are already in its transcript and write nothing
     provenance: cronProvenance({ sourceThreadRef: THREAD, trigger: "conversation" }),
   });
   await outbound.send({ destination: webDestination(), text: "no provenance", idempotencyKey: "reach:1" });
-  assert.equal((await sessions.getEntries(session.id)).length, 0);
+  assert.equal((await sessions.getItems(session.id)).length, 0);
   assert.equal(states.length, 0);
 });
 
@@ -101,10 +101,10 @@ test("a recovered reply the turn never wrote is added to its own transcript", as
     idempotencyKey: "run:r-1",
     provenance: cronProvenance({ sourceThreadRef: THREAD, trigger: "conversation" }),
   });
-  const entries = await sessions.getEntries(session.id);
+  const items = await sessions.getItems(session.id);
   assert.deepEqual(
-    entries.map((e) => [e.type, (e.payload as { text?: string }).text]),
-    [["assistant", "recovered reply"]],
+    items.map((e) => [e.kind, e.text]),
+    [["AgentMessage", "recovered reply"]],
   );
 });
 
@@ -120,10 +120,10 @@ test("a busy conversation gets the message once its turn ends", async () => {
     provenance: cronProvenance(),
   });
   await new Promise((resolve) => setTimeout(resolve, 50));
-  assert.equal((await sessions.getEntries(session.id)).length, 0);
+  assert.equal((await sessions.getItems(session.id)).length, 0);
   await sessions.releaseLease(lease);
   await sent;
-  assert.equal((await sessions.getEntries(session.id)).length, 1);
+  assert.equal((await sessions.getItems(session.id)).length, 1);
 });
 
 test("a conversation that stays busy fails the post, so the sender can retry it", async () => {
@@ -139,7 +139,7 @@ test("a conversation that stays busy fails the post, so the sender can retry it"
   await assert.rejects(outbound.send(post), /stayed busy/);
   await sessions.releaseLease(lease!);
   await outbound.send(post);
-  assert.equal((await sessions.getEntries(session.id)).length, 1);
+  assert.equal((await sessions.getItems(session.id)).length, 1);
 });
 
 test("a post to a web conversation that does not exist fails loudly", async () => {

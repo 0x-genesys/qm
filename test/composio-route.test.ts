@@ -1073,9 +1073,11 @@ async function slackReplyFixture() {
   f.deps.sessions = sessions;
   f.app.getSessionForViewer = async (id, viewer) => (id === "session" && viewer === "alice" ? { session } : null);
   const receipts = async () =>
-    (await sessions.getEntries(session.id)).map((e): Record<string, unknown> => ({
-      type: e.type,
-      ...(e.payload as Record<string, unknown>),
+    (await sessions.getItems(session.id)).map((e): Record<string, unknown> => ({
+      kind: e.kind,
+      text: e.text,
+      externalId: e.externalId,
+      ...e.body,
     }));
   f.deps.slackAccounts = createMemoryMap();
   await f.deps.slackAccounts.put("alice", {
@@ -1110,9 +1112,9 @@ test("Slack replies use only the viewer's verified user connection and server-si
   assert.equal(result.data.sent, true);
   const receipts = await f.receipts();
   assert.equal(receipts.length, 1);
-  assert.equal(receipts[0]!.type, "user");
+  assert.equal(receipts[0]!.kind, "UserMessage");
   assert.equal(receipts[0]!.text, "Hello");
-  assert.equal(receipts[0]!.ts, "123.789");
+  assert.equal(receipts[0]!.externalId, "123.789");
   assert.equal(receipts[0]!.name, "Alice");
   assert.equal(receipts[0]!.slackReplyReceipt, true);
   const request = JSON.parse(String(f.calls.at(-1)!.init!.body));
@@ -1238,9 +1240,9 @@ test("native Slack replies use the authenticated user's token and server destina
   assert.equal(result.data.sent, true);
   const receipts = await f.receipts();
   assert.equal(receipts.length, 1);
-  assert.equal(receipts[0]!.type, "user");
+  assert.equal(receipts[0]!.kind, "UserMessage");
   assert.equal(receipts[0]!.text, "Hello");
-  assert.equal(receipts[0]!.ts, "123.789");
+  assert.equal(receipts[0]!.externalId, "123.789");
   assert.equal(receipts[0]!.name, "Alice");
   assert.equal(receipts[0]!.slackReplyReceipt, true);
   assert.equal(f.calls.length, 0);

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { DeliveryProvenance, Destination, OutgoingAttachment, ScopeId } from "../types.ts";
 import type { TurnOrigin } from "../core/turn-origin.ts";
 import { acquireLeaseWithin, type SessionStore } from "../sessions/session-store.ts";
+import type { NewItem } from "../sessions/items.ts";
 import type { SessionStateBus } from "../runs/session-state-bus.ts";
 import type { IdempotencyStore } from "../idempotency/idempotency-store.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
@@ -164,7 +165,7 @@ function keyTurnId(key: string): string {
 
 type TranscriptSessions = Pick<
   SessionStore,
-  "getByThread" | "acquireLease" | "peekLease" | "releaseLease" | "appendMany" | "getEntries" | "participantsOf"
+  "getByThread" | "acquireLease" | "peekLease" | "releaseLease" | "appendMany" | "getItems" | "participantsOf"
 >;
 
 interface TranscriptDeps {
@@ -176,7 +177,7 @@ interface TranscriptDeps {
 export async function appendToTranscript(
   deps: TranscriptDeps,
   session: { id: string; threadRef: string; scopeId: ScopeId },
-  entry: { type: "assistant" | "user"; payload: Record<string, unknown> },
+  item: NewItem<"AgentMessage" | "UserMessage">,
   key: string,
   alreadyThere?: () => Promise<boolean>,
 ): Promise<void> {
@@ -191,9 +192,9 @@ export async function appendToTranscript(
   try {
     const present = alreadyThere
       ? await alreadyThere()
-      : (await deps.sessions.getEntries(session.id, { turnId })).some((e) => e.type === entry.type);
+      : (await deps.sessions.getItems(session.id, { turnId })).some((e) => e.kind === item.kind);
     if (present) return;
-    await deps.sessions.appendMany({ ...lease, turnId }, [{ ...entry, scopeLabel: session.scopeId }]);
+    await deps.sessions.appendMany({ ...lease, turnId }, [item]);
   } finally {
     await deps.sessions.releaseLease(lease);
   }
@@ -217,6 +218,6 @@ export function createWebSender(deps: {
     if (!post.text.trim() || (dest.webTranscript?.kind !== "reply" && !fromElsewhere)) return;
     const session = await deps.sessions.getByThread(dest.target);
     if (!session) throw new Error(`web conversation ${dest.target} does not exist`);
-    await appendToTranscript(deps, session, { type: "assistant", payload: { text: post.text } }, post.idempotencyKey);
+    await appendToTranscript(deps, session, { kind: "AgentMessage", text: post.text }, post.idempotencyKey);
   };
 }

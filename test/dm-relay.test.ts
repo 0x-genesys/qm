@@ -438,7 +438,7 @@ describe("agent → teammate DM: delivery events in the recipient's session (ant
     assert.equal(session!.surface, "slack");
     assert.ok((await built.sessions.participantsOf(session!.id)).includes("U-alice"));
     assert.equal(
-      (await built.sessions.getEntries(session!.id)).some((e) => e.type === "assistant"),
+      (await built.sessions.getItems(session!.id)).some((e) => e.kind === "AgentMessage"),
       false,
       "principal delivery is not fake chat history",
     );
