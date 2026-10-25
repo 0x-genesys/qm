@@ -11,14 +11,15 @@ import { createInsecureTestServer } from "../src/api/server.ts";
 import { createDeployStore } from "../src/deploy/deploy-store.ts";
 import { createDeployService } from "../src/deploy/deploy-service.ts";
 import { createAclStore } from "../src/acl/acl-store.ts";
-import { createDirectoryStore } from "../src/directory/directory-store.ts";
 import { createIdentityService } from "../src/identity/identity-service.ts";
-import { createMemorySessionStore } from "../src/sessions/memory-session-store.ts";
 import { PORTAL_IDENTITY_HEADER } from "../src/auth/portal-identity.ts";
 import { portalSession } from "../src/deploy/viewer-session.ts";
 import { scopeId } from "../src/types.ts";
 import type { FeatureFlagStore } from "../src/feature-flags.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
+import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
+import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
+import { testDatabaseUrl, testDeployBackings, testMap } from "./support/test-database.ts";
 
 let externalSharing = true;
 const externalSharingOn = { enabled: async () => externalSharing } as unknown as FeatureFlagStore;
@@ -172,7 +173,7 @@ test("subdomain ingress: portal sign-in admits the owner, denies strangers, boun
   upstream.listen(0);
   const upstreamPort = (upstream.address() as AddressInfo).port;
 
-  const deployStore = createDeployStore();
+  const deployStore = createDeployStore(testDeployBackings());
   const deploy = createDeployService({
     ...singleProcessDeps(),
     externalSharingAllowed: async () => true,
@@ -189,9 +190,9 @@ test("subdomain ingress: portal sign-in admits the owner, denies strangers, boun
   const app = createApp({
     deploy,
     acl: createAclStore(),
-    directory: createDirectoryStore(),
-    sessions: createMemorySessionStore(),
-    identity: createIdentityService(),
+    directory: createPostgresDirectoryStore(testDatabaseUrl()),
+    sessions: createPostgresSessionStore(testDatabaseUrl()),
+    identity: createIdentityService(testMap(), { externalMembers: testMap() }),
   } as unknown as Parameters<typeof createApp>[0]);
   await app.deploy({
     ownerScopeId: scopeId("personal", "alice@example.com"),
@@ -374,11 +375,11 @@ test("org-wide app access admits only signed-in org members", async () => {
   const upstream = createHttpServer((_req, res) => res.end("UPSTREAM OK"));
   upstream.listen(0);
   const acl = createAclStore();
-  const identity = createIdentityService();
+  const identity = createIdentityService(testMap(), { externalMembers: testMap() });
   const deploy = createDeployService({
     ...singleProcessDeps(),
     externalSharingAllowed: async () => false,
-    deployStore: createDeployStore(),
+    deployStore: createDeployStore(testDeployBackings()),
     provider: {
       profile: { managedScaleToZero: false },
       apply: async () => ({ host: "127.0.0.1", port: (upstream.address() as AddressInfo).port }),
@@ -391,8 +392,8 @@ test("org-wide app access admits only signed-in org members", async () => {
   const app = createApp({
     deploy,
     acl,
-    directory: createDirectoryStore(),
-    sessions: createMemorySessionStore(),
+    directory: createPostgresDirectoryStore(testDatabaseUrl()),
+    sessions: createPostgresSessionStore(testDatabaseUrl()),
     identity,
   } as unknown as Parameters<typeof createApp>[0]);
   const d = await app.deploy({
@@ -435,7 +436,7 @@ test("org-wide app access admits only signed-in org members", async () => {
 });
 
 test("subdomain ingress: without the session config the domain has no door — a 503, not a bounce", async () => {
-  const deployStore = createDeployStore();
+  const deployStore = createDeployStore(testDeployBackings());
   const deploy = createDeployService({
     ...singleProcessDeps(),
     externalSharingAllowed: async () => true,
@@ -452,9 +453,9 @@ test("subdomain ingress: without the session config the domain has no door — a
   const app = createApp({
     deploy,
     acl: createAclStore(),
-    directory: createDirectoryStore(),
-    sessions: createMemorySessionStore(),
-    identity: createIdentityService(),
+    directory: createPostgresDirectoryStore(testDatabaseUrl()),
+    sessions: createPostgresSessionStore(testDatabaseUrl()),
+    identity: createIdentityService(testMap(), { externalMembers: testMap() }),
   } as unknown as Parameters<typeof createApp>[0]);
   await app.deploy({
     ownerScopeId: scopeId("personal", "alice@example.com"),

@@ -3,9 +3,10 @@ import "./support/auto-fake-sprites.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createScopedEventSink } from "../src/admin/scoped-event-sink.ts";
-import { createErrorLog } from "../src/admin/error-log.ts";
-import { createAuditLog } from "../src/audit/audit-log.ts";
 import { scopeId } from "../src/types.ts";
+import { createPostgresAuditLog } from "../src/admin/postgres-audit-log.ts";
+import { createPostgresErrorLog } from "../src/admin/postgres-error-log.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 const s1 = scopeId("personal", "u1");
 const s2 = scopeId("personal", "u2");
@@ -52,7 +53,7 @@ test("scoped sink filters by scope and applies an extra predicate + limit", () =
 });
 
 test("error log records and lists scope-filtered newest-first", async () => {
-  const log = createErrorLog();
+  const log = createPostgresErrorLog(testDatabaseUrl());
   log.record({ category: "turn", code: "error", message: "shape-only", scopeLabel: s1 });
   log.record({ category: "egress", code: "denied", message: "shape-only", scopeLabel: s2 });
   const mine = await log.list({ scopeId: s1 });
@@ -64,7 +65,7 @@ test("error log records and lists scope-filtered newest-first", async () => {
 });
 
 test("audit log is now bounded (latent leak fixed) and preserves insertion order", async () => {
-  const log = createAuditLog();
+  const log = createPostgresAuditLog(testDatabaseUrl());
   for (let i = 0; i < 50001; i++) {
     log.record({ at: i, principalId: "p", action: "turn", resource: "r", scopeLabel: s1 });
   }
@@ -75,7 +76,7 @@ test("audit log is now bounded (latent leak fixed) and preserves insertion order
 });
 
 test("error log pages beyond the former 200-record window after filtering", async () => {
-  const log = createErrorLog();
+  const log = createPostgresErrorLog(testDatabaseUrl());
   for (let i = 0; i < 260; i++)
     log.record({ category: "turn", code: String(i), message: "failure", scopeLabel: s1, sessionId: "one" });
   log.record({ category: "turn", code: "other", message: "failure", scopeLabel: s2 });

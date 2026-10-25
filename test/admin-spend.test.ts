@@ -7,13 +7,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { createInsecureTestServer } from "../src/api/server.ts";
-import { createMemorySessionStore } from "../src/sessions/memory-session-store.ts";
 import { cacheHitRatio } from "../src/api/routes/admin/spend.ts";
 import { buildApp } from "./support/build-app.ts";
 import { scopeId, type TurnRequest } from "../src/types.ts";
 import type { SessionStore } from "../src/sessions/session-store.ts";
 import { bill } from "./support/spend-usage.ts";
 import { testConfig } from "./support/test-config.ts";
+import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 const DAY = 86_400_000;
 const ALICE = { "x-admin-actor": "admin-alice@default-org" };
@@ -55,7 +56,7 @@ const conserved = (report: any, column: string): number =>
   [...report.people, ...report.scopes].reduce((sum: number, e: any) => sum + e[column], 0);
 
 test("spend: uses the saved report and exposes its freshness", async () => {
-  const store = createMemorySessionStore();
+  const store = createPostgresSessionStore(testDatabaseUrl());
   const asOf = Date.UTC(2026, 0, 1);
   let reads = 0;
   store.spendReport = async (range) => {

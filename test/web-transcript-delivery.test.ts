@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createMemorySessionStore } from "../src/sessions/memory-session-store.ts";
 import { createDeliveryStore } from "../src/delivery/delivery-store.ts";
 import { createMemoryRunStore } from "../src/runs/memory-run-store.ts";
 import { withWebTranscriptDeliveries } from "../src/delivery/web-transcript-delivery.ts";
@@ -12,6 +11,8 @@ import type { DeliveryStore } from "../src/delivery/delivery-store.ts";
 import type { SessionStore } from "../src/sessions/session-store.ts";
 import type { DeliveryProvenance, Destination, Principal, ScopeId, TurnResult } from "../src/types.ts";
 import type { OrchestratorInput } from "../src/core/orchestrator.ts";
+import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 const THREAD = "web:alice@example.com:conv-1";
 const SCOPE = "personal:alice@example.com" as ScopeId;
@@ -33,7 +34,7 @@ async function webSession(sessions: SessionStore, threadRef = THREAD) {
 }
 
 function wired() {
-  const sessions = createMemorySessionStore();
+  const sessions = createPostgresSessionStore(testDatabaseUrl());
   const inner = createDeliveryStore();
   const deliveries = withWebTranscriptDeliveries(inner, sessions);
   return { sessions, inner, deliveries };
@@ -120,7 +121,7 @@ test("repeated drains and a restarted decorator never duplicate the transcript e
 });
 
 test("a failed transcript write converges on retry: one entry", async () => {
-  const sessions = createMemorySessionStore();
+  const sessions = createPostgresSessionStore(testDatabaseUrl());
   let failNextAppend = true;
   const flaky = {
     ...sessions,

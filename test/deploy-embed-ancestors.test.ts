@@ -8,9 +8,10 @@ import { createDeployService } from "../src/deploy/deploy-service.ts";
 import { createAclStore } from "../src/acl/acl-store.ts";
 import { scopeId } from "../src/types.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
+import { testDeployBackings } from "./support/test-database.ts";
 
 function svc() {
-  const deployStore = createDeployStore();
+  const deployStore = createDeployStore(testDeployBackings());
   const deploy = createDeployService({
     ...singleProcessDeps(),
     deployStore,

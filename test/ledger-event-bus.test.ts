@@ -6,14 +6,11 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
-import {
-  createMemoryLedgerEventBus,
-  createPostgresLedgerEventBus,
-  type OwnedLedgerEvent,
-} from "../src/loops/ledger-events.ts";
+import { createPostgresLedgerEventBus, type OwnedLedgerEvent } from "../src/loops/ledger-events.ts";
 import { createInsecureTestServer } from "../src/api/server.ts";
 import { buildApp } from "./support/build-app.ts";
 import { testConfig } from "./support/test-config.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 const PG = process.env.DATABASE_URL;
 const pgSkip = PG ? false : "set DATABASE_URL to run the Postgres ledger-event bus test";
@@ -23,7 +20,7 @@ function event(over: Partial<OwnedLedgerEvent> = {}): OwnedLedgerEvent {
 }
 
 test("memory bus: subscribers receive emitted events and unsubscribe cleanly", () => {
-  const bus = createMemoryLedgerEventBus();
+  const bus = createPostgresLedgerEventBus(testDatabaseUrl());
   const got: OwnedLedgerEvent[] = [];
   const off = bus.subscribe((e) => got.push(e));
   bus.emit(event());

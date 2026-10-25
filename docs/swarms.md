@@ -319,8 +319,7 @@ or your version-control workflow first.
 
 ## Verification
 
-Run the focused suites with `node --experimental-test-module-mocks --test test/swarm*.test.ts`.
-Run `npm run test:pg` against a disposable Postgres database. The swarm suite uses
+Run the focused suites with `DATABASE_URL=<disposable Postgres> node scripts/run-pg-tests.mjs test/swarm*.test.ts`. The swarm suite uses
 a separate schema so migration-reset tests cannot invalidate its state.
 Set `SWARM_TEST_DATABASE_URL` when running `test/swarm-orchestrator.test.ts` to
 exercise the HTTP spawn/reply flow across an application restart with real durable

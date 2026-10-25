@@ -8,10 +8,10 @@ import { buildApp } from "./support/build-app.ts";
 import { testConfig } from "./support/test-config.ts";
 import { createSessionSyscalls } from "../src/sessions/session-syscalls.ts";
 import { createSessionMailbox, type SessionMessage } from "../src/sessions/session-mailbox.ts";
-import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { createMemoryRunStore } from "../src/runs/memory-run-store.ts";
 import { createMemoryRunSignalStore } from "../src/runs/run-signal-store.ts";
 import { scopeId, type Principal } from "../src/types.ts";
+import { testMap } from "./support/test-database.ts";
 
 const alice: Principal = { id: "alice@example.com", type: "internal" };
 const bob: Principal = { id: "bob@example.com", type: "internal" };
@@ -44,7 +44,7 @@ test("session search reuses indexed search with participant intersection, tenure
     sessions,
     runs,
     signals: createMemoryRunSignalStore(),
-    mailbox: createSessionMailbox(createMemoryMap<SessionMessage>()),
+    mailbox: createSessionMailbox(testMap<SessionMessage>()),
     maxAttempts: 1,
     prepareRequest: async (request) => ({
       ...request,

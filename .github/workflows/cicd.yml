@@ -76,6 +76,19 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5]
+    services:
+      postgres:
+        image: pgvector/pgvector:0.8.1-pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: qm
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Reuse the exact successful PR tree
         if: needs.reuse.outputs.reusable == 'true'
@@ -110,6 +123,7 @@ jobs:
         if: needs.reuse.outputs.reusable != 'true'
         env:
           CORE_TEST_SHARD: ${{ matrix.shard }}/5
+          DATABASE_URL: postgres://postgres:postgres@localhost:5432/qm
         run: npm run test:root:shard
 
   core:
@@ -297,11 +311,6 @@ jobs:
       - name: Build connector SDK
         if: needs.reuse.outputs.reusable != 'true'
         run: npm run build:connector-sdk
-      - name: Postgres-backed tests (durability + cross-process)
-        if: needs.reuse.outputs.reusable != 'true'
-        env:
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/qm
-        run: npm run test:pg
       - name: Swarm HTTP runtime tests
         if: needs.reuse.outputs.reusable != 'true'
         env:

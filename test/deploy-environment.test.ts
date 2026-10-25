@@ -10,10 +10,11 @@ import { scopeId } from "../src/types.ts";
 import type { DeployProvider } from "../src/deploy/deploy-provider.ts";
 import type { Deployment, DeploymentVersion } from "../src/deploy/deploy-store.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
+import { testDeployBackings } from "./support/test-database.ts";
 const tmp = () => mkdtempSync(join(tmpdir(), "deployment-env-"));
 
 function svc(deploymentEnv?: (deployment: Deployment) => Promise<Record<string, string>>) {
-  const deployStore = createDeployStore();
+  const deployStore = createDeployStore(testDeployBackings());
   let applied: DeploymentVersion | undefined;
   const provider: DeployProvider = {
     profile: { managedScaleToZero: false },

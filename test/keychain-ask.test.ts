@@ -29,7 +29,6 @@ import { createCronStore } from "../src/cron/cron-store.ts";
 import { createDeliveryStore } from "../src/delivery/delivery-store.ts";
 import { createIdempotencyStore, type IdempotencyRecord } from "../src/idempotency/idempotency-store.ts";
 import { createIdentityService } from "../src/identity/identity-service.ts";
-import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { deriveConnectorKey } from "../src/connectors/connector-client-store.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS, type CapabilityClaims } from "../src/auth/capability-token.ts";
 import { scopeId, type TurnRequest, type TurnResult } from "../src/types.ts";
@@ -38,17 +37,18 @@ import { testConfig } from "./support/test-config.ts";
 import { selectDefaultSandbox } from "./support/default-sandbox.ts";
 import { materializeGrant } from "./support/materialize-grant.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
-import { createMemoryAdvisoryLock } from "../src/persistence/advisory-lock.ts";
+import { testAdvisoryLock, testMap, testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresCronFireStore } from "../src/cron/fire-store.ts";
 
 const KEY = deriveConnectorKey("keychain-ask-test-key");
 const SECRET = "keychain-ask-route-secret".repeat(3);
 
 function kcAt(now: () => number): Keychain {
   return createKeychain({
-    lock: createMemoryAdvisoryLock(),
-    creds: createMemoryMap(),
-    grants: createMemoryMap(),
-    asks: createMemoryMap(),
+    lock: testAdvisoryLock(),
+    creds: testMap(),
+    grants: testMap(),
+    asks: testMap(),
     key: KEY,
     now,
   });
@@ -305,13 +305,13 @@ test("expiry sweep fires the resolution once and rides the scheduler tick", asyn
   assert.equal(fired[0]!.status, "expired");
 
   const swept: number[] = [];
-  const idStore = createIdempotencyStore(createMemoryMap<IdempotencyRecord>());
+  const idStore = createIdempotencyStore(testMap<IdempotencyRecord>());
   const scheduler = createScheduler({
     ...singleProcessDeps(),
-    crons: createCronStore(createMemoryMap()),
+    crons: createCronStore(testMap(), { fires: createPostgresCronFireStore(testDatabaseUrl()) }),
     deliveries: createDeliveryStore(),
     idempotency: idStore,
-    identity: createIdentityService(createMemoryMap()),
+    identity: createIdentityService(testMap(), { externalMembers: testMap() }),
     run: async () => ({ status: "ok" }) as TurnResult,
     sweepAsks: async (now) => void swept.push(now),
   });
@@ -379,8 +379,8 @@ test("runTrigger marks every trigger-fired turn `triggered` (the consent-gate cl
   const outcome = await runTrigger(
     {
       deliveries: createDeliveryStore(),
-      idempotency: createIdempotencyStore(createMemoryMap<IdempotencyRecord>()),
-      identity: createIdentityService(createMemoryMap()),
+      idempotency: createIdempotencyStore(testMap<IdempotencyRecord>()),
+      identity: createIdentityService(testMap(), { externalMembers: testMap() }),
       run: async (req) => ((seen = req), { status: "ok" } as TurnResult),
     },
     {
@@ -404,8 +404,8 @@ test("runTrigger: silent markers never silence a notification-shaped fire (keych
   const outcome = await runTrigger(
     {
       deliveries,
-      idempotency: createIdempotencyStore(createMemoryMap<IdempotencyRecord>()),
-      identity: createIdentityService(createMemoryMap()),
+      idempotency: createIdempotencyStore(testMap<IdempotencyRecord>()),
+      identity: createIdentityService(testMap(), { externalMembers: testMap() }),
       run: async () => ({ status: "ok", reply: "The keychain ask was approved." }) as TurnResult,
     },
     {
@@ -440,8 +440,8 @@ test("fireAskResolution: a turn that fires but doesn't land falls back to a plai
     const deliveries = createDeliveryStore();
     return {
       deliveries,
-      idempotency: createIdempotencyStore(createMemoryMap<IdempotencyRecord>()),
-      identity: createIdentityService(createMemoryMap()),
+      idempotency: createIdempotencyStore(testMap<IdempotencyRecord>()),
+      identity: createIdentityService(testMap(), { externalMembers: testMap() }),
       run,
       getAsk: async () => current,
     };

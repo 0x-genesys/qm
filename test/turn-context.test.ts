@@ -6,20 +6,20 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { resolveTurnContext } from "../src/resolution/turn-context.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
-import { createMemoryService } from "../src/memory/memory-service.ts";
-import { createMemoryConfigStore } from "../src/resolution/config-store.ts";
-import { createMemoryFileArtifactStore } from "../src/files/file-artifact-store.ts";
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
-import { createAuditLog } from "../src/audit/audit-log.ts";
 import type { Resolution, Session } from "../src/types.ts";
 import { renderRecall } from "../src/memory/cross-scope.ts";
+import { createPostgresAuditLog } from "../src/admin/postgres-audit-log.ts";
+import { createPostgresFileArtifactStore } from "../src/files/postgres-file-artifact-store.ts";
+import { createPostgresMemoryService } from "../src/memory/postgres-memory-service.ts";
+import { testConfigStore, testDatabaseUrl } from "./support/test-database.ts";
 
 async function fixture() {
   const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "turn-context-")));
-  const memory = createMemoryService(workspace);
-  const config = createMemoryConfigStore("test", { defaultSharingPosture: "open" });
-  const files = createMemoryFileArtifactStore(createMemoryDurableByteStore());
-  const auditLog = createAuditLog();
+  const memory = createPostgresMemoryService(testDatabaseUrl());
+  const config = testConfigStore("test", { defaultSharingPosture: "open" });
+  const files = createPostgresFileArtifactStore(testDatabaseUrl(), createMemoryDurableByteStore());
+  const auditLog = createPostgresAuditLog(testDatabaseUrl());
   let member = true;
   const resolution = {
     layers: [

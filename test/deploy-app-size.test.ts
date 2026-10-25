@@ -9,11 +9,12 @@ import { createDeployService } from "../src/deploy/deploy-service.ts";
 import { createAclStore } from "../src/acl/acl-store.ts";
 import { scopeId } from "../src/types.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
+import { testDeployBackings } from "./support/test-database.ts";
 
 function service(maxAppBytes?: number) {
   const dir = mkdtempSync(join(tmpdir(), "deploy-app-size-"));
   let applies = 0;
-  const store = createDeployStore({ git: { repoRoot: join(dir, "repos") } });
+  const store = createDeployStore(testDeployBackings({ git: { repoRoot: join(dir, "repos") } }));
   const deploy = createDeployService({
     ...singleProcessDeps(),
     deployStore: store,

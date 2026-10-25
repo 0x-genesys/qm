@@ -6,8 +6,8 @@ import { testConfig } from "./support/test-config.ts";
 import { settle } from "./support/settle.ts";
 import { createSessionSyscalls } from "../src/sessions/session-syscalls.ts";
 import { createSessionMailbox, type SessionMessage } from "../src/sessions/session-mailbox.ts";
-import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import type { Run } from "../src/runs/run-store.ts";
+import { testMap } from "./support/test-database.ts";
 
 test("a subagent shows its delegated tasks while the parent's completion wake stays hidden", async (t) => {
   const built = buildApp(testConfig({ memoryCapture: "off" }));
@@ -33,7 +33,7 @@ test("a subagent shows its delegated tasks while the parent's completion wake st
     sessions: built.sessions,
     runs: built.runs,
     signals: built.signals,
-    mailbox: createSessionMailbox(createMemoryMap<SessionMessage>()),
+    mailbox: createSessionMailbox(testMap<SessionMessage>()),
     maxAttempts: 1,
   }).forTurn({
     session: parentSession,
@@ -107,7 +107,7 @@ test("human-origin delegated input is screened before model execution", async (t
     sessions: built.sessions,
     runs: built.runs,
     signals: built.signals,
-    mailbox: createSessionMailbox(createMemoryMap<SessionMessage>()),
+    mailbox: createSessionMailbox(testMap<SessionMessage>()),
     maxAttempts: 1,
   }).forTurn({ session, scopeId: session.scopeId, request: { ...parent.request, runId: parent.id } });
   const opened = await syscalls.open({ task: "UNTRUSTED_TASK" });

@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mock, test } from "node:test";
 import * as identityModule from "../src/identity/identity-service.ts";
 import * as configModule from "../src/resolution/config-store.ts";
-import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { testConfig } from "./support/test-config.ts";
+import { testConfigStore, testMap } from "./support/test-database.ts";
 
 const identityFailure = new Error("identity persistence unavailable");
 const configFailure = new Error("configuration persistence unavailable");
@@ -15,7 +15,7 @@ mock.module("../src/identity/identity-service.ts", {
     createIdentityService: (...args: Parameters<typeof identityModule.createIdentityService>) =>
       identityModule.createIdentityService(
         {
-          ...createMemoryMap<identityModule.DeactivationRecord>(),
+          ...testMap<identityModule.DeactivationRecord>(),
           all: async () => {
             throw identityFailure;
           },
@@ -28,7 +28,7 @@ mock.module("../src/resolution/config-store.ts", {
   namedExports: {
     ...configModule,
     createMemoryConfigStore: (...args: Parameters<typeof configModule.createMemoryConfigStore>) =>
-      configModule.createMemoryConfigStore(args[0], {
+      configModule.testConfigStore(args[0], {
         ...args[1],
         deploymentIdentity: {
           ...args[1]!.deploymentIdentity!,

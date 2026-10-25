@@ -12,9 +12,10 @@ import { createAclStore } from "../src/acl/acl-store.ts";
 import { scopeId } from "../src/types.ts";
 import { mintSignedPayload } from "../src/auth/signed-token.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
+import { testDeployBackings } from "./support/test-database.ts";
 
 function svc() {
-  const deployStore = createDeployStore();
+  const deployStore = createDeployStore(testDeployBackings());
   const acl = createAclStore();
   const deploy = createDeployService({
     ...singleProcessDeps(),

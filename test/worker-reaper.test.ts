@@ -6,7 +6,6 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryRunStore } from "../src/runs/memory-run-store.ts";
-import { createMemorySessionStore } from "../src/sessions/memory-session-store.ts";
 import { createReaper } from "../src/runs/reaper.ts";
 import { createWorker } from "../src/runs/worker.ts";
 import type { Orchestrator } from "../src/core/orchestrator.ts";
@@ -18,6 +17,8 @@ import type { RunStore } from "../src/runs/run-store.ts";
 import { replayableRequest } from "../src/core/orchestrator/turn-helpers.ts";
 import { testConfig } from "./support/test-config.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
+import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const actor: Principal = { id: "internal:U1", type: "internal" };
@@ -34,7 +35,10 @@ test("reaper requeues a run whose lease expired (crashed worker)", async () => {
   await runs.claim("dead-worker", 10);
   await sleep(30);
 
-  const reaper = createReaper(runs, createMemorySessionStore(), { ...singleProcessDeps(), intervalMs: 60_000 });
+  const reaper = createReaper(runs, createPostgresSessionStore(testDatabaseUrl()), {
+    ...singleProcessDeps(),
+    intervalMs: 60_000,
+  });
   const swept = await reaper.sweep();
   assert.equal(swept.requeued, 1);
   assert.equal(swept.parked, 0);
@@ -64,7 +68,10 @@ test("a run parks once the ERROR budget (error_attempts) is exhausted", async ()
 test("repeated lease-expiry reaps requeue forever without spending the error budget", async () => {
   const { runs } = createMemoryRunStore();
   const r = (await runs.enqueue({ sessionId: "s1", request: turn, maxAttempts: 2 })).run;
-  const reaper = createReaper(runs, createMemorySessionStore(), { ...singleProcessDeps(), intervalMs: 60_000 });
+  const reaper = createReaper(runs, createPostgresSessionStore(testDatabaseUrl()), {
+    ...singleProcessDeps(),
+    intervalMs: 60_000,
+  });
 
   for (let i = 0; i < 5; i++) {
     await runs.claim("dead-worker", 10);
@@ -82,7 +89,10 @@ test("repeated lease-expiry reaps requeue forever without spending the error bud
 test("with maxClaims set, repeated lease-expiry reaps PARK the poison pill instead of requeuing forever", async () => {
   const { runs } = createMemoryRunStore({ maxClaims: 3 });
   const r = (await runs.enqueue({ sessionId: "s1", request: turn, maxAttempts: 99 })).run;
-  const reaper = createReaper(runs, createMemorySessionStore(), { ...singleProcessDeps(), intervalMs: 60_000 });
+  const reaper = createReaper(runs, createPostgresSessionStore(testDatabaseUrl()), {
+    ...singleProcessDeps(),
+    intervalMs: 60_000,
+  });
 
   for (let i = 1; i <= 2; i++) {
     await runs.claim("dead-worker", 10);
@@ -133,7 +143,10 @@ test("only the leader instance's interval sweep reaps expired leases", async () 
       return leader ? fn(new Promise<void>(() => {})) : null;
     },
   };
-  const reaper = createReaper(runs, createMemorySessionStore(), { intervalMs: 5, leaderLease: lease });
+  const reaper = createReaper(runs, createPostgresSessionStore(testDatabaseUrl()), {
+    intervalMs: 5,
+    leaderLease: lease,
+  });
   reaper.start();
   try {
     await sleep(40);
@@ -157,7 +170,10 @@ test("the reaper's direct sweep() is ungated by the lease (used by tests/tooling
       return null;
     },
   };
-  const reaper = createReaper(runs, createMemorySessionStore(), { intervalMs: 60_000, leaderLease: denyAll });
+  const reaper = createReaper(runs, createPostgresSessionStore(testDatabaseUrl()), {
+    intervalMs: 60_000,
+    leaderLease: denyAll,
+  });
   const swept = await reaper.sweep();
   assert.equal(swept.requeued, 1, "direct sweep() runs regardless of leadership");
   assert.equal((await runs.get(r.id))?.status, "pending");
@@ -165,7 +181,7 @@ test("the reaper's direct sweep() is ungated by the lease (used by tests/tooling
 
 test("reaping a lease-expired run releases its stranded session lease", async () => {
   const { runs } = createMemoryRunStore();
-  const sessions = createMemorySessionStore();
+  const sessions = createPostgresSessionStore(testDatabaseUrl());
   const session = await sessions.getOrCreateByThread("t1", "dm", "personal:U1");
   const { lease: held } = await sessions.acquireLease(session.id);
   assert.ok(held, "the (now-dead) worker holds the session lease");
@@ -207,7 +223,7 @@ test("reapExpired fences the dead attempt, releases its session lease, and only 
 
 test("a heartbeat landing between SELECT and retire leaves the run AND its session lease untouched", async () => {
   const { runs } = createMemoryRunStore();
-  const sessions = createMemorySessionStore();
+  const sessions = createPostgresSessionStore(testDatabaseUrl());
   const session = await sessions.getOrCreateByThread("t1", "dm", "personal:U1");
   const { lease: held } = await sessions.acquireLease(session.id);
   assert.ok(held, "the live worker holds the session lease");
@@ -234,7 +250,7 @@ test("a heartbeat landing between SELECT and retire leaves the run AND its sessi
 
 test("shutdown cancels before handback and holds both leases until the turn unwinds", async () => {
   const { runs } = createMemoryRunStore();
-  const sessions = createMemorySessionStore();
+  const sessions = createPostgresSessionStore(testDatabaseUrl());
   const session = await sessions.getOrCreateByThread("t1", "dm", "personal:U1");
   const enq = (await runs.enqueue({ sessionId: "t1", request: turn, maxAttempts: 1 })).run;
   let started!: () => void;
@@ -299,7 +315,7 @@ test("shutdown cancels before handback and holds both leases until the turn unwi
 
 test("an uncooperative turn keeps both leases until it actually exits", async () => {
   const { runs } = createMemoryRunStore();
-  const sessions = createMemorySessionStore();
+  const sessions = createPostgresSessionStore(testDatabaseUrl());
   const session = await sessions.getOrCreateByThread("t1", "dm", "personal:U1");
   const enq = (await runs.enqueue({ sessionId: "t1", request: turn, maxAttempts: 3 })).run;
   let held: Awaited<ReturnType<typeof sessions.acquireLease>>["lease"];

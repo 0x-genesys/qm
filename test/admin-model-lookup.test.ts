@@ -29,7 +29,6 @@ test("admin lookup recognizes an existing model without asking for a clone templ
 
 import { lookupModel } from "../src/model/model-lookup.ts";
 import { createModelCredentialStore } from "../src/model/model-credential-store.ts";
-import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { setProviderBaseUrls } from "../src/model/provider-endpoints.ts";
 import { verificationUpstream } from "./support/model-verification-upstream.ts";
 import { setModelOverlays } from "../src/model/pi-models.ts";
@@ -41,7 +40,7 @@ afterEach(() => {
 });
 const credentials = () =>
   createModelCredentialStore({
-    backing: createMemoryMap(),
+    backing: testMap(),
     keyMaterial: "test-key",
     fallback: { openai: "test-openai-key", anthropic: "test-anthropic-key" },
   });
@@ -223,6 +222,7 @@ test("identity schema rejects URL-like and extra inputs before lookup", async ()
 });
 
 import { createServer } from "node:http";
+import { testMap } from "./support/test-database.ts";
 
 test("real metadata transport authenticates only the configured endpoint and refuses redirects", async () => {
   let mode = "record";
