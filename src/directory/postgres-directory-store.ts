@@ -1,5 +1,4 @@
 import { likeEscape } from "../persistence/like.ts";
-import { orgId as configOrgId } from "../config.ts";
 import { createHash } from "node:crypto";
 import { createPgPool, type PoolClient, withPgTransaction } from "../persistence/pg-pool.ts";
 import type { PrincipalType } from "../types.ts";
@@ -13,6 +12,7 @@ import {
   type DirectoryMember,
   type DirectoryStore,
 } from "./directory-store.ts";
+import { tenant } from "../tenant.ts";
 
 const INITIAL_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS directory_members(
@@ -189,7 +189,7 @@ export const DIRECTORY_MIGRATIONS = [
 ];
 
 export function createPostgresDirectoryStore(connectionString: string): DirectoryStore {
-  const orgId = configOrgId();
+  const orgId = tenant().orgId;
   const { q, pool } = createPgPool(connectionString, DIRECTORY_MIGRATIONS);
 
   async function pick<T>(
