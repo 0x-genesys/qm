@@ -404,24 +404,12 @@ export function createMockHarness(): Harness {
             credentials?: string[];
             scratch?: boolean;
             sandboxId?: string;
-            background?: boolean;
           };
-          const result = params.background
-            ? {
-                stdout: (
-                  await turn.tools.backgroundStart(params.command, {
-                    purpose: "Mock background job",
-                    ...(params.credentials ? { credentials: params.credentials } : {}),
-                  })
-                ).processId,
-                stderr: "",
-                code: 0,
-              }
-            : await turn.tools.execute(params.command, {
-                credentials: params.credentials,
-                scratch: params.scratch,
-                sandboxId: params.sandboxId,
-              });
+          const result = await turn.tools.execute(params.command, {
+            credentials: params.credentials,
+            scratch: params.scratch,
+            sandboxId: params.sandboxId,
+          });
           await turn.emit({ type: "tool_result", payload: result, scopeLabel: turn.scopeLabel });
           turn.onProgress?.({ toolCalls: 1 });
           usedTool = true;

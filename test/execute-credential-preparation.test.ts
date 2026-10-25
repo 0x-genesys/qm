@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createToolContext, type CommandCredential, type ToolContextDeps } from "../src/tools/primitives.ts";
+import { createAgentTools } from "../src/harness/agent-tools.ts";
 import type { ExecOptions, Sandbox, SandboxHandle } from "../src/sandbox/sandbox.ts";
 import { scopeId } from "../src/types.ts";
 
@@ -308,4 +309,36 @@ test("replay returns cached masked bytes without resolving a consumed single-use
   assert.deepEqual(replay, first);
   assert.equal(resolutions, 1);
   assert.deepEqual(events, []);
+});
+
+test("the model and transcript see when the private box ran a command or failed", async () => {
+  const entries: Array<Record<string, unknown>> = [];
+  let available = true;
+  const { ctx } = privateBoxContext([], {
+    async provisionPrivateBox() {
+      if (!available) throw new Error("provider unavailable");
+      return { id: "private-box", rootDir: "/private" };
+    },
+  });
+  const execute = createAgentTools({
+    current: ctx,
+    emit: (entry) => void entries.push(entry.payload as Record<string, unknown>),
+    scopeLabel: scopeId("channel", "room"),
+  })[0]!;
+  const run = (params: Record<string, unknown>) =>
+    (execute.execute as unknown as (id: string, p: unknown) => Promise<{ content: Array<{ text: string }> }>)("call", {
+      purpose: "Check login",
+      command: "whoami",
+      ...params,
+    });
+  const ran = await run({ credentials: ["granted"] });
+  assert.match(ran.content[0]!.text, /^\[ran on this turn's private box; its files are discarded after the turn\]\nok/);
+  assert.equal(entries.at(-1)?.scope, "private");
+  const shared = await run({ credentials: ["brokered"] });
+  assert.match(shared.content[0]!.text, /^ok/);
+  assert.equal(entries.at(-1)?.scope, "scoped");
+  available = false;
+  await assert.rejects(run({ credentials: ["granted"] }), /provider unavailable/);
+  assert.equal(entries.at(-1)?.scope, "private");
+  assert.equal(entries.at(-1)?.isError, true);
 });

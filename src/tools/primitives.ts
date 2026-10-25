@@ -554,6 +554,16 @@ export interface ToolContextDeps {
   sessionId?: string;
 }
 
+const privateBoxFailures = new WeakSet<object>();
+
+const markPrivateBoxFailure = (error: unknown): never => {
+  if (error !== null && typeof error === "object") privateBoxFailures.add(error);
+  throw error;
+};
+
+export const failedOnPrivateBox = (error: unknown): boolean =>
+  error !== null && typeof error === "object" && privateBoxFailures.has(error);
+
 export function createToolContext(deps: ToolContextDeps): ToolContext {
   const writableScopeId = deps.layers.find((l) => l.mode === "rw")?.scopeId ?? null;
   const memory =
@@ -911,7 +921,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         } else {
           authorizeExecution(command, undefined, executionPolicy());
           if (reached) handle = await deps.reach!.provisionFor(reached.scopeId);
-          else if (privateBox) handle = await deps.provisionPrivateBox!();
+          else if (privateBox) handle = await deps.provisionPrivateBox!().catch(markPrivateBoxFailure);
           else if (scratch) handle = await deps.provisionScratch!();
           else handle = await deps.provision();
         }
@@ -936,7 +946,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
             scopeLabel: reached.scopeId,
           });
         }
-        return timed("exec", async () => {
+        const executed = timed("exec", async () => {
           execOpts?.signal?.throwIfAborted();
           const { commandEnv, secretValues, fileExecution } = await stageCredentials(
             requested,
@@ -968,6 +978,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           );
           return { ...r, ...(reached ? { reached } : {}), ...(privateBox ? { privateBox } : {}) };
         });
+        return privateBox ? executed.catch(markPrivateBoxFailure) : executed;
       });
     },
 

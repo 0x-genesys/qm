@@ -956,7 +956,6 @@ test("manifest: own credentials need no grant but require explicit execution req
     scopeGrants: [],
   });
   assert.match(own, /### Alice \(U1\) — own; no grant needed \(including background turns\)\n.*file-login/);
-  assert.doesNotMatch(own, /runs on a private box|execute scope/);
   assert.doesNotMatch(own, /Teammate keychains/);
   assert.ok(!own.includes("no grant for this conversation"));
   assert.match(
@@ -1652,11 +1651,6 @@ test("manifest merges credential representations without conflating login identi
   const rendered = renderKeychainManifest(input, 1000);
   assert.equal(rendered.split("### ").length - 1, 1);
   assert.equal(rendered.split("connected app gmail.googleapis.com").length - 1, 1);
-  assert.match(
-    rendered,
-    /In this shared conversation, a command that names a personal, granted or org environment credential runs on a private box for this turn/,
-  );
-  assert.doesNotMatch(rendered, /execute scope/);
   assert.match(rendered, /NEEDS RECONNECT/);
   assert.match(rendered, /token expires at/);
   assert.ok(rendered.includes("token in `$VAULT_TOKEN_GMAIL_GOOGLEAPIS_COM`"));

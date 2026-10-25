@@ -16,7 +16,7 @@ import { CONFIG_DEFAULTS, type Config } from "../config.ts";
 import type { ClientToolDeclaration, CronFireLogEntry, EntryType, ScopeId } from "../types.ts";
 import type { ToolContext, PublishInput, PublishAudienceDescriptor } from "../tools/primitives.ts";
 import type { GapWork } from "../sessions/session-store.ts";
-import { NeedsApproval, CommandDenied } from "../tools/primitives.ts";
+import { NeedsApproval, CommandDenied, failedOnPrivateBox } from "../tools/primitives.ts";
 import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import { splitToScope } from "../api/artifact-share.ts";
 import { errMessage, reportFailure, swallowAs } from "../util/errors.ts";
@@ -701,7 +701,9 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       const { stdout: _stdout, stderr: _stderr, privateBox, ...execMeta } = r;
       const resultScope = privateBox ? { scope: "private" } : scopeNote;
       const parts = [r.stdout, r.stderr ? `[stderr]\n${r.stderr}` : ""].filter(Boolean).join("\n");
-      const reachedPrefix = r.reached ? `[ran on ${r.reached.label}'s computer]\n` : "";
+      let placePrefix = "";
+      if (r.reached) placePrefix = `[ran on ${r.reached.label}'s computer]\n`;
+      else if (privateBox) placePrefix = "[ran on this turn's private box; its files are discarded after the turn]\n";
       const localExec = !route?.scratch && !privateBox && route?.reachTarget === undefined && !r.reached;
       const pressureNote =
         localExec && r.pressure && r.pressure.ioFull60 >= PRESSURE_WARN_FULL60
@@ -714,7 +716,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           content: [
             {
               type: "text" as const,
-              text: `${reachedPrefix}${parts}\n[exit ${r.code}${r.timedOut ? " timed-out" : ""}]${pressureNote}`,
+              text: `${placePrefix}${parts}\n[exit ${r.code}${r.timedOut ? " timed-out" : ""}]${pressureNote}`,
             },
           ],
           details: r,
@@ -726,8 +728,9 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         r.reached ? { provenance: "external", source: "reached room" } : undefined,
       );
     } catch (e) {
+      const failureScope = failedOnPrivateBox(e) ? { scope: "private" } : scopeNote;
       if (e instanceof MaskedExecutionError) {
-        return recordResult(callId, { tool: "execute", ...scopeNote }, text(e.message), true);
+        return recordResult(callId, { tool: "execute", ...failureScope }, text(e.message), true);
       }
       if (e instanceof NeedsApproval) return blockOnApproval(callId, e, params.purpose);
       if (e instanceof CommandDenied) {
@@ -740,7 +743,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       }
       await log("tool_result", {
         tool: "execute",
-        ...scopeNote,
+        ...failureScope,
         callId,
         isError: true,
         result: `Command execution failed: ${redactSecrets(errMessage(e))}`,

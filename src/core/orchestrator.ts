@@ -1400,6 +1400,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           config: deps.config,
           isCurrentSharedScopeMember: deps.isCurrentSharedScopeMember,
         }));
+      const ownCredentialsAllowed =
+        scopeId === personalScope(actor.id) || openSpeakerKeychain || openAutomationKeychain;
       const privateBoxAvailable = !external && scopeId !== personalScope(actor.id);
       const connectorEnv: Record<string, string> = {};
       const commandCredentials: CommandCredential[] = [];
@@ -1475,8 +1477,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             credential.id,
           );
         }
-        const ownAllowed = scopeId === personalScope(actor.id) || openSpeakerKeychain || openAutomationKeychain;
-        if (ownAllowed) {
+        if (ownCredentialsAllowed) {
           for (const credential of await keychain.listByOwner(actor.id)) {
             if (credential.kind === "broker" || isBackendCredential(credential)) continue;
             addCredential(
@@ -1499,12 +1500,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       };
       await registerKeychainCredentials(addCredentialToCatalog);
       const registerConnectorCredentials = async (addCredential: typeof addCredentialToCatalog): Promise<void> => {
-        if (
-          !external &&
-          !strictReadOnly &&
-          deps.connectorTokens &&
-          (scopeId === personalScope(actor.id) || openSpeakerKeychain || openAutomationKeychain)
-        ) {
+        if (!external && !strictReadOnly && deps.connectorTokens && ownCredentialsAllowed) {
           const tokens = deps.connectorTokens;
           const inventory = tokens.listConnectorsByOwners
             ? ((await tokens.listConnectorsByOwners([actor.id])).get(actor.id) ?? [])
@@ -1651,11 +1647,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         controlClaims = {
           ...scopeAttestation,
           aud: CONTROL_PLANE_AUD,
-          ...(!external &&
-          allInternal &&
-          (scopeId === personalScope(actor.id) || openSpeakerKeychain || openAutomationKeychain)
-            ? { ownerConnections: true }
-            : {}),
+          ...(!external && allInternal && ownCredentialsAllowed ? { ownerConnections: true } : {}),
           exp: sandboxTokenExpiry,
           ...(turnTimezone ? { timezone: turnTimezone } : {}),
           ...(destination ? { destination } : {}),

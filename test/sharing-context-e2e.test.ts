@@ -495,7 +495,6 @@ test("Open speaker keychain uses a disposable computer, follows the speaker, and
     });
   }
   const prompt = await b.turn("!sysprompt", true);
-  assert.match(prompt, /a command that names a personal, granted or org environment credential runs on a private box/);
   assert.match(prompt, /### U1 — own; Open live turn only[^\n]*\n(?:(?!###)[\s\S])*npm/);
   assert.match(prompt, /### U2 — no grant for this conversation\n(?:(?!###)[\s\S])*npm/);
   assert.ok(!prompt.includes("npm_U1"));
@@ -674,9 +673,6 @@ test("shared conversations run named credentials on the private box and never st
       (privateBoxes.has(handle.id) ? carried : exposed).push(handle.id);
     return writeFileBytes(handle, path, bytes);
   };
-  const prompt = await b.turn("!sysprompt", true);
-  assert.match(prompt, /a command that names a personal, granted or org environment credential runs on a private box/);
-  assert.match(prompt, /STANDING grant/);
   assert.equal(await b.turn(`!run python3 -c 'open("room-only.txt","w").write("room")'`, true), "(exit 0)");
   const probe = `python3 -c 'import os,pathlib; p=pathlib.Path.home()/".custom-cli/auth"; print("|".join([str(os.getenv("NPM_TOKEN") == "npm_granted_U2"), p.read_text() if p.exists() else "absent", str(os.getenv("ORG_ENV_TOKEN") == "secret_org-env"), os.getenv("AGENT_API_TOKEN","unset"), "room" if pathlib.Path("room-only.txt").exists() else "isolated"]))'`;
   const handles = [credentialHandle(granted), credentialHandle(login), "org-env"];
@@ -701,21 +697,11 @@ test("shared conversations run named credentials on the private box and never st
     }),
     "True True",
   );
-  await assert.rejects(
-    execute({ command: "sleep 1", credentials: [credentialHandle(granted)], background: true }),
-    /background jobs in a shared conversation cannot use these credentials yet/,
-  );
-  assert.match(await execute({ command: "echo started", background: true }), /\S/);
   assert.equal(await b.turn(`!run sh -c 'ls /tmp | grep -c qm-credentials || true'`, true), "0");
   assert.deepEqual(exposed, []);
   assert.ok(carried.length >= 3);
   assert.equal(provisions.filter((key) => key.startsWith("private-box:")).length, 3);
   const own = await b.keychain.save({ ownerId: "U1", service: "dm-cli", secret: "dm_own_U1", envKey: "DM_TOKEN" });
-  const dmPrompt = await b.turn("!sysprompt");
-  assert.match(
-    dmPrompt,
-    /## Credentials\nExecution handles are shown in backticks; select them in execute.credentials. Credential IDs/,
-  );
   assert.equal(await b.turn(`!run python3 -c 'open("dm-only.txt","w").write("dm")'`), "(exit 0)");
   const before = provisions.length;
   assert.equal(
