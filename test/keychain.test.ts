@@ -1621,7 +1621,7 @@ test("manifest merges credential representations without conflating login identi
     scopeId: "channel:C1",
     conversationKind: "channel",
     openSpeakerKeychain: true,
-    privateBox: true,
+    scratchOnly: true,
     actorId: "alice@example.com",
     members: [{ id: "alice@example.com", displayName: "Alice" }],
     entriesByOwner: new Map([["alice@example.com", [first, second]]]),

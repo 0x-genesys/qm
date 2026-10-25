@@ -193,6 +193,7 @@ export interface OrchestratorDeps {
   connectorStatusCache?: ConnectorStatusCache;
   resolveConnectorClient?: OAuthClientResolver;
   scratchExec?: boolean;
+  scratchJobs?: import("../../processes/scratch-job-computers.ts").ScratchJobComputers;
   featureFlags?: FeatureFlagStore;
   installSharedCanvas?: (
     actorId: string,

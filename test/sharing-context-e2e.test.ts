@@ -14,7 +14,7 @@ import { sleep } from "../src/util/async.ts";
 // Full application/tool/materializer path, with deterministic model commands and
 // the repo's host-backed Sprites transport. This does not test VM isolation.
 async function fixture(t: TestContext, config: Partial<Config> = {}) {
-  const built = buildApp(testConfig({ memoryCapture: "off", ...config }));
+  const built = buildApp(testConfig({ memoryCapture: "off", scratchExecEnabled: true, ...config }));
   await built.config.hydrate?.();
   await built.identity.hydrate();
   await built.deploymentLayerReady;
@@ -499,15 +499,15 @@ test("Open speaker keychain uses a disposable computer, follows the speaker, and
   assert.match(prompt, /### U2 — no grant for this conversation\n(?:(?!###)[\s\S])*npm/);
   assert.ok(!prompt.includes("npm_U1"));
   await b.workspace.write("channel:C1", "room-only.txt", "room_data");
-  const probe = `python3 -c 'import os,pathlib; p=pathlib.Path.home()/".custom-cli/auth"; print("|".join([os.getenv("NPM_TOKEN","unset"),os.getenv("VAULT_TOKEN_GMAIL_GOOGLEAPIS_COM","unset"),p.read_text() if p.exists() else "absent",os.getenv("AGENT_API_TOKEN","unset"),"room" if pathlib.Path("room-only.txt").exists() else "isolated"]))'`;
+  const probe = `python3 -c 'import os,pathlib; p=pathlib.Path.home()/".custom-cli/auth"; print("|".join([os.getenv("NPM_TOKEN","unset"),os.getenv("VAULT_TOKEN_GMAIL_GOOGLEAPIS_COM","unset"),p.read_text() if p.exists() else "absent",str(bool(os.getenv("AGENT_API_TOKEN"))),"room" if pathlib.Path("room-only.txt").exists() else "isolated"]))'`;
   const selected = (id = "U1") =>
     `!execute ${JSON.stringify({ command: probe.replace('os.getenv("NPM_TOKEN","unset")', `str(os.getenv("NPM_TOKEN") == "npm_${id}")`).replace('os.getenv("VAULT_TOKEN_GMAIL_GOOGLEAPIS_COM","unset")', `str(os.getenv("VAULT_TOKEN_GMAIL_GOOGLEAPIS_COM") == "gmail_${id}")`), credentials: [...handles.get(id)!, "connector:gmail.googleapis.com:default"] })}`;
-  assert.equal(await b.turn(selected(), true), "True|True|file_U1|unset|isolated");
-  assert.equal(await b.turn(selected("U2"), true, "U2"), "True|True|file_U2|unset|isolated");
+  assert.equal(await b.turn(selected(), true), "True|True|file_U1|True|isolated");
+  assert.equal(await b.turn(selected("U2"), true, "U2"), "True|True|file_U2|True|isolated");
   for (const id of ["U1", "U2", "U1"]) {
     assert.equal(
       await b.turn(selected(id), true, id, { origin: { kind: "ambient", live: true } }),
-      `True|True|file_${id}|unset|isolated`,
+      `True|True|file_${id}|True|isolated`,
     );
   }
   const ambientPrompt = await b.turn("!sysprompt", true, "U2", { origin: { kind: "ambient", live: true } });
@@ -530,25 +530,25 @@ test("Open speaker keychain uses a disposable computer, follows the speaker, and
           publishMembers: [{ externalId: "U1" }, { externalId: "U2" }],
         },
       }),
-      "True|True|file_U1|unset|isolated",
+      "True|True|file_U1|True|isolated",
     );
   }
   assert.deepEqual(await b.keychain.grantsForScope("group:G1"), []);
   assert.deepEqual(await b.keychain.grantsForScope("channel:C1"), []);
   assert.ok((await b.auditLog.events()).some((event) => event.action === "keychain.open_speaker_use"));
-  const onPrivateBox = (command: string) =>
+  const onScratch = (command: string) =>
     `!execute ${JSON.stringify({ command, credentials: [handles.get("U1")![0]] })}`;
-  assert.equal(await b.turn(onPrivateBox(`python3 -c 'open("retained.txt","w").write("private")'`), true), "(exit 0)");
+  assert.equal(await b.turn(onScratch(`python3 -c 'open("retained.txt","w").write("private")'`), true), "(exit 0)");
   assert.equal(
     await b.turn(
-      onPrivateBox(`python3 -c 'import os; print("leaked" if os.path.exists("retained.txt") else "clean")'`),
+      onScratch(`python3 -c 'import os; print("leaked" if os.path.exists("retained.txt") else "clean")'`),
       true,
     ),
     "clean",
   );
   let deniedTurn = 0;
   const denied = (origin: TurnRequest["origin"] = { kind: "human" }) =>
-    b.turn(onPrivateBox("true"), true, "U1", {
+    b.turn(onScratch("true"), true, "U1", {
       origin,
       conversation: {
         kind: "channel",
@@ -584,11 +584,11 @@ test("Open speaker keychain uses a disposable computer, follows the speaker, and
         publishMembers: [{ externalId: "U1" }, { externalId: "U2" }],
       },
     });
-  assert.equal(await firstTurn("C-unsynced"), "True|True|file_U1|unset|isolated");
-  assert.equal(await firstTurn("C-unsynced", { kind: "ambient", live: true }), "True|True|file_U1|unset|isolated");
+  assert.equal(await firstTurn("C-unsynced"), "True|True|file_U1|True|isolated");
+  assert.equal(await firstTurn("C-unsynced", { kind: "ambient", live: true }), "True|True|file_U1|True|isolated");
   await b.remove("U1");
   const removed = (origin: TurnRequest["origin"] = { kind: "human" }) =>
-    b.turn(onPrivateBox("true"), true, "U1", {
+    b.turn(onScratch("true"), true, "U1", {
       origin,
       conversation: {
         kind: "channel",
@@ -601,9 +601,9 @@ test("Open speaker keychain uses a disposable computer, follows the speaker, and
   await assert.rejects(removed({ kind: "ambient", live: true }), /non-internal participant/);
 });
 
-test("shared conversations run named credentials on the private box and never stage them on the room computer", async (t) => {
+test("shared conversations run named credentials on the turn's scratch computer and never stage them on the room computer", async (t) => {
   const b = await fixture(t, {
-    signingSecret: "private-box-test-signing-key",
+    signingSecret: "scratch-routing-test-signing-key",
     apiBaseUrl: "http://core.test",
     maxAttempts: 1,
   });
@@ -648,13 +648,13 @@ test("shared conversations run named credentials on the private box and never st
       grantedBy: "U1",
     });
   }
-  const privateBoxes = new Set<string>();
+  const scratchBoxes = new Set<string>();
   const provisions: string[] = [];
   const provision = b.sandbox.provision.bind(b.sandbox);
   b.sandbox.provision = async (layers, opts) => {
     const handle = await provision(layers, opts);
     provisions.push(opts?.scratch?.key ?? "scoped");
-    if (opts?.scratch?.key.startsWith("private-box:")) privateBoxes.add(handle.id);
+    if (opts?.scratch) scratchBoxes.add(handle.id);
     return handle;
   };
   const secrets = ["npm_granted_U2", "file_granted_U2", "secret_org-env"];
@@ -664,24 +664,24 @@ test("shared conversations run named credentials on the private box and never st
   b.sandbox.run = async (handle, command, opts) => {
     const env = JSON.stringify(handle.env ?? {});
     if (secrets.some((secret) => env.includes(secret)))
-      (privateBoxes.has(handle.id) ? carried : exposed).push(handle.id);
+      (scratchBoxes.has(handle.id) ? carried : exposed).push(handle.id);
     return run(handle, command, opts);
   };
   const writeFileBytes = b.sandbox.writeFileBytes.bind(b.sandbox);
   b.sandbox.writeFileBytes = async (handle, path, bytes) => {
     if (secrets.some((secret) => Buffer.from(bytes).toString().includes(secret)))
-      (privateBoxes.has(handle.id) ? carried : exposed).push(handle.id);
+      (scratchBoxes.has(handle.id) ? carried : exposed).push(handle.id);
     return writeFileBytes(handle, path, bytes);
   };
   assert.equal(await b.turn(`!run python3 -c 'open("room-only.txt","w").write("room")'`, true), "(exit 0)");
-  const probe = `python3 -c 'import os,pathlib; p=pathlib.Path.home()/".custom-cli/auth"; print("|".join([str(os.getenv("NPM_TOKEN") == "npm_granted_U2"), p.read_text() if p.exists() else "absent", str(os.getenv("ORG_ENV_TOKEN") == "secret_org-env"), os.getenv("AGENT_API_TOKEN","unset"), "room" if pathlib.Path("room-only.txt").exists() else "isolated"]))'`;
+  const probe = `python3 -c 'import os,pathlib; p=pathlib.Path.home()/".custom-cli/auth"; print("|".join([str(os.getenv("NPM_TOKEN") == "npm_granted_U2"), p.read_text() if p.exists() else "absent", str(os.getenv("ORG_ENV_TOKEN") == "secret_org-env"), str(bool(os.getenv("AGENT_API_TOKEN"))), "room" if pathlib.Path("room-only.txt").exists() else "isolated"]))'`;
   const handles = [credentialHandle(granted), credentialHandle(login), "org-env"];
   const execute = (params: Record<string, unknown>, room = true, actor = "U1") =>
     b.turn(`!execute ${JSON.stringify(params)}`, room, actor);
-  assert.equal(await execute({ command: probe, credentials: handles }), "True|file_granted_U2|True|unset|isolated");
+  assert.equal(await execute({ command: probe, credentials: handles }), "True|file_granted_U2|True|True|isolated");
   assert.equal(
     await execute({ command: probe, credentials: handles, scratch: true }),
-    "True|file_granted_U2|True|unset|isolated",
+    "True|file_granted_U2|True|True|isolated",
   );
   assert.equal(
     await execute({
@@ -699,7 +699,7 @@ test("shared conversations run named credentials on the private box and never st
   );
   assert.deepEqual(exposed, []);
   assert.ok(carried.length >= 3);
-  assert.equal(provisions.filter((key) => key.startsWith("private-box:")).length, 3);
+  assert.equal(provisions.filter((key) => key.startsWith("turn:")).length, 3);
   const own = await b.keychain.save({ ownerId: "U1", service: "dm-cli", secret: "dm_own_U1", envKey: "DM_TOKEN" });
   assert.equal(await b.turn(`!run python3 -c 'open("dm-only.txt","w").write("dm")'`), "(exit 0)");
   const before = provisions.length;
@@ -713,5 +713,5 @@ test("shared conversations run named credentials on the private box and never st
     ),
     "True True",
   );
-  assert.ok(provisions.slice(before).every((key) => !key.startsWith("private-box:")));
+  assert.ok(provisions.slice(before).every((key) => !key.startsWith("turn:")));
 });

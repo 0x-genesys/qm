@@ -16,7 +16,7 @@ import { CONFIG_DEFAULTS, type Config } from "../config.ts";
 import type { ClientToolDeclaration, CronFireLogEntry, EntryType, ScopeId } from "../types.ts";
 import type { ToolContext, PublishInput, PublishAudienceDescriptor } from "../tools/primitives.ts";
 import type { GapWork } from "../sessions/session-store.ts";
-import { NeedsApproval, CommandDenied, failedOnPrivateBox } from "../tools/primitives.ts";
+import { NeedsApproval, CommandDenied, reroutedToScratch } from "../tools/primitives.ts";
 import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import { splitToScope } from "../api/artifact-share.ts";
 import { errMessage, reportFailure, swallowAs } from "../util/errors.ts";
@@ -604,7 +604,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     background: Type.Optional(
       Type.Boolean({
         description:
-          "Run detached and return a process_id. Use background to poll, send input, stop, or watch the process. Only scoped execution supports background jobs.",
+          "Run detached and return a process_id. Use background to poll, send input, stop, or watch the process. Background jobs run on the scoped computer, or on this turn's scratch computer when they name a private credential in a shared conversation.",
       }),
     ),
     sandbox_id: Type.Optional(
@@ -631,8 +631,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
 
     credentials: Type.Optional(
       Type.Array(Type.String(), {
-        description:
-          "Exact authorized credential handles to materialize for this command only (for a background job, until it exits). Newly granted handles are accepted. In a shared conversation, a command that names any credential except a brokered org service runs on a private box for this turn instead of the shared computer: org-global files plus the requested credentials, no shared workspace, skill files or $AGENT_API_* tokens, destroyed after the turn, so return what you need in its output or push it with git. Background jobs there cannot use those credentials yet.",
+        description: `Exact authorized credential handles to materialize for this command only (for a background job, until it exits). Newly granted handles are accepted. ${scratchExec ? "In a shared conversation, a command that names any credential except a brokered org service runs on this turn's scratch computer instead of the shared one, even with sandbox_id. That computer has none of the shared workspace's files, so fetch any script or state the command needs from Files or git within the command. Its files are discarded once the turn and its background jobs end, and a background job there ends if this server is redeployed." : "In a shared conversation, only brokered org service credentials can be used: this deployment has no scratch computer to keep other credentials off the shared one."}`,
       }),
     ),
   };
@@ -698,13 +697,15 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         ...(ref.abortSignal ? { signal: ref.abortSignal } : {}),
       };
       const r = await tc.execute(params.command, Object.keys(execOpts).length ? execOpts : undefined);
-      const { stdout: _stdout, stderr: _stderr, privateBox, ...execMeta } = r;
-      const resultScope = privateBox ? { scope: "private" } : scopeNote;
+      const { stdout: _stdout, stderr: _stderr, scratchReroute, ...execMeta } = r;
+      const resultScope = scratchReroute ? { scope: "scratch" } : scopeNote;
       const parts = [r.stdout, r.stderr ? `[stderr]\n${r.stderr}` : ""].filter(Boolean).join("\n");
       let placePrefix = "";
       if (r.reached) placePrefix = `[ran on ${r.reached.label}'s computer]\n`;
-      else if (privateBox) placePrefix = "[ran on this turn's private box; its files are discarded after the turn]\n";
-      const localExec = !route?.scratch && !privateBox && route?.reachTarget === undefined && !r.reached;
+      else if (scratchReroute)
+        placePrefix =
+          "[ran on this turn's scratch computer, not the shared one, because it names a private credential; its files are discarded after the turn]\n";
+      const localExec = !route?.scratch && !scratchReroute && route?.reachTarget === undefined && !r.reached;
       const pressureNote =
         localExec && r.pressure && r.pressure.ioFull60 >= PRESSURE_WARN_FULL60
           ? `\n[pressure] this computer's disk is saturated (io ${r.pressure.ioFull60}%, load ${r.pressure.load1}) — sequence heavy work${scratchExec ? ', move self-contained runs to scope:"scratch"' : ""}, or check sandbox action=status`
@@ -728,7 +729,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         r.reached ? { provenance: "external", source: "reached room" } : undefined,
       );
     } catch (e) {
-      const failureScope = failedOnPrivateBox(e) ? { scope: "private" } : scopeNote;
+      const failureScope = reroutedToScratch(e) ? { scope: "scratch" } : scopeNote;
       if (e instanceof MaskedExecutionError) {
         return recordResult(callId, { tool: "execute", ...failureScope }, text(e.message), true);
       }
@@ -1922,15 +1923,18 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         ...(params.sandbox_id ? { sandboxId: params.sandbox_id } : {}),
         ...(params.credentials?.length ? { credentials: params.credentials } : {}),
       });
-      const { output: _output, ...startMeta } = r;
+      const { output: _output, scratchReroute, ...startMeta } = r;
+      const placePrefix = scratchReroute
+        ? "[running on this turn's scratch computer, not the shared one, because it names a private credential; that computer is discarded once the turn and its background jobs end]\n"
+        : "";
       return recordResult(
         callId,
-        { tool: "execute", background: true, ...startMeta },
+        { tool: "execute", background: true, ...(scratchReroute ? { scope: "scratch" } : {}), ...startMeta },
         {
           content: [
             {
               type: "text" as const,
-              text: `started ${r.processId}${r.reattached ? " (reattached)" : ""}\n${r.output}\n[cursor ${r.cursor} | ${fmtStatus(r.status)}]`,
+              text: `${placePrefix}started ${r.processId}${r.reattached ? " (reattached)" : ""}\n${r.output}\n[cursor ${r.cursor} | ${fmtStatus(r.status)}]`,
             },
           ],
           details: r,

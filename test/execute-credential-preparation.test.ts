@@ -187,7 +187,7 @@ test("newly available handles are resolved from the current catalog and revocati
   assert.equal(runs.length, 2);
 });
 
-function privateBoxContext(events: string[], extra: Partial<ToolContextDeps> = {}) {
+function scratchContext(events: string[], extra: Partial<ToolContextDeps> = {}) {
   const commands: Array<[string, string, Record<string, string> | undefined]> = [];
   const sandbox = {
     async run(target: SandboxHandle, command: string) {
@@ -200,70 +200,101 @@ function privateBoxContext(events: string[], extra: Partial<ToolContextDeps> = {
     [
       {
         ...credential(events, "granted", { env: [{ key: "GRANTED_TOKEN", value: "granted-secret" }] }),
-        privateBox: true,
+        scratchOnly: true,
       },
       {
         ...credential(events, "brokered", { env: [{ key: "AGENT_CREDENTIAL_TOKEN", value: "room-capability" }] }),
-        privateBox: false,
+        scratchOnly: false,
       },
     ],
     {
       sandbox,
+      sandboxResources: {} as ToolContextDeps["sandboxResources"],
+      async provisionResource() {
+        events.push("resource");
+        return { id: "room-resource", rootDir: "/room" };
+      },
       async provisionScratch() {
         events.push("scratch");
-        return { ...handle, id: "scratch" };
+        return { id: "scratch", rootDir: "/scratch", env: { AGENT_API_TOKEN: "turn-capability" } };
       },
-      async provisionPrivateBox() {
-        events.push("private");
-        return { id: "private-box", rootDir: "/private" };
-      },
-      privateBoxCommand: (command, env = {}) => `${Object.keys(env).sort().join(",")}|${command}`,
       ...extra,
     },
   );
   return { ctx, commands };
 }
 
-test("private-box credentials move scoped and scratch commands off the shared computer", async () => {
+test("private credentials run scoped and sandbox_id commands on the turn's scratch computer", async () => {
   const events: string[] = [];
-  const { ctx, commands } = privateBoxContext(events);
-  for (const route of [{}, { scratch: true }]) {
-    const result = await ctx.execute("whoami", { ...route, credentials: ["granted", "brokered"] });
-    assert.equal(result.privateBox, true);
-  }
-  const both = { GRANTED_TOKEN: "granted-secret", AGENT_CREDENTIAL_TOKEN: "room-capability" };
+  const { ctx, commands } = scratchContext(events);
+  const routes = [{}, { sandboxId: "box-a" }, { scratch: true }];
+  const results = [];
+  for (const route of routes) results.push(await ctx.execute("whoami", { ...route, credentials: ["granted"] }));
+  assert.deepEqual(
+    results.map((result) => result.scratchReroute),
+    [true, true, undefined],
+  );
+  const env = { AGENT_API_TOKEN: "turn-capability", GRANTED_TOKEN: "granted-secret" };
   assert.deepEqual(commands, [
-    ["private-box", "AGENT_CREDENTIAL_TOKEN,GRANTED_TOKEN|whoami", both],
-    ["private-box", "AGENT_CREDENTIAL_TOKEN,GRANTED_TOKEN|whoami", both],
+    ["scratch", "whoami", env],
+    ["scratch", "whoami", env],
+    ["scratch", "whoami", env],
   ]);
-  assert.ok(!events.includes("provision") && !events.includes("scratch"));
+  assert.ok(!events.includes("provision") && !events.includes("resource"));
   const brokered = await ctx.execute("whoami", { credentials: ["brokered"] });
-  assert.equal(brokered.privateBox, undefined);
-  assert.deepEqual(commands[2], ["credential-preparation", "whoami", { AGENT_CREDENTIAL_TOKEN: "room-capability" }]);
-  await assert.rejects(ctx.execute("whoami", { sandboxId: "box-a", credentials: ["granted"] }), /drop sandbox_id/);
-  assert.equal(commands.length, 3);
+  assert.equal(brokered.scratchReroute, undefined);
+  assert.deepEqual(commands[3], ["credential-preparation", "whoami", { AGENT_CREDENTIAL_TOKEN: "room-capability" }]);
 });
 
-test("background jobs refuse private-box credentials before provisioning or staging", async () => {
+test("without a scratch computer private credentials are refused and brokered ones still run", async () => {
   const events: string[] = [];
-  const started: string[] = [];
-  const { ctx, commands } = privateBoxContext(events, {
+  const { ctx, commands } = scratchContext(events, {
+    provisionScratch: undefined,
+    backgroundBroker: {} as ToolContextDeps["backgroundBroker"],
+  });
+  await assert.rejects(
+    ctx.execute("whoami", { credentials: ["granted"] }),
+    /this deployment has no scratch computer, so a shared conversation can use only brokered org service credentials/,
+  );
+  await assert.rejects(
+    ctx.backgroundStart("sleep 60", { purpose: "Wait", credentials: ["granted"] }),
+    /this deployment has no scratch computer/,
+  );
+  assert.ok(!events.some((event) => event.startsWith("resolve")));
+  await ctx.execute("whoami", { credentials: ["brokered"] });
+  assert.equal(commands.length, 1);
+});
+
+test("background jobs with private credentials start on the turn's scratch computer", async () => {
+  const events: string[] = [];
+  const started: Array<[string, string, Record<string, string> | undefined]> = [];
+  const { ctx } = scratchContext(events, {
+    async provisionScratchJob() {
+      events.push("scratch-job");
+      return { id: "scratch", rootDir: "/scratch", resourceId: "scratch-job:turn" };
+    },
     backgroundBroker: {
-      async start(_target: SandboxHandle, command: string) {
-        started.push(command);
-        return { processId: "p1", output: "", cursor: 0, status: "running" };
+      async start(
+        target: SandboxHandle,
+        command: string,
+        _purpose: string,
+        _ttl: number,
+        credentials?: { env?: Record<string, string> },
+      ) {
+        started.push([target.resourceId!, command, credentials?.env]);
+        return { processId: "p1", output: "", cursor: 0, status: { state: "running" }, reattached: false };
       },
     } as unknown as ToolContextDeps["backgroundBroker"],
   });
-  await assert.rejects(
-    ctx.backgroundStart("sleep 60", { purpose: "Wait", credentials: ["granted"] }),
-    /background jobs in a shared conversation cannot use these credentials yet/,
-  );
-  assert.deepEqual(events, []);
-  assert.deepEqual(started, []);
-  await ctx.backgroundStart("gh auth login", { purpose: "Log in" });
-  assert.deepEqual(started, ["gh auth login"]);
-  assert.deepEqual(commands, []);
+  const job = await ctx.backgroundStart("sync", { purpose: "Sync", sandboxId: "box-a", credentials: ["granted"] });
+  assert.equal(job.scratchReroute, true);
+  const plain = await ctx.backgroundStart("gh auth login", { purpose: "Log in" });
+  assert.equal(plain.scratchReroute, undefined);
+  assert.deepEqual(started, [
+    ["scratch-job:turn", "sync", { GRANTED_TOKEN: "granted-secret" }],
+    [undefined, "gh auth login", undefined],
+  ]);
+  assert.ok(!events.includes("resource"));
 });
 
 test("replay returns cached masked bytes without resolving a consumed single-use credential", async () => {
@@ -311,13 +342,13 @@ test("replay returns cached masked bytes without resolving a consumed single-use
   assert.deepEqual(events, []);
 });
 
-test("the model and transcript see when the private box ran a command or failed", async () => {
+test("the model and transcript see when a command moved to the scratch computer", async () => {
   const entries: Array<Record<string, unknown>> = [];
   let available = true;
-  const { ctx } = privateBoxContext([], {
-    async provisionPrivateBox() {
+  const { ctx } = scratchContext([], {
+    async provisionScratch() {
       if (!available) throw new Error("provider unavailable");
-      return { id: "private-box", rootDir: "/private" };
+      return { id: "scratch", rootDir: "/scratch" };
     },
   });
   const execute = createAgentTools({
@@ -332,13 +363,13 @@ test("the model and transcript see when the private box ran a command or failed"
       ...params,
     });
   const ran = await run({ credentials: ["granted"] });
-  assert.match(ran.content[0]!.text, /^\[ran on this turn's private box; its files are discarded after the turn\]\nok/);
-  assert.equal(entries.at(-1)?.scope, "private");
+  assert.match(ran.content[0]!.text, /^\[ran on this turn's scratch computer, not the shared one, [^\]]*\]\nok/);
+  assert.equal(entries.at(-1)?.scope, "scratch");
   const shared = await run({ credentials: ["brokered"] });
   assert.match(shared.content[0]!.text, /^ok/);
   assert.equal(entries.at(-1)?.scope, "scoped");
   available = false;
   await assert.rejects(run({ credentials: ["granted"] }), /provider unavailable/);
-  assert.equal(entries.at(-1)?.scope, "private");
+  assert.equal(entries.at(-1)?.scope, "scratch");
   assert.equal(entries.at(-1)?.isError, true);
 });

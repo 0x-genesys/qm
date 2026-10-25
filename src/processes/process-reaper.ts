@@ -5,6 +5,7 @@ import { awaitProcessExit } from "../sandbox/await-process-exit.ts";
 import { ProcessSessionGoneError } from "../sandbox/exec-process-session.ts";
 import type { ProcessSandbox, SandboxHandle } from "../sandbox/sandbox.ts";
 import { errMessage, swallow } from "../util/errors.ts";
+import { isScratchJobComputer, type ScratchJobComputers } from "./scratch-job-computers.ts";
 
 const PROCESS_REAPER_LEASE_KEY = "processes:reaper";
 
@@ -12,6 +13,7 @@ export interface ReaperKillHookOptions {
   termGraceMs?: number;
   killGraceMs?: number;
   onExit?: (handle: SandboxHandle, processId: string) => Promise<void>;
+  scratchJobs?: Pick<ScratchJobComputers, "get">;
 }
 
 export function createReaperKillHook(
@@ -22,9 +24,14 @@ export function createReaperKillHook(
   const killGraceMs = opts?.killGraceMs ?? 2_000;
   return async (rec) => {
     if (!rec.sandboxId) return;
-    const handle = await sandbox.provision([{ scopeId: rec.scopeId, mode: "rw", mountPath: "" }], {
-      sandboxId: rec.sandboxId,
-    });
+    const scratchJob = isScratchJobComputer(rec.sandboxId);
+    const scratchHandle = scratchJob ? opts?.scratchJobs?.get(rec.sandboxId) : undefined;
+    if (scratchJob && !scratchHandle) return;
+    const handle =
+      scratchHandle ??
+      (await sandbox.provision([{ scopeId: rec.scopeId, mode: "rw", mountPath: "" }], {
+        sandboxId: rec.sandboxId,
+      }));
     try {
       try {
         await sandbox.signalProcess(handle, rec.processId, "TERM");
@@ -47,7 +54,7 @@ export function createReaperKillHook(
           ),
         );
     } finally {
-      await sandbox.teardown(handle, { keepWarm: true });
+      if (!scratchJob) await sandbox.teardown(handle, { keepWarm: true });
     }
   };
 }

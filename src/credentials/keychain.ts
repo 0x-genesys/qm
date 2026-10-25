@@ -1654,7 +1654,7 @@ export interface KeychainManifestInput {
   scopeId: ScopeId;
   conversationKind: "dm" | "channel" | "group";
   openSpeakerKeychain?: boolean;
-  privateBox?: boolean;
+  scratchOnly?: boolean;
   actorId: string;
   members: Array<{ id: string; displayName?: string }>;
   entriesByOwner: Map<string, KeychainCredentialMeta[]>;
@@ -1797,7 +1797,7 @@ export function renderKeychainManifest(input: KeychainManifestInput, now: number
   }
   const lines = [
     "## Credentials",
-    `Execution handles are shown in backticks; select them in execute.credentials.${input.privateBox ? " In this shared conversation, a command that names any credential except a brokered org service runs on this turn's private box (see execute.credentials)." : ""} Credential IDs identify entries for access requests, not execution handles.`,
+    `Execution handles are shown in backticks; select them in execute.credentials.${input.scratchOnly ? " In this shared conversation, a command that names any credential except a brokered org service runs on this turn's scratch computer (see execute.credentials)." : ""} Credential IDs identify entries for access requests, not execution handles.`,
   ];
   for (const [ownerId, group] of [...groups].sort(([a], [b]) => a.localeCompare(b))) {
     const member = input.members.find((member) => personKey(member.id) === ownerId);
@@ -1826,7 +1826,7 @@ export function renderKeychainManifest(input: KeychainManifestInput, now: number
   if (asks.length) lines.push("", "Asks sent from this conversation:", ...asks.sort());
   lines.push(
     "",
-    "Grants: Use of private credentials outside of a 1:1 DM with that person requires an explicit grant. The exception is the live speaker's own credentials on the private box in an Open shared conversation, not continuing room or background access. Otherwise use the `request-access` skill; consider whether one-time, standing or time-bound access fits the request.",
+    "Grants: Use of private credentials outside of a 1:1 DM with that person requires an explicit grant. The exception is the live speaker's own credentials in an Open shared conversation, not continuing room or background access. Otherwise use the `request-access` skill; consider whether one-time, standing or time-bound access fits the request.",
     "Secret drop: for a credential nobody has saved, mint a one-time link with the `secret-drop` skill; never collect secrets in chat or send people to the keychain page. Keys enter the submitter's private keychain; in a shared channel they are shared for use in that channel alone.",
     "Device code or CLI logins: read the `interactive-login` skill from the first step. It logs in under a temporary home and saves the result. Never log in against this computer's $HOME; only keychain entries are durable and grantable.",
   );

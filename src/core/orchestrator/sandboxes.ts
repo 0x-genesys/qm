@@ -9,6 +9,7 @@ import { accessConversationSandbox, type SandboxAccessPlan } from "../../sandbox
 import { reconcileProcesses } from "../../processes/reconcile.ts";
 import { leaseLapsed } from "../../runs/run-store.ts";
 import { finishProcessCredentials } from "../../credentials/execute-files.ts";
+import { scratchJobComputerId } from "../../processes/scratch-job-computers.ts";
 import {
   materializeSkillTree as laySkillTree,
   packRoot,
@@ -42,9 +43,7 @@ export interface TurnSandboxContext {
   connectorEnv: Record<string, string>;
   egressTokenForTurn: string | undefined;
   egressTokenForPolicy?: (policy: Resolution["egress"]) => Promise<string | undefined>;
-  openSpeakerKeychain?: boolean;
   openResourceAccess?: boolean;
-  privateBoxAvailable: boolean;
   visibleSkillsForTurn: (sources?: readonly string[]) => Promise<SkillResolution[]>;
   emitGapWork: (phase: GapPhase, start: number, end: number) => void;
 }
@@ -64,33 +63,11 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     connectorEnv,
     egressTokenForTurn,
     egressTokenForPolicy,
-    openSpeakerKeychain,
     openResourceAccess,
-    privateBoxAvailable,
     visibleSkillsForTurn,
     emitGapWork,
   } = ctx;
 
-  let privateBoxCommand: ((command: string, env?: Record<string, string>) => string) | undefined;
-  const privateBoxUnsetKeys = [
-    "AGENT_API_TOKEN",
-    "AGENT_OAUTH_CONSENT_TOKEN",
-    "AGENT_CREDENTIAL_TOKEN",
-    "AWS_ACCESS_KEY_ID",
-    "AWS_SECRET_ACCESS_KEY",
-    "AWS_SESSION_TOKEN",
-    "AWS_REGION",
-    "AWS_DEFAULT_REGION",
-  ];
-  const privateBoxEnv = Object.fromEntries(
-    Object.entries(connectorEnv).filter(([key]) => !privateBoxUnsetKeys.includes(key)),
-  );
-  if (privateBoxAvailable) {
-    privateBoxCommand = (command, env = {}) => {
-      const keys = privateBoxUnsetKeys.filter((key) => !(key in env));
-      return keys.length ? `unset ${keys.join(" ")}; ${command}` : command;
-    };
-  }
   const box: {
     handle: SandboxHandle | null;
     pending: SandboxHandle | null;
@@ -128,11 +105,6 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
       }),
     });
   };
-  const privateBox: { handle: SandboxHandle | null; pending: SandboxHandle | null } = {
-    handle: null,
-    pending: null,
-  };
-  let privateBoxProvisionInFlight: Promise<SandboxHandle> | null = null;
   const destroyEphemeralHandle = async (handle: SandboxHandle): Promise<void> => {
     const errors: unknown[] = [];
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -408,6 +380,12 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     return provisioned;
   };
 
+  const provisionScratchJob = async (): Promise<SandboxHandle> => {
+    if (!deps.scratchJobs) throw new Error("background jobs on a scratch computer are not available here");
+    const handle = { ...(await provisionScratch()), resourceId: scratchJobComputerId(scratchKey()) };
+    deps.scratchJobs.hold(handle);
+    return handle;
+  };
   const provisionScratch = (): Promise<SandboxHandle> => {
     if (scratchBox.pending)
       return Promise.reject(new Error("Disposable sandbox initialization cleanup is still pending"));
@@ -440,60 +418,6 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     });
     return scratchProvisionInFlight;
   };
-  const provisionPrivateBox = privateBoxAvailable
-    ? async (): Promise<SandboxHandle> => {
-        // Recheck each command, including commands reusing this turn's isolated computer.
-        if (
-          openSpeakerKeychain &&
-          (!(await deps.isCurrentSharedScopeMember?.(actor.id, scopeId)) ||
-            (await deps.config?.resolveSharingPostureDurable(personalScope(actor.id), scopeId)) !== "open")
-        )
-          throw new Error("Open speaker keychain access is no longer authorized");
-        if (privateBox.handle) return privateBox.handle;
-        if (privateBox.pending && !privateBoxProvisionInFlight) {
-          return Promise.reject(new Error("private box initialization failed and cleanup is still pending"));
-        }
-        privateBoxProvisionInFlight ??= (async () => {
-          const handle = await deps.sandbox.provision(
-            resolution.layers.filter((l) => l.mode === "ro" && l.mountPath === "global"),
-            {
-              env: privateBoxEnv,
-              egress: resolution.egress,
-              ...(egressTokenForTurn ? { egressToken: egressTokenForTurn } : {}),
-              scratch: { key: `private-box:${session.id}:${transferId}` },
-              routeScopeId: memoryScopeId,
-              ...(onSandboxStatus ? { onStatus: onSandboxStatus } : {}),
-            },
-          );
-          privateBox.pending = handle;
-          privateBox.handle = handle;
-          return handle;
-        })().catch(async (err) => {
-          privateBoxProvisionInFlight = null;
-          if (err instanceof SandboxProvisionCleanupError) privateBox.pending = err.handle;
-          const pendingHandle = privateBox.pending;
-          if (pendingHandle) {
-            try {
-              await destroyEphemeralHandle(pendingHandle);
-              if (privateBox.pending === pendingHandle) privateBox.pending = null;
-            } catch (cleanupErr) {
-              deps.errors?.record(
-                {
-                  category: "sandbox",
-                  code: "private_box_init_cleanup_failed",
-                  message: errMessage(cleanupErr),
-                  scopeLabel: scopeId,
-                  sessionId: session.id,
-                },
-                cleanupErr,
-              );
-            }
-          }
-          throw err;
-        });
-        return privateBoxProvisionInFlight;
-      }
-    : undefined;
   const reachBoxes = new Map<ScopeId, SandboxHandle>();
   const provisionForReach = async (target: ScopeId): Promise<SandboxHandle> => {
     const cached = reachBoxes.get(target);
@@ -574,11 +498,7 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     return (await deps.processes.listLive()).some((process) => process.sandboxId === handle.resourceId);
   };
   const reclaimBox = async (): Promise<void> => {
-    let privateBoxCleanupError: unknown;
     let scratchCleanupError: unknown;
-    if (privateBoxProvisionInFlight)
-      await privateBoxProvisionInFlight.catch(swallowAs("orchestrator: private box provision", undefined));
-    privateBoxProvisionInFlight = null;
     const reachHandles = [...reachBoxes.values()];
     reachBoxes.clear();
     await Promise.all(
@@ -601,31 +521,10 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
         await deps.sandbox.teardown(h).catch(swallowAs("orchestrator: teardown", undefined));
       }),
     );
-    const privateBoxHandle = privateBox.handle ?? privateBox.pending;
-    if (privateBoxHandle) {
-      try {
-        await destroyEphemeralHandle(privateBoxHandle);
-        privateBox.handle = null;
-        privateBox.pending = null;
-      } catch (err) {
-        privateBoxCleanupError = err;
-        deps.errors?.record(
-          {
-            category: "sandbox",
-            code: "private_box_destroy_failed",
-            message: errMessage(err),
-            scopeLabel: scopeId,
-            sessionId: session.id,
-          },
-          err,
-        );
-      }
-    }
     if (scratchProvisionInFlight)
       await scratchProvisionInFlight.catch(swallowAs("orchestrator: scratch provision", undefined));
     scratchProvisionInFlight = null;
-    const scratchHandle = scratchBox.handle ?? scratchBox.pending;
-    if (scratchHandle) {
+    const releaseScratch = async (scratchHandle: SandboxHandle): Promise<void> => {
       const cleanupStart = Date.now();
       try {
         await destroyEphemeralHandle(scratchHandle);
@@ -636,7 +535,7 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
           cleanupMs: Date.now() - cleanupStart,
         });
       } catch (error) {
-        scratchCleanupError = error instanceof Error ? error : new Error(errMessage(error));
+        const cleanupError = error instanceof Error ? error : new Error(errMessage(error));
         recordScratchLifecycle("release_failed", scratchHandle, {
           releasedAt: Date.now(),
           cleanupMs: Date.now() - cleanupStart,
@@ -650,8 +549,28 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
             scopeLabel: scopeId,
             sessionId: session.id,
           },
-          scratchCleanupError,
+          cleanupError,
         );
+        throw cleanupError;
+      }
+    };
+    const scratchHandle = scratchBox.handle ?? scratchBox.pending;
+    if (scratchHandle) {
+      const retained =
+        scratchBox.handle !== null &&
+        deps.scratchJobs !== undefined &&
+        (await deps.scratchJobs
+          .retainWhileJobsRun(scratchJobComputerId(scratchKey()), () => releaseScratch(scratchHandle))
+          .catch(swallowAs("orchestrator: scratch job retention", false)));
+      if (retained) {
+        scratchBox.handle = null;
+        recordScratchLifecycle("retained_for_jobs", scratchHandle);
+      } else {
+        try {
+          await releaseScratch(scratchHandle);
+        } catch (error) {
+          scratchCleanupError = error;
+        }
       }
     }
     await Promise.allSettled(resourcePending.values());
@@ -688,7 +607,6 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     box.handle = null;
     box.pending = null;
     if (!handle) {
-      if (privateBoxCleanupError) throw privateBoxCleanupError;
       if (scratchCleanupError) throw scratchCleanupError;
       return;
     }
@@ -706,19 +624,16 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
       ...(keepWarm ? { keepWarm: true } : {}),
       ...(box.used ? {} : { homeUnchanged: true }),
     });
-    if (privateBoxCleanupError) throw privateBoxCleanupError;
     if (scratchCleanupError) throw scratchCleanupError;
   };
 
   return {
     scratchBox,
-    privateBox,
-    privateBoxCommand,
     provision,
     provisionScratch,
+    provisionScratchJob,
     accessResource,
     provisionResource,
-    provisionPrivateBox,
     useSkill,
     provisionForReach,
     reclaimBox,

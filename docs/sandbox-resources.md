@@ -23,18 +23,27 @@ Commands use `execute(command, sandbox_id?, credentials?, background?)`. Set
 with the job and displayed instead of the command; the raw command remains available
 in expanded output. `timeout_seconds` is the foreground wall-clock timeout or the
 background job lifetime. Background jobs require scoped, durable execution; disposable
-scratch, private-box and reached-room routing remain foreground-only.
+scratch and reached-room routing remain foreground-only, except for the credential rule
+below.
 
 In a shared conversation (anything other than the acting person's personal scope), a
 command that names a personal, granted, connector, role-broker or org environment
-credential runs on a private box for that turn instead of the conversation's computer,
-whether it asked for scoped or scratch execution. The private box mounts only org-global
-files, gets the requested credentials plus `AGENT_API_URL`, unsets the platform capability
-tokens the command did not request, and is destroyed when the turn ends. Brokered org
+credential runs on the turn's scratch computer instead of the conversation's computer,
+including when it asked for the scoped computer or a `sandbox_id`. The scratch computer
+is the ordinary per-turn one: same image, the turn's environment and capability tokens,
+Files, skills and global mounts, but none of the shared workspace's files. Only that
+turn's commands run there. The result tells the model the command moved. Brokered org
 service handles (`AGENT_CREDENTIAL_TOKEN`) carry no secret and stay on the requested
-computer unless the same command also names a private credential. A command naming a
-private credential cannot target `sandbox_id`, and background jobs cannot use one yet.
-Personal conversations stage credentials on their own computer as before.
+computer. Deployments without scratch execution refuse such credentials in shared
+conversations. Personal conversations stage credentials on their own computer as before.
+
+A background job that names such a credential also starts on the turn's scratch computer.
+The core process that ran the turn keeps that computer after the turn while any of its
+jobs is running, checks the jobs every ten seconds, and destroys the computer once none
+is left (exit, stop, or the job's lifetime running out). The computer is not durable: a
+core process that drains on shutdown destroys the scratch computers it still holds, and
+polling, stopping or watching such a job from another core process reports that its
+computer was retired on deploy.
 
 The `background` tool controls existing jobs with `poll`, `send_input`, `stop`, `list`,
 `watch`, and `unwatch`. Process IDs retain their durable saved target even after the
@@ -56,6 +65,6 @@ The old routing table is retained only as upgrade input. It is never read when s
 
 Before upgrading from a release without resource-aware readers, drain its cores and workers. Rollback must use a resource-aware release that honors the permanent completion marker. A missing default after import means no default, not permission to recreate an old scoped computer.
 
-Scoped commands require an explicit target or selected default. Disposable scratch and private-box computers use the selected computer's provider without reusing its disk or resource identity; with no selection they use the installation provider, without creating a default. An unavailable selected provider fails explicitly rather than substituting another provider.
+Scoped commands require an explicit target or selected default. Disposable scratch computers use the selected computer's provider without reusing its disk or resource identity; with no selection they use the installation provider, without creating a default. An unavailable selected provider fails explicitly rather than substituting another provider.
 
 To move work between providers, create a computer, restore the required work from git or Files, verify it, and select it as the new default. Selection does not copy files or migrate running jobs.

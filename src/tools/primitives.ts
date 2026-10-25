@@ -173,7 +173,7 @@ interface ReachedProvenance {
 
 export interface CommandCredential {
   handle: string;
-  privateBox?: boolean;
+  scratchOnly?: boolean;
   env?: Array<{ key: string; value: string; secret?: boolean }>;
   resolve?: () => Promise<{
     commit?: () => Promise<void>;
@@ -214,7 +214,7 @@ export interface ToolContext extends SurfaceToolDeps {
       signal?: AbortSignal;
       credentials?: string[];
     },
-  ): Promise<ExecResult & { reached?: ReachedProvenance; privateBox?: boolean }>;
+  ): Promise<ExecResult & { reached?: ReachedProvenance; scratchReroute?: boolean }>;
   sandboxResources?(
     action: "list" | "create" | "default" | "retire",
     input?: { backend?: string; name?: string; sandboxId?: string | null },
@@ -258,7 +258,7 @@ export interface ToolContext extends SurfaceToolDeps {
   backgroundStart(
     command: string,
     opts: { purpose: string; ttlSeconds?: number; sandboxId?: string; credentials?: string[] },
-  ): Promise<BackgroundStartResult>;
+  ): Promise<BackgroundStartResult & { scratchReroute?: boolean }>;
   backgroundPoll(
     processId: string,
     opts?: { sinceCursor?: number; maxBytes?: number; waitSeconds?: number },
@@ -484,13 +484,12 @@ export interface ToolContextDeps {
   resolveCommandCredentials?: (handles: readonly string[]) => Promise<readonly CommandCredential[]>;
   provision: () => Promise<SandboxHandle>;
   provisionScratch?: () => Promise<SandboxHandle>;
+  provisionScratchJob?: () => Promise<SandboxHandle>;
   provisionResource?: (
     input: string | SandboxAccessPlan,
     authorize?: (access: SandboxAccessPlan) => void,
   ) => Promise<SandboxHandle>;
   accessSandboxResource?: (id: string) => Promise<SandboxAccessPlan>;
-  provisionPrivateBox?: () => Promise<SandboxHandle>;
-  privateBoxCommand?: (command: string, env?: Record<string, string>) => string;
   listSkills?: (source?: string) => Promise<SkillResolution[]>;
   useSkill?: (name: string, path: string, sandboxId?: string, source?: string) => Promise<SkillResult>;
   reach?: {
@@ -554,15 +553,18 @@ export interface ToolContextDeps {
   sessionId?: string;
 }
 
-const privateBoxFailures = new WeakSet<object>();
+const scratchRerouteFailures = new WeakSet<object>();
 
-const markPrivateBoxFailure = (error: unknown): never => {
-  if (error !== null && typeof error === "object") privateBoxFailures.add(error);
+const markScratchRerouteFailure = (error: unknown): never => {
+  if (error !== null && typeof error === "object") scratchRerouteFailures.add(error);
   throw error;
 };
 
-export const failedOnPrivateBox = (error: unknown): boolean =>
-  error !== null && typeof error === "object" && privateBoxFailures.has(error);
+export const reroutedToScratch = (error: unknown): boolean =>
+  error !== null && typeof error === "object" && scratchRerouteFailures.has(error);
+
+const SCRATCH_REQUIRED_MESSAGE =
+  "this deployment has no scratch computer, so a shared conversation can use only brokered org service credentials; personal and granted credentials stay off the shared computer";
 
 export function createToolContext(deps: ToolContextDeps): ToolContext {
   const writableScopeId = deps.layers.find((l) => l.mode === "rw")?.scopeId ?? null;
@@ -873,7 +875,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         signal?: AbortSignal;
         credentials?: string[];
       },
-    ): Promise<ExecResult & { reached?: ReachedProvenance; privateBox?: boolean }> {
+    ): Promise<ExecResult & { reached?: ReachedProvenance; scratchReroute?: boolean }> {
       return once(async () => {
         const scratch = execOpts?.scratch === true;
         const requestedCredentials = execOpts?.credentials ?? [];
@@ -881,7 +883,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           throw new Error("command credentials are available only on scoped or scratch computers");
         }
         const requested = await selectCredentials(requestedCredentials);
-        const privateBox = requested.some((credential) => credential.privateBox);
+        const scratchOnly = requested.some((credential) => credential.scratchOnly);
         const reachTarget = execOpts?.reachTarget;
         if ([scratch, reachTarget !== undefined, execOpts?.sandboxId !== undefined].filter(Boolean).length > 1) {
           throw new Error("a command runs on one computer — choose scoped, scratch, or a reached room");
@@ -889,14 +891,8 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         if (scratch && !deps.provisionScratch) {
           throw new Error('scratch execution is not available on this computer — run without scope:"scratch"');
         }
-        if (privateBox && execOpts?.sandboxId !== undefined) {
-          throw new Error(
-            "in a shared conversation, a command that names these credentials runs on this turn's private box — drop sandbox_id",
-          );
-        }
-        if (privateBox && !deps.provisionPrivateBox) {
-          throw new Error("this turn has no private box for these credentials");
-        }
+        if (scratchOnly && !deps.provisionScratch) throw new Error(SCRATCH_REQUIRED_MESSAGE);
+        const scratchReroute = scratchOnly && !scratch;
         let reached: ReachedProvenance | undefined;
         if (reachTarget !== undefined) {
           if (!deps.reach) {
@@ -910,7 +906,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         }
         const executionPolicy = deps.commandPolicy;
         let handle;
-        if (execOpts?.sandboxId !== undefined) {
+        if (execOpts?.sandboxId !== undefined && !scratchOnly) {
           if (!deps.sandboxResources || !deps.provisionResource) throw new Error("sandbox inventory unavailable");
           const access = await accessSandbox(execOpts.sandboxId);
           handle = await deps.provisionResource(access, (current) => {
@@ -921,7 +917,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         } else {
           authorizeExecution(command, undefined, executionPolicy());
           if (reached) handle = await deps.reach!.provisionFor(reached.scopeId);
-          else if (privateBox) handle = await deps.provisionPrivateBox!().catch(markPrivateBoxFailure);
+          else if (scratchReroute) handle = await deps.provisionScratch!().catch(markScratchRerouteFailure);
           else if (scratch) handle = await deps.provisionScratch!();
           else handle = await deps.provision();
         }
@@ -956,14 +952,13 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           );
           const r = await withCleanup(
             async (): Promise<ExecResult> => {
-              const sandboxCommand = privateBox ? (deps.privateBoxCommand?.(command, commandEnv) ?? command) : command;
               const commandHandle = Object.keys(commandEnv).length
                 ? { ...handle, env: { ...handle.env, ...commandEnv } }
                 : handle;
               const secretEnv = executionSecretEnv(commandHandle.env, secretValues);
               const mask = createExactSecretValueMasker(Object.values(secretEnv));
               try {
-                const result = await deps.sandbox.run(commandHandle, sandboxCommand, opts);
+                const result = await deps.sandbox.run(commandHandle, command, opts);
                 return { ...result, stdout: mask(result.stdout), stderr: mask(result.stderr) };
               } catch (error) {
                 const message = errMessage(error);
@@ -976,9 +971,9 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
               await fileExecution?.finish();
             },
           );
-          return { ...r, ...(reached ? { reached } : {}), ...(privateBox ? { privateBox } : {}) };
+          return { ...r, ...(reached ? { reached } : {}), ...(scratchReroute ? { scratchReroute } : {}) };
         });
-        return privateBox ? executed.catch(markPrivateBoxFailure) : executed;
+        return scratchReroute ? executed.catch(markScratchRerouteFailure) : executed;
       });
     },
 
@@ -1278,19 +1273,20 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     async backgroundStart(
       command: string,
       opts: { purpose: string; ttlSeconds?: number; sandboxId?: string; credentials?: string[] },
-    ): Promise<BackgroundStartResult> {
+    ): Promise<BackgroundStartResult & { scratchReroute?: boolean }> {
       if (!deps.backgroundBroker) throw new Error(BACKGROUND_UNAVAILABLE_MESSAGE);
       const requestedCredentials = opts.credentials ?? [];
       if (requestedCredentials.length && !writableScopeId)
         throw new Error("command credentials are available only on scoped computers");
       const requested = await selectCredentials(requestedCredentials);
-      if (requested.some((credential) => credential.privateBox))
-        throw new Error(
-          "background jobs in a shared conversation cannot use these credentials yet; run the command in the foreground, where they go to this turn's private box",
-        );
+      const scratchOnly = requested.some((credential) => credential.scratchOnly);
+      if (scratchOnly && !deps.provisionScratchJob) throw new Error(SCRATCH_REQUIRED_MESSAGE);
       const policy = deps.commandPolicy;
       let handle: SandboxHandle;
-      if (opts?.sandboxId !== undefined) {
+      if (scratchOnly) {
+        authorizeExecution(command, undefined, policy());
+        handle = await deps.provisionScratchJob!();
+      } else if (opts?.sandboxId !== undefined) {
         if (!deps.sandboxResources || !deps.provisionResource) throw new Error("sandbox inventory unavailable");
         const access = await accessSandbox(opts.sandboxId);
         handle = await deps.provisionResource(access, (current) => {
@@ -1321,13 +1317,14 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           } catch (error) {
             return withCleanup(() => Promise.reject(error), release);
           }
-          return deps.backgroundBroker!.start(
+          const started = await deps.backgroundBroker!.start(
             handle,
             command,
             opts.purpose,
             opts?.ttlSeconds ? opts.ttlSeconds * 1000 : undefined,
             credentials,
           );
+          return scratchOnly ? { ...started, scratchReroute: true } : started;
         },
         () => true,
       );

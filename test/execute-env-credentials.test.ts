@@ -92,7 +92,7 @@ test("role broker vends only for explicitly selected scoped execution", async ()
   assert.equal(assumes, 1);
 });
 
-test("role broker sessions in a shared conversation reach only the private box", async () => {
+test("role broker sessions in a shared conversation reach only the turn's scratch computer", async () => {
   const built = buildApp(
     testConfig({
       dataDir: mkdtempSync(join(tmpdir(), "shared-broker-")),
@@ -100,6 +100,7 @@ test("role broker sessions in a shared conversation reach only the private box",
       apiBaseUrl: "http://core.test",
       deploymentLayerDir: acmecliBrokeredLayer(),
       maxAttempts: 1,
+      scratchExecEnabled: true,
     }),
     {
       credentialBrokers: {
@@ -125,17 +126,17 @@ test("role broker sessions in a shared conversation reach only the private box",
     members.map(({ externalId }) => ({ channelId: "C_BROKER", principalId: externalId })),
   );
   await selectDefaultSandbox(built, actor.externalId, scopeId("channel", "C_BROKER"));
-  const privateBoxes = new Set<string>();
+  const scratchBoxes = new Set<string>();
   const provision = built.sandbox.provision.bind(built.sandbox);
   built.sandbox.provision = async (layers, opts) => {
     const handle = await provision(layers, opts);
-    if (opts?.scratch?.key.startsWith("private-box:")) privateBoxes.add(handle.id);
+    if (opts?.scratch) scratchBoxes.add(handle.id);
     return handle;
   };
   const exposed: string[] = [];
   const run = built.sandbox.run.bind(built.sandbox);
   built.sandbox.run = async (handle, command, opts) => {
-    if (JSON.stringify(handle.env ?? {}).includes("shared-room-secret") && !privateBoxes.has(handle.id))
+    if (JSON.stringify(handle.env ?? {}).includes("shared-room-secret") && !scratchBoxes.has(handle.id))
       exposed.push(handle.id);
     return run(handle, command, opts);
   };
@@ -147,10 +148,10 @@ test("role broker sessions in a shared conversation reach only the private box",
   };
   const turn = (text: string) => built.app.turn({ surface: "slack", actor, conversation, text });
   const result = await turn(
-    `!execute ${JSON.stringify({ command: 'test "$AWS_ACCESS_KEY_ID" = AKIA_SHARED_ROOM && test -z "${AGENT_API_TOKEN-}" && echo private', credentials: ["broker_acmecli"] })}`,
+    `!execute ${JSON.stringify({ command: 'test "$AWS_ACCESS_KEY_ID" = AKIA_SHARED_ROOM && test -n "${AGENT_API_TOKEN-}" && echo scratch', credentials: ["broker_acmecli"] })}`,
   );
-  assert.equal(result.reply, "private", JSON.stringify(result));
-  assert.equal(privateBoxes.size, 1);
+  assert.equal(result.reply, "scratch", JSON.stringify(result));
+  assert.equal(scratchBoxes.size, 1);
   assert.deepEqual(exposed, []);
   assert.equal((await turn('!run test -z "${AWS_ACCESS_KEY_ID-}" && echo absent')).reply, "absent");
 });

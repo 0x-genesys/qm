@@ -94,9 +94,10 @@ before being copied into a different conversation's computer. Organization, pers
 Isolated winning. These reads are labelled and audited, but model output is not a disclosure
 control. In an Open shared conversation, the authenticated internal speaker can use their
 own keychain without creating a room grant. In any shared conversation, commands that name
-a credential other than a brokered org service run on the turn's private box, a separate
-disposable computer destroyed at turn end, never the shared workspace. Each use of the
-speaker's own credential rechecks composed sharing policy and current membership. Other people's credentials and automated or ambient turns still require grants.
+a credential other than a brokered org service run on the turn's scratch computer, which
+only that turn's commands use and which is destroyed once the turn and its background jobs
+end, never on the shared workspace. Each use of the speaker's own credential rechecks
+composed sharing policy and current membership. Other people's credentials and automated or ambient turns still require grants.
 The raw keychain-use endpoint remains personal-or-grant-only. Command approvals remain in
 force; code can still disclose secrets while using them, so this is not an output filter.
 Open does not change transcript audience filtering, writes or memory capture,

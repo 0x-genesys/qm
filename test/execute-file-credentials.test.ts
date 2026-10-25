@@ -75,11 +75,10 @@ async function fixture(t: TestContext) {
     },
   } as unknown as Sandbox;
   let resolutions = 0;
-  const context = (extra: Partial<ToolContextDeps> = {}, privateBox = false) =>
+  const context = (extra: Partial<ToolContextDeps> = {}, scratchOnly = false) =>
     createToolContext({
       sandbox,
       provision: async () => handle,
-      provisionPrivateBox: async () => ({ ...handle, id: "private" }),
       provisionScratch: async () => ({ ...handle, id: "scratch" }),
       layers: [{ scopeId: scope, mountPath: "", mode: "rw" }],
       commandPolicy: () => ({ mode: "denylist", rules: [] }),
@@ -87,7 +86,7 @@ async function fixture(t: TestContext) {
       commandCredentials: [
         {
           handle: "aws",
-          privateBox,
+          scratchOnly,
           async resolve() {
             resolutions++;
             const materialized = await keychain.materializeOwnById(owner, credential.id, scope);
@@ -120,7 +119,7 @@ async function fixture(t: TestContext) {
   return { keychain, credential, handle, sandbox, commands, context, resolutions: () => resolutions };
 }
 
-for (const target of ["default", "private", "scratch", "selected"] as const) {
+for (const target of ["default", "rerouted", "scratch", "selected"] as const) {
   test(`${target} execution persists refreshed files and cleans its temporary home`, async (t) => {
     const f = await fixture(t);
     const selected = { ...f.handle, id: "selected" };
@@ -137,7 +136,7 @@ for (const target of ["default", "private", "scratch", "selected"] as const) {
             },
           }
         : {},
-      target === "private",
+      target === "rerouted",
     );
     const result = await ctx.execute('printf refreshed > "$HOME/.aws/sso/cache/session.json"; printf "%s" "$HOME"', {
       credentials: ["aws"],
@@ -145,7 +144,10 @@ for (const target of ["default", "private", "scratch", "selected"] as const) {
       ...(target === "selected" ? { sandboxId: "selected" } : {}),
     });
     assert.equal(result.code, 0, result.stderr);
-    assert.equal(f.commands.find((entry) => entry.command.startsWith("printf refreshed"))?.handle.id, target);
+    assert.equal(
+      f.commands.find((entry) => entry.command.startsWith("printf refreshed"))?.handle.id,
+      target === "rerouted" ? "scratch" : target,
+    );
     await assert.rejects(access(result.stdout));
     const next = await f.keychain.materializeOwnById(owner, f.credential.id, scope);
     assert.equal(next.kind, "file");

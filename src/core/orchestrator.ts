@@ -67,6 +67,7 @@ import {
   type KeychainManifestInput,
 } from "../credentials/keychain.ts";
 import { finishProcessCredentials } from "../credentials/execute-files.ts";
+import { isScratchJobComputer, SCRATCH_JOB_GONE_MESSAGE } from "../processes/scratch-job-computers.ts";
 import {
   configuredConnectorProviders,
   connectorStatusIsStale,
@@ -1402,7 +1403,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         }));
       const ownCredentialsAllowed =
         scopeId === personalScope(actor.id) || openSpeakerKeychain || openAutomationKeychain;
-      const privateBoxAvailable = !external && scopeId !== personalScope(actor.id);
+      const sharedScope = !external && scopeId !== personalScope(actor.id);
       const connectorEnv: Record<string, string> = {};
       const commandCredentials: CommandCredential[] = [];
       const credentialDescriptions: NonNullable<KeychainManifestInput["execution"]> = [];
@@ -1420,7 +1421,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           at: Date.now(),
           principalId: actor.id,
           action: "keychain.open_speaker_use",
-          resource: "private box execution",
+          resource: "scratch execution",
           scopeLabel: scopeId,
         });
       };
@@ -1442,7 +1443,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         };
       };
       const placeCredential = (credential: CommandCredential): CommandCredential => ({
-        privateBox: privateBoxAvailable,
+        scratchOnly: sharedScope,
         ...credential,
       });
       const addCredentialToCatalog = (
@@ -1801,7 +1802,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             addCredential(
               {
                 handle: credential.slug,
-                privateBox: false,
+                scratchOnly: false,
                 resolve: async () => ({ env: [{ key: "AGENT_CREDENTIAL_TOKEN", value: await resolveBrokerToken() }] }),
               },
               `${credential.name}; proxy ${credential.host}; ${(credential.allowedMethods?.length ? credential.allowedMethods : ["GET"]).toSorted().join("/")}; ${credential.allowedPathPrefixes?.length ? `paths ${credential.allowedPathPrefixes.toSorted().join(", ")}` : "any path"}; use the use-shared-credential skill`,
@@ -1900,12 +1901,11 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       }
 
       const {
-        privateBoxCommand,
         provision,
         provisionScratch,
+        provisionScratchJob,
         accessResource,
         provisionResource,
-        provisionPrivateBox,
         useSkill,
         provisionForReach,
         reclaimBox,
@@ -1924,9 +1924,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         connectorEnv,
         egressTokenForTurn,
         egressTokenForPolicy,
-        openSpeakerKeychain: openSpeakerKeychain || openAutomationKeychain,
         openResourceAccess: !external && (liveAuthorTurn || openAutomationKeychain),
-        privateBoxAvailable,
         visibleSkillsForTurn,
         emitGapWork,
       });
@@ -2299,7 +2297,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             scopeId,
             conversationKind: conversation.kind,
             openSpeakerKeychain,
-            privateBox: privateBoxAvailable,
+            scratchOnly: sharedScope && deps.scratchExec === true,
             actorId: actor.id,
             members,
             entriesByOwner,
@@ -2409,7 +2407,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ? createBackgroundBroker({
                 sandbox: deps.sandbox,
                 registry: deps.processes,
-                provisionSandbox: provisionResource,
+                provisionSandbox: async (id) => {
+                  if (!isScratchJobComputer(id)) return provisionResource(id);
+                  const handle = deps.scratchJobs?.get(id);
+                  if (!handle) throw new Error(SCRATCH_JOB_GONE_MESSAGE);
+                  return handle;
+                },
                 onExit: (handle, processId) =>
                   finishProcessCredentials(
                     {
@@ -2641,11 +2644,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           sandboxResources: turnSandboxResources,
           invalidateProvision,
           provision,
-          provisionScratch,
+          ...(deps.scratchExec ? { provisionScratch, provisionScratchJob } : {}),
           provisionResource,
           accessSandboxResource: accessResource,
-          ...(provisionPrivateBox ? { provisionPrivateBox } : {}),
-          ...(privateBoxCommand ? { privateBoxCommand } : {}),
           useSkill,
           listSkills: (source) => visibleSkillsForTurn(source ? [source] : [scopeId, resolution.orgScopeId]),
           ...(reachAvailable
