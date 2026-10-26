@@ -273,10 +273,6 @@ export interface CronFireNote {
   by?: string;
 }
 
-export interface CronInbox {
-  source?: string;
-}
-
 export interface Cron extends TriggerBase {
   runtime?: import("./harness/harness.ts").RuntimeChoice | null;
   schedule: CronSchedule;
@@ -287,7 +283,7 @@ export interface Cron extends TriggerBase {
   archived?: boolean;
   action?: string;
   message?: string;
-  inbox?: CronInbox;
+  inbox?: { source?: string };
   createdAt: number;
   unattendedGrants?: string[];
   sessionRef?: string;

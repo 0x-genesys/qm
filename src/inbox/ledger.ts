@@ -50,7 +50,7 @@ export interface LatestEvent {
   from?: string;
 }
 
-export const EVENT_TEXT_CHARS = 2_000;
+const EVENT_TEXT_CHARS = 2_000;
 
 export interface InboxLedger {
   ingest(entries: IngestEntryInput[]): Promise<IngestOutcome>;
@@ -87,7 +87,7 @@ export function inboxItemId(cronId: string, sourceKey: string): string {
 }
 
 const LEDGER_THREAD_MAX = 200;
-export const DECISION_LEASE_MS = 300_000;
+const DECISION_LEASE_MS = 300_000;
 
 function nextIngestStatus(item: InboxItem, proposal: InboxProposal | undefined): InboxItemStatus {
   if (proposal) return "ready";
