@@ -109,7 +109,6 @@ const INTERNAL_RESULT_TOOLS = new Set([
   "webhook",
   "share",
   "publish",
-  "miniapp",
   "write",
 ]);
 
