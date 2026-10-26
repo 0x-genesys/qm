@@ -108,7 +108,7 @@ export function controlState(swarm: Swarm, memberId: string): SwarmControlState 
   return state;
 }
 
-export function messageBudget(swarm: Swarm, woken: number): string | undefined {
+function messageBudget(swarm: Swarm, woken: number): string | undefined {
   if (swarm.messages.length >= (swarm.settings.messages ?? Infinity)) return "swarm message budget exhausted";
   if (swarm.notificationCount + woken > (swarm.settings.notifications ?? Infinity))
     return "swarm notification budget exhausted";
