@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { statSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import process from "node:process";
 import { parseArgs } from "node:util";
 import pg from "pg";
 
-const { values, positionals: files } = parseArgs({
+const { values, positionals } = parseArgs({
   allowPositionals: true,
   options: {
     jobs: { type: "string", default: process.env.PG_TEST_JOBS ?? String(Math.min(4, availableParallelism())) },
@@ -20,7 +21,8 @@ if (!Number.isInteger(jobs) || jobs < 1) throw new Error(`--jobs must be a posit
 if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
   throw new Error(`--timeout must be a positive number of seconds, got ${values.timeout}`);
 }
-if (files.length === 0) throw new Error("Pass the Postgres test files to run");
+if (positionals.length === 0) throw new Error("Pass the Postgres test files to run");
+const files = positionals.toSorted((a, b) => statSync(b).size - statSync(a).size);
 
 const baseUrl = process.env.DATABASE_URL;
 if (!baseUrl) throw new Error("Set DATABASE_URL to a Postgres server the tests may create databases on");
