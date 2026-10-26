@@ -31,7 +31,7 @@ function start(enabled = true) {
     capabilitySecret: "capability-secret".repeat(3),
     portalIdentitySecret: identitySecret,
     requireSignedPortalIdentity: true,
-    replayDedupe: { ...createPostgresReplayDedupe(testDatabaseUrl()), durable: true },
+    replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
     admin: built.admin,
     identity: built.identity,
     auditLog: built.auditLog,
