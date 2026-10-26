@@ -18,7 +18,7 @@ const noSandbox = {} as unknown as Sandbox;
 function ctxFor(opts: {
   scope: ScopeId;
   workspace: ReturnType<typeof createLocalWorkspaceStore>;
-  memory: ReturnType<typeof createMemoryService>;
+  memory: ReturnType<typeof createPostgresMemoryService>;
   memoryScopeId?: ScopeId;
 }) {
   const layers: WorkspaceLayer[] = [{ scopeId: opts.scope, mountPath: "", mode: "rw" }];
@@ -269,12 +269,12 @@ test("memorySearch spans every readable notebook, tagging hits when more than on
   });
   assert.match(
     (await ctx.memoryRead(org)) ?? "",
-    /### org:default-org\n#1 \(2026-05-31\) deploys are frozen in December/,
+    /### org:default-org\n#2 \(2026-05-31\) deploys are frozen in December/,
   );
   assert.equal(await ctx.memoryRead("personal:someone-else"), null);
   assert.equal(await ctx.memorySearch("deploys", 20, "personal:someone-else"), null);
   assert.deepEqual(await ctx.memorySearch("deploys", 20, org), [
-    `[${org}] #1 (2026-05-31) deploys are frozen in December`,
+    `[${org}] #2 (2026-05-31) deploys are frozen in December`,
   ]);
   const tool = createAgentTools({ current: ctx, emit: () => {}, scopeLabel: personal }).find(
     (t) => t.name === "memory",
@@ -285,13 +285,13 @@ test("memorySearch spans every readable notebook, tagging hits when more than on
     textOf(await call(tool, { action: "add", scope: org, facts: [{ text: "stolen" }] })),
     /scope is only allowed/,
   );
-  assert.match(textOf(await call(tool, { action: "delete", scope: org, ids: ["1"] })), /scope is only allowed/);
+  assert.match(textOf(await call(tool, { action: "delete", scope: org, ids: ["2"] })), /scope is only allowed/);
   assert.doesNotMatch(await memory.read(org), /stolen/);
   assert.match(await memory.read(org), /December/);
   const hits = await ctx.memorySearch("deploys");
   assert.deepEqual(hits, [
     `[${personal}] #1 (2026-05-31) deploys happen on Fridays`,
-    `[${org}] #1 (2026-05-31) deploys are frozen in December`,
+    `[${org}] #2 (2026-05-31) deploys are frozen in December`,
   ]);
 });
 

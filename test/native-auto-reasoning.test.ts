@@ -188,7 +188,6 @@ test("real Pi AgentSession and Anthropic serializer send Auto without a fixed ef
 });
 
 test("runtime scope writes and turn dispatch reject unsupported modes without changing legacy selections", async () => {
-  const { createMemoryConfigStore } = await import("../src/resolution/config-store.ts");
   const { resolveRuntimeChoice } = await import("../src/harness/harness-router.ts");
   const { createRuntimeService } = await import("../src/harness/runtime-control.ts");
   const config = testConfigStore("default-org");

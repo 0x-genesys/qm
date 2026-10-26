@@ -433,7 +433,6 @@ describe("link mutation serialization", () => {
     assert.equal((await links.list()).length, 1);
   });
   it("does not reuse a snapshot begun before the mutation lock", async () => {
-    const { createMemoryAdvisoryLock } = await import("../src/persistence/advisory-lock.ts");
     const backing = testMap<PrincipalLink>();
     const lock = testAdvisoryLock();
     const delayed = Promise.withResolvers<void>();
@@ -469,7 +468,7 @@ describe("link mutation serialization", () => {
       await links.link({ principalId: "A", canonicalId: "B", evidence: "qa", linkedBy: "qa" });
       installPrincipalLinks(links);
       try {
-        const store = createMemoryMap<import("../src/identity/identity-service.ts").DeactivationRecord>();
+        const store = testMap<import("../src/identity/identity-service.ts").DeactivationRecord>();
         const rows: import("../src/identity/identity-service.ts").DeactivationRecord[] = [
           { principalId: "A", source: reverse ? "directory-sync" : "manual", at: 1 },
           { principalId: "B", source: reverse ? "manual" : "directory-sync", at: 2 },

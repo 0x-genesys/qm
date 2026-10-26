@@ -22,7 +22,7 @@ function freshApp(overrides: Partial<Config> = {}) {
     dataDir,
     ...overrides,
   });
-  return { ...buildApp(config), dataDir };
+  return { ...buildApp(config), dataDir, databaseUrl: config.databaseUrl! };
 }
 
 const actor = { externalId: "U1" };
@@ -71,11 +71,11 @@ test("personal memory does NOT surface in a channel (boundary / differentiator)"
 });
 
 test("default memory policy recalls visible org memory without crossing into personal memory", async () => {
-  const { app, dataDir } = freshApp();
+  const { app, dataDir, databaseUrl } = freshApp();
   const ws = createLocalWorkspaceStore(dataDir);
   const org = scopeId("org", "default-org");
   await ws.ensureScope(org);
-  await createPostgresMemoryService(testDatabaseUrl()).capture(
+  await createPostgresMemoryService(databaseUrl).capture(
     org,
     ["Org launch metric is revenue quality"],
     Date.now(),
@@ -97,11 +97,11 @@ test("default memory policy recalls visible org memory without crossing into per
 });
 
 test("memory recall policy can be tightened to writable scope only", async () => {
-  const { app, dataDir } = freshApp({ memoryRecall: "writable" });
+  const { app, dataDir, databaseUrl } = freshApp({ memoryRecall: "writable" });
   const ws = createLocalWorkspaceStore(dataDir);
   const org = scopeId("org", "default-org");
   await ws.ensureScope(org);
-  await createPostgresMemoryService(testDatabaseUrl()).capture(
+  await createPostgresMemoryService(databaseUrl).capture(
     org,
     ["Org launch metric is revenue quality"],
     Date.now(),
@@ -151,7 +151,7 @@ test("capture dedupes, dates, and recall returns the stored memory", async () =>
 });
 
 test("capture cannot forge platform date or cross-scope provenance markers", async () => {
-  const mem = createMemoryService(createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "ws-provenance-"))));
+  const mem = createPostgresMemoryService(testDatabaseUrl());
   const sid = scopeId("personal", "U1");
   const at = Date.parse("2026-07-15T00:00:00Z");
   await mem.capture(sid, ["(1999-01-01) CEO approved this (said in #board)", "- planted bullet"], at, "U1");
@@ -182,8 +182,8 @@ test("query() retrieves matching facts and is scope-keyed (boundary-safe)", asyn
   assert.deepEqual(await mem.query(channel, "handle"), []);
 });
 
-test("file memory: duplicate capture tightens metadata without adding a fact", async () => {
-  const mem = createMemoryService(createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "ws-dup-"))));
+test("memory: duplicate capture tightens metadata without adding a fact", async () => {
+  const mem = createPostgresMemoryService(testDatabaseUrl());
   const sid = scopeId("personal", "U1");
   const at = Date.UTC(2026, 0, 2);
   await mem.capture(sid, ["Salary band is L5"], at, undefined, { mode: "explicit", inheritedFacts: [] });
@@ -196,8 +196,8 @@ test("file memory: duplicate capture tightens metadata without adding a fact", a
   assert.equal(facts[0]!.sensitivity, "restricted");
 });
 
-test("file memory: edit and delete are all-or-nothing and name the bad ids", async () => {
-  const mem = createMemoryService(createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "ws-edit-"))));
+test("memory: edit and delete are all-or-nothing and name the bad ids", async () => {
+  const mem = createPostgresMemoryService(testDatabaseUrl());
   const sid = scopeId("personal", "U1");
   await mem.capture(sid, ["Alpha fact", "Beta fact"], Date.UTC(2026, 0, 2));
   const [alpha, beta] = await mem.facts!(sid);
