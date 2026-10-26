@@ -1658,7 +1658,7 @@ export interface SessionStateEvent {
 }
 
 export interface InboxItemEvent {
-  loopId: string;
+  cronId: string;
   itemId: string;
   op: string;
 }
@@ -1692,7 +1692,7 @@ export function subscribeDeliveries(
   es.addEventListener("inbox_item", (e: MessageEvent) => {
     try {
       const ev = JSON.parse(e.data) as InboxItemEvent;
-      if (typeof ev.loopId === "string" && typeof ev.itemId === "string") onInboxItem?.(ev);
+      if (typeof ev.cronId === "string" && typeof ev.itemId === "string") onInboxItem?.(ev);
     } catch (err) {
       swallow("web-ui: handle inbox-item frame", err);
     }
