@@ -732,3 +732,16 @@ test("stopping a tree stops every turn in its conversations in one step", { skip
   );
   assert.equal(await pointer(parent), null);
 });
+
+test("slots freed together by one owner are refilled without waiting for the sweep", { skip }, async () => {
+  const swarmId = randomUUID();
+  const members = [];
+  for (let i = 0; i < FAIR_ACTIVE_CAP + 4; i++)
+    members.push(await admitSwarm(swarmId, `swarm:${swarmId}:${i}`, `member ${i}`));
+  const active = members.slice(0, FAIR_ACTIVE_CAP);
+  const capped = members.slice(FAIR_ACTIVE_CAP);
+  assert.ok(capped.every((m) => m.run.status === "queued"));
+  await Promise.all(active.map((m) => ledger.cancel(m.run.id)));
+  for (const m of capped) assert.equal((await runStore.runs.get(m.run.id))?.status, "pending");
+  for (const m of capped) await ledger.cancel(m.run.id);
+});

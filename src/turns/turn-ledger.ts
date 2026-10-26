@@ -84,7 +84,7 @@ interface RepairCandidate {
 const UNKNOWN_TASK_DEFER_MS = 30_000;
 export const FAIR_ACTIVE_CAP = 8;
 const BACKGROUND_PRIORITY: RunPriority = 2;
-const CAPPED_HEAD = "r.status = 'queued' AND r.fair_key IS NOT NULL";
+const cappedHead = (alias: string): string => `${alias}.status = 'queued' AND ${alias}.fair_key IS NOT NULL`;
 
 function fairKeyFor(request: EnqueueInput["request"], priority: RunPriority): string | null {
   if (request.swarm) return `swarm:${request.swarm.swarmId}`;
@@ -159,7 +159,23 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
         tenant = null;
         throw error;
       }));
-  const tx = async <T>(fn: (client: PoolClient) => Promise<T>): Promise<T> => withPgTransaction(await db.pool(), fn);
+  const heldFairKeys = new WeakMap<PoolClient, Set<string>>();
+  const pendingFairReleases = new WeakMap<PoolClient, Set<string>>();
+  const tx = async <T>(fn: (client: PoolClient) => Promise<T>): Promise<T> => {
+    const pool = await db.pool();
+    let releases: string[] = [];
+    const result = await withPgTransaction(pool, async (client) => {
+      try {
+        return await fn(client);
+      } finally {
+        releases = [...(pendingFairReleases.get(client) ?? [])];
+        heldFairKeys.delete(client);
+        pendingFairReleases.delete(client);
+      }
+    });
+    for (const key of releases) await withPgTransaction(pool, (client) => releaseFair(client, key));
+    return result;
+  };
 
   async function lockPointer(client: PoolClient, threadRef: string): Promise<string | null> {
     await client.query(
@@ -187,10 +203,19 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     await client.query("SELECT 1 FROM runs WHERE id = $1 FOR NO KEY UPDATE", [turnId]);
   }
 
-  async function fairRoom(client: PoolClient, fairKey: string, wait: boolean): Promise<number> {
-    const lock = wait ? "pg_advisory_xact_lock" : "pg_try_advisory_xact_lock";
-    const locked = await client.query(`SELECT ${lock}(hashtext($1)) AS ok`, [`qm_turn_fair:${fairKey}`]);
-    if (!wait && locked.rows[0]?.ok !== true) return 0;
+  async function fairRoom(client: PoolClient, fairKey: string): Promise<number> {
+    const held = heldFairKeys.get(client) ?? new Set<string>();
+    heldFairKeys.set(client, held);
+    if (!held.has(fairKey)) {
+      const lock = held.size ? "pg_try_advisory_xact_lock" : "pg_advisory_xact_lock";
+      const locked = await client.query(`SELECT ${lock}(hashtext($1)) AS ok`, [`qm_turn_fair:${fairKey}`]);
+      if (held.size && locked.rows[0]?.ok !== true) {
+        const pending = pendingFairReleases.get(client) ?? new Set<string>();
+        pendingFairReleases.set(client, pending.add(fairKey));
+        return 0;
+      }
+      held.add(fairKey);
+    }
     const { rows } = await client.query(
       `SELECT count(*)::int AS n FROM runs WHERE fair_key = $1 AND engine = 'absurd' AND status IN ('pending','running')`,
       [fairKey],
@@ -198,8 +223,8 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     return FAIR_ACTIVE_CAP - Number(rows[0]!.n);
   }
 
-  async function start(client: PoolClient, run: Run, waitForFairLock = false): Promise<void> {
-    if (run.fairKey && (await fairRoom(client, run.fairKey, waitForFairLock)) <= 0) {
+  async function start(client: PoolClient, run: Run): Promise<void> {
+    if (run.fairKey && (await fairRoom(client, run.fairKey)) <= 0) {
       await point(client, run.sessionId, run.id);
       return;
     }
@@ -325,12 +350,12 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     });
   }
 
-  async function releaseFair(client: PoolClient, fairKey: string, wait = false): Promise<void> {
-    const room = await fairRoom(client, fairKey, wait);
+  async function releaseFair(client: PoolClient, fairKey: string): Promise<void> {
+    const room = await fairRoom(client, fairKey);
     if (room <= 0) return;
     const { rows } = await client.query(
       `SELECT r.* FROM session_turn_pointers p JOIN runs r ON r.id = p.active_turn_id
-        WHERE p.tenant_id = qm_tenant_id() AND r.fair_key = $1 AND ${CAPPED_HEAD}
+        WHERE p.tenant_id = qm_tenant_id() AND r.fair_key = $1 AND ${cappedHead("r")}
         ORDER BY r.claim_priority ASC, r.created_at ASC, r.seq ASC LIMIT $2 FOR UPDATE OF p SKIP LOCKED`,
       [fairKey, room],
     );
@@ -429,12 +454,12 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
         const queued = rowToRun(rows[0]);
         let capped = false;
         if (active && priority === 0) {
-          const head = await client.query(`SELECT 1 FROM runs r WHERE r.id = $1 AND ${CAPPED_HEAD}`, [active]);
+          const head = await client.query(`SELECT 1 FROM runs r WHERE r.id = $1 AND ${cappedHead("r")}`, [active]);
           capped = head.rows.length > 0;
         }
         if (active && !capped && !(priority === 0 && (await askToYield(client, active))))
           return { run: queued, deduped: false };
-        await start(client, queued, true);
+        await start(client, queued);
         const state = await client.query("SELECT status FROM runs WHERE id = $1", [queued.id]);
         return { run: { ...queued, status: state.rows[0]!.status as Run["status"] }, deduped: false };
       });
@@ -534,14 +559,21 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     async cancelTree(threadRefs) {
       const refs = [...new Set(threadRefs)].sort();
       if (!refs.length) return 0;
+      const busy = await db.query(
+        `SELECT DISTINCT session_id FROM runs WHERE session_id = ANY($1::text[]) AND engine = 'absurd'
+           AND status IN ('queued','pending','running') ORDER BY session_id`,
+        [refs],
+      );
+      if (!busy.rows.length) return 0;
       const settled: string[] = [];
       const count = await tx(async (client) => {
         const active = new Map<string, string | null>();
-        for (const ref of refs) active.set(ref, await lockPointer(client, ref));
+        for (const row of busy.rows)
+          active.set(String(row.session_id), await lockPointer(client, String(row.session_id)));
         const { rows } = await client.query(
           `SELECT * FROM runs WHERE session_id = ANY($1::text[]) AND engine = 'absurd'
              AND status IN ('queued','pending','running') ORDER BY id FOR UPDATE`,
-          [refs],
+          [[...active.keys()]],
         );
         const rank = (run: Run): number => {
           if (run.status === "queued") return 0;
@@ -573,9 +605,9 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     async releaseCapped() {
       const { rows } = await db.query(
         `SELECT DISTINCT r.fair_key FROM session_turn_pointers p JOIN runs r ON r.id = p.active_turn_id
-          WHERE p.tenant_id = qm_tenant_id() AND ${CAPPED_HEAD} LIMIT 100`,
+          WHERE p.tenant_id = qm_tenant_id() AND ${cappedHead("r")} LIMIT 100`,
       );
-      for (const row of rows) await tx((client) => releaseFair(client, String(row.fair_key), true));
+      for (const row of rows) await tx((client) => releaseFair(client, String(row.fair_key)));
     },
 
     async repairCandidates(limit = 100) {
@@ -591,7 +623,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
            LEFT JOIN runs t ON t.id = p.active_turn_id
            ${joins}
           WHERE p.tenant_id = qm_tenant_id() AND p.active_turn_id IS NOT NULL
-            AND NOT (${CAPPED_HEAD.replaceAll("r.", "t.")})
+            AND NOT (${cappedHead("t")})
             AND (t.id IS NULL OR t.status NOT IN ('pending','running') OR t.absurd_task_id IS NULL
               OR ${state} IS NULL OR ${state} IN ('failed','completed')
               OR (${state} = 'cancelled' AND ${cancelledAt} < absurd.current_time() - make_interval(secs => $2)))
