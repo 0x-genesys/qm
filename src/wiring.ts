@@ -210,10 +210,10 @@ import {
 import { createMemoryFileArtifactStore, type FileArtifactStore } from "./files/file-artifact-store.ts";
 import { createPostgresFileArtifactStore } from "./files/postgres-file-artifact-store.ts";
 import { createAwsSandbox, type StoredMicrovm } from "./sandbox/aws-sandbox.ts";
-import { createLocalSandbox } from "./sandbox/local-sandbox.ts";
+import { createLocalSandbox, type StoredLocalSandbox } from "./sandbox/local-sandbox.ts";
 import { createSpritesSandbox, type StoredSpritesSandbox } from "./sandbox/sprites-sandbox.ts";
 import { createSmolmachinesSandbox, type StoredSmolmachinesSandbox } from "./sandbox/smolmachines-sandbox.ts";
-import { createAgent37Sandbox } from "./sandbox/agent37-sandbox.ts";
+import { createAgent37Sandbox, type StoredAgent37Sandbox } from "./sandbox/agent37-sandbox.ts";
 import {
   createConfigEpochResolver,
   createSuperserveSandbox,
@@ -854,7 +854,12 @@ export function buildApp(
   const modalBodies = artifactMap<StoredModalSandbox>("modal_sandbox_bodies");
   const awsBodies = artifactMap<StoredMicrovm>("aws_sandbox_bodies");
   const superserveBodies = artifactMap<StoredSuperserveSandbox>("superserve_sandbox_bodies");
-  const buildLocal = (): Sandbox => createLocalSandbox(workspace, { ...sandboxShared, ...config.localSandbox });
+  const buildLocal = (): Sandbox =>
+    createLocalSandbox(workspace, {
+      ...sandboxShared,
+      ...config.localSandbox,
+      store: artifactMap<StoredLocalSandbox>("local_sandbox_bodies"),
+    });
   const buildSprites = (): Sandbox =>
     createSpritesSandbox(workspace, {
       ...sandboxShared,
@@ -932,7 +937,13 @@ export function buildApp(
       store: modalBodies,
     });
   };
-  const buildAgent37 = (): Sandbox => createAgent37Sandbox(workspace, { ...sandboxShared, ...config.agent37Sandbox });
+  const buildAgent37 = (): Sandbox =>
+    createAgent37Sandbox(workspace, {
+      ...sandboxShared,
+      ...config.agent37Sandbox,
+      ...homeSnapshots("agent37-home"),
+      store: artifactMap<StoredAgent37Sandbox>("agent37_sandbox_bodies"),
+    });
   const superserveEpochs = artifactMap<StoredConfigEpoch>("superserve_config_epochs");
   const buildSuperserve = (): Sandbox => {
     const ss = config.superserveSandbox;
