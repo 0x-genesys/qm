@@ -1328,10 +1328,16 @@ export async function oneShot(
       void session.abort().catch(() => undefined);
     };
     opts?.signal?.addEventListener("abort", onAbort, { once: true });
-    const calls: AssistantMessage[] = [];
+    let recorded: Promise<void> = Promise.resolve();
+    let step = 0;
     const unsubscribe = session.agent.subscribe((event) => {
       if (event.type === "agent_start" && opts?.signal?.aborted) session.agent.abort();
-      if (event.type === "message_end" && event.message.role === "assistant") calls.push(event.message);
+      if (event.type === "message_end" && event.message.role === "assistant" && opts?.recordLlmRequest) {
+        const record = opts.recordLlmRequest;
+        const call = event.message;
+        const at = step++;
+        recorded = recorded.then(() => recordOneShotCall(record, call, at, model));
+      }
     });
     try {
       await session.prompt(prompt);
@@ -1340,7 +1346,7 @@ export async function oneShot(
     } finally {
       unsubscribe();
       opts?.signal?.removeEventListener("abort", onAbort);
-      if (opts?.recordLlmRequest) await recordOneShotCalls(opts.recordLlmRequest, calls, model);
+      await recorded;
     }
     return piLastAssistantTextOrThrow(session);
   } finally {
@@ -1348,23 +1354,22 @@ export async function oneShot(
   }
 }
 
-async function recordOneShotCalls(
+async function recordOneShotCall(
   record: (rec: HarnessLlmRequestRecord) => void | Promise<void>,
-  calls: readonly AssistantMessage[],
+  call: AssistantMessage,
+  step: number,
   model: Model<Api>,
 ): Promise<void> {
-  for (const [step, call] of calls.entries()) {
-    try {
-      await record({
-        turnSeq: null,
-        step,
-        model: model.id,
-        truncated: false,
-        usage: piUsageToCallUsage(call.usage, model, false),
-      });
-    } catch (e) {
-      swallow("pi: one-shot request record", e);
-    }
+  try {
+    await record({
+      turnSeq: null,
+      step,
+      model: model.id,
+      truncated: false,
+      usage: piUsageToCallUsage(call.usage, model, false),
+    });
+  } catch (e) {
+    swallow("pi: one-shot request record", e);
   }
 }
 
