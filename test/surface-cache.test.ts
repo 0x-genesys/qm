@@ -329,16 +329,17 @@ test("revisedSince returns messages edited or deleted after the watermark, stamp
   assert.ok(firstDeletedAt && firstDeletedAt >= before);
   await cache.ingest([{ container: "Cr", ts: "2.0", deleted: true }]);
   assert.equal(
-    (await cache.revisedSince("Cr", 0))[1]!.deletedAt,
+    (await cache.revisedSince("Cr", 0)).find((m) => m.ts === "2.0")!.deletedAt,
     firstDeletedAt,
     "a repeat delete keeps the first stamp",
   );
   assert.equal((await cache.revisedSince("Cr", before + 10)).length, 1, "the watermark itself is included");
   assert.deepEqual(await cache.revisedSince("Cr", before + 11), []);
   assert.deepEqual(await cache.revisedSince("Cother", 0), []);
+  const byTs = (rows: { ts: string }[]) => rows.map((m) => m.ts).sort();
   assert.deepEqual(
-    await cache.revisedSince("Cr", 0),
-    await cache.revisedSince("Cr", 1),
+    byTs(await cache.revisedSince("Cr", 0)),
+    byTs(await cache.revisedSince("Cr", 1)),
     "never-revised rows never match",
   );
 });
