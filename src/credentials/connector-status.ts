@@ -112,6 +112,19 @@ export async function refreshConnectorStatus(
   return { principalId, checkedAt: now, providers };
 }
 
+export async function currentConnectorStatus(
+  cache: ConnectorStatusCache,
+  tokens: ConnectorTokenStore | undefined,
+  principalId: string,
+  now: number,
+): Promise<ConnectorStatusRecord | null> {
+  const cached = await cache.get(principalId);
+  if (!tokens || !connectorStatusIsStale(cached, now)) return cached;
+  const fresh = await refreshConnectorStatus(tokens, principalId, now);
+  await cache.put(fresh);
+  return fresh;
+}
+
 export function connectorLabel(name: string): string {
   return PROVIDERS[name]?.label ?? name.charAt(0).toUpperCase() + name.slice(1);
 }
