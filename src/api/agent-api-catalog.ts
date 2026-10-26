@@ -344,7 +344,7 @@ const FAMILIES: AgentApiFamily[] = [
         method: "POST",
         path: "/v1/reach",
         summary:
-          "send a teammate a DM, post to a channel, or post to a group DM RIGHT NOW — `text` plus `recipient`, `channel`, or `participants` (the group DM's other members — the group is opened for you if it doesn't exist yet, so never ask someone to create one), optionally with `files` (workspace paths or {file_id: \"stored Files ID\"}, sent all-or-nothing); `sandbox_id` selects the sandbox for paths, omitted means default, ignored for stored IDs. EXTREMELY IMPORTANT: a `channel` post broadcasts to everyone there — pick the narrowest audience that can act; a question or errand for one person goes to their DM (`recipient`), NEVER a public channel, unless the person you're helping explicitly named that channel as the destination or the message genuinely concerns the whole room; pass `threadTs` (the parent message's ts) with a `recipient`/`channel`/`participants` post to reply inside that thread instead of top-level; or react to a message instead of posting with `react:{ts,emoji}` plus a `channel`/`participants`; or retract one of your own messages with `delete:{ts}` (no target = this conversation, or name a `channel`/`participants` to delete elsewhere) — find a message's `ts` via /v1/surface-context; pass `unfurlLinks:false` to suppress Slack previews (no schedule; for later/recurring use /v1/crons)",
+          "send a teammate a DM, post to a channel, or post to a group DM RIGHT NOW — `text` plus `recipient`, `channel`, or `participants` (the group DM's other members — the group is opened for you if it doesn't exist yet, so never ask someone to create one), optionally with `files` (workspace paths or {file_id: \"stored Files ID\"}, sent all-or-nothing); `sandbox_id` selects the sandbox for paths, omitted means default, ignored for stored IDs. EXTREMELY IMPORTANT: a `channel` post broadcasts to everyone there — pick the narrowest audience that can act; a question or errand for one person goes to their DM (`recipient`), NEVER a public channel, unless the person you're helping explicitly named that channel as the destination or the message genuinely concerns the whole room; pass `threadTs` (the parent message's ts) with a `recipient`/`channel`/`participants` post to reply inside that thread instead of top-level; or react to a message instead of posting with `react:{ts,emoji}` plus a `channel`/`participants`; or retract one of your own messages with `delete:{ts}` (no target = this conversation, or name a `channel`/`participants` to delete elsewhere) — find a message's `ts` via /v1/surface-context; pass `unfurlLinks:false` to suppress Slack previews (no schedule; for later/recurring use the cron tool)",
       },
     ],
   },
@@ -405,12 +405,6 @@ const FAMILIES: AgentApiFamily[] = [
       },
       {
         method: "POST",
-        path: "/v1/deployments/:id/always-on",
-        summary:
-          "keep an app you manage permanently warm — body {alwaysOn:true} exempts it from idle sleep so visitors never hit a cold start; {alwaysOn:false} returns it to the default sleep-when-idle",
-      },
-      {
-        method: "POST",
         path: "/v1/deployments/:id/embed-ancestors",
         summary:
           "let named sites show an app you manage inside their page (iframe) — body {embedAncestors:[https origins, optionally https://*.example.com]}; list every frame between the app and the browser tab; [] forbids embedding again",
@@ -424,35 +418,6 @@ const FAMILIES: AgentApiFamily[] = [
         method: "POST",
         path: "/v1/deployments/:id/restore",
         summary: "restore an archived app you manage by reapplying its current saved version",
-      },
-    ],
-  },
-  {
-    when: (v) => !!v.claims.memory,
-    guidance: "Memory bodies and curation rules are documented in the memory skill.",
-    routes: [
-      {
-        method: "POST",
-        path: "/v1/memory/search",
-        summary: "search authorized notebooks; optional scope selects one notebook",
-      },
-      { method: "POST", path: "/v1/memory/facts", summary: "append durable facts to this conversation's notebook now" },
-      { method: "GET", path: "/v1/memory/self", summary: "list this conversation's notebook facts with their ids" },
-      {
-        method: "PATCH|DELETE",
-        path: "/v1/memory/facts",
-        summary: "edit facts ({facts:[{id,text}]}) or forget them ({ids}); any unknown id fails the whole call",
-      },
-    ],
-  },
-  {
-    when: (v) => !!v.claims.memory?.orgWrite,
-    routes: [
-      {
-        method: "POST|PATCH|DELETE",
-        path: "/v1/memory/facts",
-        summary:
-          'add "scope":"org" (?scope=org on GET) to target the org-wide notebook every conversation recalls — admin only, confirm wording first',
       },
     ],
   },
