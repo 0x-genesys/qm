@@ -88,20 +88,6 @@ test("deployments persist with immutable versions across store instances", async
   assert.equal((await s2.versionOf(d.id, 1))?.snapshotDir, "/snap/1");
 });
 
-test("a fresh in-memory map is the unchanged default (ephemeral, no durability required)", async () => {
-  const s = createCronStore(testMap<Cron>(), { fires: createPostgresCronFireStore(testDatabaseUrl()) });
-  const c = await s.create({
-    schedule: { everyMs: 1000 },
-    action: "x",
-    ownerScopeId: scopeId("personal", "U1"),
-    owner: "U1",
-    createdBy: "U1",
-    destination: { type: "dm", target: "U1" },
-  });
-  assert.equal((await s.list()).length, 1);
-  assert.equal((await s.get(c.id))?.action, "x");
-});
-
 test("map iteration is deterministic id order — metadata updates (recordUse-style merges) must not reorder", async () => {
   const map = testMap<{ name: string; lastUsedAt?: number }>();
   await map.put("b", { name: "beta" });
@@ -125,7 +111,7 @@ interface SelectRow {
   nested: { keep: string };
 }
 
-test("memory map select filters case-insensitively on one field and strips omitted top-level keys", async () => {
+test("map select filters case-insensitively on one field and strips omitted top-level keys", async () => {
   const map = testMap<SelectRow>();
   await map.put("b", { id: "b", owner: "U1", secretEnc: "enc-b", nested: { keep: "b" } });
   await map.put("a", { id: "a", owner: "u1", secretEnc: "enc-a", nested: { keep: "a" } });
@@ -157,7 +143,7 @@ test("select sweeps non-ASCII field values into the candidate set — SQL and JS
   );
 });
 
-test("memory map select returns clones — mutating a result cannot poison the store", async () => {
+test("map select returns clones — mutating a result cannot poison the store", async () => {
   const map = testMap<SelectRow>();
   await map.put("x", { id: "x", owner: "U1", nested: { keep: "x" } });
   const [row] = await map.select({ where: { field: "owner", anyOfFold: ["u1"] } });

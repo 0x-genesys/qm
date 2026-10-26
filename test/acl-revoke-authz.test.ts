@@ -15,6 +15,7 @@ import { scopeId, type Grant } from "../src/types.ts";
 import { testConfig } from "./support/test-config.ts";
 import { createPostgresFileArtifactStore } from "../src/files/postgres-file-artifact-store.ts";
 import { testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 const owner = scopeId("personal", "U1");
 const carol = scopeId("personal", "U2");
@@ -44,7 +45,9 @@ async function putFile(files: FileArtifactStore, ownerScopeId: string) {
 async function fileAcl(ownerScopeId: string) {
   const files = createPostgresFileArtifactStore(testDatabaseUrl(), createMemoryDurableByteStore());
   await putFile(files, ownerScopeId);
-  return createAclStore(undefined, { resolveFiles: (refs) => files.resolveByIds(refs) });
+  return createAclStore(createPostgresGrantStore(testDatabaseUrl()), {
+    resolveFiles: (refs) => files.resolveByIds(refs),
+  });
 }
 
 test("revoke has the same owner check as grant: a non-owner cannot revoke a personal-scope grant", async () => {

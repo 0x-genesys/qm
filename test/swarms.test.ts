@@ -928,7 +928,7 @@ test("the root can extend an expired work window", async () => {
   await service.send(caller, { requestId: "message", text: "Work", audience: "all" });
 });
 
-test("memory store has transaction rollback and detached read parity", async () => {
+test("swarm store has transaction rollback and detached read parity", async () => {
   const { service, caller, root, store } = await swarmFixture();
   await service.spawn(caller, { requestId: "one", text: "Work" });
   const original = (await store.get(root.id))!;

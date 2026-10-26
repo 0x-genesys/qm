@@ -12,11 +12,12 @@ import { CapabilityUnsupportedError } from "../src/sandbox/sandbox.ts";
 import type { AgentComputerExportEntry, Sandbox, SandboxHandle } from "../src/sandbox/sandbox.ts";
 import { scopeId } from "../src/types.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
-import { testConfigStore, testDeployBackings } from "./support/test-database.ts";
+import { testConfigStore, testDeployBackings, testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 function svc() {
   const deployStore: DeployStore = createDeployStore(testDeployBackings());
-  const acl: AclStore = createAclStore();
+  const acl: AclStore = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   let starts = 0;
   const deploy: DeployService = createDeployService({
     ...singleProcessDeps(),

@@ -49,11 +49,11 @@ async function exerciseWindow(store: SessionStore, threadRef: string) {
   assert.deepEqual(empty, { entries: [], totalEntries: 0 });
 }
 
-test("memory store: context window slices at the latest summary and keeps guards whole-history", async () => {
+test("session store: context window slices at the latest summary and keeps guards whole-history", async () => {
   await exerciseWindow(createPostgresSessionStore(testDatabaseUrl()), "ch:C1:mem");
 });
 
-test("memory store: sessions without a summary return the full history", async () => {
+test("session store: sessions without a summary return the full history", async () => {
   const store = createPostgresSessionStore(testDatabaseUrl());
   const scope = scopeId("channel", "C1");
   const s = await store.getOrCreateByThread("ch:C1:nosummary", "channel", scope);

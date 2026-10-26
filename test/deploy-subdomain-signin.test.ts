@@ -20,6 +20,7 @@ import { singleProcessDeps } from "./support/single-process.ts";
 import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { testDatabaseUrl, testDeployBackings, testMap } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 let externalSharing = true;
 const externalSharingOn = { enabled: async () => externalSharing } as unknown as FeatureFlagStore;
@@ -184,12 +185,12 @@ test("subdomain ingress: portal sign-in admits the owner, denies strangers, boun
       destroy: async () => {},
     },
     auditLog,
-    acl: createAclStore(),
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl())),
     deployDir: mkdtempSync(join(tmpdir(), "signin-")),
   });
   const app = createApp({
     deploy,
-    acl: createAclStore(),
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl())),
     directory: createPostgresDirectoryStore(testDatabaseUrl()),
     sessions: createPostgresSessionStore(testDatabaseUrl()),
     identity: createIdentityService(testMap(), { externalMembers: testMap() }),
@@ -374,7 +375,7 @@ test("subdomain ingress: portal sign-in admits the owner, denies strangers, boun
 test("org-wide app access admits only signed-in org members", async () => {
   const upstream = createHttpServer((_req, res) => res.end("UPSTREAM OK"));
   upstream.listen(0);
-  const acl = createAclStore();
+  const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   const identity = createIdentityService(testMap(), { externalMembers: testMap() });
   const deploy = createDeployService({
     ...singleProcessDeps(),
@@ -447,12 +448,12 @@ test("subdomain ingress: without the session config the domain has no door — a
       destroy: async () => {},
     },
     auditLog,
-    acl: createAclStore(),
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl())),
     deployDir: mkdtempSync(join(tmpdir(), "signin-off-")),
   });
   const app = createApp({
     deploy,
-    acl: createAclStore(),
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl())),
     directory: createPostgresDirectoryStore(testDatabaseUrl()),
     sessions: createPostgresSessionStore(testDatabaseUrl()),
     identity: createIdentityService(testMap(), { externalMembers: testMap() }),

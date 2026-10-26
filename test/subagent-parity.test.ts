@@ -42,6 +42,7 @@ import {
   testDeployBackings,
   testAdvisoryLock,
 } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 type Call = { tool: string; args: Record<string, unknown> };
 type Turn = {
@@ -139,7 +140,7 @@ async function world(flags: FeatureName[], next: (turn: Turn, subagent: boolean)
       },
     },
   );
-  const acl = createAclStore();
+  const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   const auditLog = createPostgresAuditLog(testDatabaseUrl());
   const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "subagent-parity-")));
   const config = testConfigStore("org");

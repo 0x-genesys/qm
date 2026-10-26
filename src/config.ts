@@ -1179,7 +1179,7 @@ function modelProviderEnvStrict(env: NodeJS.ProcessEnv): ModelProvider | undefin
 }
 
 function resolveStoreKinds(env: NodeJS.ProcessEnv): Pick<Config, "runStore"> {
-  for (const key of ["SESSION_STORE", "RUN_STORE", "ARTIFACT_STORE"] as const) {
+  for (const key of ["RUN_STORE", "ARTIFACT_STORE"] as const) {
     if (env[key] === "sqlite") {
       throw new Error(
         `${key}=sqlite is no longer supported — SQLite was removed. ` +

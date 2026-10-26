@@ -11,7 +11,8 @@ import type { AdvisoryLock } from "../src/persistence/advisory-lock.ts";
 import type { DeployProvider } from "../src/deploy/deploy-provider.ts";
 import { scopeId } from "../src/types.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
-import { testDeployBackings } from "./support/test-database.ts";
+import { testDeployBackings, testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 const nonLeaderLease: LeaderLease = {
   async hold() {
@@ -34,7 +35,7 @@ function svc(opts: { lease?: LeaderLease; lock?: AdvisoryLock; managed?: boolean
     deployStore,
     provider,
     auditLog: { record() {}, events: async () => [], tail: async () => [] },
-    acl: createAclStore(),
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl())),
     deployDir: mkdtempSync(join(tmpdir(), "concurrency-")),
     ...(opts.lease ? { leaderLease: opts.lease } : {}),
     ...(opts.lock ? { advisoryLock: opts.lock } : {}),
@@ -128,7 +129,7 @@ test("withDeployLock: same-instance lifecycle ops still serialize (no overlap)",
     deployStore,
     provider,
     auditLog: { record() {}, events: async () => [], tail: async () => [] },
-    acl: createAclStore(),
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl())),
     deployDir: mkdtempSync(join(tmpdir(), "serialize-")),
   });
   const d = await deploy.deploy({

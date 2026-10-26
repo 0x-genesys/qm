@@ -27,7 +27,7 @@ async function seed(sessions: SessionStore, threadRef: string, principal: string
   return s.id;
 }
 
-test("memory store: searchEntries matches user and assistant text, newest first", async () => {
+test("session store: searchEntries matches user and assistant text, newest first", async () => {
   const store = createPostgresSessionStore(testDatabaseUrl());
   const id = await seed(store, "web:U1:a", "U1", [
     "can you refresh the memo board?",
@@ -47,7 +47,7 @@ test("memory store: searchEntries matches user and assistant text, newest first"
   assert.equal((await store.searchEntries("U1", "memo"))[0]!.text.includes("memo"), true);
 });
 
-test("memory store: search respects participant visibility windows and identity", async () => {
+test("session store: search respects participant visibility windows and identity", async () => {
   const store = createPostgresSessionStore(testDatabaseUrl());
   const s = await store.getOrCreateByThread("web:U1:w", "dm", scopeId("personal", "U1"));
   await store.addParticipant(s.id, "U1", undefined, { includeHistory: true });
@@ -74,7 +74,7 @@ test("memory store: search respects participant visibility windows and identity"
   assert.equal((await store.searchEntries("U1", "secret")).length, 2, "a full-history participant sees both");
 });
 
-test("memory store: search ignores non-conversational entry types", async () => {
+test("session store: search ignores non-conversational entry types", async () => {
   const store = createPostgresSessionStore(testDatabaseUrl());
   const s = await store.getOrCreateByThread("web:U1:t", "dm", scopeId("personal", "U1"));
   await store.addParticipant(s.id, "U1", undefined, { includeHistory: true });

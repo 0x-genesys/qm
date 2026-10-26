@@ -9,7 +9,8 @@ import { createAclStore } from "../src/acl/acl-store.ts";
 import type { DeployProvider } from "../src/deploy/deploy-provider.ts";
 import { scopeId } from "../src/types.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
-import { testDeployBackings } from "./support/test-database.ts";
+import { testDeployBackings, testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 function svc(managedScaleToZero: boolean) {
   const deployStore = createDeployStore(testDeployBackings());
@@ -26,7 +27,7 @@ function svc(managedScaleToZero: boolean) {
     deployStore,
     provider,
     auditLog: { record() {}, events: async () => [], tail: async () => [] },
-    acl: createAclStore(),
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl())),
     deployDir: mkdtempSync(join(tmpdir(), "reap-")),
   });
   return {

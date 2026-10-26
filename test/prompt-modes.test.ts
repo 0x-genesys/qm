@@ -27,6 +27,7 @@ import { createPostgresMemoryService } from "../src/memory/postgres-memory-servi
 import { createPostgresRateLimiter } from "../src/ratelimit/postgres-rate-limiter.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { testConfigStore, testDatabaseUrl, testDeployBackings, testMap } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 const ORG = "default-org";
 
@@ -86,7 +87,7 @@ async function buildOrchestrator(
   if (opts.orgSoul !== undefined) await config.setSoul(scopeId("org", ORG), opts.orgSoul);
   if (opts.branding) await config.setBranding(scopeId("org", ORG), opts.branding);
 
-  const acl = createAclStore();
+  const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   const auditLog = createPostgresAuditLog(testDatabaseUrl());
   const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "pm-")));
   const memory = createPostgresMemoryService(testDatabaseUrl());

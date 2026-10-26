@@ -11,6 +11,8 @@ import { externalTools } from "../src/core/orchestrator/external-tools.ts";
 import type { ToolContext } from "../src/tools/primitives.ts";
 import { scopeId, type TurnRequest } from "../src/types.ts";
 import { selectDefaultSandbox } from "./support/default-sandbox.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 const policy = { companyDomains: ["example.com"], companyTeamIds: ["TCOMPANY"], serviceCredentials: ["safe"] };
 const externalSlackPolicies = { batch: policy };
@@ -162,7 +164,7 @@ test("external broker requires the current run lease and both external-safe and 
   const { createMemoryRunStore } = await import("../src/runs/memory-run-store.ts");
   const { createAclStore } = await import("../src/acl/acl-store.ts");
   const { runs } = createMemoryRunStore();
-  const acl = createAclStore();
+  const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   const req = request("test");
   const { run: queued } = await runs.enqueue({
     sessionId: req.conversation.threadRef,

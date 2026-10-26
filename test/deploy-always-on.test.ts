@@ -10,7 +10,8 @@ import type { DeployProvider } from "../src/deploy/deploy-provider.ts";
 import type { DeployEndpoint } from "../src/deploy/deploy-store.ts";
 import { scopeId } from "../src/types.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
-import { testDeployBackings } from "./support/test-database.ts";
+import { testDeployBackings, testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 function svc(
   opts: {
@@ -50,7 +51,7 @@ function svc(
     deployStore,
     provider,
     auditLog: { record() {}, events: async () => [], tail: async () => [] },
-    acl: createAclStore(),
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl())),
     deployDir: mkdtempSync(join(tmpdir(), "always-on-")),
   });
   return {
@@ -147,7 +148,7 @@ test("alwaysOn is visible to the provider at first launch (not applied after the
     deployStore,
     provider,
     auditLog: { record() {}, events: async () => [], tail: async () => [] },
-    acl: createAclStore(),
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl())),
     deployDir: mkdtempSync(join(tmpdir(), "always-on-")),
   });
   await deploy.deployOrUpdate({ ...owner, name: "warm-launch", entrypoint: "x", files: [], alwaysOn: true });
@@ -181,7 +182,7 @@ test("reaper re-checks alwaysOn under the deploy lock (no stale-snapshot destroy
     deployStore,
     provider,
     auditLog: { record() {}, events: async () => [], tail: async () => [] },
-    acl: createAclStore(),
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl())),
     deployDir: mkdtempSync(join(tmpdir(), "always-on-")),
   });
   const d = await deploy.deploy({ ...owner, entrypoint: "x", files: [] });

@@ -21,6 +21,7 @@ import { createPostgresDirectoryStore } from "../src/directory/postgres-director
 import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { testDatabaseUrl, testDeployBackings, testMap } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 const externalSharingOn = { enabled: async () => true } as unknown as FeatureFlagStore;
 
@@ -46,7 +47,7 @@ test("app-only gateway checks exact current personal read grants without inherit
     res.end(JSON.stringify(req.headers));
   });
   await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
-  const acl = createAclStore();
+  const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   const deploy = createDeployService({
     ...singleProcessDeps(),
     externalSharingAllowed: async () => true,

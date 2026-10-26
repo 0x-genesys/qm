@@ -13,6 +13,7 @@ import { scopeId } from "../src/types.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
 import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
 import { testDatabaseUrl, testDeployBackings, testMap } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 const CH = "CBUILT";
 const CH_OTHER = "CSHARED";
@@ -21,7 +22,7 @@ async function setup(opts: { withResolver: boolean } = { withResolver: true }) {
   const deployStore = createDeployStore(
     testDeployBackings({ git: { repoRoot: mkdtempSync(join(tmpdir(), "parity-repo-")) } }),
   );
-  const acl: AclStore = createAclStore();
+  const acl: AclStore = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   const directory: DirectoryStore = createPostgresDirectoryStore(testDatabaseUrl());
   const identity = createIdentityService(testMap(), { externalMembers: testMap() });
   await directory.replaceChannels(

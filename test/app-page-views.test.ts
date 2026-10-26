@@ -19,6 +19,7 @@ import { singleProcessDeps } from "./support/single-process.ts";
 import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { testDatabaseUrl, testDeployBackings, testMap } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 const SESSION_SECRET = "portal-session-secret";
 const LOGIN_URL = "https://portal.example.com";
@@ -56,7 +57,7 @@ async function harness(log: AppPageViewLog) {
   });
   upstream.listen(0);
   const upstreamPort = (upstream.address() as AddressInfo).port;
-  const acl = createAclStore();
+  const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   const deploy = createDeployService({
     ...singleProcessDeps(),
     externalSharingAllowed: async () => true,
