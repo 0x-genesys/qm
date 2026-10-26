@@ -187,12 +187,14 @@ The goal is installed as the worker session's goal when that turn starts, and th
 turn runs under the normal goal loop: the worker is prompted to continue until the
 goal's governor approves completion or pauses it, or an optional `token_cap` is
 spent. While a worker's goal is open, its turns run without the swarm `turnMs`
-deadline; when `turnMs` is set, other turns keep it. If a worker's turn ends while
-its goal is still active (it was interrupted, failed, or reached a run limit), the
-swarm wakes it with a message from itself to continue. It does so only while the
-worker is active, the goal's token cap is not spent, and the goal used tokens since
-the last such message, so a turn that cannot start is not retried forever. These
-messages count against `messages` and `notifications` when those budgets are set. `floor` and `token_cap` take the same keys as the goal tool, and
+deadline; when `turnMs` is set, other turns keep it. If a worker's turn is interrupted while its goal is still active (the turn was
+cancelled, or its run was handed back on shutdown and then ended), the swarm wakes
+it with a message from itself to continue. Ordinary failures are left to run
+retries. A wake-up is queued only while the worker is active, the goal's token cap
+is not spent, and the goal used tokens since the last such message, so a turn that
+cannot start is not retried forever. A periodic sweep of recently finished swarm
+runs queues any wake-up a process missed. These messages count against `messages`
+and `notifications` when those budgets are set. `floor` and `token_cap` take the same keys as the goal tool, and
 neither is required. Goals go to workers, not the root session (a goal sent to
 `all` skips the root and the sender), and a goal needs `notify`. The worker treats the agent that sent the goal as the user for it and
 messages that agent when it needs a decision. When a goal is complete, the worker
