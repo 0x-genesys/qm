@@ -5,6 +5,7 @@ import { createBackgroundBroker } from "../src/connectors/background-exec-broker
 import { createMemoryProcessRegistry } from "../src/processes/process-registry.ts";
 import { createReaperKillHook } from "../src/processes/process-reaper.ts";
 import { createScratchJobComputers } from "../src/processes/scratch-job-computers.ts";
+import { isScratchJobComputer, ScratchJobComputerGoneError } from "../src/sandbox/held-computers.ts";
 import type { ProcessSandbox, ProvisionOptions, SandboxHandle, TeardownOptions } from "../src/sandbox/sandbox.ts";
 import type { WorkspaceLayer } from "../src/types.ts";
 
@@ -25,6 +26,11 @@ function fixture() {
   const sandbox = {
     profile: { processSessions: true },
     async provision(_layers: WorkspaceLayer[], opts?: ProvisionOptions) {
+      if (opts?.sandboxId && isScratchJobComputer(opts.sandboxId)) {
+        const held = scratchJobs.get(opts.sandboxId);
+        if (!held) throw new ScratchJobComputerGoneError();
+        return held;
+      }
       const id = opts?.scratch ? `scratch-${++next}` : (opts?.sandboxId ?? "room");
       provisions.push(id);
       return { id, rootDir: "/workspace" };
@@ -106,7 +112,7 @@ test("a scratch computer running a background job outlives its turn until the jo
 test("the reaper kills a held scratch job in place and skips one this process no longer holds", async () => {
   const f = fixture();
   const { handle, job } = await f.startJob();
-  const kill = createReaperKillHook(f.sandbox, { termGraceMs: 5, killGraceMs: 5, heldComputers: f.scratchJobs });
+  const kill = createReaperKillHook(f.sandbox, { termGraceMs: 5, killGraceMs: 5 });
   const record = (await f.processes.get(job.processId))!;
   await kill({ ...record, sandboxId: "scratch-job:turn:gone" });
   assert.deepEqual(f.signals, []);

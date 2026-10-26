@@ -631,7 +631,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
 
     credentials: Type.Optional(
       Type.Array(Type.String(), {
-        description: `Exact authorized credential handles to materialize for this command only (for a background job, until it exits). Newly granted handles are accepted. ${scratchExec ? "In a shared conversation, a command naming any credential except a brokered org service runs on this turn's scratch computer instead, even with sandbox_id: no shared workspace files (fetch scripts from Files or git in the command), discarded once the turn and its background jobs end." : "In a shared conversation only brokered org service credentials can be used: this deployment has no scratch computer."}`,
+        description: `Exact authorized credential handles to materialize for this command only (for a background job, until it exits). Newly granted handles are accepted. ${scratchExec ? "In a shared conversation, a command naming any credential except a brokered org service runs on a scratch computer for this turn instead, even with sandbox_id: no shared workspace files (fetch scripts from Files or git in the command), discarded after the turn; background jobs get their own, discarded shortly after they end." : "In a shared conversation only brokered org service credentials can be used: this deployment has no scratch computer."}`,
       }),
     ),
   };
@@ -1925,7 +1925,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       });
       const { output: _output, scratchReroute, ...startMeta } = r;
       const placePrefix = scratchReroute
-        ? "[running on this turn's scratch computer, not the shared one, because it names a private credential; that computer is discarded once the turn and its background jobs end]\n"
+        ? "[running on a scratch computer for this turn's background jobs, not the shared one, because it names a private credential; it is discarded shortly after its jobs end]\n"
         : "";
       return recordResult(
         callId,

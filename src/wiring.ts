@@ -2759,7 +2759,6 @@ export function buildApp(
           ? {
               kill: createReaperKillHook(sandbox, {
                 onExit: finishCredentials,
-                ...(scratchJobs ? { heldComputers: scratchJobs } : {}),
               }),
             }
           : {}),

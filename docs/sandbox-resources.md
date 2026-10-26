@@ -37,13 +37,18 @@ service handles (`AGENT_CREDENTIAL_TOKEN`) carry no secret and stay on the reque
 computer. Deployments without scratch execution refuse such credentials in shared
 conversations. Personal conversations stage credentials on their own computer as before.
 
-A background job that names such a credential also starts on the turn's scratch computer.
-The core process that ran the turn keeps that computer after the turn while any of its
-jobs is running, checks the jobs every ten seconds, and destroys the computer once none
-is left (exit, stop, or the job's lifetime running out). The computer is not durable: a
-core process that drains on shutdown destroys the scratch computers it still holds, and
-polling, stopping or watching such a job from another core process reports that its
-computer was retired on deploy.
+A background job that names such a credential starts on a second per-turn scratch
+computer reserved for jobs, so foreground commands never share a computer with a job
+other members can poll or send input to. The core process that ran the turn keeps that
+computer while any of its jobs is running or still writing refreshed credentials back,
+checks every ten seconds, and destroys it five minutes after the last job ends (exit,
+stop, or the job's lifetime running out) so the final output can still be read. The
+computer is not durable: a core process that drains on shutdown marks its running jobs
+reaped, writes their credentials back and destroys the computer. Polling a job after
+its computer is gone reports that the job finished; another core process reports that
+it cannot reach the job, and a watch reports the job lost. In an Open conversation the
+live speaker's own credentials stay foreground-only, because other members can control
+background jobs.
 
 The `background` tool controls existing jobs with `poll`, `send_input`, `stop`, `list`,
 `watch`, and `unwatch`. Process IDs retain their durable saved target even after the
