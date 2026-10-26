@@ -97,13 +97,35 @@ async function runIsolated(file, index) {
   try {
     await admin.query(`CREATE DATABASE ${name}`);
     if (stopping) return { file, ok: false, ms: 0, output: "" };
-    return await runFile(file, { DATABASE_URL: databaseUrl(name) });
+    return await runFile(file, { DATABASE_URL: databaseUrl(name), QM_TEST_TEMPLATE_DATABASE: templateName });
   } finally {
     await dropDatabase(name);
   }
 }
 
+const templateName = `${runId}_template`;
+
+function migrateTemplate() {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      [new URL("../test/support/test-template.ts", import.meta.url).pathname, databaseUrl(templateName)],
+      { stdio: ["ignore", "ignore", "inherit"] },
+    );
+    child.on("error", reject);
+    child.on("close", (code) =>
+      code === 0 ? resolve() : reject(new Error(`Migrating ${templateName} exited ${code}`)),
+    );
+  });
+}
+
 const started = Date.now();
+await admin.query(`CREATE DATABASE ${templateName}`);
+await migrateTemplate().catch(async (error) => {
+  await dropDatabase(templateName);
+  await endPool();
+  throw error;
+});
 const results = [];
 let next = 0;
 const work = Promise.all(
@@ -130,6 +152,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     stopping = true;
     for (const child of children) killGroup(child);
     void work.then(async () => {
+      await dropDatabase(runId).catch(() => {});
       await endPool();
       process.exit(signal === "SIGINT" ? 130 : 143);
     });
@@ -138,6 +161,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 
 await work;
 if (stopping) await new Promise(() => {});
+await dropDatabase(runId);
 await endPool();
 
 const failed = results.filter((result) => !result.ok);
