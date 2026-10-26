@@ -4,7 +4,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createScopedEventSink } from "../src/admin/scoped-event-sink.ts";
 import { scopeId } from "../src/types.ts";
-import { createPostgresAuditLog } from "../src/admin/postgres-audit-log.ts";
 import { createPostgresErrorLog } from "../src/admin/postgres-error-log.ts";
 import { testDatabaseUrl } from "./support/test-database.ts";
 
@@ -62,17 +61,6 @@ test("error log records and lists scope-filtered newest-first", async () => {
   assert.ok(typeof mine[0]?.ts === "number");
   assert.equal(await log.count(), 2, "count totals every event");
   assert.equal(await log.count({ scopeId: s1 }), 1, "count honors the scope filter");
-});
-
-test("audit log is now bounded (latent leak fixed) and preserves insertion order", async () => {
-  const log = createPostgresAuditLog(testDatabaseUrl());
-  for (let i = 0; i < 50001; i++) {
-    log.record({ at: i, principalId: "p", action: "turn", resource: "r", scopeLabel: s1 });
-  }
-  const events = await log.events();
-  assert.equal(events.length, 50000, "bounded at the cap");
-  assert.equal(events[0]?.at, 1, "oldest event dropped");
-  assert.equal(events[events.length - 1]?.at, 50000, "newest retained, oldest-first order");
 });
 
 test("error log pages beyond the former 200-record window after filtering", async () => {

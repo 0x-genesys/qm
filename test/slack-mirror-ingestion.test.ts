@@ -508,7 +508,8 @@ test("real message handler checks prior stake before ingesting the current reply
     thread_ts: "1.000001",
     text: "follow-up",
   });
-  await new Promise((resolve) => setImmediate(resolve));
+  for (let i = 0; i < 200 && (f.dispatches.length === 0 || records.length === 0); i++)
+    await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(f.dispatches.length, 1);
   assert.equal(calls.length, 1);
   assert.equal(records.length, 1);

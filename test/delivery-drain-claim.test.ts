@@ -83,13 +83,13 @@ test("an expired claim re-surfaces the row to a later poll (drainer died mid-pos
       text: "claimed then abandoned",
       idempotencyKey: "post:sess-3:one",
     });
-    assert.equal((await fetchPending(srv.base, "type=group&claimMs=50")).length, 1);
+    assert.equal((await fetchPending(srv.base, "type=group&claimMs=2000")).length, 1);
     assert.equal(
-      (await fetchPending(srv.base, "type=group&claimMs=50")).length,
+      (await fetchPending(srv.base, "type=group&claimMs=2000")).length,
       0,
       "claimed rows are invisible before the TTL",
     );
-    await new Promise((r) => setTimeout(r, 80));
+    await new Promise((r) => setTimeout(r, 2100));
     assert.equal((await fetchPending(srv.base, "type=group&claimMs=15000")).length, 1, "the abandoned row comes back");
   } finally {
     await srv.close();
