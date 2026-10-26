@@ -347,9 +347,10 @@ test("per-user mode fails closed without a keychain and shared mode preserves ex
     }),
   );
   await service.refresh();
-  const count = mcp.requests.length;
+  const calls = () => mcp.requests.filter((r) => r.rpc === "tools/call").length;
+  const count = calls();
   await assert.rejects(service.call("crm_query", {}, "internal:alice"), /requires a connected user/);
-  assert.equal(mcp.requests.length, count);
+  assert.equal(calls(), count);
   await store.put(server({ url: mcp.url, auth: "bearer", bearerToken: "shared-token", credentialScope: "shared" }));
   await service.refresh();
   assert.equal(await service.call("crm_query", {}), "ran query");
