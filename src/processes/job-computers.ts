@@ -4,7 +4,7 @@ import type { ProcessRecord, ProcessRegistry } from "./process-registry.ts";
 import { reconcileProcesses } from "./reconcile.ts";
 
 const STARTUP_GRACE_MS = 2 * 60_000;
-const RECONCILE_EVERY_MS = 5 * 60_000;
+const RETRY_EVERY_MS = 5 * 60_000;
 
 const live = (job: ProcessRecord): boolean => job.status === "running" || Boolean(job.credentialsPending);
 
@@ -16,19 +16,28 @@ export function createJobComputerSweep(deps: {
   onError: (error: unknown, scopeId: string) => void;
   now?: () => number;
 }): () => Promise<void> {
-  const reconciledAt = new Map<string, number>();
+  const attemptedAt = new Map<string, number>();
   const clock = deps.now ?? Date.now;
   return async () => {
     const now = clock();
     for (const computer of await deps.resources.jobComputers()) {
       try {
+        if (computer.state === "provisioning") continue;
+        const throttled = now - (attemptedAt.get(computer.id) ?? 0) < RETRY_EVERY_MS;
+        if (computer.state === "retired" || computer.error) {
+          if (throttled) continue;
+          attemptedAt.set(computer.id, now);
+          await deps.resources.retireJobComputer(computer.id);
+          attemptedAt.delete(computer.id);
+          continue;
+        }
         const jobs = async () =>
           (await deps.processes.listByScope(computer.ownerScopeId)).filter((job) => job.sandboxId === computer.id);
         let current = await jobs();
         if (!current.length && now - Date.parse(computer.createdAt) < STARTUP_GRACE_MS) continue;
         if (current.some(live)) {
-          if (now - (reconciledAt.get(computer.id) ?? 0) < RECONCILE_EVERY_MS) continue;
-          reconciledAt.set(computer.id, now);
+          if (throttled) continue;
+          attemptedAt.set(computer.id, now);
           const handle = await deps.sandbox.provision([{ scopeId: computer.ownerScopeId, mode: "rw", mountPath: "" }], {
             sandboxId: computer.id,
           });
@@ -43,7 +52,7 @@ export function createJobComputerSweep(deps: {
           if (current.some(live)) continue;
         }
         await deps.resources.retireJobComputer(computer.id);
-        reconciledAt.delete(computer.id);
+        attemptedAt.delete(computer.id);
       } catch (error) {
         deps.onError(error, computer.ownerScopeId);
       }

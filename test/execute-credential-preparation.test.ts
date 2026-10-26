@@ -240,7 +240,10 @@ test("background jobs with private credentials start on their own job computer",
     },
   } as unknown as ToolContextDeps["backgroundBroker"];
   const without = scratchContext(events, { backgroundBroker: broker });
-  await assert.rejects(without.ctx.backgroundStart("sync", { purpose: "Sync", credentials: ["granted"] }));
+  await assert.rejects(
+    without.ctx.backgroundStart("sync", { purpose: "Sync", credentials: ["granted"] }),
+    /cannot use granted; run the command in the foreground/,
+  );
   assert.ok(!events.some((event) => event.startsWith("resolve")));
   const { ctx } = scratchContext(events, {
     backgroundBroker: broker,
@@ -331,6 +334,5 @@ test("the model and transcript see when a command moved to the scratch computer"
   assert.equal(entries.at(-1)?.scope, "scoped");
   available = false;
   await assert.rejects(run({ credentials: ["granted"] }), /provider unavailable/);
-  assert.equal(entries.at(-1)?.scope, "scratch");
   assert.equal(entries.at(-1)?.isError, true);
 });

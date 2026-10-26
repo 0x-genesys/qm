@@ -553,16 +553,6 @@ export interface ToolContextDeps {
   sessionId?: string;
 }
 
-const scratchRerouteFailures = new WeakSet<object>();
-
-const markScratchRerouteFailure = (error: unknown): never => {
-  if (error !== null && typeof error === "object") scratchRerouteFailures.add(error);
-  throw error;
-};
-
-export const reroutedToScratch = (error: unknown): boolean =>
-  error !== null && typeof error === "object" && scratchRerouteFailures.has(error);
-
 const scratchOnlyHandles = (credentials: readonly CommandCredential[]): string =>
   credentials
     .filter((credential) => credential.scratchOnly)
@@ -919,10 +909,8 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         } else {
           authorizeExecution(command, undefined, executionPolicy());
           if (reached) handle = await deps.reach!.provisionFor(reached.scopeId);
-          else if (scratch || scratchOnly) {
-            const provisioning = deps.provisionScratch!();
-            handle = await (scratchReroute ? provisioning.catch(markScratchRerouteFailure) : provisioning);
-          } else handle = await deps.provision();
+          else if (scratch || scratchOnly) handle = await deps.provisionScratch!();
+          else handle = await deps.provision();
         }
         const resolvedMs = execOpts?.timeoutSeconds != null ? execOpts.timeoutSeconds * 1000 : deps.execTimeoutMs;
         const timeoutMs =
@@ -976,7 +964,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           );
           return { ...r, ...(reached ? { reached } : {}), ...(scratchReroute ? { scratchReroute } : {}) };
         });
-        return scratchReroute ? executed.catch(markScratchRerouteFailure) : executed;
+        return executed;
       });
     },
 

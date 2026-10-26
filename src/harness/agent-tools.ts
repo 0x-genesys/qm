@@ -16,7 +16,7 @@ import { CONFIG_DEFAULTS, type Config } from "../config.ts";
 import type { ClientToolDeclaration, CronFireLogEntry, EntryType, ScopeId } from "../types.ts";
 import type { ToolContext, PublishInput, PublishAudienceDescriptor } from "../tools/primitives.ts";
 import type { GapWork } from "../sessions/session-store.ts";
-import { NeedsApproval, CommandDenied, reroutedToScratch } from "../tools/primitives.ts";
+import { NeedsApproval, CommandDenied } from "../tools/primitives.ts";
 import type { McpToolDescriptor } from "../mcp/mcp-tool-service.ts";
 import { splitToScope } from "../api/artifact-share.ts";
 import { errMessage, reportFailure, swallowAs } from "../util/errors.ts";
@@ -730,9 +730,8 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         r.reached ? { provenance: "external", source: "reached room" } : undefined,
       );
     } catch (e) {
-      const failureScope = reroutedToScratch(e) ? { scope: "scratch" } : scopeNote;
       if (e instanceof MaskedExecutionError) {
-        return recordResult(callId, { tool: "execute", ...failureScope }, text(e.message), true);
+        return recordResult(callId, { tool: "execute", ...scopeNote }, text(e.message), true);
       }
       if (e instanceof NeedsApproval) return blockOnApproval(callId, e, params.purpose);
       if (e instanceof CommandDenied) {
@@ -745,7 +744,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
       }
       await log("tool_result", {
         tool: "execute",
-        ...failureScope,
+        ...scopeNote,
         callId,
         isError: true,
         result: `Command execution failed: ${redactSecrets(errMessage(e))}`,

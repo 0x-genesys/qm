@@ -225,15 +225,14 @@ export function createSandboxResources(opts: {
     },
     async jobComputers() {
       await initialize();
-      return (await opts.records.all()).filter(
-        (record) => record.jobOnly && (record.state !== "retired" || record.cleanupPending || record.error),
-      );
+      return (await opts.records.all()).filter((record) => record.jobOnly);
     },
     async retireJobComputer(id) {
       await opts.lock.withLock(`sandbox-resource:${id}`, async () => {
         const current = await get(id);
-        if (current.jobOnly && (current.state !== "retired" || current.cleanupPending || current.error))
-          await destroy(current);
+        if (!current.jobOnly) return;
+        await destroy(current);
+        await opts.records.delete(id);
       });
     },
     access: agentRecord,
@@ -282,7 +281,9 @@ export function createSandboxResources(opts: {
       if (!Object.hasOwn(opts.backends, backend) || !opts.backends[backend as SandboxBackendName])
         throw new Error(`sandbox backend unavailable: ${backend}`);
       if (jobOnly && !opts.backends[backend as SandboxBackendName]?.destroyScope)
-        throw new Error(`background jobs with private credentials need a computer that ${backend} can retire`);
+        throw new Error(
+          `background jobs with private credentials need a computer that ${backend} can retire; run the command in the foreground`,
+        );
       const id = reservationId ?? randomUUID();
       if (!/^[a-zA-Z0-9-]{1,80}$/.test(id)) throw new Error("invalid sandbox reservation");
       const record: SandboxResource = {
