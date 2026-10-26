@@ -80,15 +80,6 @@ export interface GrantPersistence {
   ): Promise<boolean>;
 }
 
-function sameGrant(a: Grant, b: Grant): boolean {
-  return (
-    a.ownerScopeId === b.ownerScopeId &&
-    a.ref === b.ref &&
-    a.granteeScopeId === b.granteeScopeId &&
-    a.permission === b.permission
-  );
-}
-
 export function createAclStore(persist: GrantPersistence, opts: AclStoreOptions = {}): AclStore {
   async function resolveGrantedFiles(grants: readonly Grant[]): Promise<Map<string, FileArtifact>> {
     const refs = grants.filter(isFileGrant).map((g) => ({ id: g.ref, ownerScopeId: g.ownerScopeId }));
