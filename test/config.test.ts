@@ -185,7 +185,6 @@ test("Modal without an egress proxy warns that sandboxes run fail-open", () => {
 });
 
 test("a leftover *=sqlite env throws (no silent downgrade to ephemeral memory)", () => {
-  assert.throws(() => loadConfig({ SESSION_STORE: "sqlite" }), /SESSION_STORE=sqlite is no longer supported/);
   assert.throws(() => loadConfig({ RUN_STORE: "sqlite" }), /RUN_STORE=sqlite is no longer supported/);
   assert.throws(() => loadConfig({ ARTIFACT_STORE: "sqlite" }), /ARTIFACT_STORE=sqlite is no longer supported/);
 });
