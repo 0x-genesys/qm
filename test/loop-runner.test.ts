@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { setTimeout as sleep } from "node:timers/promises";
 import { createLoopStore } from "../src/loops/loop-store.ts";
 import { createLoopItemLedger } from "../src/loops/item-ledger.ts";
 import { createLoopOutputStore } from "../src/loops/output-store.ts";
@@ -400,8 +401,10 @@ test("a quiet fire that needs nobody says so", async () => {
   assert.equal(fireNeedsAttention(summary), false);
 });
 
-async function settle(): Promise<void> {
-  for (let i = 0; i < 50; i++) await new Promise((resolve) => setImmediate(resolve));
+async function settle(started: string[], count: number): Promise<number> {
+  for (let i = 0; i < 500 && started.length < count; i++) await sleep(10);
+  await sleep(50);
+  return started.length;
 }
 
 function heldWork(started: string[], release: Map<string, () => void>): LoopRunnerEffects["work"] {
@@ -425,11 +428,9 @@ test("a concurrency cap of 2 starts a second item while the first still runs, an
       work: heldWork(started, release),
     }),
   );
-  await settle();
-  assert.equal(started.length, 2);
+  assert.equal(await settle(started, 2), 2);
   release.get(started[1]!)!();
-  await settle();
-  assert.equal(started.length, 3);
+  assert.equal(await settle(started, 3), 3);
   release.get(started[0]!)!();
   release.get(started[2]!)!();
   const summary = await fire;
@@ -451,14 +452,11 @@ test("an unset concurrency cap still starts the next item only after the previou
       work: heldWork(started, release),
     }),
   );
-  await settle();
-  assert.equal(started.length, 1);
+  assert.equal(await settle(started, 1), 1);
   release.get(started[0]!)!();
-  await settle();
-  assert.equal(started.length, 2);
+  assert.equal(await settle(started, 2), 2);
   release.get(started[1]!)!();
-  await settle();
-  assert.equal(started.length, 3);
+  assert.equal(await settle(started, 3), 3);
   release.get(started[2]!)!();
   const summary = await fire;
   assert.deepEqual([...started].sort(), ["A", "B", "C"]);
@@ -486,10 +484,9 @@ test("an undeclared ship action parks its own item and leaves the item running b
       ],
     }),
   );
-  await settle();
-  assert.equal(started.length, 2);
+  assert.equal(await settle(started, 2), 2);
   release.get("A")!();
-  await settle();
+  await settle(started, 2);
   release.get("B")!();
   const summary = await fire;
   const idOf = new Map((await s.items.byLoop(loop.id)).map((item) => [item.sourceKey, item.id]));
@@ -535,12 +532,10 @@ test("a failed claim does not reject the fire while a sibling item is still in f
     .finally(() => {
       fireSettled = true;
     });
-  await settle();
-  assert.equal(started.length, 1);
+  assert.equal(await settle(started, 1), 1);
   assert.equal(fireSettled, false);
   release.get(started[0]!)!();
-  await settle();
-  assert.equal(started.length, 2);
+  assert.equal(await settle(started, 2), 2);
   assert.equal(fireSettled, false);
   release.get(started[1]!)!();
   assert.equal(await outcome, "ledger unavailable");
