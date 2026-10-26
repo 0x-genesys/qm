@@ -20,7 +20,7 @@ COPY plugins/web-ui/public ./public
 COPY plugins/web-ui/src ./src
 COPY plugins/chassis/src /app/plugins/chassis/src
 COPY docs/images/slack-app-config-token-setup.gif /app/docs/images/slack-app-config-token-setup.gif
-RUN npm run build
+RUN NODE_OPTIONS=--max-old-space-size=4096 npm run build
 
 FROM node:24.22.1-alpine3.24@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53
 
