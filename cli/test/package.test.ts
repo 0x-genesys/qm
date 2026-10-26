@@ -208,7 +208,7 @@ test(
         adminOnboardingUrl?: string;
       };
       assert.equal(outputs.webUiUrl, "https://acme-aws.example.com");
-      assert.equal(outputs.adminOnboardingUrl, "https://acme-aws.example.com/admin/onboarding");
+      assert.equal(outputs.adminOnboardingUrl, "https://acme-aws.example.com/settings/onboarding");
       const awsConfigPath = join(awsDeployment, "qm.config.jsonc");
       writeFileSync(
         awsConfigPath,
