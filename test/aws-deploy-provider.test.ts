@@ -445,7 +445,7 @@ test("resolveEndpoint: an app in use is served from cache and re-checked in the 
   t.mock.timers.tick(60_000);
   const hot = await p.resolveEndpoint!(d, version("/unused"));
   assert.equal(hot!.host, first!.host, "the visit is answered from cache");
-  await new Promise((r) => setImmediate(r));
+  for (let i = 0; i < 400 && counts.describe === describes; i++) await new Promise((r) => setTimeout(r, 5));
   assert.equal(counts.describe, describes + 1, "a background re-check refreshed the verdict");
 
   const moved = { ...d, endpoint: { host: "elsewhere.on.aws", port: 443 } };
