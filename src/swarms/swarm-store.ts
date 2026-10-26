@@ -18,7 +18,6 @@ export const SWARM_LIMITS = {
   provisionMs: 10_000,
   continuationSweepMs: 60_000,
   continuationLookbackMs: 15 * 60_000,
-  continuationOverlapMs: 60_000,
   continuationPage: 200,
 } as const;
 

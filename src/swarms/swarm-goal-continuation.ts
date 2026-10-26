@@ -45,7 +45,6 @@ export function createSwarmGoalContinuation(deps: {
   lock: AdvisoryLock;
 }): Sweeper & { sweep(): Promise<void> } {
   const { store, sessions, runs } = deps;
-  let scannedFrom: number | undefined;
 
   async function continueGoal(run: Run): Promise<void> {
     const target = run.request.swarm;
@@ -79,25 +78,17 @@ export function createSwarmGoalContinuation(deps: {
   }
 
   async function sweep(): Promise<void> {
-    const startedAt = Date.now();
     const claim = deps.lock.tryWithLock?.bind(deps.lock) ?? deps.lock.withLock.bind(deps.lock);
-    await claim("swarm-goal-continuation", async () => {
-      await forEachTerminalRun(
+    await claim("swarm-goal-continuation", () => {
+      const now = Date.now();
+      return forEachTerminalRun(
         runs,
-        {
-          fromMs: Math.max(
-            startedAt - SWARM_LIMITS.continuationLookbackMs,
-            (scannedFrom ?? 0) - SWARM_LIMITS.continuationOverlapMs,
-          ),
-          beforeMs: startedAt,
-          page: SWARM_LIMITS.continuationPage,
-        },
+        { fromMs: now - SWARM_LIMITS.continuationLookbackMs, beforeMs: now, page: SWARM_LIMITS.continuationPage },
         async (batch) => {
           for (const run of batch)
             if (run.request.swarm) await continueGoal(run).catch(swallowAs("swarm: goal continuation", undefined));
         },
       );
-      scannedFrom = startedAt;
     });
   }
 
