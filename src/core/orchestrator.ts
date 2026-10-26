@@ -2407,7 +2407,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           deps.turnStream?.begin(input.runId);
         }
 
-        const broker =
+        const backgroundBroker =
           deps.processes && supportsProcessSessions(deps.sandbox)
             ? createBackgroundBroker({
                 sandbox: deps.sandbox,
@@ -2429,15 +2429,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 ...(deps.backgroundJobTtlMaxMs !== undefined ? { ttlMaxMs: deps.backgroundJobTtlMaxMs } : {}),
               })
             : undefined;
-        const backgroundBroker = broker && {
-          ...broker,
-          write: async (...[handle, processId, data]: Parameters<typeof broker.write>) => {
-            const sandboxId = (await deps.processes!.get(processId))?.sandboxId;
-            if (sandboxId && (await deps.sandboxResources?.get(sandboxId))?.jobOnly)
-              throw new Error("a background job that uses private credentials does not accept input");
-            return broker.write(handle, processId, data);
-          },
-        };
 
         const readOutputTail = backgroundBroker
           ? async (processId: string, maxBytes: number) => {

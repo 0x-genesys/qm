@@ -341,7 +341,7 @@ import {
   type ProcessRegistry,
 } from "./processes/process-registry.ts";
 import { createProcessReaper, createReaperKillHook, type ProcessReaper } from "./processes/process-reaper.ts";
-import { retireFinishedJobComputers } from "./processes/job-computers.ts";
+import { createJobComputerSweep } from "./processes/job-computers.ts";
 import { createMonitorStore, type MonitorStore } from "./monitors/monitor-store.ts";
 import { createMonitorPoller, type MonitorPoller } from "./monitors/monitor-poller.ts";
 import { createSkillSyncEngine, type SkillSyncEngine } from "./skills/skill-sync-engine.ts";
@@ -2739,23 +2739,22 @@ export function buildApp(
         ...(supportsProcessSessions(sandbox)
           ? {
               kill: createReaperKillHook(sandbox, { onExit: finishCredentials }),
-              afterSweep: () =>
-                retireFinishedJobComputers({
-                  resources: sandboxResources,
-                  sandbox,
-                  processes: processes!,
-                  finish: finishCredentials,
-                  onError: (error, scopeId) =>
-                    errors.record(
-                      {
-                        category: "process_session",
-                        code: "job_computer_retire_failed",
-                        message: errMessage(error),
-                        scopeLabel: scopeId,
-                      },
-                      error,
-                    ),
-                }),
+              afterSweep: createJobComputerSweep({
+                resources: sandboxResources,
+                sandbox,
+                processes: processes!,
+                finish: finishCredentials,
+                onError: (error, scopeId) =>
+                  errors.record(
+                    {
+                      category: "process_session",
+                      code: "job_computer_retire_failed",
+                      message: errMessage(error),
+                      scopeLabel: scopeId,
+                    },
+                    error,
+                  ),
+              }),
             }
           : {}),
         leaderLease,

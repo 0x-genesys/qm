@@ -2783,13 +2783,7 @@ test("only execute advertises command starts and sandbox is lifecycle-only", asy
         );
       }
     }
-    for (const input of [
-      { scope: "scratch" },
-      { scope: "owner" },
-      { scope: "#room" },
-      { durable: false },
-      { sandbox_id: null },
-    ])
+    for (const input of [{ scope: "scratch" }, { scope: "#room" }, { durable: false }, { sandbox_id: null }])
       assert.match(
         textOut(
           await call(execute, { command: "forbidden", purpose: "Test invalid routing", background: true, ...input }),

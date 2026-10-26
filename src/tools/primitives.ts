@@ -1363,6 +1363,8 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     async backgroundWrite(processId: string, data: string): Promise<BackgroundWriteResult> {
       if (!deps.backgroundBroker) throw new Error(BACKGROUND_UNAVAILABLE_MESSAGE);
       const handle = (await deps.backgroundBroker.handleFor?.(processId)) ?? (await deps.provision());
+      if (handle.resourceId && (await deps.sandboxResources?.get(handle.resourceId))?.jobOnly)
+        throw new Error("a background job that uses private credentials does not accept input");
       return once(
         () => deps.backgroundBroker!.write(handle, processId, data),
         () => true,

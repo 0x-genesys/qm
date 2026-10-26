@@ -225,7 +225,9 @@ export function createSandboxResources(opts: {
     },
     async jobComputers() {
       await initialize();
-      return (await opts.records.all()).filter((record) => record.jobOnly && record.state !== "retired");
+      return (await opts.records.all()).filter(
+        (record) => record.jobOnly && (record.state !== "retired" || record.cleanupPending || record.error),
+      );
     },
     async retireJobComputer(id) {
       await opts.lock.withLock(`sandbox-resource:${id}`, async () => {
@@ -279,6 +281,8 @@ export function createSandboxResources(opts: {
       await authorize(actorId, scopeId);
       if (!Object.hasOwn(opts.backends, backend) || !opts.backends[backend as SandboxBackendName])
         throw new Error(`sandbox backend unavailable: ${backend}`);
+      if (jobOnly && !opts.backends[backend as SandboxBackendName]?.destroyScope)
+        throw new Error(`background jobs with private credentials need a computer that ${backend} can retire`);
       const id = reservationId ?? randomUUID();
       if (!/^[a-zA-Z0-9-]{1,80}$/.test(id)) throw new Error("invalid sandbox reservation");
       const record: SandboxResource = {

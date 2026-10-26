@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { retireFinishedJobComputers } from "../src/processes/job-computers.ts";
+import { createJobComputerSweep } from "../src/processes/job-computers.ts";
 import { createMemoryProcessRegistry } from "../src/processes/process-registry.ts";
 import type { SandboxResource } from "../src/sandbox/sandbox-resources.ts";
 import type { ProcessSandbox, SandboxHandle } from "../src/sandbox/sandbox.ts";
@@ -38,18 +38,25 @@ function fixture() {
         }));
     },
   } as unknown as ProcessSandbox;
-  const sweep = () =>
-    retireFinishedJobComputers({
-      resources: {
-        jobComputers: async () => computers.filter((computer) => !retired.includes(computer.id)),
-        retireJobComputer: async (id) => void retired.push(id),
-      },
-      sandbox,
-      processes,
-      finish: async (_handle, processId) => void finished.push(processId),
-      onError: (error) => void errors.push(error),
-    });
-  return { processes, exited, retired, finished, errors, sweep };
+  let now = Date.now();
+  const provisions: string[] = [];
+  const origProvision = sandbox.provision.bind(sandbox);
+  sandbox.provision = async (layers, opts) => {
+    provisions.push(opts!.sandboxId!);
+    return origProvision(layers, opts);
+  };
+  const sweep = createJobComputerSweep({
+    resources: {
+      jobComputers: async () => computers.filter((computer) => !retired.includes(computer.id)),
+      retireJobComputer: async (id) => void retired.push(id),
+    },
+    sandbox,
+    processes,
+    finish: async (_handle, processId) => void finished.push(processId),
+    onError: (error) => void errors.push(error),
+    now: () => now,
+  });
+  return { processes, exited, retired, finished, errors, provisions, sweep, advance: (ms: number) => void (now += ms) };
 }
 
 test("the job sweep retires a job computer only after its jobs end and write back", async () => {
@@ -73,6 +80,23 @@ test("the job sweep retires a job computer only after its jobs end and write bac
   assert.equal((await f.processes.get("p-a"))?.status, "exited");
   f.exited.add("p-b");
   await f.sweep();
-  assert.deepEqual(f.retired, ["job-a", "job-b"]);
+  assert.deepEqual(f.retired, ["job-a"], "a box checked within the last five minutes is left alone");
+  f.advance(5 * 60_000);
+  await f.sweep();
+  assert.deepEqual(
+    f.retired.filter((id) => id !== "job-new"),
+    ["job-a", "job-b"],
+  );
+  assert.deepEqual(f.provisions, ["job-a", "job-b", "job-b"]);
   assert.deepEqual(f.errors, []);
+});
+
+test("a job computer with no job yet survives the startup grace period and is retired after it", async () => {
+  const f = fixture();
+  await f.sweep();
+  assert.ok(!f.retired.includes("job-new"));
+  f.advance(3 * 60_000);
+  await f.sweep();
+  assert.ok(f.retired.includes("job-new"));
+  assert.deepEqual(f.provisions, []);
 });

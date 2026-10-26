@@ -34,7 +34,7 @@ is the ordinary per-turn one: same image, the turn's environment and capability 
 Files, skills and global mounts, but none of the shared workspace's files. Only that
 turn's commands run there. The result tells the model the command moved. Brokered org
 service handles (`AGENT_CREDENTIAL_TOKEN`) carry no raw secret and stay on the requested
-computer. Personal conversations stage credentials on their own computer as before.
+computer. Personal conversations stage credentials on their own computer.
 
 A background job in a shared conversation that names such a credential starts on its own
 job computer: a sandbox record marked job-only, created on the conversation's provider. It
