@@ -173,10 +173,6 @@ function schemaDifferences(
   const targetTables = new Set(target.map((shape) => shape.table));
   const stagingTables = new Set(staging.map((shape) => shape.table));
   const differences: string[] = [];
-  for (const table of stagingTables)
-    if (!targetTables.has(table)) differences.push(`table ${table} is missing in the target`);
-  for (const table of targetTables)
-    if (!stagingTables.has(table)) differences.push(`table ${table} is missing in staging`);
   for (const [name, shape] of stagingColumns) {
     if (!targetTables.has(shape.table)) continue;
     const other = targetColumns.get(name);
@@ -311,8 +307,12 @@ async function copyToTarget(
   tenantId: string,
   staging: pg.Client,
   target: pg.Client,
+  targetTables: ReadonlySet<string>,
 ): Promise<TableCount[]> {
-  const tables = await dependencyOrder(target, await tenantTables(staging));
+  const tables = await dependencyOrder(
+    target,
+    (await tenantTables(staging)).filter((table) => targetTables.has(table.name)),
+  );
   await target.query("BEGIN");
   await target.query("SELECT set_config('qm.tenant_id', $1, true)", [tenantId]);
   const existing: string[] = [];
@@ -362,6 +362,28 @@ function formatCounts(counts: readonly TableCount[]): string {
   return lines.join("\n");
 }
 
+// Some stores create their tables at runtime rather than in a registered migration, so either side may lack a table
+// the other has. A table only the target has receives no rows; a table only staging has is fatal only if it holds rows.
+async function checkUnsharedTables(
+  staging: pg.Client,
+  stagingTables: ReadonlySet<string>,
+  targetTables: ReadonlySet<string>,
+  log: (line: string) => void,
+): Promise<void> {
+  const targetOnly = [...targetTables].filter((table) => !stagingTables.has(table)).sort();
+  if (targetOnly.length) log(`tables only in the target (nothing to copy): ${targetOnly.join(", ")}`);
+  const stagingOnly = [...stagingTables].filter((table) => !targetTables.has(table)).sort();
+  if (!stagingOnly.length) return;
+  await staging.query("SET qm.tenant_bypass = 'on'");
+  const populated: string[] = [];
+  for (const table of stagingOnly) {
+    const rows = await countRows(staging, { schema: "public", name: table });
+    if (rows > 0) populated.push(`${table} (${rows} rows)`);
+  }
+  if (populated.length) throw new Error(`tables with rows are missing in the target: ${populated.join(", ")}`);
+  log(`empty tables only in staging (skipped): ${stagingOnly.join(", ")}`);
+}
+
 export async function importTenant(options: TenantImportOptions): Promise<TenantImportResult> {
   const sourceTenant = await stage(options);
   const stagedTenant = await prepareStaging(options);
@@ -371,19 +393,19 @@ export async function importTenant(options: TenantImportOptions): Promise<Tenant
   const staging = await connect(options.stagingUrl);
   const target = await connect(options.targetUrl);
   try {
-    const differences = schemaDifferences(
-      await publicColumns(staging),
-      await publicColumns(target),
-      options.allowExtraColumns,
-    );
+    const stagingShape = await publicColumns(staging);
+    const targetShape = await publicColumns(target);
+    const differences = schemaDifferences(stagingShape, targetShape, options.allowExtraColumns);
     if (differences.length) {
       throw new Error(`staging and target schemas differ:\n  ${differences.join("\n  ")}`);
     }
+    const targetTables = new Set(targetShape.map((shape) => shape.table));
+    await checkUnsharedTables(staging, new Set(stagingShape.map((shape) => shape.table)), targetTables, options.log);
     await staging.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     await staging.query("SET LOCAL qm.tenant_bypass = 'on'");
     let counts: TableCount[];
     try {
-      counts = await copyToTarget(options, tenantId, staging, target);
+      counts = await copyToTarget(options, tenantId, staging, target, targetTables);
       options.log(formatCounts(counts));
       // Triggers on copied tables can derive extra rows (dirty markers, version bumps), so the target may hold more
       // rows than staging; fewer means rows were lost.
