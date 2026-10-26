@@ -89,14 +89,6 @@ function sameGrant(a: Grant, b: Grant): boolean {
   );
 }
 
-function sameGrantTuple(a: Grant, b: Grant): boolean {
-  return sameGrant(a, b) && a.grantedBy === b.grantedBy;
-}
-
-function sameGrantSet(a: readonly Grant[], b: readonly Grant[]): boolean {
-  return a.length === b.length && a.every((grant) => b.some((candidate) => sameGrantTuple(grant, candidate)));
-}
-
 export function createAclStore(persist: GrantPersistence, opts: AclStoreOptions = {}): AclStore {
   async function resolveGrantedFiles(grants: readonly Grant[]): Promise<Map<string, FileArtifact>> {
     const refs = grants.filter(isFileGrant).map((g) => ({ id: g.ref, ownerScopeId: g.ownerScopeId }));
