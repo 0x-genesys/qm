@@ -71,6 +71,75 @@ test("Claude child environment excludes core credentials and user homes", () => 
   );
 });
 
+test("Claude child environment forwards Bedrock credentials and routing", () => {
+  assert.deepEqual(
+    claudeChildEnv(
+      {
+        PATH: "/bin",
+        CLAUDE_CODE_USE_BEDROCK: "1",
+        AWS_REGION: "us-west-2",
+        AWS_ACCESS_KEY_ID: "akid",
+        AWS_SECRET_ACCESS_KEY: "secret",
+        AWS_SESSION_TOKEN: "session",
+        ANTHROPIC_BEDROCK_BASE_URL: "https://bedrock.invalid",
+        DATABASE_URL: "postgres://secret",
+      },
+      "/tmp/claude-jail",
+    ),
+    {
+      HOME: "/tmp/claude-jail",
+      CLAUDE_CONFIG_DIR: "/tmp/claude-jail/.claude",
+      PATH: "/bin",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      AWS_REGION: "us-west-2",
+      AWS_ACCESS_KEY_ID: "akid",
+      AWS_SECRET_ACCESS_KEY: "secret",
+      AWS_SESSION_TOKEN: "session",
+      ANTHROPIC_BEDROCK_BASE_URL: "https://bedrock.invalid",
+    },
+  );
+});
+
+test("Claude child environment forwards ECS task-role credential discovery for Bedrock", () => {
+  assert.deepEqual(
+    claudeChildEnv(
+      {
+        PATH: "/bin",
+        CLAUDE_CODE_USE_BEDROCK: "1",
+        AWS_REGION: "us-west-2",
+        AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: "/v2/credentials/task-role",
+        AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: "/var/run/secrets/token",
+      },
+      "/tmp/claude-jail",
+    ),
+    {
+      HOME: "/tmp/claude-jail",
+      CLAUDE_CONFIG_DIR: "/tmp/claude-jail/.claude",
+      PATH: "/bin",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      AWS_REGION: "us-west-2",
+      AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: "/v2/credentials/task-role",
+      AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: "/var/run/secrets/token",
+    },
+  );
+});
+
+test("personal Claude OAuth excludes organization Bedrock credentials", () => {
+  const org = {
+    PATH: "/bin",
+    CLAUDE_CODE_USE_BEDROCK: "1",
+    AWS_ACCESS_KEY_ID: "org-akid",
+    AWS_SECRET_ACCESS_KEY: "org-secret",
+    AWS_SESSION_TOKEN: "org-session",
+  };
+  assert.deepEqual(perUserClaudeEnv(org, "personal-token"), {
+    PATH: "/bin",
+    CLAUDE_CODE_OAUTH_TOKEN: "personal-token",
+  });
+  assert.equal(perUserClaudeEnv(org, undefined), org);
+  assert.equal(org.AWS_ACCESS_KEY_ID, "org-akid");
+});
+
 test("Claude drops only a root parent process to the unprivileged nobody identity", () => {
   assert.deepEqual(claudeProcessIdentity(0), { uid: 65534, gid: 65534 });
   assert.equal(claudeProcessIdentity(1000), undefined);
