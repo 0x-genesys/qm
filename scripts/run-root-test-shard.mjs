@@ -5,7 +5,12 @@ import process from "node:process";
 import { parseArgs } from "node:util";
 
 const ROOT_TEST_DIR = new URL("../test/", import.meta.url);
-const PINNED_SLOW_TESTS = ["test/orchestrator.test.ts"];
+const PINNED_SLOW_TESTS = [
+  "test/orchestrator.test.ts",
+  "test/orchestrator-approvals.test.ts",
+  "test/orchestrator-context.test.ts",
+  "test/orchestrator-lifecycle.test.ts",
+];
 
 function parsePositiveInteger(value, name) {
   const parsed = Number(value);
