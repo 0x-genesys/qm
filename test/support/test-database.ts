@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { MessageChannel, receiveMessageOnPort, Worker, type MessagePort } from "node:worker_threads";
 import { createPostgresAdminGrantStore } from "../../src/admin/postgres-admin-grant-store.ts";
 import { createAdminGrantStore, type AdminGrant, type AdminGrantStore } from "../../src/admin/admin-grant-store.ts";
 import { createPostgresAdvisoryLock, type AdvisoryLock } from "../../src/persistence/advisory-lock.ts";
@@ -9,22 +9,50 @@ import { configStoreMaps, createConfigStore } from "../../src/resolution/config-
 import { orgId } from "../../src/config.ts";
 import { scopeId } from "../../src/types.ts";
 
-const CREATE = `import pg from "pg";
-const client = new pg.Client({ connectionString: process.argv[1] });
-await client.connect();
-await client.query('CREATE DATABASE "' + process.argv[2] + '"');
-await client.end();`;
-
-export function testDatabaseUrl(): string {
+function baseDatabaseUrl(): URL {
   const base = process.env.DATABASE_URL;
   if (!base) throw new Error("Set DATABASE_URL to a Postgres server the tests may create databases on");
-  const url = new URL(base);
-  const name = `${url.pathname.slice(1)}_${randomBytes(6).toString("hex")}`;
-  execFileSync(process.execPath, ["--input-type=module", "-e", CREATE, base, name], {
-    stdio: ["ignore", "ignore", "inherit"],
-  });
+  return new URL(base);
+}
+
+let databaseWorker: { worker: Worker; signal: Int32Array; port: MessagePort } | undefined;
+
+function createDatabaseSync(request: { template?: string; migrate?: boolean }): string {
+  if (!databaseWorker) {
+    const signal = new Int32Array(new SharedArrayBuffer(4));
+    const { port1, port2 } = new MessageChannel();
+    const worker = new Worker(new URL("./database-worker.ts", import.meta.url), {
+      workerData: { base: baseDatabaseUrl().toString(), signal, port: port2 },
+      transferList: [port2],
+      execArgv: [],
+    });
+    worker.unref();
+    databaseWorker = { worker, signal, port: port1 };
+  }
+  const { worker, signal, port } = databaseWorker;
+  Atomics.store(signal, 0, 0);
+  worker.postMessage(request);
+  if (Atomics.wait(signal, 0, 0, 120_000) === "timed-out") throw new Error("Timed out creating a test database");
+  const reply = receiveMessageOnPort(port)?.message as { ok: boolean; name?: string; message?: string } | undefined;
+  if (!reply?.ok || !reply.name) throw new Error(`Could not create a test database: ${reply?.message ?? "no reply"}`);
+  return reply.name;
+}
+
+function databaseUrl(name: string): string {
+  const url = baseDatabaseUrl();
   url.pathname = `/${name}`;
   return url.toString();
+}
+
+export function testDatabaseUrl(): string {
+  return databaseUrl(createDatabaseSync({}));
+}
+
+let migratedTemplate: string | undefined;
+
+export function testMigratedDatabaseUrl(): string {
+  migratedTemplate ??= process.env.QM_TEST_TEMPLATE_DATABASE || createDatabaseSync({ migrate: true });
+  return databaseUrl(createDatabaseSync({ template: migratedTemplate }));
 }
 
 let shared: { url: string; maps: ReturnType<typeof createPostgresMapFactory> } | undefined;
