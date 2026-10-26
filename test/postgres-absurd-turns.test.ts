@@ -387,11 +387,26 @@ test("swarm operations accept an Absurd turn's live claim and refuse it after ha
     assert.equal(run.status, "running");
     await fixture.service.spawn(fixture.caller, { requestId: "live", text: "Work" });
     assert.ok(await store.get(fixture.root.id));
+    const claims = fixture.caller.claims;
+    const fence = {
+      runId: claims.runId!,
+      attempt: claims.runAttempt!,
+      leaseToken: claims.runLeaseToken!,
+      sessionId: fixture.root.id,
+      threadRef: fixture.root.threadRef,
+      actorId: claims.actorId,
+      scopeId: fixture.root.scopeId,
+    };
+    await store.update(fixture.root.id, () => {}, fence);
     assert.equal(
       await ledger.handBack(run, fixture.caller.claims.runLeaseToken!, { stop: { kind: "shutdown" } }),
       true,
     );
     await assert.rejects(fixture.service.inspect(fixture.caller), /active capability run required/);
+    await assert.rejects(
+      store.update(fixture.root.id, () => {}, fence),
+      /active capability run required/,
+    );
   } finally {
     await backing.delete(fixture.root.id);
     await factory.pool.close();
