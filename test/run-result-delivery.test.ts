@@ -349,7 +349,6 @@ test("wired stores: a parked run lands a durable, non-ackable failure note", asy
 });
 
 const failureSessions = async () => {
-  const { createMemorySessionStore } = await import("../src/sessions/memory-session-store.ts");
   const sessions = createPostgresSessionStore(testDatabaseUrl());
   const scope = "personal:u1@example.test" as import("../src/types.ts").ScopeId;
   const session = await sessions.getOrCreateByThread("slack:D1", "dm", scope, undefined, "slack");

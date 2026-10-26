@@ -30,7 +30,13 @@ import { createPostgresFileArtifactStore } from "../src/files/postgres-file-arti
 import { createPostgresMemoryService } from "../src/memory/postgres-memory-service.ts";
 import { createPostgresRateLimiter } from "../src/ratelimit/postgres-rate-limiter.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
-import { testConfigStore, testDatabaseUrl, testMap, testDeployBackings } from "./support/test-database.ts";
+import {
+  testAdvisoryLock,
+  testConfigStore,
+  testDatabaseUrl,
+  testMap,
+  testDeployBackings,
+} from "./support/test-database.ts";
 
 function fakeSandbox(): Sandbox {
   const unreached = () => {
@@ -68,6 +74,7 @@ async function scenario() {
     mailbox,
     signals: createMemoryRunSignalStore(),
     maxAttempts: 3,
+    advisoryLock: testAdvisoryLock(),
   });
   const harness = defineHarness(
     {
