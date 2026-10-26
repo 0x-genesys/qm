@@ -1,6 +1,7 @@
 # Deployment templates
 
-The files under `deploy/` are service-image templates used by the `qm` CLI. They are not a production deployment and contain no cloud
+The files under `deploy/` are service-image templates used
+by the `qm` CLI. They are not a production deployment and contain no cloud
 account, workspace, or organization credentials.
 
 The one exception is [`layers/`](./layers/), which is empty in qm itself. A private
@@ -10,7 +11,7 @@ never travels back upstream.
 For a new hosted instance, follow the repository-root
 [`deployment.md`](../deployment.md) workflow. It:
 
-- asks whether to deploy into the operator's Fly.io organization or AWS account;
+- asks for the operator's AWS account;
 - creates the organization's deployment directory under [`layers/`](./layers/) with its
   `qm.config.jsonc`;
 - configures verified-email web onboarding before optional Slack;
@@ -52,7 +53,4 @@ The agent advertises only connectors whose admin configuration is enabled.
 
 ## Fixtures
 
-[`stacks/`](./stacks/) contains account-neutral contract fixtures. The checked-in
-`cli/templates/fly/<service>.toml` files are templates from which the CLI derives
-deployment-specific copies under the ignored `deploy/stacks/.generated/`
-directory.
+[`stacks/`](./stacks/) contains account-neutral contract fixtures.

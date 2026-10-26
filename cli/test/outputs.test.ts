@@ -10,9 +10,7 @@ const config: QmConfig = {
   contract: 1,
   orgId: "acme",
   publicUrl: "https://qm.acme.example/",
-  target: "fly",
-  region: "sjc",
-  flyOrg: "personal",
+  target: "docker",
   services: ["core", "slack", "web-ui", "portal"],
   plugins: [],
   skills: [],
@@ -30,9 +28,9 @@ test("email-first outputs return the bot, web, and settings URLs without adverti
   try {
     renderSlackFiles(config, dir);
     const output = deploymentOutputs(config, dir);
-    assert.equal(output.provider, "fly");
-    assert.equal(output.providerAccountOrOrganization, "personal");
-    assert.equal(output.region, "sjc");
+    assert.equal(output.provider, "docker");
+    assert.equal(output.providerAccountOrOrganization, undefined);
+    assert.equal(output.region, undefined);
     assert.equal(output.webUiUrl, "https://qm.acme.example");
     assert.equal(output.adminOnboardingUrl, "https://qm.acme.example/settings/onboarding");
     assert.equal(output.adminConnectorsUrl, "https://qm.acme.example/settings/connectors");

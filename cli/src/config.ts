@@ -51,7 +51,6 @@ export interface PluginEntry {
 
 export interface SandboxConfig {
   backend?: SandboxBackendId;
-  app?: string;
   image?: string;
   baseImage?: string;
   env?: Record<string, string>;
@@ -155,16 +154,10 @@ export interface QmConfig {
   env: Partial<Record<DeclaredServiceName, Record<string, string>>>;
   secretEnv?: Partial<Record<DeclaredServiceName, Record<string, string>>>;
   securityScreen?: SecurityScreenConfig;
-  vms?: Partial<Record<ServiceName, { size?: string; memory?: string }>>;
   imageOverrides: Partial<Record<ServiceName, string>>;
   sandbox?: SandboxConfig;
   botName?: string;
   orgName?: string;
-  appPrefix?: string;
-  region?: string;
-  flyOrg?: string;
-  imageFrom?: string;
-  deployAppPrefix?: string;
   aws?: AwsConfig;
 }
 
@@ -200,8 +193,6 @@ export function loadConfigInDir(dir: string, overrides?: { target?: Target }): {
   }
   return loadConfigAt(path, overrides);
 }
-
-export const appPrefixOf = (config: QmConfig): string => config.appPrefix ?? config.orgId;
 
 export const dockerBasePort = (config: QmConfig): number => envNum("QM_BASE_PORT", config.basePort ?? 8080);
 
@@ -490,16 +481,10 @@ const VALID_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([
   "env",
   "secretEnv",
   "securityScreen",
-  "vms",
   "imageOverrides",
   "sandbox",
   "botName",
   "orgName",
-  "appPrefix",
-  "region",
-  "flyOrg",
-  "imageFrom",
-  "deployAppPrefix",
   "aws",
 ]);
 
@@ -714,11 +699,6 @@ function validate(raw: unknown, path: string): QmConfig {
   if (botName) out.botName = botName;
   const orgName = identityName("orgName", 40, "it is how the bot refers to your organization");
   if (orgName) out.orgName = orgName;
-  if (typeof o["appPrefix"] === "string") out.appPrefix = o["appPrefix"];
-  if (typeof o["region"] === "string") out.region = o["region"];
-  if (typeof o["flyOrg"] === "string") out.flyOrg = o["flyOrg"];
-  if (typeof o["imageFrom"] === "string") out.imageFrom = o["imageFrom"];
-  if (typeof o["deployAppPrefix"] === "string") out.deployAppPrefix = o["deployAppPrefix"];
   if (o["aws"] !== undefined) {
     const configuredSecretNames = [
       ...plugins.flatMap((plugin) => (plugin.secrets ?? []).map((secret) => secret.name)),
@@ -746,22 +726,6 @@ function validate(raw: unknown, path: string): QmConfig {
     for (const workload of new Set([...runnableServices(services), ...externalImages])) {
       if (out.aws?.services[workload]) awsWorkloadArchitecture(out, workload);
     }
-  }
-  if (o["vms"] !== undefined) {
-    out.vms = validateServiceMap(o["vms"], path, "vms", (v, k) => {
-      if (!isPlainObject(v)) {
-        throw new CliError(`${path}: "vms.${k}" must be an object (e.g. { "memory": "4gb" })`);
-      }
-      const vm = v;
-      const vmOut: { size?: string; memory?: string } = {};
-      for (const f of ["size", "memory"] as const) {
-        const fv = vm[f];
-        if (fv === undefined) continue;
-        if (typeof fv !== "string") throw new CliError(`${path}: "vms.${k}.${f}" must be a string`);
-        vmOut[f] = fv;
-      }
-      return vmOut;
-    });
   }
   return out;
 }
@@ -1439,7 +1403,7 @@ function validateAws(
 function validateSandbox(raw: unknown, path: string, target: Target): SandboxConfig | undefined {
   if (raw === undefined) return undefined;
   if (!isPlainObject(raw)) {
-    throw new CliError(`${path}: "sandbox" must be an object (e.g. { "app": "acme-sandboxes" })`);
+    throw new CliError(`${path}: "sandbox" must be an object (e.g. { "backend": "sprites" })`);
   }
   const o = raw;
   const assertEnvName = (name: string, field: string): void => {
@@ -1454,12 +1418,6 @@ function validateSandbox(raw: unknown, path: string, target: Target): SandboxCon
       throw new CliError(`${path}: "sandbox.backend" must be ${choices.slice(0, -1).join(", ")}, or ${choices.at(-1)}`);
     }
     out.backend = o["backend"];
-  }
-  if (o["app"] !== undefined) {
-    if (typeof o["app"] !== "string" || !o["app"].trim()) {
-      throw new CliError(`${path}: "sandbox.app" must be a non-empty string (the Fly sandbox app name)`);
-    }
-    out.app = o["app"];
   }
   if (o["image"] !== undefined) {
     if (o["backend"] === "local") {
@@ -1499,7 +1457,7 @@ function validateSandbox(raw: unknown, path: string, target: Target): SandboxCon
     throw new CliError(`${path}: "sandbox.backend": ${JSON.stringify(out.backend)}${label} requires target ${targets}`);
   }
   if (out.backend === "local") {
-    const stray = (["app", "baseImage", "env", "secretEnv"] as const).filter((key) => out[key] !== undefined);
+    const stray = (["baseImage", "env", "secretEnv"] as const).filter((key) => out[key] !== undefined);
     if (stray.length) {
       throw new CliError(
         `${path}: "sandbox.backend": "local" ignores ${stray.map((key) => `"sandbox.${key}"`).join(", ")} — remove them; use "sandbox.image" for the runnable local sandbox image`,
@@ -1507,23 +1465,20 @@ function validateSandbox(raw: unknown, path: string, target: Target): SandboxCon
     }
   }
   if (out.backend === "aws") {
-    const stray = (["app", "image", "baseImage", "env", "secretEnv"] as const).filter((key) => out[key] !== undefined);
+    const stray = (["image", "baseImage", "env", "secretEnv"] as const).filter((key) => out[key] !== undefined);
     if (stray.length) {
       throw new CliError(
-        `${path}: "sandbox.backend": "aws" runs Lambda MicroVM sandboxes, which ignore ${stray.map((key) => `"sandbox.${key}"`).join(", ")} (Fly sandbox settings) — remove them or set "sandbox.backend": "sprites"`,
+        `${path}: "sandbox.backend": "aws" runs Lambda MicroVM sandboxes, which ignore ${stray.map((key) => `"sandbox.${key}"`).join(", ")} — remove them or set "sandbox.backend": "sprites"`,
       );
     }
   }
   if (out.backend === "agent37" || out.backend === "superserve" || out.backend === "e2b") {
-    const stray = (["app", "image", "baseImage", "env", "secretEnv"] as const).filter((key) => out[key] !== undefined);
+    const stray = (["image", "baseImage", "env", "secretEnv"] as const).filter((key) => out[key] !== undefined);
     if (stray.length) {
       throw new CliError(
         `${path}: "sandbox.backend": "${out.backend}" ignores ${stray.map((key) => `"sandbox.${key}"`).join(", ")} — remove them`,
       );
     }
-  }
-  if (out.image && !out.app && out.backend !== "local") {
-    throw new CliError(`${path}: "sandbox.image" requires "sandbox.app" unless "sandbox.backend" is "local"`);
   }
   if (SANDBOX_BACKEND_POLICY[target].requireExplicit && out.backend === undefined) {
     throw new CliError(

@@ -48,7 +48,7 @@ export const isReservedContainerName = (name: string): boolean => RESERVED_CONTA
 
 export function pluginNameError(name: string): string | null {
   if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(name)) {
-    return "must be a lowercase DNS label (a-z, 0-9, and hyphens between) — the fly target uses it as the app name <appPrefix>-<name>";
+    return "must be a lowercase DNS label (a-z, 0-9, and hyphens between)";
   }
   if (isReservedContainerName(name)) {
     return `collides with a built-in container (reserved: ${RESERVED_CONTAINER_NAMES.join(", ")}) — choose another name`;
@@ -62,19 +62,6 @@ export interface LogOpts {
 }
 
 type WebConfig = Pick<QmConfig, "orgId" | "publicUrl" | "services" | "env" | "botName" | "orgName">;
-
-export interface ServiceCtx {
-  config: WebConfig;
-  deployAppPrefix: string;
-  coreUrl: string;
-}
-
-interface FlyServiceSpec {
-  managed: (s: ServiceCtx) => Record<string, string>;
-  stackKeys: string[];
-  deployFlags: string[];
-  publicIngress?: (s: ServiceCtx) => boolean;
-}
 
 export interface ServiceDef {
   name: ServiceName;
@@ -90,7 +77,6 @@ export interface ServiceDef {
     portEnv: "PORT";
     hostPortOffset?: number;
   };
-  fly?: FlyServiceSpec;
   tcpIngress?: { healthCheck: string[] };
 }
 
@@ -200,40 +186,12 @@ const CATALOG: Record<ServiceName, ServiceDef> = {
     order: 0,
     dev: { cwd: ".", entry: ["--env-file-if-exists=.env", "src/index.ts"] },
     docker: { image: "core", internalPort: 8080, portEnv: "PORT", hostPortOffset: 0 },
-    fly: {
-      managed: (s) => ({ ...coreWebEnv(s.config), FLY_DEPLOY_APP_PREFIX: s.deployAppPrefix }),
-      stackKeys: [
-        "S3_BUCKET",
-        "S3_REGION",
-        "PUBLIC_WEB_URL",
-        "FLY_ORG",
-        "PI_DETECT_MODEL",
-        "PUBLIC_PORT",
-        "PORTAL_PUBLIC_URL",
-        "OIDC_ALLOWED_EMAIL_DOMAIN",
-        "OIDC_AUTH_ENDPOINT",
-        "OIDC_TOKEN_ENDPOINT",
-        "OIDC_USERINFO_ENDPOINT",
-        "OIDC_ISSUER",
-        "OIDC_JWKS_URI",
-        "OIDC_SCOPES",
-        "OIDC_PRINCIPAL_CLAIM",
-      ],
-      deployFlags: ["--ha=false"],
-      publicIngress: (s) => hostsWebEdge(s.config.services),
-    },
   },
   "egress-proxy": {
     name: "egress-proxy",
     readiness: /starting main dispatch loop/,
     order: 50,
     docker: { image: "egress-proxy", internalPort: 48080, portEnv: "PORT", hostPortOffset: 4 },
-    fly: {
-      managed: (s) => ({ CORE_API_URL: s.coreUrl, CORE_ORG_ID: s.config.orgId }),
-      stackKeys: [],
-      deployFlags: ["--ha=false"],
-      publicIngress: () => true,
-    },
     tcpIngress: {
       healthCheck: [
         "CMD",
