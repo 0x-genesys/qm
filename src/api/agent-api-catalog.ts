@@ -13,7 +13,6 @@ interface AgentApiRoute {
 interface AgentApiView {
   claims: CapabilityClaims;
   isAdmin: boolean;
-  swarmsEnabled: boolean;
 }
 
 interface AgentApiFamily {
@@ -64,25 +63,6 @@ const FAMILIES: AgentApiFamily[] = [
         path: "/v1/composio/twitter/media",
         summary:
           "{accountId,data} uploads one base64 PNG, JPEG or WebP image (5 MB max) through your own active X connection and returns mediaId for a post's media ids",
-      },
-    ],
-  },
-  {
-    when: (view) => view.swarmsEnabled,
-    guidance:
-      "Swarm workers are ordinary sessions with private blank computers. Inspect peers and their context, then send to chosen IDs or all; shared history is visible to every member. Notifications queue unattended turns. Each swarm gets one shared board computer (inspect returns board.sandboxId) that the root and every worker reach with execute's sandbox_id; pass forumSandboxId at creation to use an existing shared computer instead. Spawn accepts model, effort and fastMode to choose the runtime for the workers it creates; children inherit it unless they choose again. POST action control with memberId and state active, paused or stopped pauses delivery to, resumes, or stops a descendant worker. To keep a worker going instead of stopping after one reply, give it a goal on spawn or send ({objective, floor?, token_cap?}): its turn then runs like a goal turn, past the swarm turn deadline, until the goal is complete, paused or out of tokens. Any member can send any worker, itself included, a goal (not the root session); send a goal again to replace a running, paused or finished one.",
-    routes: [
-      {
-        method: "GET",
-        path: "/v1/swarm",
-        summary:
-          "own identity and all peers with editable JSON context, session IDs and sandbox IDs; ?read=1&after=0&waitMs=0&replyTo=... reads scoped messages, not only intended audience",
-      },
-      {
-        method: "POST",
-        path: "/v1/swarm",
-        summary:
-          "{action:'spawn',requestId,text,count?,context?,contexts?,forumSandboxId?,settings?,backend?,goal?} spawns one or an initial pool; {action:'context',context} updates own JSON; {action:'send',requestId,text,audience,replyTo?,notify?,goal?} sends to explicit peer ids or all, leaving each recipient's copy in its mailbox for its next turn unless notify:true or a goal wakes them (notify:false records only); {action:'control',memberId,state:'active'|'paused'|'stopped'} controls a descendant worker. Retry the same requestId and payload for idempotency.",
       },
     ],
   },
@@ -711,15 +691,10 @@ export interface AgentApiListing {
   guidance: string[];
 }
 
-export function renderAgentApis(
-  claims: CapabilityClaims,
-  admin: { isAdmin: boolean; role?: string },
-  features: { swarmsEnabled: boolean },
-): AgentApiListing {
+export function renderAgentApis(claims: CapabilityClaims, admin: { isAdmin: boolean; role?: string }): AgentApiListing {
   const view: AgentApiView = {
     claims,
     isAdmin: admin.isAdmin,
-    swarmsEnabled: features.swarmsEnabled,
   };
   const visible = [...FAMILIES, ...unattendedFamilies(), WHOAMI_FOR_ALL].filter((f) => f.when?.(view) ?? true);
   return {

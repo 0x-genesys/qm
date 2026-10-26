@@ -7,7 +7,6 @@ import type { EventBus } from "../util/event-bus.ts";
 import type { RunStreamEvent } from "../runs/run-stream-events.ts";
 import type { ResourceSearchStore, ResourceSearchHit } from "../search/resource-search.ts";
 import type { ModelOverlayStore } from "../model/model-overlay-store.ts";
-import type { SwarmService } from "../swarms/swarm-service.ts";
 import type {
   DeliveryProvenance,
   Grant,
@@ -275,7 +274,6 @@ export interface SessionSearchHit {
 }
 
 export interface App {
-  swarms?: SwarmService;
   turn(req: TurnRequest, replay?: { signalDedupKey: string }): Promise<TurnResult>;
   getApproval(requestId: string, viewer?: string): Promise<(PendingApprovalRecord & { requestId: string }) | null>;
   subscribeSessionStates(cb: (event: SessionStateEvent) => void, opts?: SubscribeOptions): () => void;
@@ -638,7 +636,6 @@ export interface AppDeps {
   admittedWork?: AdmittedWork;
   shutdown?: () => AbortSignal;
   resourceSearch?: ResourceSearchStore;
-  swarms?: SwarmService;
   identity: IdentityService;
   publicWebUrl?: string;
   inviteMailer?: Mailer;

@@ -103,7 +103,6 @@ async function runTurnEnforcingGoal(
             }),
         }
       : {}),
-    ...(input.goalInbox ? { inbox: input.goalInbox } : {}),
     beforePrompt: () => {
       console.error(`[goal] continuation session=${input.session.id} harness=${harnessId} turns=${meter.turns}`);
     },

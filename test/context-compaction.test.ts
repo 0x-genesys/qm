@@ -1,4 +1,3 @@
-import { swarmFixture } from "./support/swarm-fixture.ts";
 import { createHarnessRouter, resolveRuntimeChoiceDurable } from "../src/harness/harness-router.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -103,17 +102,12 @@ function fakeSandbox(): Sandbox {
   };
 }
 
-function buildOrchestrator(
-  harness: Harness,
-  maxContextTokens?: number,
-  defaultTurnWallClockMs?: number,
-  swarm?: Awaited<ReturnType<typeof swarmFixture>>,
-) {
+function buildOrchestrator(harness: Harness, maxContextTokens?: number, defaultTurnWallClockMs?: number) {
   const config = createMemoryConfigStore(ORG);
   const acl = createAclStore();
   const auditLog = createAuditLog();
   const errors = createErrorLog();
-  const sessions = swarm?.sessions ?? createMemorySessionStore();
+  const sessions = createMemorySessionStore();
   const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "cc-")));
   const deploy = createDeployService({
     ...singleProcessDeps(),
@@ -131,8 +125,7 @@ function buildOrchestrator(
     sessions,
     workspace,
     files: createMemoryFileArtifactStore(createMemoryDurableByteStore()),
-    sandbox: swarm?.sandbox ?? fakeSandbox(),
-    ...(swarm ? { swarms: swarm.service, sandboxResources: swarm.sandboxes } : {}),
+    sandbox: fakeSandbox(),
     modelGateway: createModelGateway(),
     auditLog,
     errors,
@@ -1309,130 +1302,6 @@ test("human child continuations respect non-fast category defaults", async () =>
     surfaceTools: false,
   });
   assert.deepEqual(seen, [category]);
-});
-
-test("verified swarm workers resolve their own defaults instead of copying the root runtime, keeping handoffs", async () => {
-  const inherited = { harnessId: "pi" as const, modelId: "claude-opus-5", effortLevel: "high", fastMode: true };
-  const category = { harnessId: "pi" as const, modelId: "gpt-6-astra", effortLevel: "low", fastMode: false };
-  const handoff = { ...category, modelId: "gpt-6-sol" };
-  for (const configured of [false, true]) {
-    const f = await swarmFixture({
-      runtime: {
-        harness: inherited.harnessId,
-        model: inherited.modelId,
-        thinkingLevel: inherited.effortLevel,
-        fastMode: inherited.fastMode,
-      },
-    });
-    const [peer] = await f.service.spawn(f.caller, { requestId: "initial", text: "work" });
-    await f.service.sweep();
-    const worker = await f.workerCaller(peer!.id);
-    assert.equal(worker.kind, "agent");
-    if (worker.kind !== "agent") throw new Error("expected worker");
-    const run = (await f.runs.get(worker.claims.runId!))!;
-    const base = createMockHarness();
-    const seen: unknown[] = [];
-    const adapter: Harness = {
-      ...base,
-      turns: {
-        ...base.turns,
-        runTurn: async (input) => {
-          seen.push(input.runtime);
-          if (seen.length === 1) return { reply: "", runtimeHandoff: { choice: handoff, lifetime: "task" } };
-          return { reply: "done" };
-        },
-      },
-    };
-    const router = createHarnessRouter(new Map([["pi", adapter]]), base, (input) =>
-      resolveRuntimeChoiceDurable(
-        built.config,
-        "org:default-org",
-        input.scopeLabel,
-        inherited,
-        input.runtime,
-        undefined,
-        input.runtimePurpose,
-      ),
-    );
-    const built = buildOrchestrator(router, undefined, undefined, f);
-    await built.config.setApprovedHarnesses(["pi"]);
-    if (configured) await built.config.setPurposeRuntime("subagent", category);
-    const result = await built.orch.handleTurn({ ...run.request, runId: run.id });
-    assert.equal(result.status, "ok");
-    assert.deepEqual(seen, [
-      configured ? category : { harnessId: inherited.harnessId, modelId: inherited.modelId },
-      handoff,
-    ]);
-    assert.equal(run.request.model, undefined, "workers do not copy the root runtime");
-  }
-});
-
-test("swarm workers keep the runtime chosen at spawn over the category and scope defaults", async () => {
-  const inherited = { harnessId: "pi" as const, modelId: "claude-opus-5", effortLevel: "high", fastMode: true };
-  const category = { harnessId: "pi" as const, modelId: "gpt-6-astra", effortLevel: "low", fastMode: false };
-  for (const configured of [false, true]) {
-    const f = await swarmFixture({
-      runtime: {
-        harness: inherited.harnessId,
-        model: inherited.modelId,
-        thinkingLevel: inherited.effortLevel,
-        fastMode: inherited.fastMode,
-      },
-    });
-    const [full] = await f.service.spawn(f.caller, {
-      requestId: "full",
-      text: "work",
-      model: "gpt-6-sol",
-      effort: "medium",
-      fastMode: false,
-    });
-    const [partial] = await f.service.spawn(f.caller, { requestId: "partial", text: "work", effort: "medium" });
-    await f.service.sweep();
-    const seen = new Map<string, unknown>();
-    for (const peer of [full!, partial!]) {
-      const worker = await f.workerCaller(peer.id);
-      if (worker.kind !== "agent") throw new Error("expected worker");
-      const run = (await f.runs.get(worker.claims.runId!))!;
-      const base = createMockHarness();
-      const adapter: Harness = {
-        ...base,
-        turns: {
-          ...base.turns,
-          runTurn: async (input) => {
-            seen.set(peer.id, input.runtime);
-            return { reply: "done" };
-          },
-        },
-      };
-      const router = createHarnessRouter(new Map([["pi", adapter]]), base, (input) =>
-        resolveRuntimeChoiceDurable(
-          built.config,
-          "org:default-org",
-          input.scopeLabel,
-          inherited,
-          input.runtime,
-          undefined,
-          input.runtimePurpose,
-        ),
-      );
-      const built = buildOrchestrator(router, undefined, undefined, f);
-      await built.config.setApprovedHarnesses(["pi"]);
-      if (configured) await built.config.setPurposeRuntime("subagent", category);
-      assert.equal((await built.orch.handleTurn({ ...run.request, runId: run.id })).status, "ok");
-    }
-    assert.deepEqual(seen.get(full!.id), {
-      harnessId: "pi",
-      modelId: "gpt-6-sol",
-      effortLevel: "medium",
-      fastMode: false,
-    });
-    assert.deepEqual(
-      seen.get(partial!.id),
-      configured
-        ? { ...category, effortLevel: "medium" }
-        : { harnessId: inherited.harnessId, modelId: inherited.modelId, effortLevel: "medium" },
-    );
-  }
 });
 
 for (const explicit of [false, true]) {
