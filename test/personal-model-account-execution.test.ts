@@ -126,8 +126,9 @@ for (const account of ["personal", "openai", "anthropic"] as const) {
   });
 }
 
-test("personal web selections reject wrong providers, policy exclusions and disconnected keys", async () => {
+test("personal web selections reject wrong providers, policy exclusions and disconnected keys", async (t) => {
   const built = buildApp(testConfig({ openaiApiKey: "company-openai", anthropicApiKey: "company-anthropic" }));
+  t.after(() => built.runtime.stop());
   await built.userModelCredentials.setApiKey("U1", "openai", "personal-openai");
   await built.config.setPersonalModelAuth("U1", true, "openai");
   const submit = (model: string) =>

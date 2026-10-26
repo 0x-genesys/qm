@@ -222,11 +222,13 @@ test("company ChatGPT subscription auth uses the native subscription transport w
     }),
     { mode: 0o600 },
   );
-  const built = buildApp(
-    testConfig({
-      codexAuthFile: authFile,
-      openaiApiKey: "must-not-fallback",
-    }),
+  const built = stopAtEnd(
+    buildApp(
+      testConfig({
+        codexAuthFile: authFile,
+        openaiApiKey: "must-not-fallback",
+      }),
+    ),
   );
   const selection = { account: "company" as const, model: "gpt-5.6-sol", routing: null };
   const keys = await built.resolveBrowserCompanyKeys();

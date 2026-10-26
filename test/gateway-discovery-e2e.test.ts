@@ -220,12 +220,14 @@ for (const protocol of ["openai", "anthropic", "unknown"] as const)
       apiKeyHeader: "x-gateway-key",
       models: {},
     };
-    const built = buildApp(
-      testConfig({
-        modelGateway: config,
-        piSystemCacheSplit: true,
-        modelId: "gateway/acme/future",
-      }),
+    const built = stopAtEnd(
+      buildApp(
+        testConfig({
+          modelGateway: config,
+          piSystemCacheSplit: true,
+          modelId: "gateway/acme/future",
+        }),
+      ),
     );
     await built.refreshModels();
     const runtime = await runtimeConfigBody(
@@ -283,17 +285,19 @@ for (const protocol of ["openai", "anthropic", "unknown"] as const)
 
 test("gateway outage leaves direct providers available", async () => {
   const built = stopAtEnd(
-    buildApp(
-      testConfig({
-        anthropicApiKey: "independent-key",
-        modelGateway: {
-          url: "https://gateway.invalid",
-          apiKey: "company-key",
-          apiKeyHeader: "x-api-key",
-          models: {},
-        },
-      }),
-      { modelCredentialFetch: async () => new Response(null, { status: 503 }) },
+    stopAtEnd(
+      buildApp(
+        testConfig({
+          anthropicApiKey: "independent-key",
+          modelGateway: {
+            url: "https://gateway.invalid",
+            apiKey: "company-key",
+            apiKeyHeader: "x-api-key",
+            models: {},
+          },
+        }),
+        { modelCredentialFetch: async () => new Response(null, { status: 503 }) },
+      ),
     ),
   );
   const providers = await built.modelCredentials.availability();

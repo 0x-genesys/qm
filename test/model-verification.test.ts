@@ -174,7 +174,7 @@ test("live API verifies exact serving credentials, blocks denied models, recheck
     openaiApiKey: "verification-test-key",
     providerBaseUrls: { openai: upstream.url + "/v1", anthropic: upstream.url },
   });
-  const built = buildApp(config, { modelCredentialFetch: async () => Response.json({ data: [] }) });
+  const built = stopAtEnd(buildApp(config, { modelCredentialFetch: async () => Response.json({ data: [] }) }));
   const server = createInsecureTestServer(built.app, serverDeps(config, built));
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -265,7 +265,7 @@ test("live API verifies exact serving credentials, blocks denied models, recheck
 test("Anthropic verification exercises ordinary and fast requests, and gateway uses its serving target and credential", async () => {
   const upstream = await verificationUpstream();
   const config = testConfig({ anthropicApiKey: "anthropic-test-key", providerBaseUrls: { anthropic: upstream.url } });
-  const built = buildApp(config);
+  const built = stopAtEnd(buildApp(config));
   try {
     upstream.behavior.rejectFast = true;
     await assert.rejects(
@@ -342,7 +342,7 @@ test("a failed recheck of the saved definition removes its prior certification",
 });
 
 test("endpoint, template metadata, credential revision, and model edits change verification fingerprints", async () => {
-  const built = buildApp(testConfig({ openaiApiKey: "test-key" }));
+  const built = stopAtEnd(buildApp(testConfig({ openaiApiKey: "test-key" })));
   const verifier = createModelVerifier({ credentials: built.modelCredentials, keyMaterial: "stable-test-hmac" });
   try {
     const original = (await verifier(parseModelOverlay(spec))).fingerprint;
@@ -431,7 +431,9 @@ test("a model stays unavailable until its pending probe completes", async () => 
 test("the store deadline leaves a hanging provider unverified", { timeout: 25_000 }, async () => {
   const upstream = await verificationUpstream();
   upstream.behavior.hang = true;
-  const built = buildApp(testConfig({ openaiApiKey: "test-key", providerBaseUrls: { openai: upstream.url + "/v1" } }));
+  const built = stopAtEnd(
+    buildApp(testConfig({ openaiApiKey: "test-key", providerBaseUrls: { openai: upstream.url + "/v1" } })),
+  );
   try {
     const start = Date.now();
     await assert.rejects(
@@ -449,7 +451,7 @@ test("the store deadline leaves a hanging provider unverified", { timeout: 25_00
 import { createHmac, scryptSync } from "node:crypto";
 
 test("verification fingerprints use a memory-hard credential-bound MAC key", async () => {
-  const built = buildApp(testConfig({ openaiApiKey: "fingerprint-test-key" }));
+  const built = stopAtEnd(buildApp(testConfig({ openaiApiKey: "fingerprint-test-key" })));
   const keyMaterial = "deployment-fingerprint-test-key";
   const candidate = parseModelOverlay(spec);
   const verifier = createModelVerifier({ credentials: built.modelCredentials, keyMaterial });
@@ -512,7 +514,7 @@ import { createModelCredentialStore } from "../src/model/model-credential-store.
 import { testMap } from "./support/test-database.ts";
 
 test("legacy fingerprint versions stay unavailable until a successful new verification", async () => {
-  const built = buildApp(testConfig({ openaiApiKey: "test-key" }));
+  const built = stopAtEnd(buildApp(testConfig({ openaiApiKey: "test-key" })));
   const candidate = parseModelOverlay(spec);
   const keyMaterial = "stable-test-key";
   const fingerprint = createHmac("sha256", keyMaterial)

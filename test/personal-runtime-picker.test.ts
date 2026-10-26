@@ -14,7 +14,7 @@ const buildApp = (...args: Parameters<typeof buildProductionApp>) => stopAtEnd(b
 type Snapshot = Awaited<ReturnType<typeof userRuntimeConfigBody>>;
 
 async function setup() {
-  const built = buildApp(testConfig());
+  const built = stopAtEnd(buildApp(testConfig()));
   const server = createInsecureTestServer(built.app, {
     config: built.config,
     userModelCredentials: built.userModelCredentials,

@@ -16,10 +16,12 @@ const MODEL_ID = "overlay-future-model";
 test("unknown builtin-provider model fails resolution and a live runtime selection request", async () => {
   assert.throws(() => getRequiredModel(MODEL_ID), /Unsupported model/);
   const config = testConfig();
-  const built = buildApp(config, {
-    modelCredentialFetch: async () => Response.json({ data: [] }),
-    modelVerificationProbe: async () => {},
-  });
+  const built = stopAtEnd(
+    buildApp(config, {
+      modelCredentialFetch: async () => Response.json({ data: [] }),
+      modelVerificationProbe: async () => {},
+    }),
+  );
   const server = createInsecureTestServer(built.app, serverDeps(config, built));
   server.listen(0, "127.0.0.1");
   await new Promise<void>((resolve) => server.once("listening", resolve));
@@ -193,10 +195,12 @@ test("OpenRouter failure rebuilds local choices", async () => {
 
 test("live admin lifecycle is authorized, audited, immediately selectable and removed on delete", async () => {
   const config = testConfig({ openaiApiKey: "local-test-key" });
-  const built = buildApp(config, {
-    modelCredentialFetch: async () => Response.json({ data: [] }),
-    modelVerificationProbe: async () => {},
-  });
+  const built = stopAtEnd(
+    buildApp(config, {
+      modelCredentialFetch: async () => Response.json({ data: [] }),
+      modelVerificationProbe: async () => {},
+    }),
+  );
   const server = createInsecureTestServer(built.app, serverDeps(config, built));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -427,10 +431,12 @@ test("hydration isolates promoted builtins, incompatible providers, missing temp
 
 test("model refresh is limited to dependent routes and admin repair survives stale persisted definitions", async () => {
   const config = testConfig();
-  const built = buildApp(config, {
-    modelCredentialFetch: async () => Response.json({ data: [] }),
-    modelVerificationProbe: async () => {},
-  });
+  const built = stopAtEnd(
+    buildApp(config, {
+      modelCredentialFetch: async () => Response.json({ data: [] }),
+      modelVerificationProbe: async () => {},
+    }),
+  );
   const backing = testMap<StoredModelOverlay>();
   await backing.put("stale", {
     spec: { ...spec, id: "stale", template: "missing" },

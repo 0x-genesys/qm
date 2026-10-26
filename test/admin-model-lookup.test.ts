@@ -135,11 +135,13 @@ test("live lookup is admin-only and builtin enable verifies without a duplicate 
     providerBaseUrls: { anthropic: upstream.url },
   });
   const built = stopAtEnd(
-    buildApp(config, {
-      modelCredentialFetch: async () => {
-        throw Error("lookup must not fetch for builtin");
-      },
-    }),
+    stopAtEnd(
+      buildApp(config, {
+        modelCredentialFetch: async () => {
+          throw Error("lookup must not fetch for builtin");
+        },
+      }),
+    ),
   );
   const server = createInsecureTestServer(built.app, serverDeps(config, built));
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -184,7 +186,7 @@ test("live lookup is admin-only and builtin enable verifies without a duplicate 
 test("enable rechecks serving credentials before mutating the picker", async () => {
   let onProbe: () => Promise<void> = async () => {};
   const config = testConfig({ anthropicApiKey: "test-key" });
-  const built = buildApp(config, { modelVerificationProbe: async () => onProbe() });
+  const built = stopAtEnd(buildApp(config, { modelVerificationProbe: async () => onProbe() }));
   const server = createInsecureTestServer(built.app, serverDeps(config, built));
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/admin/model-registry/claude-opus-4-6/enable`;
