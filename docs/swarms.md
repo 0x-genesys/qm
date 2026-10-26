@@ -319,11 +319,9 @@ or your version-control workflow first.
 
 ## Verification
 
-Run the focused suites with `DATABASE_URL=<disposable Postgres> node scripts/run-pg-tests.mjs test/swarm*.test.ts`. The swarm suite uses
-a separate schema so migration-reset tests cannot invalidate its state.
-Set `SWARM_TEST_DATABASE_URL` when running `test/swarm-orchestrator.test.ts` to
-exercise the HTTP spawn/reply flow across an application restart with real durable
-state. These tests use deterministic model and sandbox doubles; live provider and
+Run the focused suites with `DATABASE_URL=<disposable Postgres> node scripts/run-pg-tests.mjs test/swarm*.test.ts`.
+`test/swarm-orchestrator.test.ts` exercises the HTTP spawn/reply flow across an application
+restart with real durable state. These tests use deterministic model and sandbox doubles; live provider and
 model acceptance remains a separate deployment check. The agent-board UI is
 intentionally deferred.
 
