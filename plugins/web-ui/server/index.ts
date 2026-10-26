@@ -1071,13 +1071,13 @@ let vite: ViteDevServer | undefined;
 
 async function createVite(server: Server): Promise<ViteDevServer | undefined> {
   if (!WEB_UI_DEV) return undefined;
-  const importVite = new Function("specifier", "return import(specifier)") as (
-    specifier: string,
-  ) => Promise<{ createServer: CreateViteServer }>;
-  const { createServer: createViteServer } = await importVite("vite");
+  const { createServer: createViteServer } = (await import(import.meta.resolve("vite"))) as {
+    createServer: CreateViteServer;
+  };
   return createViteServer({
     root: ROOT,
     configFile: join(ROOT, "vite.config.ts"),
+    configLoader: "runner",
     appType: "custom",
     server: {
       middlewareMode: true,

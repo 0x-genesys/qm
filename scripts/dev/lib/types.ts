@@ -12,8 +12,8 @@ export const EXIT = {
   doctorCritical: 10,
 } as const;
 
-export type ChildName = "core" | "web" | "admin" | "portal";
-export const CHILD_ORDER: ChildName[] = ["core", "web", "portal"];
+export type ChildName = "core";
+export const CHILD_ORDER: ChildName[] = ["core"];
 
 export interface SlotPorts {
   core: number;
