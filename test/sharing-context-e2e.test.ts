@@ -719,4 +719,17 @@ test("shared conversations run named credentials on the turn's scratch computer 
     "True True",
   );
   assert.ok(provisions.slice(before).every((key) => !key.startsWith("turn:")));
+  await b.environments.attach("channel:C1", "personal:U1", "U1");
+  const attached = provisions.length;
+  assert.equal(
+    await execute(
+      {
+        command: `python3 -c 'import os,pathlib; print(os.getenv("DM_TOKEN") == "dm_own_U1", pathlib.Path("dm-only.txt").exists())'`,
+        credentials: [credentialHandle(own)],
+      },
+      false,
+    ),
+    "True False",
+  );
+  assert.ok(provisions.slice(attached).some((key) => key.startsWith("turn:")));
 });

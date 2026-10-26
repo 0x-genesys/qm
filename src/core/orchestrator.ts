@@ -1402,7 +1402,13 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         }));
       const ownCredentialsAllowed =
         scopeId === personalScope(actor.id) || openSpeakerKeychain || openAutomationKeychain;
-      const sharedScope = !external && scopeId !== personalScope(actor.id);
+      const sharedScope =
+        !external &&
+        (scopeId !== personalScope(actor.id) ||
+          environmentId !== scopeId ||
+          ((await deps.environments?.attachmentsFor(environmentId)) ?? []).some(
+            (attachment) => attachment.scopeId !== scopeId,
+          ));
       const connectorEnv: Record<string, string> = {};
       const commandCredentials: CommandCredential[] = [];
       const credentialDescriptions: NonNullable<KeychainManifestInput["execution"]> = [];
@@ -1443,7 +1449,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       };
       const placeCredential = (credential: CommandCredential): CommandCredential => ({
         ...credential,
-        scratchOnly: credential.scratchOnly ?? sharedScope,
+        scratchOnly: sharedScope && credential.scratchOnly !== false,
       });
       const addCredentialToCatalog = (
         credential: CommandCredential,

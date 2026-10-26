@@ -25,7 +25,8 @@ in expanded output. `timeout_seconds` is the foreground wall-clock timeout or th
 background job lifetime. Background jobs require scoped, durable execution; disposable
 scratch and reached-room routing remain foreground-only.
 
-In a shared conversation (anything other than the acting person's personal scope), a
+In a shared conversation (anything other than the acting person's personal scope, or a
+personal scope whose environment another conversation is attached to), a
 command that names a personal, granted, connector, role-broker or org environment
 credential runs on the turn's scratch computer instead of the conversation's computer,
 including when it asked for the scoped computer or a `sandbox_id`. The scratch computer
