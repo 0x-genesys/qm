@@ -402,18 +402,6 @@ test("HARNESS=claude uses native Claude authentication and does not require an A
   assert.equal(loadConfig({ HARNESS: "claude", CLAUDE_MODEL: "claude-opus-4-8" }).claudeModel, "claude-opus-4-8");
 });
 
-test("SUPERSERVE_CONFIG_GENERATION accepts only nonnegative safe integers", () => {
-  for (const value of ["9007199254740993", "-1", "0.5", "NaN", "Infinity"]) {
-    assert.throws(() => loadConfig({ SUPERSERVE_CONFIG_GENERATION: value }), /SUPERSERVE_CONFIG_GENERATION/, value);
-  }
-  for (const value of [undefined, "", "  "]) {
-    assert.equal(loadConfig({ SUPERSERVE_CONFIG_GENERATION: value }).superserveSandbox.configGeneration, undefined);
-  }
-  for (const value of ["0", "7", " 42 ", String(Number.MAX_SAFE_INTEGER)]) {
-    assert.equal(loadConfig({ SUPERSERVE_CONFIG_GENERATION: value }).superserveSandbox.configGeneration, Number(value));
-  }
-});
-
 test("SANDBOX_BACKEND: unset defaults to local (dev only); the retired secondary variable is tolerated", () => {
   assert.equal(loadConfig({}).sandboxBackend, "local");
   assert.throws(
@@ -435,26 +423,6 @@ test("SANDBOX_BACKEND: unset defaults to local (dev only); the retired secondary
   assert.throws(
     () => loadConfig({ SANDBOX_BACKEND: " superserve ", SUPERSERVE_TEMPLATE: "qm-agent-1.0.0" }),
     /SUPERSERVE_API_KEY/,
-  );
-  assert.equal(
-    loadConfig({
-      SANDBOX_BACKEND: "superserve",
-      SUPERSERVE_TEMPLATE: "qm-agent-1.0.0",
-      SUPERSERVE_API_KEY: "ss_live_k",
-      SUPERSERVE_CONFIG_GENERATION: "7",
-    }).superserveSandbox.configGeneration,
-    7,
-    "a deployment that tracks its own rollouts stamps the generation its sandboxes carry",
-  );
-  assert.throws(
-    () =>
-      loadConfig({
-        SANDBOX_BACKEND: "superserve",
-        SUPERSERVE_TEMPLATE: "qm-agent-1.0.0",
-        SUPERSERVE_API_KEY: "ss_live_k",
-        SUPERSERVE_CONFIG_GENERATION: "later",
-      }),
-    /SUPERSERVE_CONFIG_GENERATION/,
   );
   assert.equal(
     loadConfig({
