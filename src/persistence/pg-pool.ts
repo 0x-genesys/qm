@@ -111,7 +111,7 @@ const migrationQueue = createKeyedQueue();
 const sharedPools = new Map<string, { pool: Pool; users: number }>();
 
 async function applyTenancyIfEnabled(pool: Pool): Promise<void> {
-  if (tenancyEnabled) await applyTenancyIfEnabled(pool);
+  if (tenancyEnabled) await applyTenancy(pool);
 }
 
 async function retainPool(connectionString: string, kind: "query" | "session" | "migration"): Promise<Pool> {
