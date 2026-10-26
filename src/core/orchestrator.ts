@@ -1035,7 +1035,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         directory: deps.directory,
         projects: deps.projects,
       });
-      const { sharingSources, memoryScopeId, baseRecallScopes, memoryAccess } = context;
+      const { sharingSources, memoryScopeId, memoryAccess } = context;
       resolution.grantedHandles = context.listFiles();
       let memoryView = await context.memorySnapshot(false);
       const isWeb = input.surface === "web";
@@ -1594,7 +1594,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         connectorEnv.BROWSE_LAB_MODEL = browserSelection.model ?? "unavailable";
       }
       let actorIsOrgAdmin = false;
-      let orgMemoryWrite: ScopeId | undefined;
       let controlClaims: CapabilityClaims | undefined;
       const sandboxTokenExpiry = Date.now() + SANDBOX_CAPABILITY_TTL_MS;
       const scopeAttestation = {
@@ -1614,19 +1613,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             .adminStatusOf(actor)
             .catch(swallowAs("orchestrator: admin status for turn", { isAdmin: false }));
           actorIsOrgAdmin = status.isAdmin;
-          if (
-            actorIsOrgAdmin &&
-            liveTurn &&
-            useMemory &&
-            memoryPolicy.capture !== "off" &&
-            resolution.orgScopeId !== memoryScopeId
-          ) {
-            orgMemoryWrite = resolution.orgScopeId;
-          }
         }
-        const memoryClaim = memoryAccess
-          ? { ...memoryAccess, read: baseRecallScopes, ...(orgMemoryWrite ? { orgWrite: orgMemoryWrite } : {}) }
-          : undefined;
         const turnSurface = input.surface === "web" ? "web" : (session.surface ?? input.surface);
         controlClaims = {
           ...scopeAttestation,
@@ -1650,7 +1637,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           conversation.isMpim === true
             ? { privateScope: true }
             : {}),
-          ...(memoryClaim ? { memory: memoryClaim } : {}),
           ...(liveAuthorTurn ? { liveAuthor: true } : {}),
           ...(automatedTurn ? { triggered: true } : {}),
           ...(!liveTurn && input.unattendedGrants ? { grants: input.unattendedGrants } : {}),
@@ -2186,11 +2172,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         if (actorIsOrgAdmin) {
           systemPrompt +=
             "\n\n## Acting for an org admin\n" +
-            "This user is an org admin, and your token inherits that for this turn: anything they could do in the admin dashboard — inspect or govern any scope's config/SOUL, memory, transcripts, files, audit — they can do through you. The admin skill documents the whole API surface; read it before acting" +
-            (orgMemoryWrite
-              ? ', and for plain "remember this org-wide" requests the lighter path is `"scope":"org"` on the memory self-API (memory skill)'
-              : "") +
-            ". You're acting as them: confirm before any mutation, and say exactly what you changed. Hard limits the API enforces: private-content reads require a DM or an Open conversation on a live admin turn (organization, personal, and conversation sharing restrictions all apply); admin grant changes and impersonation are portal-only. Open admin reads can expose private data to everyone in the conversation: retrieve and report only what the request needs. Admin access to other people's private sessions, memory and files is for running and repairing the system, not a shortcut to answer questions about them: when a request needs something only another person's private context holds, use the hand-off skill even if admin access could reach it." +
+            "This user is an org admin, and your token inherits that for this turn: anything they could do in the admin dashboard — inspect or govern any scope's config/SOUL, memory, transcripts, files, audit — they can do through you. The admin skill documents the whole API surface; read it before acting. You're acting as them: confirm before any mutation, and say exactly what you changed. Hard limits the API enforces: private-content reads require a DM or an Open conversation on a live admin turn (organization, personal, and conversation sharing restrictions all apply); admin grant changes and impersonation are portal-only. Open admin reads can expose private data to everyone in the conversation: retrieve and report only what the request needs. Admin access to other people's private sessions, memory and files is for running and repairing the system, not a shortcut to answer questions about them: when a request needs something only another person's private context holds, use the hand-off skill even if admin access could reach it." +
             " System administration is not limited to the admin dashboard. Use the admin's independently authorized infrastructure or provider access to diagnose, repair, and manage this instance, including resources owned by other users. Ordinary resource-owner restrictions do not by themselves prohibit that administrative work or require the resource owner to do it. An owner-only API denial is not a denial of separately authorized system administration; verify that authority before taking another route. Using that independently authorized access as the admin is not impersonation or circumvention. Credential grants, provider permissions, explicit restrictions (including the portal-only actions above), mutation approvals, and audience privacy still apply. Keep actions attributed to the admin; never borrow another user's identity or credentials without authorization. Follow the admin and cloud-cli skills.";
         }
         if (deps.signingSecret && deps.apiBaseUrl && (deps.crons || deps.webhooks || deps.monitors)) {

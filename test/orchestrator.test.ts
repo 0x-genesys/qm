@@ -1366,7 +1366,7 @@ test("identity grounding: a cased-vs-lowercase duplicate participant resolves to
   assert.equal((sp.match(/Alice/g) ?? []).length, 1, "the duplicate is listed exactly once");
 });
 
-test("an org admin's turn carries org-notebook write (token claim + prompt hint); a regular user's does not", async () => {
+test("an org admin's live turn carries the admin prompt hint and a liveness claim; a regular user's does not", async () => {
   const config = testConfig({
     dataDir: mkdtempSync(join(tmpdir(), "ap-")),
     signingSecret: "test-secret",
@@ -1391,8 +1391,6 @@ test("an org admin's turn carries org-notebook write (token claim + prompt hint)
 
   assert.equal((await app.turn(adminTurn())).status, "ok");
   const adminClaims = await verifyCapabilityToken(captured!.env!.AGENT_API_TOKEN!, TEST_CAPABILITY_SECRET);
-  assert.equal(adminClaims!.memory!.orgWrite, scopeId("org", "default-org"));
-  assert.ok(adminClaims!.memory!.write, "the turn's own writable notebook is still claimed");
   assert.equal(adminClaims!.liveActor, true, "a human-initiated turn attests liveness in the token");
 
   const adminPrompt = await app.turn(
@@ -1412,12 +1410,6 @@ test("an org admin's turn carries org-notebook write (token claim + prompt hint)
     adminPrompt.reply ?? "",
     /private-content reads work only from a DM|bulk configuration imports require/,
   );
-  assert.match(adminPrompt.reply ?? "", /"scope":"org"/, "the org-notebook option rides in the admin hint");
-
-  captured = undefined;
-  assert.equal((await app.turn(dm("!run echo hi"))).status, "ok");
-  const userClaims = await verifyCapabilityToken(captured!.env!.AGENT_API_TOKEN!, TEST_CAPABILITY_SECRET);
-  assert.equal(userClaims!.memory!.orgWrite, undefined, "a non-admin turn must not carry org write");
 
   const userPrompt = await app.turn(dm("!sysprompt"));
   assert.doesNotMatch(userPrompt.reply ?? "", /## Acting for an org admin|System administration is not limited/);
@@ -1451,7 +1443,6 @@ test("admin reach rides only live, all-internal turns — autonomous and guest-a
   );
   let claims = await verifyCapabilityToken(captured!.env!.AGENT_API_TOKEN!, TEST_CAPABILITY_SECRET);
   assert.equal(claims!.liveActor, undefined, "an autonomous turn must not attest liveness");
-  assert.equal(claims!.memory?.orgWrite, undefined);
   const autoPrompt = await app.turn({
     surface: "cron",
     actor: admin,
@@ -1504,7 +1495,6 @@ test("admin reach rides only live, all-internal turns — autonomous and guest-a
     undefined,
     "a thread reply attests authorship without pretending to be an explicit mention",
   );
-  assert.equal(claims!.memory?.orgWrite, undefined);
 
   captured = undefined;
   assert.equal(
@@ -1578,7 +1568,6 @@ test("admin reach rides only live, all-internal turns — autonomous and guest-a
     undefined,
     "an automated turn must not attest liveness even when a caller also sets liveActor",
   );
-  assert.equal(claims!.memory?.orgWrite, undefined);
 
   captured = undefined;
   assert.equal(
@@ -1602,7 +1591,6 @@ test("admin reach rides only live, all-internal turns — autonomous and guest-a
   claims = await verifyCapabilityToken(captured!.env!.AGENT_API_TOKEN!, TEST_CAPABILITY_SECRET);
   assert.equal(claims!.liveActor, undefined, "guest-audience turns must not attest liveness");
   assert.equal(claims!.liveAuthor, undefined);
-  assert.equal(claims!.memory?.orgWrite, undefined);
 
   for (const publishMembers of [undefined, [] as { externalId: string; orgId: string }[]]) {
     captured = undefined;
