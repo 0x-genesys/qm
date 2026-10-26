@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { awsWorkloadArchitecture, type QmConfig } from "./config.ts";
 import { CliError, ok } from "./log.ts";
 import { computedSecrets } from "./secrets.ts";
-import { isServiceName, serviceDef } from "./services.ts";
+import { hostsWebEdge, isServiceName, PUBLIC_PORT, serviceDef, serviceHost } from "./services.ts";
 import { canonicalJson } from "./canonical-json.ts";
 
 const DERIVED_VARS = new Set([
@@ -15,6 +15,7 @@ const DERIVED_VARS = new Set([
   "cluster_name",
   "public_url",
   "core_public_hosts",
+  "public_port",
   "cloud_map_namespace",
   "secrets_prefix",
   "github_oidc_provider_arn",
@@ -157,34 +158,42 @@ function derivedValues(
       "the vendored AWS scaffold predates aws.deployEnvironment; update infra/variables.tf and infra/main.tf from the current scaffold before configuring it",
     );
   }
-  const corePublicHosts = config.services.includes("portal") ? awsCoreHostnames(config) : [];
+  const webEdge = hostsWebEdge(config.services);
+  const corePublicHosts = webEdge ? awsCoreHostnames(config) : [];
   if (corePublicHosts.length && !declared.includes("core_public_hosts")) {
     throw new CliError(
       "the vendored AWS scaffold predates split portal/core host routing; update infra/variables.tf and infra/main.tf from the current scaffold before configuring apiUrl or AWS_DEPLOY_APPS_DOMAIN",
     );
   }
+  if (webEdge && !declared.includes("public_port")) {
+    throw new CliError(
+      "the vendored AWS scaffold predates core hosting the public web edge; update infra/variables.tf and infra/main.tf from the current scaffold before deploying web-ui or portal",
+    );
+  }
   const services = Object.fromEntries(
-    Object.entries(aws.services).map(([name, service]) => {
-      const manageTaskRole =
-        name !== "core" &&
-        (managedRoles.has(name) || (!service!.taskRoleArn && Boolean(service!.assumeRoleArns?.length)));
-      return [
-        name,
-        {
-          ecr_repository: service!.ecrRepository,
-          ecs_service: service!.ecsService,
-          cpu: service!.cpu,
-          memory: service!.memory,
-          architecture: awsWorkloadArchitecture(config, name),
-          internal_port: isServiceName(name) ? serviceDef(name).docker.internalPort : 8080,
-          ...(service!.publicPaths ? { public_paths: service!.publicPaths } : {}),
-          ...(service!.taskRoleArn ? { task_role_arn: service!.taskRoleArn } : {}),
-          ...(service!.executionRoleArn ? { execution_role_arn: service!.executionRoleArn } : {}),
-          ...(service!.assumeRoleArns !== undefined ? { assume_role_arns: service!.assumeRoleArns } : {}),
-          ...(manageTaskRole ? { manage_task_role: true } : {}),
-        },
-      ];
-    }),
+    Object.entries(aws.services)
+      .filter(([name]) => serviceHost(name) === name)
+      .map(([name, service]) => {
+        const manageTaskRole =
+          name !== "core" &&
+          (managedRoles.has(name) || (!service!.taskRoleArn && Boolean(service!.assumeRoleArns?.length)));
+        return [
+          name,
+          {
+            ecr_repository: service!.ecrRepository,
+            ecs_service: service!.ecsService,
+            cpu: service!.cpu,
+            memory: service!.memory,
+            architecture: awsWorkloadArchitecture(config, name),
+            internal_port: isServiceName(name) ? serviceDef(name).docker.internalPort : 8080,
+            ...(service!.publicPaths ? { public_paths: service!.publicPaths } : {}),
+            ...(service!.taskRoleArn ? { task_role_arn: service!.taskRoleArn } : {}),
+            ...(service!.executionRoleArn ? { execution_role_arn: service!.executionRoleArn } : {}),
+            ...(service!.assumeRoleArns !== undefined ? { assume_role_arns: service!.assumeRoleArns } : {}),
+            ...(manageTaskRole ? { manage_task_role: true } : {}),
+          },
+        ];
+      }),
   );
   const secrets = computedSecrets(config);
   return {
@@ -209,6 +218,7 @@ function derivedValues(
     },
     json: {
       ...(declared.includes("core_public_hosts") ? { core_public_hosts: [...new Set(corePublicHosts)].sort() } : {}),
+      ...(declared.includes("public_port") ? { public_port: webEdge ? PUBLIC_PORT : 0 } : {}),
       services,
       secret_names: secrets.map((secret) => secret.name),
     },
@@ -257,6 +267,7 @@ export function terraformVarsDrift(
   declared: string[] = [
     ...(hclAssignment(existing, "github_environment") === undefined ? [] : ["github_environment"]),
     ...(hclAssignment(existing, "core_public_hosts") === undefined ? [] : ["core_public_hosts"]),
+    ...(hclAssignment(existing, "public_port") === undefined ? [] : ["public_port"]),
   ],
 ): string[] {
   const { strings, json } = derivedValues(config, declared, managedTaskRoles(existing));

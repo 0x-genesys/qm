@@ -43,15 +43,14 @@ import {
   type ComputedSecret,
 } from "../secrets.ts";
 import {
-  brokerWiring,
-  brandEnvOf,
-  orgEnv,
+  coreWebEnv,
+  hostsWebEdge,
+  PUBLIC_PORT,
   runnableServices,
   hostedServiceEnv,
   serviceHost,
   serviceDef,
   isServiceName,
-  virtualServiceEnv,
   type LogOpts,
   type ServiceName,
 } from "../services.ts";
@@ -378,24 +377,19 @@ function secretValueFrom(config: QmConfig, name: string, arns?: Record<string, s
 export function serviceEnvironment(config: QmConfig, service: ServiceName): Record<string, string> {
   const aws = requireAws(config);
   const def = serviceDef(service);
-  const coreUrl = `http://core.${aws.networking.cloudMapNamespace}:8080`;
-  const coreEnv =
-    service === "core"
+  const env: Record<string, string> = {
+    ...(service === "core"
       ? {
+          ...coreWebEnv(config),
           ...(config.model ? { PI_MODEL: config.model } : {}),
           ...(config.modelProvider ? { MODEL_PROVIDER: config.modelProvider } : {}),
-          ...virtualServiceEnv(config.services, config.env),
         }
-      : {};
-  const env: Record<string, string> = {
-    ...orgEnv(service, config.orgId, config.publicUrl, config.services.includes("portal"), brandEnvOf(config)),
-    ...(service === "core"
-      ? {}
       : {
-          CORE_API_URL:
-            isServiceName(service) && serviceDef(service).tcpIngress ? (config.apiUrl ?? config.publicUrl) : coreUrl,
+          CORE_ORG_ID: config.orgId,
+          CORE_API_URL: def.tcpIngress
+            ? (config.apiUrl ?? config.publicUrl)
+            : `http://core.${aws.networking.cloudMapNamespace}:8080`,
         }),
-    ...coreEnv,
     ...hostedServiceEnv(config.services, config.env, service),
     ...(service === "core" ? securityScreenEnv(config) : {}),
   };
@@ -429,26 +423,7 @@ export function serviceEnvironment(config: QmConfig, service: ServiceName): Reco
       });
     }
   }
-  if (service === "portal") {
-    env.WEB_UI_UPSTREAM = `http://web-ui.${aws.networking.cloudMapNamespace}:8080`;
-    env.ADMIN_UPSTREAM = `http://web-ui.${aws.networking.cloudMapNamespace}:8080/admin`;
-    env.PORTAL_XFF_TRUSTED_HOPS = "1";
-  }
-  if (config.services.includes("auth")) {
-    Object.assign(
-      env,
-      brokerWiring(service, {
-        publicUrl: config.publicUrl,
-        authBaseUrl: `http://auth.${aws.networking.cloudMapNamespace}:8080`,
-        ...(config.env.auth?.AUTH_ALLOWED_EMAIL_DOMAIN
-          ? { allowedEmailDomain: config.env.auth.AUTH_ALLOWED_EMAIL_DOMAIN }
-          : {}),
-      }),
-    );
-  }
-  if (config.services.includes("portal") && (service === "web-ui" || service === "admin")) {
-    env.REQUIRE_SIGNED_PORTAL_IDENTITY = "1";
-  }
+  if (service === "core" && hostsWebEdge(config.services)) env.PORTAL_XFF_TRUSTED_HOPS = "1";
   env[def.docker.portEnv] = String(def.docker.internalPort);
   return Object.fromEntries(Object.entries(env).sort(([a], [b]) => a.localeCompare(b)));
 }
@@ -473,7 +448,7 @@ function workloadEnvironment(
       ...(plugin?.coreAccess === false
         ? {}
         : { CORE_API_URL: `http://core.${requireAws(config).networking.cloudMapNamespace}:8080` }),
-      ...orgEnv(workload, config.orgId, config.publicUrl, config.services.includes("portal"), brandEnvOf(config)),
+      CORE_ORG_ID: config.orgId,
       ...plugin?.env,
       PORT: "8080",
     }).sort(([a], [b]) => a.localeCompare(b)),
@@ -570,6 +545,17 @@ export function renderTaskDefinition(
             protocol: "tcp",
             ...(def?.tcpIngress ? {} : { appProtocol: "http" }),
           },
+          ...(service === "core" && hostsWebEdge(config.services)
+            ? [
+                {
+                  name: "public",
+                  containerPort: PUBLIC_PORT,
+                  hostPort: PUBLIC_PORT,
+                  protocol: "tcp",
+                  appProtocol: "http",
+                },
+              ]
+            : []),
         ],
         ...(healthCheck ? { healthCheck } : {}),
         ...(spec.stopTimeout !== undefined ? { stopTimeout: spec.stopTimeout } : {}),
@@ -1927,62 +1913,12 @@ function adoptMissingWorkloads(
   return true;
 }
 
-function unchangedWebRouting(
-  config: QmConfig,
-  manifest: DeploymentManifest | undefined,
-  desired: Array<{ service: string; task: EcsTaskDefinition }>,
-): boolean {
-  if (!manifest) return false;
-  const workloads = ["web-ui", "portal"];
-  if (workloads.some((workload) => !desired.some((item) => item.service === workload))) return false;
-  try {
-    const states = describedServices(config, workloads);
-    for (const workload of workloads) {
-      const count = manifest.counts?.[workload];
-      const definition = manifest.tasks[workload];
-      if (!definition || !count || count !== workloadDesiredCount(config, workload)) return false;
-      stableWorkloadCapacity(config, workload, states.get(workload)!, definition, count);
-      const prior = awsJson<{ taskDefinition?: Record<string, unknown> }>(requireAws(config), [
-        "ecs",
-        "describe-task-definition",
-        "--task-definition",
-        definition,
-      ]).taskDefinition;
-      const next = desired.find((item) => item.service === workload)!.task;
-      const keys = workload === "portal" ? ["WEB_UI_UPSTREAM", "ADMIN_UPSTREAM"] : ["ADMIN_ENABLED"];
-      const settings = (task: Record<string, unknown> | undefined): string[] | undefined => {
-        const containers = task?.containerDefinitions as Array<Record<string, unknown>> | undefined;
-        const matches = containers?.filter((container) => container.name === workload);
-        if (matches?.length !== 1) return undefined;
-        const container = matches[0]!;
-        const secrets = (container.secrets ?? []) as Array<{ name: string }>;
-        const environment = (container.environment ?? []) as Array<{ name: string; value: string }>;
-        const values: string[] = [];
-        for (const key of keys) {
-          const entries = environment.filter((entry) => entry.name === key);
-          if (secrets.some((entry) => entry.name === key) || entries.length !== 1 || !entries[0]!.value)
-            return undefined;
-          values.push(entries[0]!.value);
-        }
-        return values;
-      };
-      const previous = settings(prior);
-      const upcoming = settings(next as unknown as Record<string, unknown>);
-      if (!previous || !upcoming || canonicalJson(previous) !== canonicalJson(upcoming)) return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function applyServiceTargets(
   config: QmConfig,
   targets: Record<string, string>,
   desiredCounts?: Record<string, number>,
   options: {
     timeoutMs?: number;
-    webBeforePortal?: boolean;
     onSubmitted?: () => void;
   } = {},
 ): Promise<void> {
@@ -1996,23 +1932,7 @@ async function applyServiceTargets(
   );
   const changed: string[] = [];
   try {
-    for (const workload of options.webBeforePortal
-      ? [...workloads].sort(
-          (a, b) => Number(a === "portal") - Number(b === "portal") || Number(b === "web-ui") - Number(a === "web-ui"),
-        )
-      : workloads) {
-      if (options.webBeforePortal && workload === "portal" && targets["web-ui"]) {
-        await awaitServiceTargets(
-          config,
-          {
-            "web-ui": {
-              taskDefinition: targets["web-ui"]!,
-              desiredCount: expectedCounts["web-ui"]!,
-            },
-          },
-          options.timeoutMs,
-        );
-      }
+    for (const workload of workloads) {
       const args = [
         "ecs",
         "update-service",
@@ -2573,10 +2493,7 @@ export async function awsUp(config: QmConfig, _configDir: string, opts: AwsUpOpt
         Object.fromEntries(
           Object.keys(rolloutTargets).map((service) => [service, workloadDesiredCount(config, service)]),
         ),
-        {
-          webBeforePortal: !unchangedWebRouting(config, current, desired),
-          onSubmitted: reportProgress ? () => reportProgress(targets) : undefined,
-        },
+        { onSubmitted: reportProgress ? () => reportProgress(targets) : undefined },
       );
       applied = true;
     } else {
@@ -3549,24 +3466,19 @@ export async function awsSecretsPush(config: QmConfig, configDir: string, envFil
         );
         affected.splice(affected.indexOf("core"), 1);
       }
-      for (const [component, host, marker, expected] of [
-        ["admin", "web-ui", "ADMIN_ENABLED", "1"],
-        ["auth", "portal", "AUTH_EMBEDDED", "1"],
-        ["admin", "portal", "ADMIN_UPSTREAM", serviceEnvironment(config, "portal").ADMIN_UPSTREAM],
-      ] as const) {
-        if (!config.services.includes(component) || !workloads.includes(host)) continue;
+      if (hostsWebEdge(config.services) && workloads.includes("core")) {
         const task = awsJson<{ taskDefinition?: Record<string, unknown> }>(aws, [
           "ecs",
           "describe-task-definition",
           "--task-definition",
-          before.tasks[host]!,
+          before.tasks.core!,
         ]).taskDefinition;
         const container = (task?.containerDefinitions as Array<Record<string, unknown>> | undefined)?.find(
-          (item) => item.name === host,
+          (item) => item.name === "core",
         );
         const environment = (container?.environment ?? []) as Array<{ name: string; value: string }>;
-        if (!environment.some((entry) => entry.name === marker && entry.value === expected)) {
-          step("secret activation deferred until combined web-ui and portal images are deployed with qm up");
+        if (!environment.some((entry) => entry.name === "PUBLIC_PORT" && entry.value === String(PUBLIC_PORT))) {
+          step("secret activation deferred until core hosting the web edge is deployed with qm up");
           return;
         }
       }
@@ -3847,6 +3759,7 @@ interface AwsEcsRoutingService {
   }>;
   loadBalancers?: Array<{
     targetGroupArn?: string;
+    containerPort?: number;
     advancedConfiguration?: {
       alternateTargetGroupArn?: string;
       productionListenerRule?: string;
@@ -4039,7 +3952,8 @@ export function assertAwsPublicRouting(
   const targetName = (name: string): string =>
     aws.services[name]?.targetGroup ??
     `${aws.cluster.slice(0, 20)}-${name.replaceAll("-", "").slice(0, 4)}-${hash(`${aws.cluster}:${name}`, 6)}`;
-  const hasPortal = Boolean(aws.services.portal);
+  const hasPortal = hostsWebEdge(config.services);
+  const ingressService = (name: string): string => (name === "portal" ? "core" : name);
   const coreHosts = hasPortal ? awsCoreHostnames(config) : [];
   let ingress = ["core"];
   if (hasPortal) ingress = coreHosts.length ? ["portal", "core"] : ["portal"];
@@ -4068,11 +3982,14 @@ export function assertAwsPublicRouting(
     if (!target?.TargetGroupArn) throw new Error(`target group for ${name} is missing`);
     targets.set(name, target.TargetGroupArn);
     expectedTargetArns.add(target.TargetGroupArn);
-    const attachment = (routingServices.get(name)?.loadBalancers ?? []).find(
+    const attachment = (routingServices.get(ingressService(name))?.loadBalancers ?? []).find(
       (item) => item.targetGroupArn === target.TargetGroupArn,
     );
     if (!attachment) {
-      throw new Error(`ECS service ${name} is not attached to its target group`);
+      throw new Error(`ECS service ${ingressService(name)} is not attached to the ${name} target group`);
+    }
+    if (name === "portal" && attachment.containerPort !== PUBLIC_PORT) {
+      throw new Error(`the portal target group must reach core on its public port ${PUBLIC_PORT}`);
     }
     const alternate = attachment.advancedConfiguration?.alternateTargetGroupArn;
     const productionRule = attachment.advancedConfiguration?.productionListenerRule;
@@ -4090,7 +4007,7 @@ export function assertAwsPublicRouting(
   }
   for (const name of deployedAwsServices(aws)) {
     if (
-      !ingress.includes(name) &&
+      !ingress.map(ingressService).includes(name) &&
       !(isServiceName(name) && serviceDef(name).tcpIngress) &&
       (routingServices.get(name)?.loadBalancers ?? []).length
     ) {

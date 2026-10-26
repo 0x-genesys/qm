@@ -268,7 +268,7 @@ test("AWS workload architecture accepts arm64 or amd64 only", () => {
   withConfig(
     {
       target: "aws",
-      services: ["core", "web-ui"],
+      services: ["core"],
       aws: {
         ...aws,
         services: {
@@ -402,7 +402,7 @@ test("AWS config rejects public surfaces without the HTTPS portal and real harne
         services: ["core", "web-ui"],
         aws: aws(["core", "web-ui"]),
       },
-      error: /web-ui requires the authenticated portal/,
+      error: /"web-ui" requires "portal"/,
     },
     {
       label: "admin without portal",
@@ -412,7 +412,7 @@ test("AWS config rejects public surfaces without the HTTPS portal and real harne
         services: ["core", "admin"],
         aws: aws(["core", "admin"]),
       },
-      error: /admin requires the authenticated portal/,
+      error: /"admin" requires "portal"/,
     },
     {
       label: "portal over HTTP",
@@ -648,7 +648,7 @@ test("AWS validates release labels, unique coordinates, Fargate sizes, and owned
     withConfig(
       {
         target: "aws",
-        services: ["core", "web-ui"],
+        services: ["core"],
         aws: {
           ...aws,
           services: {
@@ -742,7 +742,7 @@ test("AWS validates release labels, unique coordinates, Fargate sizes, and owned
   withConfig(
     {
       target: "aws",
-      services: ["core", "web-ui"],
+      services: ["core"],
       aws: {
         ...aws,
         services: {
@@ -1498,7 +1498,7 @@ test("proxy deployment rendering names the mode and classifier", () => {
 });
 
 test("AWS built-in architecture defaults match published images and retain explicit choices", () => {
-  const workloads = ["core", "web-ui", "admin", "portal", "auth", "linear"];
+  const workloads = ["core", "egress-proxy", "linear"];
   const config = {
     plugins: [{ name: "linear" }],
     imageOverrides: {},
