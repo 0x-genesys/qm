@@ -2378,6 +2378,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             await thinkTail;
             await drainCaptured();
             entry.ref.onGapWork = undefined;
+            toolAbort.abort();
             entry.ref.abortSignal = undefined;
             entry.ref.screenToolResult = undefined;
           }

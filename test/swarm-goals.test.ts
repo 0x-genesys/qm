@@ -18,7 +18,7 @@ test("a spawn goal reaches the worker turn without the swarm turn deadline", asy
   await assert.rejects(f.service.binding({ ...run.request, runId: run.id, turnWallClockMs: 600_000 }));
 });
 
-test("goals are validated and only a parent may assign them to its own workers", async () => {
+test("goals are validated, and any member can give any worker, itself included, a goal that wakes it", async () => {
   const f = await swarmFixture();
   const [first, second] = await f.service.spawn(f.caller, { requestId: "initial", count: 2, text: "work" });
   await f.service.sweep();
@@ -34,16 +34,23 @@ test("goals are validated and only a parent may assign them to its own workers",
     /needs notify/,
   );
   await assert.rejects(
-    f.service.send(f.caller, { requestId: "self", audience: [f.root.id], text: "go", goal }),
-    /own workers/,
+    f.service.send(f.caller, { requestId: "root", audience: [f.root.id], text: "go", goal }),
+    /assigned to workers/,
+  );
+  const everyone = await f.service.send(f.caller, { requestId: "all", audience: "all", text: "go", goal });
+  assert.deepEqual(
+    [first!.id, second!.id, f.root.id].map((id) => everyone.notifications[id]?.state),
+    ["pending", "pending", undefined],
   );
   const peer = await f.workerCaller(first!.id);
-  await assert.rejects(
-    f.service.send(peer, { requestId: "sibling", audience: [second!.id], text: "go", goal }),
-    /own workers/,
-  );
-  const sent = await f.service.send(f.caller, { requestId: "assign", audience: [second!.id], text: "go", goal });
-  assert.deepEqual(sent.goal, goal);
+  const sibling = await f.service.send(peer, { requestId: "sibling", audience: [second!.id], text: "go", goal });
+  const next = { objective: "Pick the next lane" };
+  const self = await f.service.send(peer, { requestId: "self", audience: [first!.id], text: "next", goal: next });
+  await f.service.sweep();
+  const runFor = async (id: string) => (await f.runs.list()).find((run) => run.request.swarm?.messageId === id);
+  assert.deepEqual((await runFor(sibling.id))?.request.swarmGoal, { ...goal, assignedAt: sibling.createdAt });
+  assert.equal((await runFor(self.id))?.request.swarm?.recipientId, first!.id);
+  assert.deepEqual((await runFor(self.id))?.request.swarmGoal, { ...next, assignedAt: self.createdAt });
 });
 
 test("each goal message installs once, and a later goal message wins", () => {
@@ -78,12 +85,17 @@ test("a running goal turn takes its worker's queued messages once, under its lea
     attempt: claimed.attempts,
   };
   const send = (requestId: string, text: string, extra = {}) =>
-    f.service.send(f.caller, { requestId, audience: [worker!.id], text, ...extra });
+    f.service.send(f.caller, { requestId, audience: [worker!.id], text, notify: true, ...extra });
   const earlier = await send("earlier", "already handled in its own turn");
   await f.service.sweep();
   const earlierRun = (await f.runs.list()).find((run) => run.request.swarm?.messageId === earlier.id)!;
   await f.runs.withdraw(earlierRun.id);
-  const replacement = await send("replace", "take lane B", { goal: { objective: "Survey lane B" } });
+  const replacement = await f.service.send(await f.workerCaller(worker!.id), {
+    requestId: "replace",
+    audience: [worker!.id],
+    text: "take lane B",
+    goal: { objective: "Survey lane B" },
+  });
   const note = await send("note", "lane B starts at the north gate");
   await f.service.sweep();
   const unacknowledged = await send("late", "not delivered yet");
@@ -129,7 +141,7 @@ test("the goal inbox holds a blocked message and everything after it, and settle
     attempt: claimed.attempts,
   };
   const send = (requestId: string, text: string) =>
-    f.service.send(f.caller, { requestId, audience: [worker!.id], text });
+    f.service.send(f.caller, { requestId, audience: [worker!.id], text, notify: true });
   const ok = await send("ok", "first note");
   const blocked = await send("blocked", "BLOCK this one");
   const after = await send("after", "after the blocked one");

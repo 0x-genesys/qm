@@ -288,6 +288,7 @@ for (const storage of ["memory", "postgres"] as const) {
               action: "send",
               requestId: "reply",
               audience: [rootId],
+              notify: true,
               text: "http-worker-result",
             };
         const response = await fetch(`${base}/v1/swarm`, {
@@ -645,6 +646,51 @@ test("a goal assigned at spawn becomes the worker's session goal and its turn ha
   }
 });
 
+test("a worker with an open goal answers messages as a goal turn without the swarm turnMs deadline", async () => {
+  const built = buildApp(testConfig({ modalSandbox: { tokenId: "test", tokenSecret: "test" } }));
+  try {
+    const rootComputer = await built.sandboxResources.create("U1", "personal:U1", "sprites", "Root");
+    await built.sandboxResources.setDefault("U1", "personal:U1", rootComputer.id);
+    const rootTurn = await built.app.turn({
+      surface: "test",
+      actor: { externalId: "U1" },
+      conversation: { kind: "dm", threadRef: "swarm-goal-deadline-root" },
+      origin: { kind: "human" },
+      text: "Coordinate work",
+    });
+    assert.equal(rootTurn.status, "ok");
+    const root = (await built.sessions.get(rootTurn.sessionId!))!;
+    const rootRun = (await built.runs.list()).find((run) => run.request.conversation.threadRef === root.threadRef)!;
+    const caller = { kind: "human" as const, actorId: "U1", sessionId: root.id, runId: rootRun.id };
+    const [worker] = await built.app.swarms!.spawn(caller, {
+      requestId: "goal-worker",
+      text: "Work the lane",
+      settings: { turnMs: 600_000 },
+      goal: { objective: "Exhaust the lane" },
+    });
+    await built.app.swarms!.sweep();
+    const first = (await built.runs.list()).find((run) => run.request.swarm)!;
+    const seen: Array<{ deadline?: number; inbox: boolean }> = [];
+    exerciseTurn = async (turn) => {
+      if (turn.goalContinuation) return { stopped: true };
+      if (turn.input.startsWith("Swarm ")) seen.push({ deadline: turn.turnWallClockMs, inbox: !!turn.goalInbox });
+    };
+    built.runtime.start();
+    assert.equal((await built.runs.waitFor(first.id, 15_000)).status, "done");
+    const message = await built.app.swarms!.send(caller, { requestId: "ping", audience: [worker!.id], text: "ping" });
+    await built.app.swarms!.sweep();
+    const answer = (await built.runs.list()).find((run) => run.request.swarm?.messageId === message.id)!;
+    assert.equal((await built.runs.waitFor(answer.id, 15_000)).status, "done");
+    assert.deepEqual(seen, [
+      { deadline: 0, inbox: true },
+      { deadline: 0, inbox: true },
+    ]);
+  } finally {
+    exerciseTurn = undefined;
+    await built.runtime.stop();
+  }
+});
+
 for (const stopped of [false, true])
   test(`a replacement goal sent to a busy worker takes over its running goal turn (turn ${stopped ? "stopped" : "finishes"})`, async () => {
     const built = buildApp(testConfig({ modalSandbox: { tokenId: "test", tokenSecret: "test" } }));
@@ -716,3 +762,71 @@ for (const stopped of [false, true])
       await built.runtime.stop();
     }
   });
+
+test("a worker's reply waits in the root's mailbox and reaches the root's next human turn once", async () => {
+  const built = buildApp(testConfig({ modalSandbox: { tokenId: "test", tokenSecret: "test" } }));
+  try {
+    const rootComputer = await built.sandboxResources.create("U1", "personal:U1", "sprites", "Root");
+    await built.sandboxResources.setDefault("U1", "personal:U1", rootComputer.id);
+    const human = (text: string) =>
+      built.app.turn({
+        surface: "test",
+        actor: { externalId: "U1" },
+        conversation: { kind: "dm", threadRef: "swarm-mailbox-root" },
+        origin: { kind: "human" },
+        text,
+      });
+    const rootTurn = await human("Coordinate work");
+    const root = (await built.sessions.get(rootTurn.sessionId!))!;
+    const rootRun = (await built.runs.list()).find((run) => run.request.conversation.threadRef === root.threadRef)!;
+    const caller = { kind: "human" as const, actorId: "U1", sessionId: root.id, runId: rootRun.id };
+    await built.app.swarms!.spawn(caller, { requestId: "worker", text: "Read the brief" });
+    await built.app.swarms!.sweep();
+    const worker = (await built.runs.list()).find((run) => run.request.swarm)!;
+    exerciseTurn = async (turn) => {
+      if (!turn.input.startsWith("Swarm ")) return;
+      const run = (await built.runs.get(turn.runId!))!;
+      await built.app.swarms!.send(
+        {
+          kind: "agent",
+          claims: {
+            actorId: "U1",
+            scopeId: turn.session.scopeId,
+            runId: run.id,
+            sessionId: turn.session.id,
+            runAttempt: run.attempts,
+            runLeaseToken: run.leaseToken!,
+            threadRef: turn.session.threadRef,
+            exp: Date.now() + 60_000,
+          },
+        },
+        { requestId: "ack", audience: [root.id], replyTo: worker.request.swarm!.messageId, text: "brief read" },
+      );
+    };
+    built.runtime.start();
+    const workerDone = await built.runs.waitFor(worker.id, 15_000);
+    assert.equal(workerDone.result?.status, "ok", JSON.stringify(workerDone.result));
+    await built.app.swarms!.sweep();
+    assert.ok(
+      !(await built.runs.list()).some(
+        (run) => run.request.swarm && run.request.conversation.threadRef === root.threadRef,
+      ),
+      "the reply does not start a root turn",
+    );
+    const environments: string[] = [];
+    exerciseTurn = async (turn) => {
+      environments.push(turn.environment ?? "");
+      if (environments.length === 1) return { stopped: true };
+    };
+    await human("Status?");
+    const status = await human("Status now?");
+    assert.equal(status.status, "ok", JSON.stringify(status));
+    assert.equal((await human("Anything else?")).status, "ok");
+    assert.match(environments[0]!, /brief read/);
+    assert.match(environments[1]!, /brief read/, "a turn that stopped before recording it keeps it");
+    assert.doesNotMatch(environments[2]!, /brief read/);
+  } finally {
+    exerciseTurn = undefined;
+    await built.runtime.stop();
+  }
+});

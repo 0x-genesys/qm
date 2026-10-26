@@ -648,7 +648,6 @@ export function buildApp(
   const principalLinks = createPrincipalLinkService(artifactMap<PrincipalLink>("principal_links"), advisoryLock);
   installPrincipalLinks(principalLinks);
   const identity = createIdentityService(artifactMap<DeactivationRecord>("deactivated_principals"), {
-    isOverridden: (id) => configStore.getInternalMemberOverrides().includes(id.trim().toLowerCase()),
     directorySyncProtected: config.emailAuthPrincipals,
     externalMembers: artifactMap<ExternalMember>("external_members"),
     principalLinks,
@@ -1768,7 +1767,10 @@ export function buildApp(
   const canReadScope = createCanReadScope({ managedGroups: projects, directory, identity, teams, sessions });
   const canWriteScope = createCanWriteScope({ managedGroups: projects, directory, identity, teams });
   const canManageScope = createCanManageScope({ managedGroups: projects, directory, identity, sessions });
-  const managesArtifactHome = createManagesArtifactHome({ managedGroups: projects, directory }, canManageScope);
+  const managesArtifactHome = createManagesArtifactHome(
+    { managedGroups: projects, directory, identity, teams },
+    canManageScope,
+  );
   const currentScopeMembers = createCurrentScopeMembers({ managedGroups: projects, directory, identity });
   const isCurrentSharedScopeMember = createIsCurrentSharedScopeMember({ managedGroups: projects, directory, identity });
   membership.canReadScope = canReadScope;
@@ -1905,6 +1907,13 @@ export function buildApp(
   pgArtifactMap?.pool.registerMigration({
     id: "durable-map/pinned_skills/0002-drop",
     statements: ["DROP TABLE IF EXISTS pinned_skills", "DELETE FROM durable_map_versions WHERE tbl = 'pinned_skills'"],
+  });
+  pgArtifactMap?.pool.registerMigration({
+    id: "durable-map/internal_member_overrides/0002-drop",
+    statements: [
+      "DROP TABLE IF EXISTS internal_member_overrides",
+      "DELETE FROM durable_map_versions WHERE tbl = 'internal_member_overrides'",
+    ],
   });
   pgArtifactMap?.pool.registerMigration(LEGACY_HARNESS_MIGRATION);
   pgArtifactMap?.pool.registerMigration({
