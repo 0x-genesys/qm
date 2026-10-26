@@ -474,7 +474,7 @@ async function sessionRunCancelled(
 export async function stopSessionTree(
   deps: {
     sessions: Pick<SessionStore, "childrenOf">;
-    runs: Pick<RunStore, "inFlightForThread" | "withdraw" | "get">;
+    runs: Pick<RunStore, "inFlightForThread" | "withdraw" | "get" | "cancelTurn">;
     signals: Pick<RunSignalStore, "send">;
   },
   root: Session,
@@ -485,7 +485,8 @@ export async function stopSessionTree(
     if (session.scopeId !== root.scopeId) continue;
     for (const run of await deps.runs.inFlightForThread(session.threadRef)) {
       await deps.signals.send(run.id, { kind: "abort", ...(reason ? { reason } : {}) });
-      if (run.status === "pending") await deps.runs.withdraw(run.id);
+      if (run.engine === "absurd") await deps.runs.cancelTurn?.(run.id);
+      else if (run.status === "pending") await deps.runs.withdraw(run.id);
       stopped = true;
     }
   }

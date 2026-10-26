@@ -46,6 +46,7 @@ export interface Lease {
   sessionId: string;
   token: string;
   turnId?: string;
+  fenceToken?: string;
 }
 
 export type LeaseHolder = "turn" | "compaction" | "fork" | "backfill";

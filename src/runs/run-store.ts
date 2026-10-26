@@ -5,7 +5,8 @@ import type { OrchestratorInput } from "../core/orchestrator.ts";
 import { isPersonAuthored, resolveTurnOrigin } from "../core/turn-origin.ts";
 import { traceCarrier } from "../../plugins/chassis/src/error-reporting.ts";
 
-type RunStatus = "pending" | "running" | "done" | "failed";
+type RunStatus = "queued" | "pending" | "running" | "done" | "failed";
+export type RunEngine = "legacy" | "absurd";
 
 export type RunPriority = 0 | 1 | 2;
 export const MAX_PREEMPTIONS = 3;
@@ -74,6 +75,10 @@ export interface Run {
   startedAt: number | null;
   finishedAt: number | null;
   lastStop?: RunStop | null;
+  engine?: RunEngine;
+  absurdQueue?: string | null;
+  absurdTaskId?: string | null;
+  absurdRunId?: string | null;
 }
 
 interface TerminalCursor {
@@ -137,6 +142,8 @@ export interface RunStore {
   deferReturn(runId: string, delayMs: number): Promise<void>;
 
   onTerminal(listener: (run: Run) => void): void;
+  emitTerminal?(run: Run): void;
+  cancelTurn?(runId: string): Promise<unknown>;
 
   get(runId: string): Promise<Run | null>;
 

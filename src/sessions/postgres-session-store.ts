@@ -1092,6 +1092,13 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
         lease.sessionId,
       ]);
       if (held.rows[0]?.token !== lease.token || Number(held.rows[0]!.expires_at) <= now()) throw new Error(invalidMsg);
+      if (lease.fenceToken) {
+        const fence = await client.query("SELECT qm_turn_fence($1, $2) AS ok", [
+          lease.turnId ?? null,
+          lease.fenceToken,
+        ]);
+        if (fence.rows[0]?.ok !== true) throw new Error(`${invalidMsg}: the turn no longer holds its claim`);
+      }
       await client.query("UPDATE session_leases SET expires_at = $2 WHERE session_id = $1", [
         lease.sessionId,
         now() + leaseTtlMs,

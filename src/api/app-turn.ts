@@ -97,7 +97,8 @@ export function createTurnMethods(
       const session = await deps.sessions.getByThread(run.sessionId);
       if (session) return stopSessionTree({ sessions: deps.sessions, runs: deps.runs, signals }, session, USER_STOP);
       await signals.send(run.id, { kind: "abort", reason: USER_STOP });
-      if (run.status === "pending") await deps.runs.withdraw(run.id);
+      if (run.engine === "absurd") await deps.runs.cancelTurn?.(run.id);
+      else if (run.status === "pending") await deps.runs.withdraw(run.id);
       return true;
     };
     return deps.advisoryLock ? deps.advisoryLock.withLock("session-tree-admission", stop) : stop();
