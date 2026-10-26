@@ -13,7 +13,7 @@ test("a durable database is pinned to one organization", async () => {
 });
 
 test("purpose runtimes persist independently without manufacturing a conversation default", async () => {
-  const baseModels = createMemoryMap<import("../src/resolution/config-store.ts").PersistedBaseModel>();
+  const baseModels = testMap<import("../src/resolution/config-store.ts").PersistedBaseModel>();
   const store = testConfigStore("default-org", { baseModels });
   const org = "org:default-org";
   const cron = { harnessId: "pi", modelId: "gpt-5.5", fastMode: false };
