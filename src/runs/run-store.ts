@@ -77,6 +77,8 @@ export interface Run {
   lastStop?: RunStop | null;
   engine?: RunEngine;
   absurdQueue?: string | null;
+  /** Absurd turns only: the swarm or automation owner whose active background turns share one cap. */
+  fairKey?: string | null;
   absurdTaskId?: string | null;
   absurdRunId?: string | null;
 }
@@ -144,6 +146,8 @@ export interface RunStore {
   onTerminal(listener: (run: Run) => void): void;
   emitTerminal?(run: Run): void;
   leaseHeld?(run: Run, token: string): Promise<boolean>;
+  /** Stops every Absurd turn in these conversations in one transaction; returns how many it stopped. */
+  cancelTree?(threadRefs: readonly string[]): Promise<number>;
   cancelTurn?(runId: string): Promise<unknown>;
 
   get(runId: string): Promise<Run | null>;

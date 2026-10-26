@@ -1566,6 +1566,7 @@ export function buildApp(
   const runs: RunStore = {
     ...runStore.runs,
     cancelTurn: turnRouting.cancelTurn,
+    cancelTree: turnRouting.cancelTree,
     withdraw: turnRouting.withdraw,
     leaseHeld: turnRouting.leaseHeld,
     async enqueue(input) {

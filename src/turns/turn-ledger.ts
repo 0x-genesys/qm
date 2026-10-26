@@ -82,6 +82,13 @@ interface RepairCandidate {
 }
 
 const UNKNOWN_TASK_DEFER_MS = 30_000;
+export const FAIR_ACTIVE_CAP = 8;
+
+function fairKeyFor(request: EnqueueInput["request"], priority: RunPriority): string | null {
+  if (request.swarm) return `swarm:${request.swarm.swarmId}`;
+  if (priority === 2) return `owner:${request.actor.id}`;
+  return null;
+}
 
 export interface TurnLedger {
   claim(queue: TurnQueue, token: string, workerId: string): Promise<{ claimed: boolean; run: Run | null }>;
@@ -95,6 +102,8 @@ export interface TurnLedger {
   finish(run: Run, token: string, outcome: TurnOutcome): Promise<boolean>;
   fenceHeld(turnId: string, token: string, client?: PoolClient): Promise<boolean>;
   cancel(turnId: string): Promise<"withdrawn" | "cancelled" | "signalled" | null>;
+  cancelTree(threadRefs: readonly string[]): Promise<number>;
+  releaseCapped(): Promise<void>;
   repairCandidates(limit?: number): Promise<RepairCandidate[]>;
   repair(candidate: RepairCandidate, result: TurnResult): Promise<Run | null>;
   release(candidate: RepairCandidate): Promise<void>;
@@ -176,7 +185,20 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     await client.query("SELECT 1 FROM runs WHERE id = $1 FOR NO KEY UPDATE", [turnId]);
   }
 
+  async function fairRoom(client: PoolClient, fairKey: string): Promise<number> {
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`qm_turn_fair:${fairKey}`]);
+    const { rows } = await client.query(
+      `SELECT count(*)::int AS n FROM runs WHERE fair_key = $1 AND engine = 'absurd' AND status IN ('pending','running')`,
+      [fairKey],
+    );
+    return FAIR_ACTIVE_CAP - Number(rows[0]!.n);
+  }
+
   async function start(client: PoolClient, run: Run): Promise<void> {
+    if (run.fairKey && (await fairRoom(client, run.fairKey)) <= 0) {
+      await point(client, run.sessionId, run.id);
+      return;
+    }
     const queue = queueOf(run);
     const params: TurnTaskParams = { tenantId: await tenantId(client), turnId: run.id };
     const spawned = await spawnTask(client, queue, TURN_TASK, params, {
@@ -304,6 +326,49 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     });
   }
 
+  async function releaseFair(client: PoolClient, fairKey: string): Promise<void> {
+    const room = await fairRoom(client, fairKey);
+    if (room <= 0) return;
+    const { rows } = await client.query(
+      `SELECT r.* FROM session_turn_pointers p JOIN runs r ON r.id = p.active_turn_id
+        WHERE p.tenant_id = qm_tenant_id() AND r.fair_key = $1 AND r.status = 'queued'
+        ORDER BY r.claim_priority ASC, r.created_at ASC, r.seq ASC LIMIT $2 FOR UPDATE OF p SKIP LOCKED`,
+      [fairKey, room],
+    );
+    for (const row of rows) {
+      await lockTurn(client, String(row.id));
+      await start(client, rowToRun(row));
+    }
+  }
+
+  async function cancelLocked(
+    client: PoolClient,
+    run: Run,
+    active: string | null,
+  ): Promise<{ outcome: "withdrawn" | "cancelled" | "signalled"; settled: boolean } | null> {
+    if (run.status === "queued") {
+      await client.query("DELETE FROM runs WHERE id = $1", [run.id]);
+      if (active === run.id) await advance(client, run.sessionId, run.id);
+      return { outcome: "withdrawn", settled: false };
+    }
+    if (run.status !== "pending" && run.status !== "running") return null;
+    if (run.absurdTaskId) await cancelTask(client, queueOf(run), run.absurdTaskId);
+    if (run.status === "running") {
+      await client.query("SELECT pg_notify($1, $2)", [TURN_CANCEL_CHANNEL, JSON.stringify(run.id)]);
+      return { outcome: "signalled", settled: false };
+    }
+    let settled = false;
+    if (run.attempts === 0) {
+      await client.query("DELETE FROM runs WHERE id = $1", [run.id]);
+      if (run.fairKey) await releaseFair(client, run.fairKey);
+    } else {
+      await terminal(client, run, "done", { status: "ok", sessionId: run.sessionId, stopped: true }, 0);
+      settled = true;
+    }
+    if (active === run.id) await advance(client, run.sessionId, run.id);
+    return { outcome: "cancelled", settled };
+  }
+
   async function settle(id: string): Promise<Run | null> {
     const { rows } = await db.query("SELECT * FROM runs WHERE id = $1", [id]);
     const run = rows[0] ? rowToRun(rows[0]) : null;
@@ -325,6 +390,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
        WHERE id = $1`,
       [run.id, status, JSON.stringify(result), Date.now(), errorIncrement, releasesDedupKey(result)],
     );
+    if (run.fairKey) await releaseFair(client, run.fairKey);
   }
 
   return {
@@ -342,8 +408,8 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
         if (legacy.rows[0]) return null;
         const { rows } = await client.query(
           `INSERT INTO runs(id, session_id, status, request, idempotency_key, attempts, max_attempts, created_at,
-             claim_priority, engine, absurd_queue)
-           VALUES ($1, $2, 'queued', $3, $4, 0, $5, $6, $7, 'absurd', $8)
+             claim_priority, engine, absurd_queue, fair_key)
+           VALUES ($1, $2, 'queued', $3, $4, 0, $5, $6, $7, 'absurd', $8, $9)
            ON CONFLICT (idempotency_key) DO NOTHING RETURNING *`,
           [
             randomUUID(),
@@ -354,6 +420,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
             Date.now(),
             priority,
             turnQueueFor(priority),
+            fairKeyFor(request, priority),
           ],
         );
         if (!rows[0]) {
@@ -361,9 +428,16 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
           return { run: rowToRun(existing.rows[0]!), deduped: true };
         }
         const queued = rowToRun(rows[0]);
-        if (active && !(priority === 0 && (await askToYield(client, active)))) return { run: queued, deduped: false };
+        let capped = false;
+        if (active && priority === 0) {
+          const head = await client.query("SELECT 1 FROM runs WHERE id = $1 AND status = 'queued'", [active]);
+          capped = head.rows.length > 0;
+        }
+        if (active && !capped && !(priority === 0 && (await askToYield(client, active))))
+          return { run: queued, deduped: false };
         await start(client, queued);
-        return { run: { ...queued, status: "pending" }, deduped: false };
+        const state = await client.query("SELECT status FROM runs WHERE id = $1", [queued.id]);
+        return { run: { ...queued, status: state.rows[0]!.status as Run["status"] }, deduped: false };
       });
     },
 
@@ -449,32 +523,60 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       const found = await db.query("SELECT session_id FROM runs WHERE id = $1 AND engine = 'absurd'", [turnId]);
       const threadRef = found.rows[0]?.session_id as string | undefined;
       if (!threadRef) return null;
-      let settled = false;
-      const outcome = await tx(async (client) => {
+      const done = await tx(async (client) => {
         const active = await lockPointer(client, threadRef);
         const { rows } = await client.query("SELECT * FROM runs WHERE id = $1 FOR UPDATE", [turnId]);
-        if (!rows[0]) return null;
-        const run = rowToRun(rows[0]);
-        if (run.status === "queued") {
-          await client.query("DELETE FROM runs WHERE id = $1", [turnId]);
-          return "withdrawn" as const;
-        }
-        if (run.status !== "pending" && run.status !== "running") return null;
-        if (run.absurdTaskId) await cancelTask(client, queueOf(run), run.absurdTaskId);
-        if (run.status === "running") {
-          await client.query("SELECT pg_notify($1, $2)", [TURN_CANCEL_CHANNEL, JSON.stringify(turnId)]);
-          return "signalled" as const;
-        }
-        if (run.attempts === 0) await client.query("DELETE FROM runs WHERE id = $1", [turnId]);
-        else {
-          await terminal(client, run, "done", { status: "ok", sessionId: run.sessionId, stopped: true }, 0);
-          settled = true;
-        }
-        if (active === turnId) await advance(client, threadRef, turnId);
-        return "cancelled" as const;
+        return rows[0] ? cancelLocked(client, rowToRun(rows[0]), active) : null;
       });
-      if (settled) await settle(turnId);
-      return outcome;
+      if (done?.settled) await settle(turnId);
+      return done?.outcome ?? null;
+    },
+
+    async cancelTree(threadRefs) {
+      const refs = [...new Set(threadRefs)].sort();
+      if (!refs.length) return 0;
+      const settled: string[] = [];
+      const count = await tx(async (client) => {
+        const active = new Map<string, string | null>();
+        for (const ref of refs) active.set(ref, await lockPointer(client, ref));
+        const { rows } = await client.query(
+          `SELECT * FROM runs WHERE session_id = ANY($1::text[]) AND engine = 'absurd'
+             AND status IN ('queued','pending','running') ORDER BY id FOR UPDATE`,
+          [refs],
+        );
+        const rank = (run: Run): number => {
+          if (run.status === "queued") return 0;
+          return active.get(run.sessionId) === run.id ? 2 : 1;
+        };
+        const runs = rows.map(rowToRun).sort((a, b) => rank(a) - rank(b));
+        let n = 0;
+        for (const run of runs) {
+          const current = await client.query("SELECT * FROM runs WHERE id = $1", [run.id]);
+          if (!current.rows[0]) continue;
+          const pointer = await client.query(`SELECT active_turn_id FROM session_turn_pointers WHERE ${POINTER_KEY}`, [
+            run.sessionId,
+          ]);
+          const done = await cancelLocked(
+            client,
+            rowToRun(current.rows[0]),
+            (pointer.rows[0]?.active_turn_id as string | null | undefined) ?? null,
+          );
+          if (!done) continue;
+          n += 1;
+          if (done.settled) settled.push(run.id);
+        }
+        return n;
+      });
+      for (const id of settled) await settle(id);
+      return count;
+    },
+
+    async releaseCapped() {
+      const { rows } = await db.query(
+        `SELECT DISTINCT r.fair_key FROM session_turn_pointers p JOIN runs r ON r.id = p.active_turn_id
+          WHERE p.tenant_id = qm_tenant_id() AND r.status = 'queued' AND r.fair_key IS NOT NULL LIMIT 100`,
+      );
+      for (const row of rows) await tx((client) => releaseFair(client, String(row.fair_key)));
     },
 
     async repairCandidates(limit = 100) {
@@ -490,6 +592,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
            LEFT JOIN runs t ON t.id = p.active_turn_id
            ${joins}
           WHERE p.tenant_id = qm_tenant_id() AND p.active_turn_id IS NOT NULL
+            AND NOT (t.status = 'queued' AND t.fair_key IS NOT NULL)
             AND (t.id IS NULL OR t.status NOT IN ('pending','running') OR t.absurd_task_id IS NULL
               OR ${state} IS NULL OR ${state} IN ('failed','completed')
               OR (${state} = 'cancelled' AND ${cancelledAt} < absurd.current_time() - make_interval(secs => $2)))

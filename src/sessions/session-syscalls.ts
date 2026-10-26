@@ -474,22 +474,22 @@ async function sessionRunCancelled(
 export async function stopSessionTree(
   deps: {
     sessions: Pick<SessionStore, "childrenOf">;
-    runs: Pick<RunStore, "inFlightForThread" | "withdraw" | "get" | "cancelTurn">;
+    runs: Pick<RunStore, "inFlightForThread" | "withdraw" | "get" | "cancelTurn" | "cancelTree">;
     signals: Pick<RunSignalStore, "send">;
   },
   root: Session,
   reason?: string,
 ): Promise<boolean> {
-  let stopped = false;
+  const inFlight: Run[] = [];
   for (const session of await treeSessions(deps.sessions, root)) {
     if (session.scopeId !== root.scopeId) continue;
-    for (const run of await deps.runs.inFlightForThread(session.threadRef)) {
-      await deps.signals.send(run.id, { kind: "abort", ...(reason ? { reason } : {}) });
-      await stopRun(deps.runs, run);
-      stopped = true;
-    }
+    inFlight.push(...(await deps.runs.inFlightForThread(session.threadRef)));
   }
-  return stopped;
+  for (const run of inFlight) await deps.signals.send(run.id, { kind: "abort", ...(reason ? { reason } : {}) });
+  const absurd = inFlight.filter((run) => run.engine === "absurd");
+  if (absurd.length && deps.runs.cancelTree) await deps.runs.cancelTree(absurd.map((run) => run.sessionId));
+  for (const run of inFlight) if (run.engine !== "absurd" || !deps.runs.cancelTree) await stopRun(deps.runs, run);
+  return inFlight.length > 0;
 }
 
 export async function sessionTreeRunCount(
@@ -1141,6 +1141,7 @@ export async function deliverSubagentMail(deps: SubagentMailDeps, run: Run): Pro
     "detectContext",
     "detectOpener",
     "conversationHeader",
+    "wakeCause",
   ] as const)
     delete request[key];
   if (!originalParent) request.addressed = false;
@@ -1198,10 +1199,14 @@ export async function deliverSubagentMail(deps: SubagentMailDeps, run: Run): Pro
       return true;
     }
     if (existing && (existing.status === "done" || existing.status === "failed")) return true;
-    if ((await deps.runs.inFlightForThread(parent.threadRef)).length) return false;
+    const inFlight = await deps.runs.inFlightForThread(parent.threadRef);
+    const absurdParent = inFlight.every((turn) => turn.engine === "absurd");
+    if (absurdParent && inFlight.some((turn) => turn.status === "queued" && turn.request.wakeCause === "child_done"))
+      return true;
+    if (inFlight.length && !absurdParent) return false;
     const wake =
       "A delegated task finished. Check internal messages with subagents wait (timeoutMs: 0), then report any new result or blocker relevant to the user's request. If it was already handled or no message is available, end without posting.";
-    await deps.runs.enqueue({
+    const { run: woken } = await deps.runs.enqueue({
       sessionId: parent.threadRef,
       dedupKey,
       request: {
@@ -1211,10 +1216,11 @@ export async function deliverSubagentMail(deps: SubagentMailDeps, run: Run): Pro
         origin: sessionTurnOrigin(prepared.origin, wake),
         text: wake,
         displayText: "Delegated task completed",
+        wakeCause: "child_done",
       },
       maxAttempts: deps.maxAttempts,
     });
-    return false;
+    return woken.engine === "absurd";
   }
   return true;
 }
