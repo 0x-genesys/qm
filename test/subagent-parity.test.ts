@@ -35,7 +35,13 @@ import { createPostgresFileArtifactStore } from "../src/files/postgres-file-arti
 import { createPostgresMemoryService } from "../src/memory/postgres-memory-service.ts";
 import { createPostgresRateLimiter } from "../src/ratelimit/postgres-rate-limiter.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
-import { testConfigStore, testDatabaseUrl, testMap, testDeployBackings } from "./support/test-database.ts";
+import {
+  testConfigStore,
+  testDatabaseUrl,
+  testMap,
+  testDeployBackings,
+  testAdvisoryLock,
+} from "./support/test-database.ts";
 
 type Call = { tool: string; args: Record<string, unknown> };
 type Turn = {
@@ -63,6 +69,7 @@ async function world(flags: FeatureName[], next: (turn: Turn, subagent: boolean)
   for (const flag of flags) await featureFlags.setEnabled(flag, scope, true, "test");
   const sidebar: Session[] = [];
   const sessionSyscalls = createSessionSyscalls({
+    advisoryLock: testAdvisoryLock(),
     sessions,
     runs,
     mailbox: createSessionMailbox(testMap<SessionMessage>()),

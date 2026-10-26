@@ -127,7 +127,7 @@ test("re-creating a byte-identical disabled webhook re-enables it", async () => 
 });
 
 test("history survives reconstruction without entering webhook listings", async () => {
-  const history = createMemoryMap<import("../src/webhooks/webhook-store.ts").WebhookHistory>();
+  const history = testMap<import("../src/webhooks/webhook-store.ts").WebhookHistory>();
   const backing = testMap<Webhook>();
   const store = createWebhookStore(backing, history);
   const wh = await store.create(base);
