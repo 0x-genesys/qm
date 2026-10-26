@@ -947,3 +947,25 @@ test("same-name skills from distinct sources keep their materialized assets sepa
   assert.equal(await router.readFile(handle, `${a.dir!.replace("/workspace/", "")}/value.py`), "org:example");
   assert.equal(await router.readFile(handle, `${b.dir!.replace("/workspace/", "")}/value.py`), "personal:alice");
 });
+
+test("a job computer is invisible and untargetable for everyone, and only the job sweep retires it", async () => {
+  const { resources, router, layers } = fixture();
+  const job = await resources.create("alice", "personal:alice", "local", "background job", undefined, true);
+  assert.ok(!(await resources.list("alice", "personal:alice")).sandboxes.some((s) => s.id === job.id));
+  for (const actor of ["alice", "admin"]) {
+    await assert.rejects(resources.access(actor, job.id));
+    await assert.rejects(resources.status(actor, job.id));
+    await assert.rejects(resources.restart(actor, job.id));
+    await assert.rejects(resources.retire(actor, job.id));
+  }
+  await assert.rejects(resources.setDefault("alice", "personal:alice", job.id));
+  const handle = await router.provision(layers, { sandboxId: job.id });
+  assert.equal(handle.resourceId, job.id);
+  assert.deepEqual(
+    (await resources.jobComputers()).map((s) => s.id),
+    [job.id],
+  );
+  await resources.retireJobComputer(job.id);
+  assert.deepEqual(await resources.jobComputers(), []);
+  await assert.rejects(router.provision(layers, { sandboxId: job.id }));
+});

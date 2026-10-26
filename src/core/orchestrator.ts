@@ -1908,6 +1908,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
       const {
         provision,
         provisionScratch,
+        provisionJobComputer,
+        provisionJobSandbox,
         accessResource,
         provisionResource,
         useSkill,
@@ -2405,12 +2407,12 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           deps.turnStream?.begin(input.runId);
         }
 
-        const backgroundBroker =
+        const broker =
           deps.processes && supportsProcessSessions(deps.sandbox)
             ? createBackgroundBroker({
                 sandbox: deps.sandbox,
                 registry: deps.processes,
-                provisionSandbox: provisionResource,
+                provisionSandbox: provisionJobSandbox,
                 onExit: (handle, processId) =>
                   finishProcessCredentials(
                     {
@@ -2427,6 +2429,15 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 ...(deps.backgroundJobTtlMaxMs !== undefined ? { ttlMaxMs: deps.backgroundJobTtlMaxMs } : {}),
               })
             : undefined;
+        const backgroundBroker = broker && {
+          ...broker,
+          write: async (...[handle, processId, data]: Parameters<typeof broker.write>) => {
+            const sandboxId = (await deps.processes!.get(processId))?.sandboxId;
+            if (sandboxId && (await deps.sandboxResources?.get(sandboxId))?.jobOnly)
+              throw new Error("a background job that uses private credentials does not accept input");
+            return broker.write(handle, processId, data);
+          },
+        };
 
         const readOutputTail = backgroundBroker
           ? async (processId: string, maxBytes: number) => {
@@ -2643,6 +2654,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           invalidateProvision,
           provision,
           provisionScratch,
+          provisionJobComputer,
           provisionResource,
           accessSandboxResource: accessResource,
           useSkill,

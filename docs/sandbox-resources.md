@@ -33,13 +33,16 @@ including when it asked for the scoped computer or a `sandbox_id`. The scratch c
 is the ordinary per-turn one: same image, the turn's environment and capability tokens,
 Files, skills and global mounts, but none of the shared workspace's files. Only that
 turn's commands run there. The result tells the model the command moved. Brokered org
-service handles (`AGENT_CREDENTIAL_TOKEN`) carry no secret and stay on the requested
-computer. Deployments without scratch execution refuse such credentials in shared
-conversations. Personal conversations stage credentials on their own computer as before.
+service handles (`AGENT_CREDENTIAL_TOKEN`) carry no raw secret and stay on the requested
+computer. Personal conversations stage credentials on their own computer as before.
 
-Background jobs in a shared conversation cannot name such a credential: any member can
-poll a job and send it input, and the scratch computer ends with the turn. Brokered org
-service handles still work in background jobs.
+A background job in a shared conversation that names such a credential starts on its own
+job computer: a sandbox record marked job-only, created on the conversation's provider. It
+is not listed in the sandbox inventory, cannot be targeted with `sandbox_id` by execute,
+files, apps or skills, cannot be made a default, and refuses `send_input`. Only the job's
+own controls reach it: poll, stop, watch, the reaper and the web output pane, including
+from a later deploy. The process reaper's sweep settles the job's exit and credential
+write-back, then destroys the computer.
 
 The `background` tool controls existing jobs with `poll`, `send_input`, `stop`, `list`,
 `watch`, and `unwatch`. Process IDs retain their durable saved target even after the

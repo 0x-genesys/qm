@@ -632,7 +632,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     credentials: Type.Optional(
       Type.Array(Type.String(), {
         description:
-          "Exact authorized credential handles to materialize for this command only (for a background job, until it exits). Newly granted handles are accepted. In a shared conversation, credentials other than brokered org services run on this turn's scratch computer instead, even with sandbox_id (no shared workspace files: fetch scripts from Files or git in the command); background jobs cannot use them.",
+          "Exact authorized credential handles to materialize for this command only (for a background job, until it exits). Newly granted handles are accepted. In a shared conversation, credentials other than brokered org services run on this turn's scratch computer instead, even with sandbox_id (no shared workspace files: fetch scripts from Files or git in the command); a background job naming them gets its own computer that nothing else can reach.",
       }),
     ),
   };
@@ -1924,7 +1924,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         ...(params.sandbox_id ? { sandboxId: params.sandbox_id } : {}),
         ...(params.credentials?.length ? { credentials: params.credentials } : {}),
       });
-      const { output: _output, ...startMeta } = r;
+      const { output: _output, jobComputer, ...startMeta } = r;
+      const placePrefix = jobComputer
+        ? "[running on a computer reserved for this job because it names a private credential; nobody can run commands on it, and it is destroyed after the job ends]\n"
+        : "";
       return recordResult(
         callId,
         { tool: "execute", background: true, ...startMeta },
@@ -1932,7 +1935,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           content: [
             {
               type: "text" as const,
-              text: `started ${r.processId}${r.reattached ? " (reattached)" : ""}\n${r.output}\n[cursor ${r.cursor} | ${fmtStatus(r.status)}]`,
+              text: `${placePrefix}started ${r.processId}${r.reattached ? " (reattached)" : ""}\n${r.output}\n[cursor ${r.cursor} | ${fmtStatus(r.status)}]`,
             },
           ],
           details: r,

@@ -258,7 +258,7 @@ export interface ToolContext extends SurfaceToolDeps {
   backgroundStart(
     command: string,
     opts: { purpose: string; ttlSeconds?: number; sandboxId?: string; credentials?: string[] },
-  ): Promise<BackgroundStartResult>;
+  ): Promise<BackgroundStartResult & { jobComputer?: boolean }>;
   backgroundPoll(
     processId: string,
     opts?: { sinceCursor?: number; maxBytes?: number; waitSeconds?: number },
@@ -484,6 +484,7 @@ export interface ToolContextDeps {
   resolveCommandCredentials?: (handles: readonly string[]) => Promise<readonly CommandCredential[]>;
   provision: () => Promise<SandboxHandle>;
   provisionScratch?: () => Promise<SandboxHandle>;
+  provisionJobComputer?: () => Promise<SandboxHandle>;
   provisionResource?: (
     input: string | SandboxAccessPlan,
     authorize?: (access: SandboxAccessPlan) => void,
@@ -890,13 +891,9 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         if ([scratch, reachTarget !== undefined, execOpts?.sandboxId !== undefined].filter(Boolean).length > 1) {
           throw new Error("a command runs on one computer — choose scoped, scratch, or a reached room");
         }
-        if (scratch && !deps.provisionScratch) {
+        if ((scratch || scratchOnly) && !deps.provisionScratch) {
           throw new Error('scratch execution is not available on this computer — run without scope:"scratch"');
         }
-        if (scratchOnly && !deps.provisionScratch)
-          throw new Error(
-            `this deployment has no scratch computer to keep ${scratchOnly} off the shared one, so a shared conversation can use only brokered org service credentials`,
-          );
         const scratchReroute = Boolean(scratchOnly) && !scratch;
         let reached: ReachedProvenance | undefined;
         if (reachTarget !== undefined) {
@@ -1279,20 +1276,21 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     async backgroundStart(
       command: string,
       opts: { purpose: string; ttlSeconds?: number; sandboxId?: string; credentials?: string[] },
-    ): Promise<BackgroundStartResult> {
+    ): Promise<BackgroundStartResult & { jobComputer?: boolean }> {
       if (!deps.backgroundBroker) throw new Error(BACKGROUND_UNAVAILABLE_MESSAGE);
       const requestedCredentials = opts.credentials ?? [];
       if (requestedCredentials.length && !writableScopeId)
         throw new Error("command credentials are available only on scoped computers");
       const requested = await selectCredentials(requestedCredentials);
       const scratchOnly = scratchOnlyHandles(requested);
-      if (scratchOnly)
-        throw new Error(
-          `a background job in a shared conversation cannot use ${scratchOnly}, because other members can read and control the job; run the command in the foreground, where it uses this turn's scratch computer`,
-        );
+      if (scratchOnly && !deps.provisionJobComputer)
+        throw new Error(`background jobs here cannot use ${scratchOnly}; run the command in the foreground`);
       const policy = deps.commandPolicy;
       let handle: SandboxHandle;
-      if (opts?.sandboxId !== undefined) {
+      if (scratchOnly) {
+        authorizeExecution(command, undefined, policy());
+        handle = await deps.provisionJobComputer!();
+      } else if (opts?.sandboxId !== undefined) {
         if (!deps.sandboxResources || !deps.provisionResource) throw new Error("sandbox inventory unavailable");
         const access = await accessSandbox(opts.sandboxId);
         handle = await deps.provisionResource(access, (current) => {
@@ -1323,13 +1321,14 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           } catch (error) {
             return withCleanup(() => Promise.reject(error), release);
           }
-          return deps.backgroundBroker!.start(
+          const started = await deps.backgroundBroker!.start(
             handle,
             command,
             opts.purpose,
             opts?.ttlSeconds ? opts.ttlSeconds * 1000 : undefined,
             credentials,
           );
+          return scratchOnly ? { ...started, jobComputer: true } : started;
         },
         () => true,
       );

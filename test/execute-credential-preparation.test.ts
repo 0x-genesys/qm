@@ -224,47 +224,40 @@ function scratchContext(events: string[], extra: Partial<ToolContextDeps> = {}) 
   return { ctx, commands };
 }
 
-test("without a scratch computer private credentials are refused and brokered ones still run", async () => {
+test("background jobs with private credentials start on their own job computer", async () => {
   const events: string[] = [];
-  const started: string[] = [];
-  const { ctx, commands } = scratchContext(events, {
-    provisionScratch: undefined,
-    backgroundBroker: {
-      async start(_target: SandboxHandle, command: string) {
-        started.push(command);
-        return { processId: "p1", output: "", cursor: 0, status: { state: "running" }, reattached: false };
-      },
-    } as unknown as ToolContextDeps["backgroundBroker"],
-  });
-  await assert.rejects(ctx.execute("whoami", { credentials: ["granted"] }));
-  await assert.rejects(ctx.backgroundStart("sleep 60", { purpose: "Wait", credentials: ["granted"] }));
+  const started: Array<[string, string, Record<string, string> | undefined]> = [];
+  const broker = {
+    async start(
+      target: SandboxHandle,
+      command: string,
+      _purpose: string,
+      _ttl: number,
+      credentials?: { env?: Record<string, string> },
+    ) {
+      started.push([target.id, command, credentials?.env]);
+      return { processId: "p1", output: "", cursor: 0, status: { state: "running" }, reattached: false };
+    },
+  } as unknown as ToolContextDeps["backgroundBroker"];
+  const without = scratchContext(events, { backgroundBroker: broker });
+  await assert.rejects(without.ctx.backgroundStart("sync", { purpose: "Sync", credentials: ["granted"] }));
   assert.ok(!events.some((event) => event.startsWith("resolve")));
-  assert.deepEqual([commands, started], [[], []]);
-  await ctx.execute("whoami", { credentials: ["brokered"] });
-  assert.equal(commands.length, 1);
-});
-
-test("background jobs refuse private credentials before provisioning or staging", async () => {
-  const events: string[] = [];
-  const started: Array<[string, Record<string, string> | undefined]> = [];
   const { ctx } = scratchContext(events, {
-    backgroundBroker: {
-      async start(
-        _target: SandboxHandle,
-        command: string,
-        _purpose: string,
-        _ttl: number,
-        credentials?: { env?: Record<string, string> },
-      ) {
-        started.push([command, credentials?.env]);
-        return { processId: "p1", output: "", cursor: 0, status: { state: "running" }, reattached: false };
-      },
-    } as unknown as ToolContextDeps["backgroundBroker"],
+    backgroundBroker: broker,
+    async provisionJobComputer() {
+      events.push("job-computer");
+      return { id: "job-box", rootDir: "/job", resourceId: "job-box" };
+    },
   });
-  await assert.rejects(ctx.backgroundStart("sync", { purpose: "Sync", credentials: ["granted"] }));
-  assert.ok(!events.includes("scratch") && !events.some((event) => event.startsWith("resolve")));
-  await ctx.backgroundStart("poll", { purpose: "Poll", credentials: ["brokered"] });
-  assert.deepEqual(started, [["poll", { AGENT_CREDENTIAL_TOKEN: "room-capability" }]]);
+  const job = await ctx.backgroundStart("sync", { purpose: "Sync", sandboxId: "box-a", credentials: ["granted"] });
+  assert.equal(job.jobComputer, true);
+  const plain = await ctx.backgroundStart("poll", { purpose: "Poll", credentials: ["brokered"] });
+  assert.equal(plain.jobComputer, undefined);
+  assert.deepEqual(started, [
+    ["job-box", "sync", { GRANTED_TOKEN: "granted-secret" }],
+    ["credential-preparation", "poll", { AGENT_CREDENTIAL_TOKEN: "room-capability" }],
+  ]);
+  assert.ok(!events.includes("scratch") && !events.includes("resource"));
 });
 
 test("replay returns cached masked bytes without resolving a consumed single-use credential", async () => {

@@ -5,7 +5,11 @@ import { intersectEgressPolicies } from "../../resolution/egress-policy.ts";
 import { isOpenScopeMember } from "../../resolution/sharing-access.ts";
 import type { GapPhase } from "../../sessions/session-store.ts";
 import { type SandboxHandle, supportsProcessSessions, SandboxProvisionCleanupError } from "../../sandbox/sandbox.ts";
-import { accessConversationSandbox, type SandboxAccessPlan } from "../../sandbox/sandbox-resources.ts";
+import {
+  accessConversationSandbox,
+  type SandboxAccessPlan,
+  type SandboxResource,
+} from "../../sandbox/sandbox-resources.ts";
 import { reconcileProcesses } from "../../processes/reconcile.ts";
 import { leaseLapsed } from "../../runs/run-store.ts";
 import { finishProcessCredentials } from "../../credentials/execute-files.ts";
@@ -329,6 +333,22 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
       ...(credentialScopeId ? { credentialScopeId } : {}),
     };
   };
+  const jobComputerPlan = (resource: SandboxResource): SandboxAccessPlan => ({
+    resource,
+    crossScope: false,
+    egress: resolution.egress,
+    commandPolicy: null,
+  });
+  const provisionJobComputer = async (): Promise<SandboxHandle> => {
+    const resources = deps.sandboxResources!;
+    const backend = (await resources.resolve(scopeId).catch(() => null))?.backend ?? resources.defaultBackend();
+    const resource = await resources.create(actor.id, memoryScopeId, backend, "background job", undefined, true);
+    return provisionResource(jobComputerPlan(resource));
+  };
+  const provisionJobSandbox = async (id: string): Promise<SandboxHandle> => {
+    const resource = await deps.sandboxResources!.get(id);
+    return resource.jobOnly ? provisionResource(jobComputerPlan(resource)) : provisionResource(id);
+  };
   const provisionResource = async (
     input: string | SandboxAccessPlan,
     authorize?: (access: SandboxAccessPlan) => void,
@@ -605,6 +625,8 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     scratchBox,
     provision,
     provisionScratch,
+    provisionJobComputer,
+    provisionJobSandbox,
     accessResource,
     provisionResource,
     useSkill,

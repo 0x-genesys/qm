@@ -96,7 +96,8 @@ control. In an Open shared conversation, the authenticated internal speaker can 
 own keychain without creating a room grant. In any shared conversation, commands that name
 a credential other than a brokered org service run on the turn's scratch computer, which
 only that turn's commands use and which is destroyed at turn end, never on the shared
-workspace; background jobs, which any member can control, cannot use them. Each use of the
+workspace. A background job naming them runs on its own job-only computer that no command,
+file operation or input can reach, which the reaper destroys after the job ends. Each use of the
 speaker's own credential rechecks composed sharing policy and current membership. Other people's credentials and automated or ambient turns still require grants.
 The raw keychain-use endpoint remains personal-or-grant-only. Command approvals remain in
 force; code can still disclose secrets while using them, so this is not an output filter.
