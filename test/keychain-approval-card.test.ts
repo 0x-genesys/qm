@@ -85,11 +85,10 @@ async function fixture() {
 
 test("native approval persists the explicit duration, resumes once, and replays without minting another grant", async () => {
   const f = await fixture();
-  const outcomes = await Promise.all(
-    ["standing", "standing", "deny"].map((decision) =>
-      f.approvals.decide(f.ask.id, { externalId: "alice@example.com" }, decision as "standing" | "deny"),
-    ),
-  );
+  const decide = (decision: "standing" | "deny") =>
+    f.approvals.decide(f.ask.id, { externalId: "alice@example.com" }, decision);
+  const outcomes = await Promise.all([decide("standing"), decide("standing")]);
+  outcomes.push(await decide("deny"));
   assert.ok(outcomes.every((view) => view.ask.status === "approved"));
   assert.equal((await f.keychain.getAsk(f.ask.id))?.status, "approved");
   const grants = await f.grants.all();
