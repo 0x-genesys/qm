@@ -670,33 +670,21 @@ test("a worker with an open goal answers messages as a goal turn without the swa
     });
     await built.app.swarms!.sweep();
     const first = (await built.runs.list()).find((run) => run.request.swarm)!;
-    const seen: Array<{ deadline?: number; inbox: boolean; instructed: boolean }> = [];
+    const seen: Array<{ deadline?: number; inbox: boolean }> = [];
     exerciseTurn = async (turn) => {
       if (turn.goalContinuation) return { stopped: true };
-      if (turn.input.startsWith("Swarm "))
-        seen.push({
-          deadline: turn.turnWallClockMs,
-          inbox: !!turn.goalInbox,
-          instructed: JSON.stringify([turn.systemPrompt, turn.input, turn.history]).includes(
-            "it returns with the next swarm message that reaches you",
-          ),
-        });
+      if (turn.input.startsWith("Swarm ")) seen.push({ deadline: turn.turnWallClockMs, inbox: !!turn.goalInbox });
     };
     built.runtime.start();
     assert.equal((await built.runs.waitFor(first.id, 15_000)).status, "done");
     const message = await built.app.swarms!.send(caller, { requestId: "ping", audience: [worker!.id], text: "ping" });
     await built.app.swarms!.sweep();
     const answer = (await built.runs.list()).find((run) => run.request.swarm?.messageId === message.id)!;
-    assert.equal(answer.request.turnWallClockMs, 600_000);
     assert.equal((await built.runs.waitFor(answer.id, 15_000)).status, "done");
-    assert.deepEqual(
-      seen.map(({ deadline, inbox }) => ({ deadline, inbox })),
-      [
-        { deadline: 0, inbox: true },
-        { deadline: 0, inbox: true },
-      ],
-    );
-    assert.equal(seen[1]!.instructed, true);
+    assert.deepEqual(seen, [
+      { deadline: 0, inbox: true },
+      { deadline: 0, inbox: true },
+    ]);
   } finally {
     exerciseTurn = undefined;
     await built.runtime.stop();

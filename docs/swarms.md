@@ -316,7 +316,9 @@ spawn or `SWARM_DEFAULTS` sets them. When set, they are enforced as budgets that
 reserved atomically with the members and messages that consume them. A set `turnMs`
 is enforced as the turn's wall clock, except for workers with an open goal; existing
 organization-wide limits can shorten it. Without `turnMs` or the message budgets,
-only those organization-wide limits bound how long a turn runs or what it spends. Internal reconciliation limits,
+only those organization-wide limits bound how long a turn runs or what it spends;
+the message budgets never stop a goal continuation, so a goal's `token_cap` is
+what bounds continued goal work. Internal reconciliation limits,
 the 32-message read page, and bounded run retry counts are not swarm
 configuration.
 
