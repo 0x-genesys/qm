@@ -5,7 +5,12 @@ import pg from "pg";
 import { migrateRegisteredPgSchemas } from "../src/persistence/pg-pool.ts";
 import type { Orchestrator, OrchestratorInput } from "../src/core/orchestrator.ts";
 import { createPostgresRunStore } from "../src/runs/postgres-run-store.ts";
-import type { Run } from "../src/runs/run-store.ts";
+import type { Run, RunStore } from "../src/runs/run-store.ts";
+import { createPostgresMapFactory } from "../src/persistence/durable-map.ts";
+import { createPostgresAdvisoryLock } from "../src/persistence/advisory-lock.ts";
+import { createSwarmStore, type SwarmStorage } from "../src/swarms/swarm-store.ts";
+import { routeTurns } from "../src/turns/turn-engine.ts";
+import { swarmFixture } from "./support/swarm-fixture.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { registerAbsurdSchema } from "../src/turns/absurd-schema.ts";
 import { createTurnLedger, type TurnLedger } from "../src/turns/turn-ledger.ts";
@@ -361,4 +366,34 @@ test("a turn over the crash-loop claim cap fails instead of running again", { sk
   assert.equal(calls, 0);
   assert.equal(run?.status, "failed");
   assert.match(run?.result?.reason ?? "", /crash loop/);
+});
+
+test("swarm operations accept an Absurd turn's live claim and refuse it after handback", { skip }, async () => {
+  const factory = createPostgresMapFactory(URL!);
+  const backing = factory.map<SwarmStorage>("swarms");
+  const routing = routeTurns(runStore.runs, ledger, { enabled: async () => true });
+  const runs: RunStore = {
+    ...runStore.runs,
+    ...routing,
+    enqueue: async (input) => (await routing.admit(input))!,
+    claimById: async () => (await claim()).run,
+  };
+  const store = createSwarmStore(backing, { runs, sessions, pg: factory.pool });
+  const fixture = await swarmFixture({ store, sessions, runs, lock: createPostgresAdvisoryLock(factory.pool) });
+  try {
+    if (fixture.caller.kind !== "agent") throw new Error("wrong caller");
+    const run = (await runStore.runs.get(fixture.caller.claims.runId!))!;
+    assert.equal(run.engine, "absurd");
+    assert.equal(run.status, "running");
+    await fixture.service.spawn(fixture.caller, { requestId: "live", text: "Work" });
+    assert.ok(await store.get(fixture.root.id));
+    assert.equal(
+      await ledger.handBack(run, fixture.caller.claims.runLeaseToken!, { stop: { kind: "shutdown" } }),
+      true,
+    );
+    await assert.rejects(fixture.service.inspect(fixture.caller), /active capability run required/);
+  } finally {
+    await backing.delete(fixture.root.id);
+    await factory.pool.close();
+  }
 });

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { ErrorLog } from "../admin/error-log.ts";
 import { conversationScope } from "../resolution/resolution-service.ts";
 import type { TurnResult } from "../types.ts";
-import type { Orchestrator } from "../core/orchestrator.ts";
+import type { Orchestrator, OrchestratorInput } from "../core/orchestrator.ts";
 import { isNonRetryable, NonRetryableTurnError, ProviderTurnError, turnFailureMessage } from "../core/turn-error.ts";
 import { resolveTurnOrigin } from "../core/turn-origin.ts";
 import {
@@ -108,19 +108,15 @@ async function attemptRun(
     if (opts?.shutdown?.aborted) return { status: "queued", sessionId: run.sessionId, runId: run.id };
     workDeadline = swarmTurnLimits(run, cancel);
     started = true;
-    const result = await deps.orchestrator.handleTurn({
-      ...run.request,
-      origin: resolveTurnOrigin(run.request),
-      runId: run.id,
-      attempt: run.attempts,
-      ...(run.lastStop ? { resumeCause: run.lastStop } : {}),
-      runLeaseToken: token,
-      finalAttempt: errorParks(run, deps.runs.maxClaims),
-      background: opts?.background ?? false,
-      cancel: cancel.signal,
-      ...(opts?.shutdown ? { shutdown: opts.shutdown } : {}),
-      ...(run.startedAt !== null ? { runStartedAt: run.startedAt } : {}),
-    });
+    const result = await deps.orchestrator.handleTurn(
+      runTurnInput(run, {
+        token,
+        maxClaims: deps.runs.maxClaims,
+        background: opts?.background ?? false,
+        cancel: cancel.signal,
+        ...(opts?.shutdown ? { shutdown: opts.shutdown } : {}),
+      }),
+    );
     stopBeat();
     if (opts?.shutdown?.aborted) return result;
     if (!(await deps.runs.complete(run.id, token, result))) {
@@ -146,6 +142,33 @@ async function attemptRun(
         .releaseLease(run.id, token, started ? handbackStop(opts.shutdown) : undefined)
         .catch((e) => swallow(`worker: shutdown handback failed run=${run.id}; lease will expire after exit`, e));
   }
+}
+
+export function runTurnInput(
+  run: Run,
+  opts: {
+    token: string;
+    maxClaims: number | undefined;
+    background: boolean;
+    cancel: AbortSignal;
+    shutdown?: AbortSignal;
+    fenced?: boolean;
+  },
+): OrchestratorInput {
+  return {
+    ...run.request,
+    origin: resolveTurnOrigin(run.request),
+    runId: run.id,
+    attempt: run.attempts,
+    ...(run.lastStop ? { resumeCause: run.lastStop } : {}),
+    runLeaseToken: opts.token,
+    ...(opts.fenced ? { turnFenceToken: opts.token } : {}),
+    finalAttempt: errorParks(run, opts.maxClaims),
+    background: opts.background,
+    cancel: opts.cancel,
+    ...(opts.shutdown ? { shutdown: opts.shutdown } : {}),
+    ...(run.startedAt !== null ? { runStartedAt: run.startedAt } : {}),
+  };
 }
 
 export function swarmTurnLimits(

@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import type { ErrorLog } from "../admin/error-log.ts";
 import type { Orchestrator } from "../core/orchestrator.ts";
 import { isNonRetryable, NonRetryableTurnError, turnFailureMessage } from "../core/turn-error.ts";
-import { resolveTurnOrigin } from "../core/turn-origin.ts";
 import type { TurnResult } from "../types.ts";
 import { sleep } from "../util/async.ts";
 import { reportFailure, swallow } from "../util/errors.ts";
@@ -20,6 +19,7 @@ import {
   CLAIM_FAIL_REPORT_CONSECUTIVE,
   LEASE_LOST_CONSECUTIVE,
   recordTurnError,
+  runTurnInput,
   runStopFor,
   swarmTurnLimits,
 } from "../runs/worker.ts";
@@ -158,20 +158,19 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         throw new NonRetryableTurnError(crashLoopReason(countedClaims(run) - 1));
       ended = {
         kind: "result",
-        result: await deps.orchestrator.handleTurn({
-          ...request,
-          origin: resolveTurnOrigin(request),
-          runId: run.id,
-          attempt: run.attempts,
-          ...(run.lastStop ? { resumeCause: run.lastStop } : {}),
-          runLeaseToken: token,
-          turnFenceToken: token,
-          finalAttempt: errorParks(run, deps.maxClaims),
-          background: true,
-          cancel: cancel.signal,
-          shutdown: shutdown.signal,
-          ...(run.startedAt !== null ? { runStartedAt: run.startedAt } : {}),
-        }),
+        result: await deps.orchestrator.handleTurn(
+          runTurnInput(
+            { ...run, request },
+            {
+              token,
+              maxClaims: deps.maxClaims,
+              background: true,
+              cancel: cancel.signal,
+              shutdown: shutdown.signal,
+              fenced: true,
+            },
+          ),
+        ),
       };
     } catch (err) {
       ended = { kind: "error", err };
