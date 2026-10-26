@@ -17,6 +17,7 @@ import { securityScreenPayload } from "../src/security/security-posture.ts";
 import { ProviderTurnError } from "../src/core/turn-error.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
 import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
+import type { DirectoryStore } from "../src/directory/directory-store.ts";
 import { testDatabaseUrl, testMap } from "./support/test-database.ts";
 import { createPostgresCronFireStore } from "../src/cron/fire-store.ts";
 
@@ -51,7 +52,7 @@ function service(
     grants?: ReturnType<typeof createShipGrantStore>;
     samePerson?: (a: string, b: string) => Promise<boolean>;
     triageEnabledFor?: (owner: string) => Promise<boolean>;
-    directory?: ReturnType<typeof createDirectoryStore>;
+    directory?: DirectoryStore;
     resolveRecipient?: TriggerDeps["resolveRecipient"];
   },
 ) {

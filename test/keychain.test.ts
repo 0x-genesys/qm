@@ -290,8 +290,8 @@ test("materializeOwnById: the owner's own credential needs no grant — scope, o
 });
 
 test("a grant row pointing at a broker credential cannot materialize (defense in depth)", async () => {
-  const creds = createMemoryMap<import("../src/credentials/keychain.ts").KeychainCredential>();
-  const grants = createMemoryMap<import("../src/credentials/keychain.ts").KeychainGrant>();
+  const creds = testMap<import("../src/credentials/keychain.ts").KeychainCredential>();
+  const grants = testMap<import("../src/credentials/keychain.ts").KeychainGrant>();
   const k = createKeychain({ lock: testAdvisoryLock(), creds, grants, asks: testMap(), key: KEY });
   const ORG = scopeId("org", "default-org");
   await k.setServiceCredential(ORG, { slug: "serp", name: "SERP", secret: "s3", host: "api.serper.dev" });
@@ -686,7 +686,7 @@ test("materializeOwn round-trips the owner's env creds; expired creds are skippe
 });
 
 test("materializeOwn skips a row that doesn't decrypt under the current key instead of throwing", async () => {
-  const creds = createMemoryMap<import("../src/credentials/keychain.ts").KeychainCredential>();
+  const creds = testMap<import("../src/credentials/keychain.ts").KeychainCredential>();
   const OTHER = deriveConnectorKey("a-different-master-key");
   const writer = createKeychain({
     lock: testAdvisoryLock(),
@@ -715,8 +715,8 @@ test("materializeOwn skips a row that doesn't decrypt under the current key inst
 });
 
 test("single-grant materialize surfaces a 422 (not a raw crypto 500) when the row doesn't decrypt", async () => {
-  const creds = createMemoryMap<import("../src/credentials/keychain.ts").KeychainCredential>();
-  const grants = createMemoryMap<import("../src/credentials/keychain.ts").KeychainGrant>();
+  const creds = testMap<import("../src/credentials/keychain.ts").KeychainCredential>();
+  const grants = testMap<import("../src/credentials/keychain.ts").KeychainGrant>();
   const OTHER = deriveConnectorKey("a-different-master-key");
   const writer = createKeychain({
     lock: testAdvisoryLock(),
@@ -836,7 +836,7 @@ test("multi-input login: re-save upserts the same slot, and unique/non-empty fie
 });
 
 test("back-compat: a legacy record carrying a plaintext username still materializes the paired env var", async () => {
-  const creds = createMemoryMap<import("../src/credentials/keychain.ts").KeychainCredential>();
+  const creds = testMap<import("../src/credentials/keychain.ts").KeychainCredential>();
   const k = createKeychain({
     lock: testAdvisoryLock(),
     creds,
