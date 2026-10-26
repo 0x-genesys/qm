@@ -9,7 +9,8 @@ import { encodeRef, serviceCredRef } from "../src/acl/resource-ref.ts";
 import { verifyCapabilityToken, type CapabilityClaims } from "../src/auth/capability-token.ts";
 import { externalTools } from "../src/core/orchestrator/external-tools.ts";
 import type { ToolContext } from "../src/tools/primitives.ts";
-import type { TurnRequest } from "../src/types.ts";
+import { scopeId, type TurnRequest } from "../src/types.ts";
+import { selectDefaultSandbox } from "./support/default-sandbox.ts";
 
 const policy = { companyDomains: ["example.com"], companyTeamIds: ["TCOMPANY"], serviceCredentials: ["safe"] };
 const externalSlackPolicies = { batch: policy };
@@ -91,6 +92,7 @@ test("external Slack strips private and org preloads before the prompt, but keep
     /PERSONAL_MEMORY_SENTINEL|ORG_MEMORY_SENTINEL|ORG_SOUL_SENTINEL|PERSONAL_FILE_SENTINEL|ORG_FILE_SENTINEL|confidential/,
   );
   assert.match(prompt.reply!, /safe/);
+  await selectDefaultSandbox(b, "U1", scopeId("channel", `${namespace}:C1`));
   const provisions: string[][] = [];
   const provision = b.sandbox.provision.bind(b.sandbox);
   b.sandbox.provision = (layers, opts) => {

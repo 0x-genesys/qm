@@ -654,7 +654,6 @@ test("saved participants do not supply a missing sender identity", async () => {
 });
 
 test("profile failures retain diagnostics without exposing credentials", async () => {
-  const { createErrorLog } = await import("../src/admin/error-log.ts");
   for (const mode of [undefined, "avatars"] as const) {
     const { items, item } = await fixture("slack", { channelId: "D1", ts: "1.0", userId: "U1" });
     const errors = createPostgresErrorLog(testDatabaseUrl());
@@ -678,7 +677,6 @@ test("profile failures retain diagnostics without exposing credentials", async (
 });
 
 test("cosmetic refresh records ledger failures without rejecting the inbox request", async () => {
-  const { createErrorLog } = await import("../src/admin/error-log.ts");
   const { items, item } = await fixture("slack", { channelId: "D1", ts: "1.0", userId: "U1" });
   const errors = createPostgresErrorLog(testDatabaseUrl());
   await createInboxSourceRefresh({
@@ -703,7 +701,6 @@ test("cosmetic refresh records ledger failures without rejecting the inbox reque
 
 test("Inbox source refresh checks the owner rollout before credentials, reads, or writes in either mode", async () => {
   const { createFeatureFlagStore } = await import("../src/feature-flags.ts");
-  const { createMemoryMap } = await import("../src/persistence/durable-map.ts");
   const flags = createFeatureFlagStore(testMap());
   await flags.setEnabled("inbox_loops", "personal:someone-else", true, "admin");
   for (const mode of [undefined, "avatars"] as const) {
