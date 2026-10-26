@@ -1,3 +1,4 @@
+import { item } from "./item-fixture.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { harness } from "./deep-link-boot-fixture.ts";
@@ -7,6 +8,7 @@ export function slackReturnTest(outcome: "success" | "expired" | "cancelled" | "
     const h = await harness({
       path: `${session ? "/s/sess-deep?" : "/settings?"}slackReturn=qa-slack-nonce${outcome === "cancelled" ? "&error=access_denied" : ""}`,
       slackReturn: outcome,
+      ...(session ? { items: [item("AgentMessage", { seq: 1, createdAt: 1, text: "::link-slack-account{}" })] } : {}),
     });
     try {
       h.releaseSessions();
