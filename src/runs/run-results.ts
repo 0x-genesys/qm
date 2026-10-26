@@ -140,7 +140,12 @@ export interface RunResultRecovery {
 export function wireRunResultPosts(
   runs: Pick<RunStore, "onTerminal" | "terminalFinished" | "get" | "setDeliveryState">,
   outbound: Pick<Outbound, "send">,
-  opts: { adminUrlFor?: AdminUrlFor; sessions?: TurnFailureSessions; graceMs?: number } = {},
+  opts: {
+    adminUrlFor?: AdminUrlFor;
+    sessions?: TurnFailureSessions;
+    graceMs?: number;
+    postsImmediately?: (surface: string) => boolean;
+  } = {},
 ): RunResultRecovery {
   const graceMs = opts.graceMs ?? RUN_RECOVERY_GRACE_MS;
   const owed = (run: Run): OutboundPost | null =>
@@ -165,7 +170,9 @@ export function wireRunResultPosts(
       );
     if (!owed(run)) return;
     void (async () => {
-      if (run.request.surface !== "web") await new Promise((resolve) => setTimeout(resolve, graceMs).unref?.());
+      const surface = run.request.surface;
+      if (surface !== "web" && !(surface && opts.postsImmediately?.(surface)))
+        await new Promise((resolve) => setTimeout(resolve, graceMs).unref?.());
       const latest = (await runs.get(run.id)) ?? run;
       const post = owed(latest);
       if (post) await postOwed(latest, post);

@@ -3,6 +3,7 @@ import { mock, test } from "node:test";
 import type { SlackCoreClient } from "../src/slack/index.ts";
 import type { TurnResult } from "../src/types.ts";
 import type { SurfaceSender } from "../src/surfaces/outbound.ts";
+import type { SlackNative } from "../src/chat-surface/slack.ts";
 
 type Handler = (args: any) => Promise<void>;
 
@@ -347,12 +348,14 @@ class FakeCore implements SlackCoreClient {
     return fn(new Promise<void>(() => {}));
   }
 
-  readonly senders: Array<{ types: readonly string[]; send: SurfaceSender }> = [];
-  registerSender(types: readonly string[], send: SurfaceSender): () => void {
-    const entry = { types, send };
-    this.senders.push(entry);
-    return () => void this.senders.splice(this.senders.indexOf(entry), 1);
-  }
+  readonly senders: SurfaceSender[] = [];
+  readonly slack: SlackNative = {
+    accounts: new Map(),
+    attach: (send) => {
+      this.senders.push(send);
+      return () => void this.senders.splice(this.senders.indexOf(send), 1);
+    },
+  };
   async pendingContextRequests(): Promise<[]> {
     return [];
   }
@@ -1635,11 +1638,8 @@ for (const coreSingleton of [true, false]) {
   test(`${coreSingleton ? "the default" : "a non-singleton"} account registers a Slack sender that posts through its client until stopped`, async () => {
     const f = await fixture({ coreSingleton });
     try {
-      assert.deepEqual(
-        f.core.senders.map((s) => s.types),
-        [["slack", "group", "principal"]],
-      );
-      await f.core.senders[0]!.send({
+      assert.equal(f.core.senders.length, 1);
+      await f.core.senders[0]!({
         destination: { type: "slack", target: "C1:100.1" },
         text: "a cron update",
         idempotencyKey: "reach:1",
