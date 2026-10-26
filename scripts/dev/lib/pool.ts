@@ -90,11 +90,10 @@ export function slotPorts(slot: string, basePort = Number(process.env.DEV_INSTAN
   const stride = legacy ? LEGACY_PORT_SLOTS : 1;
   return {
     core: first,
-    web: first + stride,
-    portal: first + 2 * stride,
-    prodProxy: first + 3 * stride,
-    slackHealth: first + 4 * stride,
-    supervisor: first + 5 * stride,
+    portal: first + 3 * stride,
+    prodProxy: first + 4 * stride,
+    slackHealth: first + 5 * stride,
+    supervisor: first + 6 * stride,
   };
 }
 
