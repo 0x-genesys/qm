@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { PgPool, PoolClient } from "./pg-pool.ts";
+import { tenantLockKey, type PgPool, type PoolClient } from "./pg-pool.ts";
 import { sleep } from "../util/async.ts";
 
 export interface AdvisoryLock {
@@ -137,13 +137,15 @@ export function createPostgresAdvisoryLock(
         try {
           const res = await client.query<{ locked: boolean }>(
             `SELECT pg_try_advisory_lock${shared ? "_shared" : ""}(hashtextextended($1, 0)) AS locked`,
-            [key],
+            [tenantLockKey(key)],
           );
           if (res.rows[0]?.locked !== true) return { acquired: false };
           try {
             return { acquired: true, value: await fn() };
           } finally {
-            await client.query(`SELECT pg_advisory_unlock${shared ? "_shared" : ""}(hashtextextended($1, 0))`, [key]);
+            await client.query(`SELECT pg_advisory_unlock${shared ? "_shared" : ""}(hashtextextended($1, 0))`, [
+              tenantLockKey(key),
+            ]);
           }
         } finally {
           if (--reservation.count === 0) keys.delete(key);

@@ -11,6 +11,7 @@ import {
   type DeployGitStoreOptions,
   type DeployGitTreeFile,
 } from "./deploy-git-store.ts";
+import { tenantCols } from "../persistence/pg-pool.ts";
 
 export interface DeploymentVersion {
   version: number;
@@ -235,7 +236,7 @@ function createPgDeployAccess(pg: PgPool): DeployAccess {
       const res = await pg.query(
         `INSERT INTO deployment_access (id, last_access_at)
          SELECT d.id, $2::bigint FROM deployments d WHERE d.id = $1
-         ON CONFLICT (id) DO UPDATE SET last_access_at = GREATEST(deployment_access.last_access_at, EXCLUDED.last_access_at)`,
+         ON CONFLICT (${tenantCols("id")}) DO UPDATE SET last_access_at = GREATEST(deployment_access.last_access_at, EXCLUDED.last_access_at)`,
         [id, at],
       );
       return res.rowCount > 0;

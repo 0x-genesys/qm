@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import type { Pool, PoolClient } from "pg";
 import { createKeyedQueue, sleep } from "../util/async.ts";
 import { errMessage, swallowAs } from "../util/errors.ts";
+import { applyTenancy, TENANT_BYPASS_OPTION } from "./tenancy.ts";
 
 export type { Pool, PoolClient };
 
@@ -14,9 +15,66 @@ interface PgPoolingConfig {
   caCert?: string;
   queryMax?: number;
   sessionMax?: number;
+  /** Row-level tenancy (QM_MULTITENANT): tenant_id-led keys, RLS, per-connection tenant setting. */
+  tenancy?: boolean;
 }
 
 let poolingConfig: PgPoolingConfig = {};
+
+// The tenant whose rows a checked-out connection may see. tenant.ts installs a reader for the
+// AsyncLocalStorage tenant; undefined means the database's own singleton tenant (single-tenant mode).
+let tenantSource: () => string | undefined = () => undefined;
+
+export function configurePgTenantSource(source: () => string | undefined): void {
+  tenantSource = source;
+}
+
+export function pgTenantId(): string | undefined {
+  return tenantSource();
+}
+
+/** Advisory-lock keys are database-wide; prefix them so tenants sharing a database never contend. */
+export function tenantLockKey(key: string): string {
+  const id = tenancyEnabled ? tenantSource() : undefined;
+  return id ? `tenant:${id}:${key}` : key;
+}
+
+const TENANT_GUC = Symbol("qm.tenant_id");
+
+type TenantTracked = PoolClient & { [TENANT_GUC]?: string };
+
+// Every checkout (including the implicit one inside Pool.query) sets qm.tenant_id on the session when it
+// differs from what the connection last carried. Session-level, so it requires direct or session-pooled
+// connections; multitenant deployments must not route through a transaction-mode pooler.
+function tenantScopedPool(pool: Pool): Pool {
+  const connect = pool.connect.bind(pool) as () => Promise<PoolClient>;
+  const scoped = (
+    callback?: (err: Error | undefined, client?: PoolClient, done?: (release?: unknown) => void) => void,
+  ) => {
+    const want = tenancyEnabled ? (tenantSource() ?? "") : "";
+    const ready = connect().then(async (raw) => {
+      const client = raw as TenantTracked;
+      if ((client[TENANT_GUC] ?? "") !== want) {
+        try {
+          await client.query("SELECT set_config('qm.tenant_id', $1, false)", [want]);
+        } catch (error) {
+          client.release(error instanceof Error ? error : new Error(String(error)));
+          throw error;
+        }
+        client[TENANT_GUC] = want;
+      }
+      return client as PoolClient;
+    });
+    if (!callback) return ready;
+    ready.then(
+      (client) => callback(undefined, client, (release?: unknown) => client.release(release as Error | undefined)),
+      (error: unknown) => callback(error instanceof Error ? error : new Error(String(error))),
+    );
+    return undefined;
+  };
+  (pool as unknown as { connect: typeof scoped }).connect = scoped;
+  return pool;
+}
 
 export function configurePgPooling(config: PgPoolingConfig): void {
   if (config.poolUrl && !config.databaseUrl) throw new Error("DATABASE_POOL_URL requires DATABASE_URL");
@@ -29,11 +87,32 @@ export function configurePgPooling(config: PgPoolingConfig): void {
     }
   }
   poolingConfig = { ...config };
+  if (config.tenancy !== undefined) tenancyEnabled = config.tenancy;
+}
+
+// Off by default: a single-tenant database keeps its original keys and needs no tenant setting.
+let tenancyEnabled = process.env.QM_MULTITENANT === "1";
+
+export function pgTenancyEnabled(): boolean {
+  return tenancyEnabled;
+}
+
+export function configurePgTenancy(enabled: boolean): void {
+  tenancyEnabled = enabled;
+}
+
+/** Conflict-target / key column list, led by tenant_id when row-level tenancy is on. */
+export function tenantCols(cols: string): string {
+  return tenancyEnabled ? `tenant_id, ${cols}` : cols;
 }
 
 const migrationQueue = createKeyedQueue();
 
 const sharedPools = new Map<string, { pool: Pool; users: number }>();
+
+async function applyTenancyIfEnabled(pool: Pool): Promise<void> {
+  if (tenancyEnabled) await applyTenancyIfEnabled(pool);
+}
 
 async function retainPool(connectionString: string, kind: "query" | "session" | "migration"): Promise<Pool> {
   const pg = (await import("pg")).default;
@@ -55,7 +134,20 @@ async function retainPool(connectionString: string, kind: "query" | "session" | 
     url = parsed.toString();
     ssl = { ssl: { ca: poolingConfig.caCert } };
   }
-  const pool = guardedPool(new pg.Pool({ connectionString: url, ...ssl, max, connectionTimeoutMillis: 10_000 }));
+  const pool =
+    kind === "migration"
+      ? guardedPool(
+          new pg.Pool({
+            connectionString: url,
+            ...ssl,
+            max,
+            connectionTimeoutMillis: 10_000,
+            options: TENANT_BYPASS_OPTION,
+          }),
+        )
+      : tenantScopedPool(
+          guardedPool(new pg.Pool({ connectionString: url, ...ssl, max, connectionTimeoutMillis: 10_000 })),
+        );
   sharedPools.set(key, { pool, users: 1 });
   return pool;
 }
@@ -416,13 +508,16 @@ export async function migrateRegisteredPgSchemas(connectionString?: string): Pro
     if (!registered?.size) continue;
     await migrationQueue(databaseUrl, async () => {
       const pg = (await import("pg")).default;
-      const pool = guardedPool(new pg.Pool({ connectionString: databaseUrl, ...pgCaOptions() }));
+      const pool = guardedPool(
+        new pg.Pool({ connectionString: databaseUrl, ...pgCaOptions(), options: TENANT_BYPASS_OPTION }),
+      );
       try {
         await applyPgMaintenance(pool, [...(registeredPreMigrationMaintenance.get(databaseUrl)?.values() ?? [])]);
         await applyPgMigrations(
           pool,
           [...registered.values()].sort((a, b) => a.id.localeCompare(b.id)),
         );
+        await applyTenancyIfEnabled(pool);
       } finally {
         await pool.end();
       }
@@ -496,6 +591,7 @@ export function createPgPool(
       await applyPgMaintenance(instance, preMigrationMaintenance);
       await applyPgMigrations(instance, migrations);
       await applyPgMaintenance(instance, postMigrationMaintenance);
+      await applyTenancyIfEnabled(instance);
     }).catch((error) => {
       readyP = null;
       throw error;
@@ -603,7 +699,10 @@ export function createPgPool(
     registerPgMigration(connectionString, migration);
     if (closed) throw new Error("Postgres store is closed");
     await ready();
-    await withMigrationPool((instance) => applyPgMigrations(instance, [migration]));
+    await withMigrationPool(async (instance) => {
+      await applyPgMigrations(instance, [migration]);
+      await applyTenancyIfEnabled(instance);
+    });
   }
   function registerMigration(definition: PgMigrationDefinition): void {
     registerPgMigration(

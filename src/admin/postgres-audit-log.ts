@@ -1,4 +1,4 @@
-import { createPgPool } from "../persistence/pg-pool.ts";
+import { createPgPool, tenantCols } from "../persistence/pg-pool.ts";
 import type { ScopeId } from "../types.ts";
 import type { AuditEvent, AuditLog } from "../audit/audit-log.ts";
 import { reportFailureAs } from "../util/errors.ts";
@@ -80,7 +80,7 @@ export function createPostgresAuditLog(connectionString: string): AuditLog {
     async recordOnce(key, e) {
       await q(
         `INSERT INTO audit_log(${COLS}, idempotency_key) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-         ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING`,
+         ON CONFLICT (${tenantCols("idempotency_key")}) WHERE idempotency_key IS NOT NULL DO NOTHING`,
         [e.at, e.principalId, e.action, e.resource, e.scopeLabel, e.status ?? null, e.detail ?? null, key],
       );
     },

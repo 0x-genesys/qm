@@ -1,4 +1,4 @@
-import { createPgPool } from "../persistence/pg-pool.ts";
+import { createPgPool, tenantCols } from "../persistence/pg-pool.ts";
 import type { ScopeId } from "../types.ts";
 import type { AdminGrant, AdminGrantPersistence, AdminRole } from "./admin-grant-store.ts";
 
@@ -35,7 +35,7 @@ export function createPostgresAdminGrantStore(connectionString: string): AdminGr
       await pg.query(
         `INSERT INTO admin_grants (principal_id, scope_id, role, granted_by, created_at)
          VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (principal_id, scope_id, role)
+         ON CONFLICT (${tenantCols("principal_id, scope_id, role")})
          DO UPDATE SET granted_by = EXCLUDED.granted_by, created_at = EXCLUDED.created_at`,
         [g.principalId, g.scopeId, g.role, g.grantedBy ?? null, g.createdAt ?? null],
       );
@@ -44,7 +44,7 @@ export function createPostgresAdminGrantStore(connectionString: string): AdminGr
       const result = await pg.query(
         `INSERT INTO admin_grants (principal_id, scope_id, role, granted_by, created_at)
          VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (principal_id, scope_id, role) DO NOTHING`,
+         ON CONFLICT (${tenantCols("principal_id, scope_id, role")}) DO NOTHING`,
         [g.principalId, g.scopeId, g.role, g.grantedBy ?? null, g.createdAt ?? null],
       );
       return (result.rowCount ?? 0) > 0;

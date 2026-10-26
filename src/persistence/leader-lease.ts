@@ -1,4 +1,4 @@
-import type { PgPool, PoolClient } from "./pg-pool.ts";
+import { tenantLockKey, type PgPool, type PoolClient } from "./pg-pool.ts";
 import { swallow } from "../util/errors.ts";
 
 export interface LeaderLease {
@@ -67,7 +67,7 @@ export function createPostgresLeaderLease(pg: PgPool): LeaderLease {
         let won: boolean;
         try {
           const res = await c.query("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS won", [
-            `leader-lease:${key}`,
+            tenantLockKey(`leader-lease:${key}`),
           ]);
           won = res.rows[0]?.won === true;
         } catch (e) {
@@ -84,7 +84,7 @@ export function createPostgresLeaderLease(pg: PgPool): LeaderLease {
           entry.lost.delete(notifyLost);
           try {
             const res = await c.query("SELECT pg_advisory_unlock(hashtextextended($1, 0)) AS released", [
-              `leader-lease:${key}`,
+              tenantLockKey(`leader-lease:${key}`),
             ]);
             if (res.rows[0]?.released !== true) {
               console.error(

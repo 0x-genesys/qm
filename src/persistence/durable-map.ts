@@ -1,4 +1,4 @@
-import { createPgPool, type PgPool, type PoolClient } from "./pg-pool.ts";
+import { createPgPool, type PgPool, type PoolClient, tenantCols } from "./pg-pool.ts";
 import { pgTextSafe } from "../util/text.ts";
 
 export interface DurableMapSelect<T, K extends Extract<keyof T, string>> {
@@ -240,7 +240,7 @@ export function createPostgresMap<T>(
     return readyP;
   }
   const bumpSql = `INSERT INTO ${VERSIONS_TABLE} (tbl, v) VALUES ('${table}', 1)
-     ON CONFLICT (tbl) DO UPDATE SET v = ${VERSIONS_TABLE}.v + 1`;
+     ON CONFLICT (${tenantCols("tbl")}) DO UPDATE SET v = ${VERSIONS_TABLE}.v + 1`;
   async function withBump<R>(fn: (client: PoolClient) => Promise<R>): Promise<R> {
     await ready();
     const client = await (await pg.pool()).connect();
@@ -327,7 +327,7 @@ export function createPostgresMap<T>(
       await withBump((client) =>
         client.query(
           `INSERT INTO ${table} (id, json) VALUES ($1, $2)
-           ON CONFLICT (id) DO UPDATE SET json = EXCLUDED.json`,
+           ON CONFLICT (${tenantCols("id")}) DO UPDATE SET json = EXCLUDED.json`,
           [id, jsonbStringify(value)],
         ),
       );
@@ -336,7 +336,7 @@ export function createPostgresMap<T>(
       const res = await withBump((client) =>
         client.query(
           `INSERT INTO ${table} (id, json) VALUES ($1, $2)
-           ON CONFLICT (id) DO UPDATE SET json = ${table}.json
+           ON CONFLICT (${tenantCols("id")}) DO UPDATE SET json = ${table}.json
            RETURNING json`,
           [id, jsonbStringify(value)],
         ),
@@ -347,7 +347,7 @@ export function createPostgresMap<T>(
       const inserted = await withBump((client) =>
         client.query(
           `INSERT INTO ${table} (id, json) VALUES ($1, $2)
-           ON CONFLICT (id) DO NOTHING`,
+           ON CONFLICT (${tenantCols("id")}) DO NOTHING`,
           [id, jsonbStringify(value)],
         ),
       );
@@ -391,7 +391,7 @@ export function createPostgresMap<T>(
         });
         await client.query(
           `INSERT INTO ${table} (id, json) SELECT id, json FROM jsonb_to_recordset($1::jsonb) AS batch(id text, json jsonb)
-           ON CONFLICT (id) DO UPDATE SET json = EXCLUDED.json`,
+           ON CONFLICT (${tenantCols("id")}) DO UPDATE SET json = EXCLUDED.json`,
           [jsonbStringify([...pending].map(([id, json]) => ({ id, json })))],
         );
         return results;

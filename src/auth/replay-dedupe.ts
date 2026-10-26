@@ -1,4 +1,4 @@
-import { createPgPool } from "../persistence/pg-pool.ts";
+import { createPgPool, tenantCols } from "../persistence/pg-pool.ts";
 
 export interface ReplayDedupe {
   readonly durable: boolean;
@@ -48,7 +48,7 @@ export function createPostgresReplayDedupe(connectionString: string): ReplayDedu
       const res = await pg.query(
         `INSERT INTO source_auth_replay (event_id, expires_at)
          VALUES ($1, to_timestamp($2 / 1000.0))
-         ON CONFLICT (event_id) DO NOTHING`,
+         ON CONFLICT (${tenantCols("event_id")}) DO NOTHING`,
         [eventId, expiresAtMs],
       );
       return res.rowCount === 1;

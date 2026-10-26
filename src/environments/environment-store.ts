@@ -1,4 +1,4 @@
-import { createPgPool } from "../persistence/pg-pool.ts";
+import { createPgPool, tenantCols } from "../persistence/pg-pool.ts";
 import type { ScopeId } from "../types.ts";
 import { tenant } from "../tenant.ts";
 
@@ -121,7 +121,7 @@ export function createPostgresEnvironmentStore(
       const ts = now();
       await q(
         `INSERT INTO environments(id, org_id, name, owner_actor_id, created_at, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$5) ON CONFLICT (id) DO NOTHING`,
+         VALUES ($1,$2,$3,$4,$5,$5) ON CONFLICT (${tenantCols("id")}) DO NOTHING`,
         [input.id, tenant().orgId, input.name ?? null, input.ownerActorId ?? null, ts],
       );
       const rows = await q("SELECT * FROM environments WHERE id = $1", [input.id]);
@@ -139,7 +139,7 @@ export function createPostgresEnvironmentStore(
       await q(
         `INSERT INTO environment_attachments(scope_id, environment_id, attached_by, attached_at)
          VALUES ($1,$2,$3,$4)
-         ON CONFLICT (scope_id) DO UPDATE SET environment_id = EXCLUDED.environment_id,
+         ON CONFLICT (${tenantCols("scope_id")}) DO UPDATE SET environment_id = EXCLUDED.environment_id,
            attached_by = EXCLUDED.attached_by, attached_at = EXCLUDED.attached_at`,
         [scopeId, environmentId, attachedBy, now()],
       );

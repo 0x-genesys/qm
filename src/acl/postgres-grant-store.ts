@@ -1,4 +1,4 @@
-import { createPgPool } from "../persistence/pg-pool.ts";
+import { createPgPool, tenantCols } from "../persistence/pg-pool.ts";
 import type { Grant, Permission, ScopeId } from "../types.ts";
 import type { GrantPersistence } from "./acl-store.ts";
 
@@ -104,7 +104,7 @@ export function createPostgresGrantStore(connectionString: string): GrantPersist
         await client.query(
           `INSERT INTO acl_grants (owner_scope_id, path, grantee_scope_id, permission, granted_by)
            VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (owner_scope_id, path, grantee_scope_id, permission)
+           ON CONFLICT (${tenantCols("owner_scope_id, path, grantee_scope_id, permission")})
            DO UPDATE SET granted_by = EXCLUDED.granted_by`,
           [g.ownerScopeId, g.ref, g.granteeScopeId, g.permission, g.grantedBy],
         );

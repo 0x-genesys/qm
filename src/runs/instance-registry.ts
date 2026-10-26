@@ -1,4 +1,5 @@
 import type { PgPool } from "../persistence/pg-pool.ts";
+import { tenantCols } from "../persistence/pg-pool.ts";
 
 export interface InstanceRegistry {
   beat(): Promise<boolean>;
@@ -42,7 +43,7 @@ export function createPostgresInstanceRegistry(
       await pg.query(
         `INSERT INTO instance_heartbeats(instance_id, build_sha, started_at, beat_at)
            VALUES ($1, $2, $3, now())
-         ON CONFLICT (instance_id) DO UPDATE SET beat_at = now()`,
+         ON CONFLICT (${tenantCols("instance_id")}) DO UPDATE SET beat_at = now()`,
         [opts.instanceId, opts.buildSha, String(opts.startedAt)],
       );
       await pg.query(`DELETE FROM instance_heartbeats WHERE beat_at < now() - interval '1 hour'`, []);

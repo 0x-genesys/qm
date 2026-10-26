@@ -1,7 +1,7 @@
 import { createPostgresNotifyBus } from "../persistence/postgres-notify-bus.ts";
 import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { createPgPool } from "../persistence/pg-pool.ts";
+import { createPgPool, tenantCols } from "../persistence/pg-pool.ts";
 import { jsonbStringify } from "../persistence/durable-map.ts";
 import { pgTextSafe } from "../util/text.ts";
 import { isObj } from "../util/objects.ts";
@@ -225,7 +225,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
               AND (SELECT array_agg(a.attname::text ORDER BY k.ord)
                    FROM unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord)
                    JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
-                  ) <> ARRAY['run_id','attempt','call_index']
+                  ) NOT IN (ARRAY['run_id','attempt','call_index'], ARRAY['tenant_id','run_id','attempt','call_index'])
           ) OR NOT EXISTS (
             SELECT 1 FROM pg_constraint c
             WHERE c.conrelid = 'tool_calls'::regclass AND c.contype = 'p'
@@ -425,7 +425,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
         const { rows } = await q(
           `INSERT INTO runs(id, session_id, status, request, idempotency_key, attempts, max_attempts, created_at, claim_priority)
            VALUES ($1,$2,'pending',$3,$4,0,$5,$6,$7)
-           ON CONFLICT (idempotency_key) DO NOTHING
+           ON CONFLICT (${tenantCols("idempotency_key")}) DO NOTHING
            RETURNING *, pg_notify('qm_run_available', 'null')`,
           [
             id,

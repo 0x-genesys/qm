@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { createPgPool, withPgTransaction, type PgPool, type PoolClient } from "../persistence/pg-pool.ts";
+import { createPgPool, withPgTransaction, type PgPool, type PoolClient, tenantCols } from "../persistence/pg-pool.ts";
 import { jsonbStringify } from "../persistence/durable-map.ts";
 import type { TurnResult } from "../types.ts";
 import type { EnqueueInput, EnqueueResult, Run, RunPriority, RunStop } from "../runs/run-store.ts";
@@ -434,7 +434,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
           `INSERT INTO runs(id, session_id, status, request, idempotency_key, attempts, max_attempts, created_at,
              claim_priority, engine, absurd_queue, fair_key)
            VALUES ($1, $2, 'queued', $3, $4, 0, $5, $6, $7, 'absurd', $8, $9)
-           ON CONFLICT (idempotency_key) DO NOTHING RETURNING *`,
+           ON CONFLICT (${tenantCols("idempotency_key")}) DO NOTHING RETURNING *`,
           [
             randomUUID(),
             sessionId,

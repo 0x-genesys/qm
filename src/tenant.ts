@@ -1,17 +1,23 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { processOrgId } from "./config.ts";
+import { configurePgTenantSource } from "./persistence/pg-pool.ts";
 import { scopeId, type ScopeId } from "./types.ts";
 import { reportFailure } from "./util/errors.ts";
 
 export interface Tenant {
+  /** Row-level tenant id (UUID) in the shared database; undefined means the database's own singleton tenant. */
+  readonly id?: string;
+  readonly slug?: string;
   readonly orgId: string;
   readonly orgScope: ScopeId;
 }
 
 const current = new AsyncLocalStorage<Tenant>();
 
-export function tenantFor(orgId: string): Tenant {
-  return { orgId, orgScope: scopeId("org", orgId) };
+configurePgTenantSource(() => current.getStore()?.id);
+
+export function tenantFor(orgId: string, id?: string, slug?: string): Tenant {
+  return { orgId, orgScope: scopeId("org", orgId), ...(id ? { id } : {}), ...(slug ? { slug } : {}) };
 }
 
 let processTenant: Tenant | undefined;
@@ -31,11 +37,12 @@ export function withTenant<T>(t: Tenant, fn: () => T): T {
 export function perTenant<T>(create: () => T): () => T {
   const states = new Map<string, T>();
   return () => {
-    const { orgId } = tenant();
-    let state = states.get(orgId);
+    const t = tenant();
+    const key = t.id ?? t.orgId;
+    let state = states.get(key);
     if (state === undefined) {
       state = create();
-      states.set(orgId, state);
+      states.set(key, state);
     }
     return state;
   };

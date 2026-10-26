@@ -1,7 +1,7 @@
 import { turnFenceHeld } from "../turns/turn-fence.ts";
 import type { GoalCreateInput } from "../harness/goal.ts";
 import { NonRetryableTurnError } from "../core/turn-error.ts";
-import { withPgTransaction, type PgPool } from "../persistence/pg-pool.ts";
+import { withPgTransaction, type PgPool, tenantCols } from "../persistence/pg-pool.ts";
 import type { RunStore, Run } from "../runs/run-store.ts";
 import type { SessionStore } from "../sessions/session-store.ts";
 import { assertSwarmRun, type SwarmRunFence } from "./swarm-fence.ts";
@@ -145,14 +145,14 @@ export function createSwarmStore(
         );
         if (!session.rowCount) throw new Error("capability session mismatch");
         await client.query(
-          "INSERT INTO durable_map_versions (tbl,v) VALUES ('swarms',1) ON CONFLICT (tbl) DO UPDATE SET v=durable_map_versions.v+1",
+          `INSERT INTO durable_map_versions (tbl,v) VALUES ('swarms',1) ON CONFLICT (${tenantCols("tbl")}) DO UPDATE SET v=durable_map_versions.v+1`,
         );
         const current = await client.query<{ json: SwarmStorage }>("SELECT json FROM swarms WHERE id=$1 FOR UPDATE", [
           id,
         ]);
         const next = mutate(current.rows[0]?.json ?? null);
         await client.query(
-          "INSERT INTO swarms (id,json) VALUES ($1,$2) ON CONFLICT (id) DO UPDATE SET json=EXCLUDED.json",
+          `INSERT INTO swarms (id,json) VALUES ($1,$2) ON CONFLICT (${tenantCols("id")}) DO UPDATE SET json=EXCLUDED.json`,
           [id, jsonbStringify(next)],
         );
         assertSwarmRun(fence, run);

@@ -1,6 +1,6 @@
 import { likeEscape } from "../persistence/like.ts";
 import { createHash } from "node:crypto";
-import { createPgPool, type PoolClient, withPgTransaction } from "../persistence/pg-pool.ts";
+import { createPgPool, type PoolClient, withPgTransaction, tenantCols } from "../persistence/pg-pool.ts";
 import type { PrincipalType } from "../types.ts";
 import { foldPrincipalId, rosterIds } from "./person.ts";
 import {
@@ -266,7 +266,7 @@ export function createPostgresDirectoryStore(connectionString: string): Director
       if (partial && complete === false) return false;
       await client.query(
         `INSERT INTO directory_sync (org_id, ${hashCol}, ${syncedAtCol}, updated_at) VALUES ($1, $2, $3, $4)
-         ON CONFLICT (org_id) DO UPDATE SET ${hashCol} = EXCLUDED.${hashCol},
+         ON CONFLICT (${tenantCols("org_id")}) DO UPDATE SET ${hashCol} = EXCLUDED.${hashCol},
            ${syncedAtCol} = COALESCE(EXCLUDED.${syncedAtCol}, directory_sync.${syncedAtCol}),
            updated_at = EXCLUDED.updated_at`,
         [tenant().orgId, partial || complete === false ? null : hash, partial ? null : (syncedAt ?? null), Date.now()],
@@ -364,7 +364,7 @@ export function createPostgresDirectoryStore(connectionString: string): Director
             await client.query(
               `INSERT INTO directory_channels (org_id, channel_id, name, name_lc, is_private, is_external, roster_known, observed_at)
              SELECT $1, rows.*, $8::bigint FROM unnest($2::text[], $3::text[], $4::text[], $5::boolean[], $6::boolean[], $7::boolean[]) AS rows
-             ON CONFLICT (org_id, channel_id) DO UPDATE SET
+             ON CONFLICT (${tenantCols("org_id, channel_id")}) DO UPDATE SET
                name = EXCLUDED.name,
                name_lc = EXCLUDED.name_lc,
                is_private = EXCLUDED.is_private,
@@ -418,7 +418,7 @@ export function createPostgresDirectoryStore(connectionString: string): Director
     async setWorkspaceUrl(url) {
       await q(
         `INSERT INTO directory_meta (org_id, workspace_url, updated_at) VALUES ($1, $2, $3)
-         ON CONFLICT (org_id) DO UPDATE SET workspace_url = EXCLUDED.workspace_url, updated_at = EXCLUDED.updated_at`,
+         ON CONFLICT (${tenantCols("org_id")}) DO UPDATE SET workspace_url = EXCLUDED.workspace_url, updated_at = EXCLUDED.updated_at`,
         [tenant().orgId, url, Date.now()],
       );
     },
@@ -505,7 +505,7 @@ export function createPostgresDirectoryStore(connectionString: string): Director
           await client.query(
             `INSERT INTO directory_groups (org_id, group_id, roster_known)
              SELECT $1, * FROM unnest($2::text[], $3::boolean[])
-             ON CONFLICT (org_id, group_id) DO UPDATE SET
+             ON CONFLICT (${tenantCols("org_id, group_id")}) DO UPDATE SET
                roster_known = directory_groups.roster_known OR EXCLUDED.roster_known`,
             [tenant().orgId, listedIds, listedIds.map((groupId) => rostered.has(groupId))],
           );
@@ -531,7 +531,7 @@ export function createPostgresDirectoryStore(connectionString: string): Director
         await client.query("SELECT pg_advisory_xact_lock(hashtext('directory'), hashtext($1))", [tenant().orgId]);
         await client.query(
           `INSERT INTO directory_groups (org_id, group_id, roster_known) VALUES ($1, $2, TRUE)
-           ON CONFLICT (org_id, group_id) DO UPDATE SET roster_known = TRUE`,
+           ON CONFLICT (${tenantCols("org_id, group_id")}) DO UPDATE SET roster_known = TRUE`,
           [tenant().orgId, groupId],
         );
         await client.query("DELETE FROM directory_group_members WHERE org_id = $1 AND group_id = $2", [
@@ -548,7 +548,7 @@ export function createPostgresDirectoryStore(connectionString: string): Director
         ]);
         await client.query(
           `INSERT INTO directory_sync (org_id, groups_hash, groups_synced_at, updated_at) VALUES ($1, $2, $3, $3)
-           ON CONFLICT (org_id) DO UPDATE SET groups_hash = EXCLUDED.groups_hash,
+           ON CONFLICT (${tenantCols("org_id")}) DO UPDATE SET groups_hash = EXCLUDED.groups_hash,
              groups_synced_at = GREATEST(COALESCE(directory_sync.groups_synced_at, 0), EXCLUDED.groups_synced_at),
              updated_at = EXCLUDED.updated_at`,
           [tenant().orgId, hashRoster(all.rows.map((r) => `${r.group_id}|${r.principal_id}`)), Date.now()],
