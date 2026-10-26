@@ -37,13 +37,7 @@ import {
   type SecurityScreenMode,
 } from "./security/security-posture.ts";
 import { parseSharingPosture, type SharingPosture } from "./resolution/sharing-posture.ts";
-import {
-  parseSlackContextSource,
-  type SlackContextSource,
-  slackPluginConfigFromEnv,
-  slackAccountConfigsFromEnv,
-  type SlackPluginConfig,
-} from "./slack/config.ts";
+import { slackPluginConfigFromEnv, slackAccountConfigsFromEnv, type SlackPluginConfig } from "./slack/config.ts";
 import {
   DEFAULT_CODEX_MODEL_ID,
   MODEL_PROVIDERS,
@@ -58,7 +52,6 @@ import { resolveSwarmSettings, type SwarmSettings } from "./swarms/swarm-setting
 
 export interface Config {
   productAnalytics?: { apiKey: string; host?: string };
-  slackContextSource?: SlackContextSource;
   suggestedActivitiesEnabled?: boolean;
   suggestedActivitiesContext?: string;
   swarmsEnabled?: boolean;
@@ -105,7 +98,6 @@ export interface Config {
   modelGateway?: ModelGatewayTransportConfig;
   brokerCredentials?: DeploymentBrokerCredential[];
   piCaptureRequests: boolean;
-  piSystemCacheSplit: boolean;
   adminGrants?: string;
   trustedOidcAdminIssuer?: string;
   emailAuthPrincipals?: string[];
@@ -157,7 +149,6 @@ export interface Config {
   pluginSkillDirs: string[];
   deploymentLayerDir?: string;
   layerEnv?: Readonly<Record<string, string | undefined>>;
-  filesDirectUploadsEnabled: boolean;
   snapshotStore: "local" | "s3";
   transferStore: "local" | "s3";
   s3Bucket?: string;
@@ -196,10 +187,8 @@ export interface Config {
     endpoint: string;
     token: string;
   };
-  scratchExecEnabled: boolean;
   reachExecEnabled: boolean;
   surfaceDebugFooter: boolean;
-  eagerProvisionEnabled: boolean;
   sandbox: SandboxEnv;
   awsSandbox: AwsSandboxEnv;
   localSandbox: LocalSandboxEnv;
@@ -1229,7 +1218,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.RESEND_API_KEY?.trim() ? { resendApiKey: env.RESEND_API_KEY.trim() } : {}),
     ...(env.AUTH_EMAIL_FROM?.trim() ? { emailFrom: env.AUTH_EMAIL_FROM.trim() } : {}),
     piCaptureRequests: boolEnvStrict("PI_CAPTURE_REQUESTS", env.PI_CAPTURE_REQUESTS) ?? true,
-    piSystemCacheSplit: boolEnvStrict("PI_SYSTEM_CACHE_SPLIT", env.PI_SYSTEM_CACHE_SPLIT) ?? false,
     rateLimitPerWindow:
       numEnvStrict("RATE_LIMIT_PER_WINDOW", env.RATE_LIMIT_PER_WINDOW) ?? CONFIG_DEFAULTS.rateLimitPerWindow,
     rateLimitWindowMs:
@@ -1302,7 +1290,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.FLY_APP_NAME ? { flyAppName: env.FLY_APP_NAME } : {}),
     ...(slack ? { slack } : {}),
     externalSlackPolicies,
-    slackContextSource: parseSlackContextSource(env.SLACK_CONTEXT_SOURCE),
     runStore,
     ...(env.SKILL_SIGNING_SECRET ? { skillSigningSecret: env.SKILL_SIGNING_SECRET } : {}),
     seedSkills: boolEnvStrict("SEED_SKILLS", env.SEED_SKILLS) ?? true,
@@ -1318,7 +1305,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(numEnvStrict("MEMORY_CAPTURE_MAX_TURNS", env.MEMORY_CAPTURE_MAX_TURNS) !== undefined
       ? { memoryCaptureMaxTurns: numEnvStrict("MEMORY_CAPTURE_MAX_TURNS", env.MEMORY_CAPTURE_MAX_TURNS) }
       : {}),
-    filesDirectUploadsEnabled: boolEnvStrict("FILES_DIRECT_UPLOADS_ENABLED", env.FILES_DIRECT_UPLOADS_ENABLED) ?? false,
     snapshotStore: env.SNAPSHOT_STORE === "s3" ? "s3" : "local",
     transferStore: env.TRANSFER_STORE === "s3" ? "s3" : "local",
     ...(env.S3_BUCKET ? { s3Bucket: env.S3_BUCKET } : {}),
@@ -1353,10 +1339,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       CONFIG_DEFAULTS.approvalSummaryTimeoutMs,
     turnLeaseWaitMs: numEnvStrict("TURN_LEASE_WAIT_MS", env.TURN_LEASE_WAIT_MS) ?? CONFIG_DEFAULTS.turnLeaseWaitMs,
     securityScreenTimeoutMs,
-    scratchExecEnabled: boolEnvStrict("EXECUTE_SCRATCH", env.EXECUTE_SCRATCH) ?? false,
     reachExecEnabled: boolEnvStrict("REACH_EXEC", env.REACH_EXEC) ?? false,
     surfaceDebugFooter: boolEnvStrict("SURFACE_DEBUG_FOOTER", env.SURFACE_DEBUG_FOOTER) ?? false,
-    eagerProvisionEnabled: boolEnvStrict("EAGER_PROVISION", env.EAGER_PROVISION) ?? true,
     sandbox: sandboxEnv(env),
     awsSandbox: awsSandboxEnv(env),
     localSandbox: localSandboxEnv(env),
