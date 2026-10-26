@@ -68,7 +68,7 @@ export function slotValid(slot: string, store = poolStore()): boolean {
 }
 
 const LEGACY_PORT_SLOTS = 16;
-const PORTS_PER_SLOT = 6;
+const PORTS_PER_SLOT = 7;
 
 export function portSlotCount(basePort = Number(process.env.DEV_INSTANCE_BASE_PORT || 8080)): number {
   if (!Number.isInteger(basePort) || basePort < 0 || basePort > 65535) {

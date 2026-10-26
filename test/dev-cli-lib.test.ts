@@ -86,8 +86,8 @@ test("port blocks preserve legacy slots and stay disjoint through the port ceili
     }
     assert.throws(() => slotPorts(`pool${count + 1}`, base), /No valid port block/);
   }
-  assert.equal(portSlotCount(8080), 9575);
-  assert.equal(slotPorts("pool17", 8080).core, 8177);
+  assert.equal(portSlotCount(8080), 8207);
+  assert.equal(slotPorts("pool17", 8080).core, 8193);
 });
 
 test("port allocation rejects malformed slots and invalid base ports", () => {
