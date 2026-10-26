@@ -4,17 +4,35 @@
 
 <div align="center">
 
-**A multiplayer agent harness for work. In Slack and on the web.**<br>
-Run it in your own cloud, with your own models and keys.
+# Springworks YCQM
 
-[![CI](https://img.shields.io/github/actions/workflow/status/yc-software/qm/cicd.yml?branch=main&label=CI&style=flat-square)](https://github.com/yc-software/qm/actions/workflows/cicd.yml)
+**Springworks' private source fork of [YC's open-source QM](https://github.com/yc-software/qm),**<br>
+customized to run on AWS Bedrock in Springworks' own AWS account.
+
 [![license](https://img.shields.io/badge/license-MIT-4c1?style=flat-square)](./LICENSE)
 [![node](https://img.shields.io/badge/node-24.15%2B-3178c6?style=flat-square)](./package.json)
-[![npm](https://img.shields.io/npm/v/@yc-software/qm?label=npm&color=000&style=flat-square)](https://www.npmjs.com/package/@yc-software/qm)
+[![fork of](https://img.shields.io/badge/fork%20of-yc--software%2Fqm-555?style=flat-square)](https://github.com/yc-software/qm)
+[![bedrock](https://img.shields.io/badge/model%20routing-AWS%20Bedrock-FF9900?style=flat-square)](./deploy/layers/springworks/AGENTS.md)
 
 [Deploy](#deploy-it-for-your-org) · [How it works](#how-it-works) · [Security model](#security-and-secrets) · [Customize](#customize-your-instance) · [Contribute](#contributing) · [Documentation](#going-deeper)
 
 </div>
+
+> **This is Springworks' internal fork, not upstream QM.** It exists to give
+> Springworks' own non-developer employees a company-wide Claude-backed
+> assistant that bills and routes model inference through AWS Bedrock in
+> Springworks' AWS account, rather than the direct Anthropic API. The upstream
+> project — model-agnostic, with no Bedrock support — lives at
+> [yc-software/qm](https://github.com/yc-software/qm); this fork tracks it via
+> `update-qm` and keeps all Springworks-specific deployment material under
+> [`deploy/layers/springworks/`](./deploy/layers/springworks/AGENTS.md), per
+> the "Deployment repositories and source forks" convention in
+> [`CLAUDE.md`](./CLAUDE.md). The core engineering changes that make Bedrock
+> routing possible live in [`src/harness/bedrock-env.ts`](./src/harness/bedrock-env.ts)
+> and the surrounding `claude` harness and config code — see that directory's
+> `AGENTS.md` for the deployment-side half of the story and `deploy/layers/springworks/deploy.sh`
+> for the scripted AWS bootstrap. General QM documentation below is unchanged
+> from upstream and still applies to this fork.
 
 ## Overview
 
