@@ -116,6 +116,12 @@ jobs:
           sha256sum -c helm-v3.19.0-linux-amd64.tar.gz.sha256sum
           tar -xzf helm-v3.19.0-linux-amd64.tar.gz
           sudo install linux-amd64/helm /usr/local/bin/helm
+      - name: Raise Postgres connection limit
+        if: needs.reuse.outputs.reusable != 'true'
+        run: |
+          docker exec ${{ job.services.postgres.id }} psql -U postgres -c "ALTER SYSTEM SET max_connections = 1000"
+          docker restart ${{ job.services.postgres.id }}
+          until docker exec ${{ job.services.postgres.id }} pg_isready -U postgres; do sleep 1; done
       - name: Verify root test shard plan
         if: needs.reuse.outputs.reusable != 'true' && matrix.shard == 1
         run: npm run test:root:shard:check

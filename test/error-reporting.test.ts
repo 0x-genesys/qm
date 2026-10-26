@@ -149,6 +149,7 @@ test("operator error records send one classified event with the record details",
     await errors.flush();
     console.log((await errors.list())[0].message);
     await flushErrorReporting();
+    process.exit(0);
   `);
   assert.equal(code, 0);
   assert.equal(output.trim(), "private-job-failure");
@@ -324,6 +325,7 @@ test("reportFailure sends one classified event per distinct failure and skips ca
     reportFailure('tools: persist artifact', reportedFirst);
     errors.record({category:'turn', code:'error', message:reportedFirst.message, scopeLabel:'private-scope'}, reportedFirst);
     await flushErrorReporting();
+    process.exit(0);
   `);
   assert.equal(code, 0);
   assert.deepEqual(

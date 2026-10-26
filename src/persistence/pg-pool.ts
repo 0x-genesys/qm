@@ -55,9 +55,7 @@ async function retainPool(connectionString: string, kind: "query" | "session" | 
     url = parsed.toString();
     ssl = { ssl: { ca: poolingConfig.caCert } };
   }
-  const pool = guardedPool(
-    new pg.Pool({ connectionString: url, ...ssl, max, connectionTimeoutMillis: 10_000, allowExitOnIdle: true }),
-  );
+  const pool = guardedPool(new pg.Pool({ connectionString: url, ...ssl, max, connectionTimeoutMillis: 10_000 }));
   sharedPools.set(key, { pool, users: 1 });
   return pool;
 }

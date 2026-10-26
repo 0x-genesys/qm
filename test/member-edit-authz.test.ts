@@ -77,7 +77,7 @@ function makeDeps(overrides: { config?: ScopedConfigStore; advisoryLock?: Adviso
     sessions,
     skills,
     deploy,
-    ...(overrides.advisoryLock ? { advisoryLock: overrides.advisoryLock } : {}),
+    advisoryLock: overrides.advisoryLock ?? testAdvisoryLock(),
   };
 }
 
