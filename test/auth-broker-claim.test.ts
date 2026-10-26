@@ -12,9 +12,8 @@ import { createServer } from "../src/api/server.ts";
 import { type BuiltApp } from "../src/wiring.ts";
 import { buildApp } from "./support/build-app.ts";
 import { signRequest } from "../src/auth/source-auth.ts";
-import { type ReplayDedupe, createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
+import type { ReplayDedupe } from "../src/auth/replay-dedupe.ts";
 import { testConfig } from "./support/test-config.ts";
-import { testDatabaseUrl } from "./support/test-database.ts";
 
 const SECRET = "auth-broker-claim-test-secret".repeat(2);
 const CLAIM_PATH = "/v1/auth/broker/claim";
@@ -111,7 +110,7 @@ test("broker ids live in their own namespace and cannot poison another subsystem
 });
 
 test("the claim route refuses to answer from a per-process replay store", async (t) => {
-  const srv = start(createPostgresReplayDedupe(testDatabaseUrl()));
+  const srv = start({ ...durableStub(), durable: false });
   t.after(() => srv.close());
   const response = await claim(srv.base, { ids: ["link:abc"], expiresAtMs: soon() });
   assert.equal(response.status, 503, "a RAM-only dedupe cannot make a sign-in link single-use across instances");

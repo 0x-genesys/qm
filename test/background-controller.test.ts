@@ -225,8 +225,7 @@ test("a process is active only after startup completes, and expiry during a slow
 for (const outcome of ["complete", "handover", "read-failure", "read-stall", "stop", "startup-timeout"] as const) {
   test(`pending startup renews verified ownership and fences on ${outcome}`, async (t) => {
     t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"] });
-    const { store, own } = setup();
-    await own("a");
+    let ownership: BackgroundOwnership = { ownerDeploymentId: "a", setAt: null, setBy: "test" };
     const started = Promise.withResolvers<void>();
     const finish = Promise.withResolvers<void>();
     const read = Promise.withResolvers<void>();
@@ -246,7 +245,7 @@ for (const outcome of ["complete", "handover", "read-failure", "read-stall", "st
           try {
             if (readMode === "fail") throw new Error("offline");
             if (readMode === "stall") await read.promise;
-            return await store.get();
+            return ownership;
           } finally {
             reads--;
           }
@@ -283,7 +282,7 @@ for (const outcome of ["complete", "handover", "read-failure", "read-stall", "st
     }
     assert.equal(starts, 1);
     assert.equal(stops, 0);
-    if (outcome === "handover") await own("b");
+    if (outcome === "handover") ownership = { ...ownership, ownerDeploymentId: "b" };
     if (outcome === "read-failure") readMode = "fail";
     if (outcome === "read-stall" || outcome === "stop") readMode = "stall";
     t.mock.timers.tick(10);
