@@ -1,6 +1,7 @@
 export interface CachedMessage {
   container: string;
   ts: string;
+  surface?: string;
   sub?: string;
   broadcast?: boolean;
   subtype?: string;
@@ -50,6 +51,7 @@ export interface ActiveThread {
 }
 
 export interface IngestEvent {
+  surface?: string;
   container: string;
   ts: string;
   sub?: string | null;
@@ -96,6 +98,7 @@ interface RevisedSinceOpts {
 }
 
 export interface SearchOpts {
+  surface?: string;
   container?: string;
   limit?: number;
 }
@@ -108,10 +111,10 @@ export interface SurfaceCache {
   readMessages(container: string, opts?: ReadMessagesOpts): Promise<CachedMessage[]>;
   revisedSince(container: string, since: number, opts?: RevisedSinceOpts): Promise<CachedMessage[]>;
   search(query: string, opts?: SearchOpts): Promise<CachedMessage[]>;
-  activeThreads(opts?: { container?: string; limit?: number }): Promise<ActiveThread[]>;
+  activeThreads(opts?: { surface?: string; container?: string; limit?: number }): Promise<ActiveThread[]>;
   members(container: string): Promise<string[]>;
   isMember(container: string, principalId: string): Promise<boolean>;
   containerState(container: string): Promise<ContainerState | null>;
-  listContainers(opts?: { limit?: number }): Promise<ContainerSummary[]>;
+  listContainers(opts?: { surface?: string; limit?: number }): Promise<ContainerSummary[]>;
   close(): Promise<void>;
 }

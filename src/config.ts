@@ -1,3 +1,4 @@
+import { httpChatConfigsFromEnv, type HttpChatConfig } from "./chat-surface/http-chat.ts";
 import { codexAuthFileForEnv, loadCodexAuthFile } from "./model/chatgpt-auth-file.ts";
 import {
   deploymentBrokerCredentialsFromEnv,
@@ -62,6 +63,7 @@ interface TenantConfig {
   publicWebUrl?: string;
   slack?: SlackPluginConfig;
   externalSlackPolicies?: ExternalSlackPolicies;
+  chatSurfaces?: HttpChatConfig[];
   s3Prefix?: string;
   deployAppsSessionSecret?: string;
   deployAppsLoginUrl?: string;
@@ -1479,6 +1481,7 @@ function loadTenantConfig(env: NodeJS.ProcessEnv): TenantConfig {
     ...(env.PUBLIC_WEB_URL ? { publicWebUrl: env.PUBLIC_WEB_URL } : {}),
     ...(slack ? { slack } : {}),
     externalSlackPolicies,
+    chatSurfaces: httpChatConfigsFromEnv(env),
     ...(env.S3_PREFIX ? { s3Prefix: env.S3_PREFIX } : {}),
     ...deployAppsEnv(env, publicUrl),
     ...(deployAppsDomain ? { deployAppsDomain } : {}),

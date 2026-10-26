@@ -5,6 +5,7 @@ import { samePerson } from "../directory/person.ts";
 import { approvalMessage } from "./approval-cards.ts";
 import { deliverKeychainCard } from "./keychain-approvals.ts";
 import { errMessage, swallow, swallowAs } from "../util/errors.ts";
+import { destinationSource } from "../types.ts";
 import {
   botIdentityArgs,
   createThreadTracker,
@@ -84,21 +85,22 @@ export function createSlackSender(deps: {
   };
 
   function deliveryClient(destination: Post["destination"]): any {
-    let client = destination.slackAccountId ? undefined : deps.defaultClient;
-    if (deps.clientForAccount)
-      client = deps.clientForAccount(destination.slackAccountId ?? "default", destination.slackTeamId);
-    if (!client) throw new Error(`Slack account ${destination.slackAccountId ?? "default"} is not connected`);
+    const { account, workspaceId } = destinationSource(destination);
+    let client = account ? undefined : deps.defaultClient;
+    if (deps.clientForAccount) client = deps.clientForAccount(account ?? "default", workspaceId);
+    if (!client) throw new Error(`Slack account ${account ?? "default"} is not connected`);
     return client;
   }
 
   async function postToConversation(d: Post): Promise<PostReceipt | void> {
     const client = deliveryClient(d.destination);
     const runId = d.idempotencyKey.startsWith("run:") ? d.idempotencyKey.slice("run:".length) : undefined;
-    const namespace = deps.externalNamespace?.(d.destination.slackAccountId ?? "default");
+    const source = destinationSource(d.destination);
+    const namespace = deps.externalNamespace?.(source.account ?? "default");
     if (
       namespace &&
       (parseDeliveryTarget(d.destination.target).channel.startsWith("D")
-        ? runId && d.destination.slackPolicyNamespace !== namespace
+        ? runId && source.policyNamespace !== namespace
         : !d.provenance?.sourceThreadRef.startsWith(`${namespace}:`))
     ) {
       console.error(
