@@ -6,6 +6,10 @@ import { testMap } from "./support/test-database.ts";
 
 const tick = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+async function staged(read: () => Promise<unknown>): Promise<void> {
+  for (let attempt = 0; attempt < 300 && (await read()) === null; attempt++) await tick(10);
+}
+
 async function cleared(read: () => Promise<unknown>): Promise<unknown> {
   for (let attempt = 0; attempt < 300 && (await read()) !== null; attempt++) await tick(10);
   return read();
@@ -82,7 +86,8 @@ test("gate: when the cap fires first, the envelope is staged before the ack; lat
     { gated: true, capMs: 10, ...envelopeStageFor(staging, body) },
   );
   await ack();
-  await tick(40);
+  await staged(() => map.get("slack:acct:message:C1:1.0"));
+  for (let attempt = 0; attempt < 300 && events.length === 0; attempt++) await tick(10);
   assert.deepEqual(events, ["ack"]);
   assert.ok(await map.get("slack:acct:message:C1:1.0"), "the row exists while acceptance is unknown");
   gate.persisted();
@@ -125,7 +130,7 @@ test("gate: a handler failure after the cap leaves the staged row for the sweepe
     ...envelopeStageFor(staging, body),
   });
   await ack();
-  await tick(40);
+  await staged(() => map.get("slack:acct:message:C1:1.0"));
   gate.failed("boom");
   await tick(0);
   assert.ok(await map.get("slack:acct:message:C1:1.0"), "the message the ack already covered is still recoverable");
@@ -264,7 +269,7 @@ test("gate: a handler failure after the cap keeps the staged row even though the
     ...envelopeStageFor(staging, body),
   });
   await ack();
-  await tick(40);
+  await staged(() => map.get("slack:acct:message:C1:1.0"));
   gate.failed("boom");
   gate.persisted();
   await tick(0);
