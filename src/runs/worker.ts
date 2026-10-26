@@ -106,12 +106,7 @@ async function attemptRun(
   };
   try {
     if (opts?.shutdown?.aborted) return { status: "queued", sessionId: run.sessionId, runId: run.id };
-    if (run.request.swarm && !run.request.swarmGoal) {
-      const { turnMs } = resolveSwarmSettings({ turnMs: run.request.turnWallClockMs });
-      workDeadline = setTimeout(() => cancel.abort(), turnMs);
-    }
-    if (run.request.swarm && countedClaims(run) > SWARM_CLAIM_BUDGET)
-      throw new NonRetryableTurnError("swarm claim budget exhausted");
+    workDeadline = swarmTurnLimits(run, cancel);
     started = true;
     const result = await deps.orchestrator.handleTurn({
       ...run.request,
@@ -151,6 +146,17 @@ async function attemptRun(
         .releaseLease(run.id, token, started ? handbackStop(opts.shutdown) : undefined)
         .catch((e) => swallow(`worker: shutdown handback failed run=${run.id}; lease will expire after exit`, e));
   }
+}
+
+export function swarmTurnLimits(
+  run: Pick<Run, "request" | "attempts" | "preemptions">,
+  cancel: AbortController,
+): ReturnType<typeof setTimeout> | undefined {
+  if (run.request.swarm && countedClaims(run) > SWARM_CLAIM_BUDGET)
+    throw new NonRetryableTurnError("swarm claim budget exhausted");
+  if (!run.request.swarm || run.request.swarmGoal) return undefined;
+  const { turnMs } = resolveSwarmSettings({ turnMs: run.request.turnWallClockMs });
+  return setTimeout(() => cancel.abort(), turnMs);
 }
 
 export function recordTurnError(errors: ErrorLog | undefined, run: Run, err: unknown): void {

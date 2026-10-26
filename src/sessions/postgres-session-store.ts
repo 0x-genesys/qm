@@ -1,3 +1,4 @@
+import { turnFenceHeld } from "../turns/turn-fence.ts";
 import { DIRECTORY_MIGRATIONS } from "../directory/postgres-directory-store.ts";
 import { randomUUID } from "node:crypto";
 import { jsonbStringify } from "../persistence/durable-map.ts";
@@ -1093,11 +1094,8 @@ export function createPostgresSessionStore(connectionString: string, opts: Store
       ]);
       if (held.rows[0]?.token !== lease.token || Number(held.rows[0]!.expires_at) <= now()) throw new Error(invalidMsg);
       if (lease.fenceToken) {
-        const fence = await client.query("SELECT qm_turn_fence($1, $2) AS ok", [
-          lease.turnId ?? null,
-          lease.fenceToken,
-        ]);
-        if (fence.rows[0]?.ok !== true) throw new Error(`${invalidMsg}: the turn no longer holds its claim`);
+        if (!(await turnFenceHeld(client, lease.turnId ?? "", lease.fenceToken)))
+          throw new Error(`${invalidMsg}: the turn no longer holds its claim`);
       }
       await client.query("UPDATE session_leases SET expires_at = $2 WHERE session_id = $1", [
         lease.sessionId,

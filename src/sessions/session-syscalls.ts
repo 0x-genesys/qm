@@ -15,7 +15,7 @@ import type { CoreSearch } from "../search/core-search.ts";
 import type { ScopeId, Session, SpawnMeta } from "../types.ts";
 import { isReply, proseText, type Item } from "./items.ts";
 import type { OrchestratorInput } from "../core/orchestrator/types.ts";
-import { isUnstarted, type Run, type RunStore } from "../runs/run-store.ts";
+import { isUnstarted, stopRun, type Run, type RunStore } from "../runs/run-store.ts";
 import type { RunSignalStore } from "../runs/run-signal-store.ts";
 import type { SessionStore } from "./session-store.ts";
 import { xmlAttrEscape, xmlEscape } from "../util/message-tag.ts";
@@ -485,8 +485,7 @@ export async function stopSessionTree(
     if (session.scopeId !== root.scopeId) continue;
     for (const run of await deps.runs.inFlightForThread(session.threadRef)) {
       await deps.signals.send(run.id, { kind: "abort", ...(reason ? { reason } : {}) });
-      if (run.engine === "absurd") await deps.runs.cancelTurn?.(run.id);
-      else if (run.status === "pending") await deps.runs.withdraw(run.id);
+      await stopRun(deps.runs, run);
       stopped = true;
     }
   }

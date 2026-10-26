@@ -11,7 +11,7 @@ import { isHalt, routeWake, type Wake } from "../wake/wake.ts";
 import type { OrchestratorInput } from "../core/orchestrator.ts";
 import { desktopClientForTurn, isPersonAuthored, isSessionTurn, resolveTurnOrigin } from "../core/turn-origin.ts";
 import { conversationScope } from "../resolution/resolution-service.ts";
-import { isTerminal, isUnstarted, leaseLapsed } from "../runs/run-store.ts";
+import { isTerminal, isUnstarted, leaseLapsed, stopRun } from "../runs/run-store.ts";
 import type { SessionStateEvent } from "../runs/session-state-bus.ts";
 import { turnModelOptions, turnRuntimePurpose, validateWebTurnModelOptions } from "../core/turn-options.ts";
 import { isProjectGroupRef, projectIdFromGroupRef } from "../projects/project-store.ts";
@@ -97,8 +97,7 @@ export function createTurnMethods(
       const session = await deps.sessions.getByThread(run.sessionId);
       if (session) return stopSessionTree({ sessions: deps.sessions, runs: deps.runs, signals }, session, USER_STOP);
       await signals.send(run.id, { kind: "abort", reason: USER_STOP });
-      if (run.engine === "absurd") await deps.runs.cancelTurn?.(run.id);
-      else if (run.status === "pending") await deps.runs.withdraw(run.id);
+      await stopRun(deps.runs, run);
       return true;
     };
     return deps.advisoryLock ? deps.advisoryLock.withLock("session-tree-admission", stop) : stop();

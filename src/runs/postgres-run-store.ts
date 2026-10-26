@@ -12,6 +12,7 @@ import type { EnqueueInput, EnqueueResult, ReapEvent, Run, RunDeliveryState, Run
 import type { RunPriority } from "./run-store.ts";
 import {
   countedClaims,
+  crashLoopReason,
   isTerminal,
   releasesDedupKey,
   runPriority,
@@ -303,7 +304,7 @@ export function createPostgresRunStore(connectionString: string, opts?: { maxCla
     }
     const reason =
       !countsAsError && overClaimed && retry && errorAttemptsAfter < run.maxAttempts
-        ? `run parked after ${countedClaims(run)} claims without completing (suspected crash loop)`
+        ? crashLoopReason(countedClaims(run))
         : error;
     const result: TurnResult = { status: "failed", sessionId: run.sessionId, reason, ...stopErrorCode(opts?.stop) };
     const { rowCount } = await q(

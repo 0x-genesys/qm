@@ -1,3 +1,4 @@
+import { turnFenceHeld } from "../turns/turn-fence.ts";
 import type { GoalCreateInput } from "../harness/goal.ts";
 import { NonRetryableTurnError } from "../core/turn-error.ts";
 import { withPgTransaction, type PgPool } from "../persistence/pg-pool.ts";
@@ -134,9 +135,7 @@ export function createSwarmStore(
           row?.engine === "absurd"
             ? {
                 ...row,
-                turnFenceHeld:
-                  (await client.query("SELECT qm_turn_fence($1, $2) AS ok", [fence.runId, fence.leaseToken])).rows[0]
-                    ?.ok === true,
+                turnFenceHeld: await turnFenceHeld(client, fence.runId, fence.leaseToken),
               }
             : row;
         assertSwarmRun(fence, run);

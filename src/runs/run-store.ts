@@ -197,6 +197,18 @@ export function errorParks(
   return run.errorAttempts + 1 >= run.maxAttempts || (maxClaims !== undefined && countedClaims(run) >= maxClaims);
 }
 
+export function crashLoopReason(claims: number): string {
+  return `run parked after ${claims} claims without completing (suspected crash loop)`;
+}
+
+export async function stopRun(
+  runs: Pick<RunStore, "cancelTurn" | "withdraw">,
+  run: Pick<Run, "id" | "engine" | "status">,
+): Promise<void> {
+  if (run.engine === "absurd") await runs.cancelTurn?.(run.id);
+  else if (run.status === "pending") await runs.withdraw(run.id);
+}
+
 export function legacyLeaseHeld(
   run: Pick<Run, "status" | "leaseToken" | "leaseExpiresAt">,
   token: string,

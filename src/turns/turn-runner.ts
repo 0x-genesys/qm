@@ -3,19 +3,25 @@ import type { ErrorLog } from "../admin/error-log.ts";
 import type { Orchestrator } from "../core/orchestrator.ts";
 import { isNonRetryable, NonRetryableTurnError, turnFailureMessage } from "../core/turn-error.ts";
 import { resolveTurnOrigin } from "../core/turn-origin.ts";
-import { resolveSwarmSettings } from "../swarms/swarm-settings.ts";
 import type { TurnResult } from "../types.ts";
 import { sleep } from "../util/async.ts";
 import { reportFailure, swallow } from "../util/errors.ts";
 import type { EventBus } from "../util/event-bus.ts";
 import { retryDelay } from "../runs/retry-delay.ts";
-import { countedClaims, errorParks, stopErrorCode, type Run, type RunStop } from "../runs/run-store.ts";
+import {
+  countedClaims,
+  crashLoopReason,
+  errorParks,
+  stopErrorCode,
+  type Run,
+  type RunStop,
+} from "../runs/run-store.ts";
 import {
   CLAIM_FAIL_REPORT_CONSECUTIVE,
   LEASE_LOST_CONSECUTIVE,
   recordTurnError,
   runStopFor,
-  SWARM_CLAIM_BUDGET,
+  swarmTurnLimits,
 } from "../runs/worker.ts";
 import type { TurnQueue } from "./absurd-schema.ts";
 import { TURN_EXTEND_INTERVAL_MS, type TurnLedger, type TurnOutcome } from "./turn-ledger.ts";
@@ -147,16 +153,9 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     };
     let ended: { kind: "result"; result: TurnResult } | { kind: "error"; err: unknown };
     try {
-      if (run.request.swarm && !run.request.swarmGoal) {
-        const { turnMs } = resolveSwarmSettings({ turnMs: run.request.turnWallClockMs });
-        workDeadline = setTimeout(() => cancel.abort(), turnMs);
-      }
-      if (run.request.swarm && countedClaims(run) > SWARM_CLAIM_BUDGET)
-        throw new NonRetryableTurnError("swarm claim budget exhausted");
+      workDeadline = swarmTurnLimits(run, cancel);
       if (deps.maxClaims !== undefined && countedClaims(run) > deps.maxClaims)
-        throw new NonRetryableTurnError(
-          `run parked after ${countedClaims(run) - 1} claims without completing (suspected crash loop)`,
-        );
+        throw new NonRetryableTurnError(crashLoopReason(countedClaims(run) - 1));
       ended = {
         kind: "result",
         result: await deps.orchestrator.handleTurn({

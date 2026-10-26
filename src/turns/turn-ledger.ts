@@ -18,6 +18,7 @@ import {
   TaskCancelled,
 } from "./absurd.ts";
 import { TURN_QUEUES, type TurnQueue } from "./absurd-schema.ts";
+import { turnFenceHeld } from "./turn-fence.ts";
 
 export const TURN_TASK = "turn";
 export const TURN_READY_CHANNEL = "qm_turn_ready";
@@ -291,8 +292,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
         return await tx(async (client) => {
           await lockTurn(client, run.id);
           if (!(await holdsClaim(client, queue, run.absurdRunId!, token))) {
-            const fence = await client.query("SELECT qm_turn_fence($1, $2) AS ok", [run.id, token]);
-            return fence.rows[0]?.ok === true ? "cancelled" : "lost";
+            return (await turnFenceHeld(client, run.id, token)) ? "cancelled" : "lost";
           }
           await extendClaim(client, queue, run.absurdRunId!, TURN_CLAIM_TIMEOUT_SEC);
           return "held";
@@ -336,8 +336,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       const applied = await tx(async (client) => {
         const active = await lockPointer(client, run.sessionId);
         await lockTurn(client, run.id);
-        const fence = await client.query("SELECT qm_turn_fence($1, $2) AS ok", [run.id, token]);
-        if (fence.rows[0]?.ok !== true) return false;
+        if (!(await turnFenceHeld(client, run.id, token))) return false;
         const state = await client.query(`SELECT state FROM ${absurdTable(queue, "r_")} WHERE run_id = $1`, [
           run.absurdRunId,
         ]);
@@ -351,12 +350,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       return applied;
     },
 
-    async fenceHeld(turnId, token, client) {
-      const { rows } = client
-        ? await client.query("SELECT qm_turn_fence($1, $2) AS ok", [turnId, token])
-        : await db.query("SELECT qm_turn_fence($1, $2) AS ok", [turnId, token]);
-      return rows[0]?.ok === true;
-    },
+    fenceHeld: async (turnId, token, client) => turnFenceHeld(client ?? db, turnId, token),
 
     async cancel(turnId) {
       const found = await db.query("SELECT session_id FROM runs WHERE id = $1 AND engine = 'absurd'", [turnId]);
