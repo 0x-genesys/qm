@@ -145,7 +145,6 @@ interface DeploymentConfig {
   requireSignedPortalIdentity?: boolean;
   connectorSecretKey?: string;
   slackEventsPort?: number;
-  gmailPubSub?: { topic: string; audience: string; serviceAccount: string };
   runStore: "memory" | "postgres";
   skillSigningSecret?: string;
   seedSkills: boolean;
@@ -1373,15 +1372,6 @@ function loadDeploymentConfig(env: NodeJS.ProcessEnv): DeploymentConfig {
     ...(env.CONNECTOR_SECRET_KEY ? { connectorSecretKey: env.CONNECTOR_SECRET_KEY } : {}),
     ...(slackEventsPort !== undefined ? { slackEventsPort } : {}),
     layerEnv: { ...env },
-    ...(env.GMAIL_PUBSUB_TOPIC && env.GMAIL_PUBSUB_AUDIENCE && env.GMAIL_PUBSUB_SERVICE_ACCOUNT
-      ? {
-          gmailPubSub: {
-            topic: env.GMAIL_PUBSUB_TOPIC,
-            audience: env.GMAIL_PUBSUB_AUDIENCE,
-            serviceAccount: env.GMAIL_PUBSUB_SERVICE_ACCOUNT,
-          },
-        }
-      : {}),
     slackContextSource: parseSlackContextSource(env.SLACK_CONTEXT_SOURCE),
     runStore,
     ...(env.SKILL_SIGNING_SECRET ? { skillSigningSecret: env.SKILL_SIGNING_SECRET } : {}),
