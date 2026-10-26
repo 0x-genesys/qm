@@ -13,6 +13,7 @@ import {
 } from "./exec-file-ops.ts";
 import { createExecSandboxBase, sandboxScopeName } from "./exec-sandbox-base.ts";
 import { createLayerToolInstaller } from "./layer-tool-install.ts";
+import { withConnectorSdk, type ConnectorSdkBundle } from "./connector-sdk.ts";
 import { createHomeSnapshotOps, HOME_SNAPSHOT_PRUNE, snapshotDue, type HomeSnapshotStore } from "./home-snapshot.ts";
 import { visibleNotInstalled, visibleTools } from "./sandbox.ts";
 import type {
@@ -50,6 +51,7 @@ export interface SandboxShared extends BlobStagingOptions {
   extraTools?: string[];
   credentialPaths?: CredentialPathSpec[];
   layerToolFiles?: () => readonly LayerInstallFile[];
+  connectorSdk?: () => Promise<ConnectorSdkBundle>;
   onError?: ErrorReport;
 }
 
@@ -84,7 +86,8 @@ export interface SandboxDriver {
   diskGb?: number;
   writablePersistence?: WritablePersistence;
   egressEnforcement: EgressEnforcement;
-  exec(name: string, script: string, timeoutSec: number): Promise<ExecResult>;
+  envViaExec?: boolean;
+  exec(name: string, script: string, timeoutSec: number, env?: Record<string, string>): Promise<ExecResult>;
   writeAbsBytes(name: string, absPath: string, data: Uint8Array): Promise<void>;
   readAbsBytes(name: string, absPath: string): Promise<Uint8Array | null>;
   inspect(name: string): Promise<MachineState | null>;
@@ -95,6 +98,7 @@ export interface SandboxDriver {
   isLive(name: string): boolean;
   forget?(name: string): void;
   restart?(name: string): Promise<void>;
+  rotationDue?(name: string): Promise<boolean>;
   ensureEgress?(name: string): Promise<void>;
   checkpoints?: DriverCheckpoints;
 }
@@ -102,6 +106,9 @@ export interface SandboxDriver {
 export type ProviderSandbox = Sandbox & {
   readonly scopeFor: (name: string) => string | undefined;
   readonly nameFor: (scopeId: string) => string;
+  readonly lifecycle: <T>(scopeId: string, fn: () => Promise<T>) => Promise<T>;
+  readonly captureHome: (scopeId: string, name: string) => Promise<void>;
+  readonly ensureResident: (scopeId: string) => Promise<void>;
 };
 
 export function createProviderSandbox(
@@ -177,10 +184,31 @@ export function createProviderSandbox(
     }
   }
 
+  async function rotate(scope: string, name: string): Promise<boolean> {
+    try {
+      await capture(scope, name);
+      await driver.destroy(name);
+      driver.forget?.(name);
+      return true;
+    } catch (e) {
+      report("sandbox_snapshot", "rotate_failed", e, scope);
+      return false;
+    }
+  }
+
   async function initialize(scope: string, name: string, onStatus?: (text: string) => void): Promise<boolean> {
-    const stored = await store.get(scope);
+    let stored = await store.get(scope);
     if (driver.isLive(name) && !stored?.initializationPending) return false;
-    const existing = await driver.inspect(name);
+    let existing = await driver.inspect(name);
+    if (
+      existing &&
+      !stored?.initializationPending &&
+      (await driver.rotationDue?.(name)) &&
+      (await rotate(scope, name))
+    ) {
+      existing = null;
+      stored = await store.get(scope);
+    }
     if (existing && !stored?.initializationPending) {
       if (existing.state === "parked") await driver.resume(name);
       return false;
@@ -196,9 +224,7 @@ export function createProviderSandbox(
       }
       const checkpointId = stored?.checkpointId;
       const restored =
-        created && checkpointId && driver.checkpoints
-          ? (await driver.checkpoints.restore(name, checkpointId), true)
-          : false;
+        checkpointId && driver.checkpoints ? (await driver.checkpoints.restore(name, checkpointId), true) : false;
       const hydrated = restored || (homeSnapshots ? await homeSnapshots.hydrateHome(scope, name) : false);
       await merge(scope, { initializationPending: undefined, ...(hydrated ? { homeDirty: false } : {}) });
       return !hydrated;
@@ -223,11 +249,20 @@ export function createProviderSandbox(
     homeDir,
     defaultTimeoutSec,
     credentialPaths: shared.credentialPaths ?? [],
-    ...(shared.layerToolFiles ? { installLayerTools: createLayerToolInstaller(shared.layerToolFiles) } : {}),
+    ...(shared.layerToolFiles || shared.connectorSdk
+      ? {
+          installLayerTools: withConnectorSdk(
+            homeDir,
+            createLayerToolInstaller(shared.layerToolFiles ?? (() => [])),
+            shared.connectorSdk,
+          ),
+        }
+      : {}),
     ...(shared.egressProxyUrl ? { egressProxyUrl: shared.egressProxyUrl } : {}),
     deleteFailureCode: `${backend}_delete_failed`,
     ...(shared.onError ? { onError: shared.onError } : {}),
     exec: driver.exec,
+    ...(driver.envViaExec ? { envViaExec: true } : {}),
     writeAbsBytes: driver.writeAbsBytes,
     readAbsBytes: driver.readAbsBytes,
     ensureResident: async (name, onStatus) => {
@@ -330,6 +365,11 @@ export function createProviderSandbox(
     profile,
     scopeFor: base.scopeFor,
     nameFor,
+    lifecycle: (scope, fn) => base.provisionQueue(scope, () => lock(scope, fn)),
+    captureHome: capture,
+    ensureResident: async (scope) => {
+      await base.provisionQueue(scope, () => lock(scope, () => initialize(scope, nameFor(scope))));
+    },
     provision: base.provision,
     run: base.run,
     writeFile: base.writeFile,

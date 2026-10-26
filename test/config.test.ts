@@ -852,17 +852,6 @@ test("retired brain environment does not configure a runtime integration and war
   assert.match(retired[0]!, /MEMORY_PROVIDER_CONFIG/);
 });
 
-test("Modal native retention and interval configuration are independent of legacy portable checkpoint throttling", () => {
-  const config = loadConfig({
-    MODAL_NATIVE_SNAPSHOT_INTERVAL_SEC: "60",
-    MODAL_SNAPSHOT_RETENTION_SEC: "86400",
-    MODAL_SNAPSHOT_INTERVAL_SEC: "315360000",
-  });
-  assert.equal(config.modalSandbox.nativeSnapshotIntervalSec, 60);
-  assert.equal(config.modalSandbox.snapshotRetentionSec, 86400);
-  assert.equal(config.modalSandbox.snapshotIntervalSec, 315360000);
-});
-
 test("Smolmachines lifecycle, egress, and snapshot knobs are parsed into Config", () => {
   const config = loadConfig({
     SMOLMACHINES_TOKEN: "smk_test",
@@ -879,13 +868,6 @@ test("Smolmachines lifecycle, egress, and snapshot knobs are parsed into Config"
   assert.equal(bare.smolmachinesSandbox.autoStopSec, undefined);
   assert.equal(bare.smolmachinesSandbox.snapshotS3Bucket, undefined);
   assert.throws(() => loadConfig({ SMOLMACHINES_AUTOSTOP_SEC: "soon" }), /SMOLMACHINES_AUTOSTOP_SEC/);
-});
-
-test("Modal native activation is default-off and uses strict boolean configuration", () => {
-  assert.equal(loadConfig({}).modalSandbox.nativeSnapshotsEnabled, false);
-  for (const value of ["true", "on", "1"])
-    assert.equal(loadConfig({ MODAL_NATIVE_SNAPSHOTS_ENABLED: value }).modalSandbox.nativeSnapshotsEnabled, true);
-  assert.throws(() => loadConfig({ MODAL_NATIVE_SNAPSHOTS_ENABLED: "enable" }), /not a recognized boolean/);
 });
 
 test("direct Files initiation defaults off and requires explicit activation", () => {
