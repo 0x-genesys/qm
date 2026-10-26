@@ -8,7 +8,6 @@ import {
   appendMessage,
   controlState,
   memberById,
-  messageBudget,
   swarmExpired,
   SWARM_LIMITS,
   type Swarm,
@@ -30,7 +29,6 @@ function continuationDue(swarm: Swarm, memberId: string, progress: GoalProgress)
     member.state !== "ready" ||
     controlState(swarm, member.id) !== "active" ||
     swarmExpired(swarm) ||
-    messageBudget(swarm, 1) ||
     (last?.goalCreatedAt === progress.goalCreatedAt && last.tokensUsed >= progress.tokensUsed) ||
     swarm.messages.some((message) => message.notifications[member.id]?.state === "pending")
   )
@@ -73,6 +71,7 @@ export function createSwarmGoalContinuation(deps: {
           audience: [recipient.id],
         },
         [recipient.id],
+        { budgeted: false },
       );
     });
   }

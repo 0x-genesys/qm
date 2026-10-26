@@ -119,10 +119,11 @@ export function appendMessage(
   swarm: Swarm,
   message: Omit<SwarmMessage, "id" | "seq" | "createdAt" | "notifications"> & { id?: string },
   recipients: readonly string[],
-  wakes = true,
+  options: { wakes?: boolean; budgeted?: boolean } = {},
 ): void {
+  const wakes = options.wakes ?? true;
   const woken = wakes ? recipients.length : 0;
-  const budget = messageBudget(swarm, woken);
+  const budget = options.budgeted === false ? undefined : messageBudget(swarm, woken);
   if (budget) throw new Error(budget);
   swarm.notificationCount += woken;
   swarm.messages.push({

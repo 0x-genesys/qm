@@ -4,9 +4,13 @@ import { createGoalRecord, type GoalRecord } from "../src/harness/goal.ts";
 import { createSwarmGoalContinuation } from "../src/swarms/swarm-goal-continuation.ts";
 import { swarmFixture } from "./support/swarm-fixture.ts";
 
-async function goalWorker() {
+async function goalWorker(settings?: { messages: number; notifications: number }) {
   const f = await swarmFixture();
-  const [worker] = await f.service.spawn(f.caller, { requestId: "initial", text: "work" });
+  const [worker] = await f.service.spawn(f.caller, {
+    requestId: "initial",
+    text: "work",
+    ...(settings ? { settings } : {}),
+  });
   await f.service.sweep();
   const member = (await f.store.get(f.root.id))!.members.find((peer) => peer.id === worker!.id)!;
   const continuation = createSwarmGoalContinuation(f.serviceOptions);
@@ -61,6 +65,18 @@ test("a worker whose turn is interrupted while its goal is active is woken to co
   await continuation.sweep();
   assert.equal((await continuations()).length, 2);
   assert.equal((await workerRuns()).filter((run) => run.status === "pending").length, 0);
+});
+
+test("a goal continuation is queued even when the swarm's message and notification budgets are spent", async () => {
+  const { f, member, setGoal, finishOpenRun, continuation, continuations } = await goalWorker({
+    messages: 1,
+    notifications: 1,
+  });
+  await setGoal({ ...createGoalRecord({ objective: "Exhaust the lane" }), tokensUsed: 10 });
+  await finishOpenRun();
+  await assert.rejects(f.service.send(f.caller, { requestId: "over", audience: [member.id], text: "more" }), /budget/);
+  await continuation.sweep();
+  assert.equal((await continuations()).length, 1);
 });
 
 for (const [name, prepare] of [

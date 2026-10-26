@@ -646,7 +646,7 @@ test("a goal assigned at spawn becomes the worker's session goal and its turn ha
   }
 });
 
-test("a worker with an open goal answers messages without the swarm turnMs deadline", async () => {
+test("a worker with an open goal answers messages as a goal turn without the swarm turnMs deadline", async () => {
   const built = buildApp(testConfig({ modalSandbox: { tokenId: "test", tokenSecret: "test" } }));
   try {
     const rootComputer = await built.sandboxResources.create("U1", "personal:U1", "sprites", "Root");
@@ -670,10 +670,17 @@ test("a worker with an open goal answers messages without the swarm turnMs deadl
     });
     await built.app.swarms!.sweep();
     const first = (await built.runs.list()).find((run) => run.request.swarm)!;
-    const seen: Array<number | undefined> = [];
+    const seen: Array<{ deadline?: number; inbox: boolean; instructed: boolean }> = [];
     exerciseTurn = async (turn) => {
       if (turn.goalContinuation) return { stopped: true };
-      if (turn.input.startsWith("Swarm ")) seen.push(turn.turnWallClockMs);
+      if (turn.input.startsWith("Swarm "))
+        seen.push({
+          deadline: turn.turnWallClockMs,
+          inbox: !!turn.goalInbox,
+          instructed: JSON.stringify([turn.systemPrompt, turn.input, turn.history]).includes(
+            "it returns with the next swarm message that reaches you",
+          ),
+        });
     };
     built.runtime.start();
     assert.equal((await built.runs.waitFor(first.id, 15_000)).status, "done");
@@ -682,7 +689,14 @@ test("a worker with an open goal answers messages without the swarm turnMs deadl
     const answer = (await built.runs.list()).find((run) => run.request.swarm?.messageId === message.id)!;
     assert.equal(answer.request.turnWallClockMs, 600_000);
     assert.equal((await built.runs.waitFor(answer.id, 15_000)).status, "done");
-    assert.deepEqual(seen, [0, 0]);
+    assert.deepEqual(
+      seen.map(({ deadline, inbox }) => ({ deadline, inbox })),
+      [
+        { deadline: 0, inbox: true },
+        { deadline: 0, inbox: true },
+      ],
+    );
+    assert.equal(seen[1]!.instructed, true);
   } finally {
     exerciseTurn = undefined;
     await built.runtime.stop();

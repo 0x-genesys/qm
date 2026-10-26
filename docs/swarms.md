@@ -186,16 +186,18 @@ for its next message. To keep a worker working, any member can attach a goal to
 The goal is installed as the worker session's goal when that turn starts, and the
 turn runs under the normal goal loop: the worker is prompted to continue until the
 goal's governor approves completion or pauses it, or an optional `token_cap` is
-spent. While a worker's goal is open, its turns run without the swarm `turnMs`
-deadline; when `turnMs` is set, other turns keep it. If a worker's turn is interrupted while its goal is still active (the turn was
+spent. While a worker's goal is open, every turn it runs is a goal turn, whatever
+woke it: swarm messages reach it mid-turn, it can wait on them, and it runs without
+the swarm `turnMs` deadline; when `turnMs` is set, other turns keep it. If a worker's turn is interrupted while its goal is still active (the turn was
 cancelled without a person stopping it, or its run was handed back on shutdown and
 then ended), the swarm wakes it with a message from itself to continue, within
 about a minute. A person's stop pauses the goal, so it gets no wake-up, and
 ordinary failures are left to run retries. A wake-up is queued only while the worker is active, the goal's token cap
 is not spent, and the goal used tokens since the last such message, so a turn that
 cannot start is not retried forever. A sweep of recently finished swarm runs, on
-startup and every minute, queues these wake-ups, so one survives a restart. These messages count against `messages`
-and `notifications` when those budgets are set. `floor` and `token_cap` take the same keys as the goal tool, and
+startup and every minute, queues these wake-ups, so one survives a restart. These messages count toward the
+`messages` and `notifications` budgets but are never refused by them; the progress
+check and the goal's token cap bound them instead. `floor` and `token_cap` take the same keys as the goal tool, and
 neither is required. Goals go to workers, not the root session (a goal sent to
 `all` skips the root and the sender), and a goal needs `notify`. The worker treats the agent that sent the goal as the user for it and
 messages that agent when it needs a decision. When a goal is complete, the worker
