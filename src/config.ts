@@ -1012,7 +1012,6 @@ function sandboxBackendEnvStrict(value: string | undefined, name = "SANDBOX_BACK
   );
 }
 
-
 export function modelGatewayFromEnv(env: NodeJS.ProcessEnv): ModelGatewayTransportConfig | undefined {
   const names = ["MODEL_GATEWAY_URL", "MODEL_GATEWAY_API_KEY", "MODEL_GATEWAY_API_KEY_HEADER", "MODEL_GATEWAY_MODELS"];
   if (!names.some((name) => env[name]?.trim())) return undefined;
