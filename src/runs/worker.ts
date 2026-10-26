@@ -4,10 +4,9 @@ import type { ErrorLog } from "../admin/error-log.ts";
 import { conversationScope } from "../resolution/resolution-service.ts";
 import type { TurnResult } from "../types.ts";
 import type { Orchestrator, OrchestratorInput } from "../core/orchestrator.ts";
-import { isNonRetryable, NonRetryableTurnError, ProviderTurnError, turnFailureMessage } from "../core/turn-error.ts";
+import { isNonRetryable, ProviderTurnError, turnFailureMessage } from "../core/turn-error.ts";
 import { resolveTurnOrigin } from "../core/turn-origin.ts";
 import {
-  countedClaims,
   errorParks,
   handbackStop,
   MAX_PREEMPTIONS,
@@ -19,7 +18,6 @@ import {
 import { errMessage, errorAlreadyReported, reportFailure, swallow } from "../util/errors.ts";
 import { sleep } from "../util/async.ts";
 import { retryDelay } from "./retry-delay.ts";
-import { resolveSwarmSettings } from "../swarms/swarm-settings.ts";
 import { traceQueued } from "../../plugins/chassis/src/error-reporting.ts";
 
 export interface ProcessDeps {
@@ -33,7 +31,6 @@ export interface ProcessDeps {
 export const LEASE_LOST_CONSECUTIVE = 3;
 
 export const CLAIM_FAIL_REPORT_CONSECUTIVE = 20;
-const SWARM_CLAIM_BUDGET = 3;
 
 export async function processRun(
   deps: ProcessDeps,
@@ -71,7 +68,6 @@ async function attemptRun(
   const onShutdown = (): void => cancel.abort();
   if (opts?.shutdown?.aborted) onShutdown();
   else opts?.shutdown?.addEventListener("abort", onShutdown, { once: true });
-  let workDeadline: ReturnType<typeof setTimeout> | undefined;
   let started = false;
   let consecutiveLost = 0;
   let leaseLost = false;
@@ -106,7 +102,6 @@ async function attemptRun(
   };
   try {
     if (opts?.shutdown?.aborted) return { status: "queued", sessionId: run.sessionId, runId: run.id };
-    workDeadline = swarmTurnLimits(run, cancel);
     started = true;
     const result = await deps.orchestrator.handleTurn(
       runTurnInput(run, {
@@ -134,7 +129,6 @@ async function attemptRun(
     });
     throw err;
   } finally {
-    clearTimeout(workDeadline);
     stopBeat();
     opts?.shutdown?.removeEventListener("abort", onShutdown);
     if (opts?.shutdown?.aborted)
@@ -169,17 +163,6 @@ export function runTurnInput(
     ...(opts.shutdown ? { shutdown: opts.shutdown } : {}),
     ...(run.startedAt !== null ? { runStartedAt: run.startedAt } : {}),
   };
-}
-
-export function swarmTurnLimits(
-  run: Pick<Run, "request" | "attempts" | "preemptions">,
-  cancel: AbortController,
-): ReturnType<typeof setTimeout> | undefined {
-  if (run.request.swarm && countedClaims(run) > SWARM_CLAIM_BUDGET)
-    throw new NonRetryableTurnError("swarm claim budget exhausted");
-  if (!run.request.swarm || run.request.swarmGoal) return undefined;
-  const { turnMs } = resolveSwarmSettings({ turnMs: run.request.turnWallClockMs });
-  return setTimeout(() => cancel.abort(), turnMs);
 }
 
 export function recordTurnError(errors: ErrorLog | undefined, run: Run, err: unknown): void {

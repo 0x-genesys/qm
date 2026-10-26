@@ -48,8 +48,6 @@ import {
   type ModelProviderAvailability,
 } from "./model/pi-models.ts";
 
-import { resolveSwarmSettings, type SwarmSettings } from "./swarms/swarm-settings.ts";
-
 interface TenantConfig {
   orgId: string;
   brandingDefault?: OrgBranding;
@@ -76,8 +74,6 @@ interface DeploymentConfig {
   slackContextSource?: SlackContextSource;
   suggestedActivitiesEnabled?: boolean;
   suggestedActivitiesContext?: string;
-  swarmsEnabled?: boolean;
-  swarmDefaults?: SwarmSettings;
   production: boolean;
   /** QM_MULTITENANT=1: one process serves every registered tenant from one database with row-level tenancy. */
   multitenant: boolean;
@@ -1094,9 +1090,6 @@ function loadDeploymentConfig(env: NodeJS.ProcessEnv): DeploymentConfig {
         "Background ownership requires a distinct DEPLOYMENT_CONTROL_SECRET of at least 32 characters and CORE_SIGNING_SECRET",
       );
   }
-  const swarmDefaults = resolveSwarmSettings(
-    env.SWARM_DEFAULTS === undefined ? undefined : JSON.parse(env.SWARM_DEFAULTS),
-  );
   const codexAuthCredential = env.CODEX_AUTH_CREDENTIAL?.trim() || undefined;
   const claudeAuthCredential = env.CLAUDE_AUTH_CREDENTIAL?.trim() || undefined;
   const anthropicApiKey = env.ANTHROPIC_API_KEY || env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_AUTH_TOKEN;
@@ -1344,8 +1337,6 @@ function loadDeploymentConfig(env: NodeJS.ProcessEnv): DeploymentConfig {
     execTimeoutDefaultMs: CONFIG_DEFAULTS.execTimeoutDefaultSec * 1000,
     execTimeoutMaxMs: CONFIG_DEFAULTS.execTimeoutMaxSec * 1000,
     turnWallClockMs: CONFIG_DEFAULTS.turnWallClockSec * 1000,
-    swarmsEnabled: boolEnvStrict("SWARMS_ENABLED", env.SWARMS_ENABLED) ?? true,
-    swarmDefaults,
     runMaxAgeMs: CONFIG_DEFAULTS.runMaxAgeMs,
     runWaitMs: CONFIG_DEFAULTS.runMaxAgeMs + 60_000,
     backgroundJobTtlMs: CONFIG_DEFAULTS.backgroundJobTtlSec * 1000,
