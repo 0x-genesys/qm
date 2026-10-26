@@ -3064,8 +3064,9 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
                 ...(input.displayText?.trim() ? { display: input.displayText } : {}),
               }
             : undefined;
+        const swarmGoalHolder = !!swarmBinding && !!openGoal((await deps.sessions.goals([session.id])).get(session.id));
         const effectiveTurnWallClockMs =
-          typeof input.turnWallClockMs === "number" && input.turnWallClockMs > 0
+          typeof input.turnWallClockMs === "number" && input.turnWallClockMs > 0 && !swarmGoalHolder
             ? input.turnWallClockMs
             : (deps.defaultTurnWallClockMs ?? CONFIG_DEFAULTS.turnWallClockSec * 1000);
         const runtimePurpose = turnRuntimePurpose(

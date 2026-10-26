@@ -958,35 +958,30 @@ test("durable worker rejects excessive swarm claims before calling the harness",
   assert.equal((await runs.get(claimed.id))!.status, "failed");
 });
 
-test("swarm work cancellation has a hard worker deadline independent of the harness", async (context) => {
+test("the durable worker leaves a swarm turn's wall clock to the turn itself", async (context) => {
   const { service, caller, runs } = await swarmFixture();
-  await service.spawn(caller, { requestId: "one", text: "Work" });
+  await service.spawn(caller, { requestId: "one", text: "Work", settings: { turnMs: 600_000 } });
   await service.sweep();
   const pending = (await runs.list()).find((item) => item.request.swarm)!;
+  assert.equal(pending.request.turnWallClockMs, 600_000);
   const claimed = (await runs.claimById(pending.id, "test", 60_000))!;
   context.mock.timers.enable({ apis: ["setTimeout"] });
   let cancelled = false;
+  let finish!: () => void;
   const orchestrator = {
     async handleTurn(input: import("../src/core/orchestrator.ts").OrchestratorInput) {
-      await new Promise<void>((resolve) =>
-        input.cancel!.addEventListener(
-          "abort",
-          () => {
-            cancelled = true;
-            resolve();
-          },
-          { once: true },
-        ),
-      );
+      input.cancel!.addEventListener("abort", () => (cancelled = true), { once: true });
+      await new Promise<void>((resolve) => (finish = resolve));
       return { status: "silent" as const };
     },
   } as unknown as Orchestrator;
   const work = processRun({ runs, orchestrator, leaseTtlMs: 60_000 }, claimed);
-  context.mock.timers.tick(SWARM_DEFAULTS.turnMs - 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  context.mock.timers.tick(600_000);
   assert.equal(cancelled, false);
-  context.mock.timers.tick(1);
+  finish();
   await work;
-  assert.equal(cancelled, true);
+  assert.equal(cancelled, false);
 });
 
 for (const action of ["spawn", "send", "context"] as const) {

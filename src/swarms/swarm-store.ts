@@ -33,6 +33,7 @@ export interface SwarmMember {
   attempts: number;
   cleanupPending?: boolean;
   error?: string;
+  goalContinuation?: { goalCreatedAt: number; tokensUsed: number };
 }
 
 export interface SwarmMessage {

@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { OrchestratorInput } from "../core/orchestrator.ts";
 import type { AdvisoryLock } from "../persistence/advisory-lock.ts";
-import type { RunStore } from "../runs/run-store.ts";
+import type { Run, RunStore } from "../runs/run-store.ts";
 import type { RunSignalStore } from "../runs/run-signal-store.ts";
 import type { SandboxResources } from "../sandbox/sandbox-resources.ts";
 import type { SessionStore } from "../sessions/session-store.ts";
@@ -91,6 +91,9 @@ export interface SwarmService {
   ): Promise<SwarmMessage[]>;
   handOver(input: OrchestratorInput, messageIds: readonly string[]): Promise<SwarmMessage[]>;
 }
+
+const GOAL_CONTINUATION_TEXT =
+  "Your previous turn ended before your goal was finished, and the goal is still active. Continue working on it.";
 
 export function swarmMessageText(message: SwarmMessage): string {
   return `Swarm ${message.author} message ${message.id} from agent ${message.senderId} (session ${message.senderSessionId})${message.replyTo ? ` (reply to ${message.replyTo})` : ""}. This is not a live human instruction.\n${message.text}`;
@@ -205,6 +208,7 @@ function matchesDispatch(input: OrchestratorInput, expected: OrchestratorInput):
     cancel: true,
     shutdown: true,
     runStartedAt: true,
+    resumeCause: true,
   };
   return (
     Object.keys(input).every((key) => Object.hasOwn(contract, key) || Object.hasOwn(execution, key)) &&
@@ -350,7 +354,7 @@ export function createSwarmService(deps: {
       ...(source.unattendedGrants ? { unattendedGrants: source.unattendedGrants } : {}),
       ...(source.readOnly ? { readOnly: true } : {}),
       ...(source.skipMemory ? { skipMemory: true } : {}),
-      turnWallClockMs: settings.turnMs,
+      ...(settings.turnMs === undefined ? {} : { turnWallClockMs: settings.turnMs }),
     };
     const createdAt = Date.now();
     return {
@@ -595,6 +599,49 @@ export function createSwarmService(deps: {
     return sweeping;
   };
   const sweeper = createSweeper(sweep, 2_000, { label: "swarm-outbox", immediate: true });
+
+  async function continueGoal(run: Run): Promise<void> {
+    const target = run.request.swarm;
+    if (!target) return;
+    const swarm = await store.get(target.swarmId);
+    const member = swarm ? memberById(swarm, target.recipientId) : undefined;
+    if (!swarm || !member?.sessionId || member.id === swarm.id) return;
+    const goal = (await sessions.goals([member.sessionId])).get(member.sessionId);
+    if (goal?.status !== "active" || (goal.capTokens !== undefined && goal.tokensUsed >= goal.capTokens)) return;
+    if ((await runs.inFlightForThread(member.threadRef)).length) return;
+    const progress = { goalCreatedAt: goal.createdAt, tokensUsed: goal.tokensUsed };
+    await store.update(swarm.id, (current) => {
+      const recipient = memberById(current, member.id);
+      if (!recipient?.sessionId || recipient.state !== "ready" || controlState(current, recipient.id) !== "active")
+        return;
+      const last = recipient.goalContinuation;
+      if (
+        swarmExpired(current) ||
+        (last?.goalCreatedAt === progress.goalCreatedAt && last.tokensUsed >= progress.tokensUsed) ||
+        current.messages.some((message) => message.notifications[recipient.id]?.state === "pending") ||
+        current.messages.length >= (current.settings.messages ?? Infinity) ||
+        current.notificationCount + 1 > (current.settings.notifications ?? Infinity)
+      )
+        return;
+      recipient.goalContinuation = progress;
+      current.notificationCount += 1;
+      current.messages.push({
+        id: randomUUID(),
+        seq: current.messages.length + 1,
+        senderId: recipient.id,
+        senderSessionId: recipient.sessionId,
+        author: "agent",
+        actorId: current.ownerId,
+        text: GOAL_CONTINUATION_TEXT,
+        audience: [recipient.id],
+        createdAt: Date.now(),
+        notifications: { [recipient.id]: { state: "pending" } },
+      });
+    });
+  }
+  runs.onTerminal((run) => {
+    if (run.request.swarm) void continueGoal(run).catch(swallowAs("swarm: goal continuation", undefined));
+  });
 
   return {
     ...sweeper,

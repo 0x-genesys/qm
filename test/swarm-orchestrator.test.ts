@@ -15,6 +15,8 @@ import { withTimeout } from "../src/util/async.ts";
 import { verifyCapabilityToken } from "../src/auth/capability-token.ts";
 import type { AddressInfo } from "node:net";
 import type { TurnRequest } from "../src/types.ts";
+import type { Run } from "../src/runs/run-store.ts";
+import { NonRetryableTurnError } from "../src/core/turn-error.ts";
 
 const screenedPayloads: string[] = [];
 let exerciseTurn: ((turn: HarnessTurnInput) => Promise<void | { stopped: true }>) | undefined;
@@ -640,6 +642,58 @@ test("a goal assigned at spawn becomes the worker's session goal and its turn ha
     );
     const goals = await built.sessions.goals([completed.result!.sessionId!]);
     assert.equal(goals.get(completed.result!.sessionId!)?.objective, "Exhaust the lane");
+  } finally {
+    exerciseTurn = undefined;
+    await built.runtime.stop();
+  }
+});
+
+test("an interrupted goal turn is continued by a fresh turn that the swarm turnMs does not cut off", async () => {
+  const built = buildApp(testConfig({ modalSandbox: { tokenId: "test", tokenSecret: "test" } }));
+  try {
+    const rootComputer = await built.sandboxResources.create("U1", "personal:U1", "sprites", "Root");
+    await built.sandboxResources.setDefault("U1", "personal:U1", rootComputer.id);
+    const rootTurn = await built.app.turn({
+      surface: "test",
+      actor: { externalId: "U1" },
+      conversation: { kind: "dm", threadRef: "swarm-goal-continue-root" },
+      origin: { kind: "human" },
+      text: "Coordinate work",
+    });
+    assert.equal(rootTurn.status, "ok");
+    const root = (await built.sessions.get(rootTurn.sessionId!))!;
+    const rootRun = (await built.runs.list()).find((run) => run.request.conversation.threadRef === root.threadRef)!;
+    const caller = { kind: "human" as const, actorId: "U1", sessionId: root.id, runId: rootRun.id };
+    await built.app.swarms!.spawn(caller, {
+      requestId: "goal-worker",
+      text: "Work the lane",
+      settings: { turnMs: 600_000 },
+      goal: { objective: "Exhaust the lane" },
+    });
+    await built.app.swarms!.sweep();
+    const first = (await built.runs.list()).find((run) => run.request.swarm)!;
+    const seen: Array<{ input: string; turnWallClockMs: number | undefined }> = [];
+    exerciseTurn = async (turn) => {
+      if (turn.goalContinuation) return { stopped: true };
+      if (!turn.input.startsWith("Swarm ")) return;
+      seen.push({ input: turn.input, turnWallClockMs: turn.turnWallClockMs });
+      if (seen.length === 1) throw new NonRetryableTurnError("simulated interruption");
+    };
+    built.runtime.start();
+    assert.equal((await built.runs.waitFor(first.id, 15_000)).status, "failed");
+    let continued: Run | undefined;
+    for (let i = 0; i < 300 && !continued; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      continued = (await built.runs.list()).find(
+        (run) => run.request.swarm && run.id !== first.id && run.sessionId === first.sessionId,
+      );
+    }
+    assert.ok(continued, "the interrupted goal turn was continued");
+    assert.equal(continued.request.turnWallClockMs, 600_000);
+    assert.equal((await built.runs.waitFor(continued.id, 15_000)).status, "done");
+    assert.equal(seen.length, 2);
+    assert.match(seen[1]!.input, /goal is still active/);
+    assert.equal(seen[1]!.turnWallClockMs, 0);
   } finally {
     exerciseTurn = undefined;
     await built.runtime.stop();
