@@ -3691,6 +3691,7 @@ test("a HiLO approval falls back to the static reason when the summarizer throws
 
 test("a HiLO approval summarizer that hangs past the deadline falls back without delaying the approval", async () => {
   const { app } = freshApp({ approvalSummaryTimeoutMs: 50 });
+  assert.equal((await app.turn(dm("hello", { conversation: { kind: "dm", threadRef: "dm:U1:warm" } }))).status, "ok");
   const started = Date.now();
   const first = await app.turn(dm("!run rm -rf build !summary-hang"));
   assert.equal(first.status, "pending_approval");
