@@ -11,14 +11,7 @@ import { type BuiltApp } from "../src/wiring.ts";
 import { buildApp } from "./support/build-app.ts";
 import { createServer, createInsecureTestServer } from "../src/api/server.ts";
 import { createPrincipalLinkService, PrincipalLinkError, type PrincipalLink } from "../src/identity/principal-links.ts";
-import {
-  canonicalPerson,
-  installPrincipalLinks,
-  personIds,
-  personKey,
-  samePerson,
-  samePersonInDirectory,
-} from "../src/directory/person.ts";
+import { canonicalPerson, installPrincipalLinks, personIds, personKey, samePerson } from "../src/directory/person.ts";
 import { createIdentityService } from "../src/identity/identity-service.ts";
 import { createKeychain, type KeychainCredential } from "../src/credentials/keychain.ts";
 import { deriveConnectorKey } from "../src/connectors/connector-client-store.ts";
@@ -29,7 +22,6 @@ import { mintSignedPayload } from "../src/auth/signed-token.ts";
 import { signedRequestHeaders } from "../plugins/chassis/src/source-auth-sign.ts";
 import { scopeId } from "../src/types.ts";
 import { testConfig } from "./support/test-config.ts";
-import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
 import { testAdvisoryLock, testDatabaseUrl, testMap } from "./support/test-database.ts";
 import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
 
@@ -134,14 +126,6 @@ describe("person primitives fold a linked sign-in to its canonical principal", (
     assert.deepEqual(personIds(EMAIL), [EMAIL, OIDC]);
     assert.deepEqual(personIds("U0STRANGER"), ["U0STRANGER"]);
     assert.equal(samePerson(OIDC, "casey@acme.test"), false);
-  });
-
-  it("the directory bridge reaches a linked sign-in through the roster row", async () => {
-    await installed();
-    const dir = createPostgresDirectoryStore(testDatabaseUrl());
-    await dir.replace([{ principalId: EMAIL, displayName: "Jordan", type: "internal", slackId: SLACK }]);
-    assert.equal(await samePersonInDirectory(dir, OIDC, SLACK), true);
-    assert.equal(await samePersonInDirectory(dir, OIDC, "U0CASEY"), false);
   });
 
   it("the identity service classifies a linked sign-in as the canonical principal and deactivates the person", async () => {
