@@ -1,4 +1,4 @@
-import { after, before, beforeEach, test } from "node:test";
+import { after, afterEach, before, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
@@ -9,7 +9,9 @@ import type { Run, RunPriority, RunStore } from "../src/runs/run-store.ts";
 import { createPostgresMapFactory } from "../src/persistence/durable-map.ts";
 import { createPostgresAdvisoryLock } from "../src/persistence/advisory-lock.ts";
 import { createSwarmStore, type SwarmStorage } from "../src/swarms/swarm-store.ts";
-import { routeTurns } from "../src/turns/turn-engine.ts";
+import { routeTurns, wakeTurnsOnSignal } from "../src/turns/turn-engine.ts";
+import { createPostgresRunSignalStore } from "../src/runs/postgres-run-signal-store.ts";
+import type { RunSignalStore } from "../src/runs/run-signal-store.ts";
 import { swarmFixture } from "./support/swarm-fixture.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { registerAbsurdSchema, TURN_QUEUES } from "../src/turns/absurd-schema.ts";
@@ -32,6 +34,7 @@ let admin: pg.Pool;
 let runStore: ReturnType<typeof createPostgresRunStore>;
 let sessions: ReturnType<typeof createPostgresSessionStore>;
 let ledger: TurnLedger;
+let signals: RunSignalStore;
 const terminal: Run[] = [];
 
 function request(thread: string, text = "hello"): OrchestratorInput {
@@ -89,6 +92,7 @@ before(async () => {
   sessions = createPostgresSessionStore(URL);
   runStore.runs.onTerminal((run) => terminal.push(run));
   ledger = createTurnLedger(URL, { onTerminal: (run) => runStore.runs.emitTerminal?.(run) });
+  signals = wakeTurnsOnSignal(createPostgresRunSignalStore(URL), () => ledger);
   await migrateRegisteredPgSchemas(URL);
 });
 
@@ -97,13 +101,15 @@ beforeEach(async () => {
   const tables = TURN_QUEUES.flatMap((queue) =>
     ["t_", "r_", "c_", "e_", "w_"].map((prefix) => `absurd.${prefix}${queue}`),
   );
-  await admin.query(`TRUNCATE ${tables.join(", ")}, session_turn_pointers`);
+  await admin.query(`TRUNCATE ${tables.join(", ")}, session_turn_pointers, turn_barriers`);
+  await admin.query("DELETE FROM run_signals");
   await admin.query("DELETE FROM runs");
 });
 
 after(async () => {
   if (!URL) return;
   await ledger.close();
+  await signals.close?.();
   await runStore.close();
   await admin.end();
 });
@@ -744,4 +750,357 @@ test("slots freed together by one owner are refilled without waiting for the swe
   await Promise.all(active.map((m) => ledger.cancel(m.run.id)));
   for (const m of capped) assert.equal((await runStore.runs.get(m.run.id))?.status, "pending");
   for (const m of capped) await ledger.cancel(m.run.id);
+});
+
+const cleanups: Array<() => Promise<unknown>> = [];
+
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0)) await cleanup();
+});
+
+function startRunner(deps: Omit<Parameters<typeof createTurnRunner>[0], "ledger" | "queues" | "pollMs" | "ready">) {
+  const ready = createPostgresNotifyBus<string>(URL!, TURN_READY_CHANNEL, "test turn readiness");
+  const runner = createTurnRunner({ ledger, queues: TURN_QUEUES, pollMs: 50, ready, ...deps });
+  cleanups.push(async () => {
+    await runner.stopClaims();
+    await ready.close?.();
+  });
+  runner.start();
+  return runner;
+}
+
+async function absurdState(run: Run): Promise<string | undefined> {
+  const { rows } = await admin.query(
+    `SELECT state FROM absurd.${run.absurdQueue === "turns_delegated" ? "r_turns_delegated" : "r_turns_people"} WHERE run_id = $1`,
+    [run.absurdRunId],
+  );
+  return rows[0]?.state as string | undefined;
+}
+
+function scripted(steps: Array<(input: OrchestratorInput) => Promise<TurnResult> | TurnResult>) {
+  const started: OrchestratorInput[] = [];
+  const orchestrator = {
+    async handleTurn(input: OrchestratorInput): Promise<TurnResult> {
+      started.push(input);
+      const step = steps[started.filter((seen) => seen.runId === input.runId).length - 1];
+      if (!step) throw new Error(`no scripted step for call ${started.length}`);
+      return step(input);
+    },
+  } as unknown as Orchestrator;
+  return { started, orchestrator };
+}
+
+const pendingApproval = (input: OrchestratorInput): TurnResult => ({
+  status: "pending_approval",
+  sessionId: input.conversation.threadRef,
+  pendingApprovals: [{ requestId: "approve-deploy", command: "deploy", reason: "needs approval", blocksInput: true }],
+});
+
+async function waitingOnApproval(thread: string, opts: { approvalWaitMs?: number } = {}) {
+  const admitted = await admit(thread, "deploy it");
+  const { started, orchestrator } = scripted([
+    pendingApproval,
+    (input) => ({ status: "ok", sessionId: thread, reply: input.approval ? "deployed" : "noted" }),
+  ]);
+  const runner = startRunner({
+    orchestrator,
+    slots: 1,
+    ...(opts.approvalWaitMs ? { approvalWaitMs: opts.approvalWaitMs } : {}),
+  });
+  const waiting = await until(
+    () => runStore.runs.get(admitted.run.id),
+    (run) => run?.status === "pending" && run.lastStop?.kind === "waiting",
+    "turn waiting on the approval",
+  );
+  await until(
+    async () => runner.held().length,
+    (n) => n === 0,
+    "worker freed",
+  );
+  return { admitted, waiting: waiting!, started, runner };
+}
+
+test(
+  "a turn waiting on an approval holds the conversation, frees its worker, and resumes with the decision",
+  { skip },
+  async () => {
+    const thread = `web:alice:${randomUUID()}`;
+    const { admitted, waiting, started } = await waitingOnApproval(thread);
+    assert.equal(await pointer(thread), admitted.run.id);
+    assert.equal(await absurdState(waiting), "sleeping");
+    assert.equal(waiting.result?.status, "pending_approval");
+    assert.equal(waiting.preemptions, 1);
+    const queuedBehind = await admit(thread, "something else");
+    assert.equal(queuedBehind.run.status, "queued");
+    const decision = await ledger.admit({
+      sessionId: thread,
+      request: { ...request(thread, "deploy it"), approval: { requestId: "approve-deploy", approved: true } },
+      priority: 0,
+      dedupKey: "approval-click-1",
+    });
+    assert.equal(decision?.run.id, admitted.run.id);
+    const again = await ledger.admit({
+      sessionId: thread,
+      request: { ...request(thread, "deploy it"), approval: { requestId: "approve-deploy", approved: true } },
+      priority: 0,
+      dedupKey: "approval-click-1",
+    });
+    assert.equal(again?.deduped, true);
+    const done = await until(
+      () => runStore.runs.get(admitted.run.id),
+      (run) => run?.status === "done",
+      "turn resumed and finished",
+    );
+    assert.equal(done?.result?.reply, "deployed");
+    const calls = started.filter((input) => input.runId === admitted.run.id);
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1]?.approval, { requestId: "approve-deploy", approved: true });
+    assert.equal(calls[1]?.resumeCause?.kind, "waiting");
+    assert.equal(calls[1]?.attempt, 2);
+    assert.equal(calls[1]?.finalAttempt, false);
+    const { rows } = await admin.query("SELECT count(*)::int AS n FROM runs WHERE session_id = $1", [thread]);
+    assert.equal(rows[0]!.n, 2);
+    await until(
+      () => pointer(thread),
+      (id) => id === queuedBehind.run.id,
+      "queued input started after the turn",
+    );
+    await ledger.cancel(queuedBehind.run.id);
+  },
+);
+
+test("a person's message wakes a turn waiting on an approval", { skip }, async () => {
+  const thread = `web:alice:${randomUUID()}`;
+  const { admitted, started } = await waitingOnApproval(thread);
+  assert.equal(await signals.send(admitted.run.id, { kind: "steer", text: "actually, stop and summarise" }), true);
+  const done = await until(
+    () => runStore.runs.get(admitted.run.id),
+    (run) => run?.status === "done",
+    "woken turn finished",
+  );
+  assert.equal(done?.result?.reply, "noted");
+  const calls = started.filter((input) => input.runId === admitted.run.id);
+  assert.equal(calls[1]?.approval, undefined);
+  assert.equal(calls[1]?.resumeCause?.kind, "waiting");
+  assert.equal((await signals.pending(admitted.run.id)).length, 1);
+});
+
+test("an approval wait that times out ends the turn as it ends today", { skip }, async () => {
+  const thread = `web:alice:${randomUUID()}`;
+  const { admitted, started } = await waitingOnApproval(thread, { approvalWaitMs: 1_000 });
+  const done = await until(
+    () => runStore.runs.get(admitted.run.id),
+    (run) => run?.status === "done",
+    "timed-out turn finished",
+  );
+  assert.equal(done?.result?.status, "pending_approval");
+  assert.equal(started.length, 1);
+  assert.equal(await pointer(thread), null);
+});
+
+async function family(children: number) {
+  const parentThread = `web:alice:${randomUUID()}`;
+  const parentId = randomUUID();
+  await admin.query(
+    "INSERT INTO sessions(id, type, scope_id, thread_ref, created_at) VALUES ($1, 'dm', 'personal:alice@example.com', $2, $3)",
+    [parentId, parentThread, Date.now()],
+  );
+  const childThreads: string[] = [];
+  for (let i = 0; i < children; i++) {
+    const thread = `agent:main:subagent:${randomUUID()}`;
+    await admin.query(
+      `INSERT INTO sessions(id, type, scope_id, thread_ref, created_at, parent_session_id)
+       VALUES ($1, 'dm', 'personal:alice@example.com', $2, $3, $4)`,
+      [randomUUID(), thread, Date.now(), parentId],
+    );
+    childThreads.push(thread);
+  }
+  return { parentThread, childThreads };
+}
+
+function barrierOrchestrator(parentThread: string, until: () => number) {
+  const started: OrchestratorInput[] = [];
+  const releases = new Map<string, () => void>();
+  const orchestrator = {
+    async handleTurn(input: OrchestratorInput): Promise<TurnResult> {
+      started.push(input);
+      if (input.conversation.threadRef === parentThread) {
+        if (input.turnWait?.resumedFrom("wait-call")) return { status: "ok", sessionId: parentThread, reply: "all in" };
+        assert.equal(await input.turnWait?.childrenBusy(), true);
+        input.turnWait?.suspend({ reason: "barrier", callId: "wait-call", until: until() });
+        return { status: "silent", sessionId: parentThread };
+      }
+      await new Promise<void>((resolve) => releases.set(input.runId!, resolve));
+      return { status: "ok", sessionId: input.conversation.threadRef, reply: "child done" };
+    },
+  } as unknown as Orchestrator;
+  return { started, releases, orchestrator };
+}
+
+async function barrierRow(turnId: string) {
+  const { rows } = await admin.query(
+    "SELECT remaining, children FROM turn_barriers WHERE tenant_id = qm_tenant_id() AND turn_id = $1",
+    [turnId],
+  );
+  return rows[0] as { remaining: number; children: string[] } | undefined;
+}
+
+test("a barrier wait wakes the parent once, when its last child finishes", { skip }, async () => {
+  const { parentThread, childThreads } = await family(2);
+  const kids = [];
+  for (const thread of childThreads) kids.push(await admit(thread, "child task", undefined, 1));
+  const parent = await admit(parentThread, "wait for both");
+  const { started, releases, orchestrator } = barrierOrchestrator(parentThread, () => Date.now() + 60_000);
+  startRunner({ orchestrator, slots: 4 });
+  await until(
+    async () => barrierRow(parent.run.id),
+    (row) => row?.remaining === 2,
+    "barrier recorded",
+  );
+  const waiting = await runStore.runs.get(parent.run.id);
+  assert.equal(waiting?.lastStop?.kind, "waiting");
+  assert.equal(await absurdState(waiting!), "sleeping");
+  await until(
+    async () => releases.size,
+    (n) => n === 2,
+    "children running",
+  );
+  releases.get(kids[0]!.run.id)!();
+  await until(
+    async () => barrierRow(parent.run.id),
+    (row) => row?.remaining === 1,
+    "first child counted",
+  );
+  await sleep(300);
+  assert.equal(started.filter((input) => input.runId === parent.run.id).length, 1);
+  assert.equal(await absurdState(waiting!), "sleeping");
+  releases.get(kids[1]!.run.id)!();
+  const done = await until(
+    () => runStore.runs.get(parent.run.id),
+    (run) => run?.status === "done",
+    "parent woke and finished",
+  );
+  assert.equal(done?.result?.reply, "all in");
+  const parentCalls = started.filter((input) => input.runId === parent.run.id);
+  assert.equal(parentCalls.length, 2);
+  assert.equal(parentCalls[1]?.resumeCause?.kind, "waiting");
+  assert.equal(await barrierRow(parent.run.id), undefined);
+});
+
+test("a barrier wait times out when a child is still working", { skip }, async () => {
+  const { parentThread, childThreads } = await family(1);
+  const kid = await admit(childThreads[0]!, "slow child", undefined, 1);
+  const parent = await admit(parentThread, "wait briefly");
+  const { started, releases, orchestrator } = barrierOrchestrator(parentThread, () => Date.now() + 1_000);
+  startRunner({ orchestrator, slots: 4 });
+  const done = await until(
+    () => runStore.runs.get(parent.run.id),
+    (run) => run?.status === "done",
+    "parent woke at its timeout",
+  );
+  assert.equal(done?.result?.reply, "all in");
+  assert.equal(started.filter((input) => input.runId === parent.run.id).length, 2);
+  assert.equal(await barrierRow(parent.run.id), undefined);
+  assert.equal((await runStore.runs.get(kid.run.id))?.status, "running");
+  releases.get(kid.run.id)!();
+  await until(
+    () => runStore.runs.get(kid.run.id),
+    (run) => run?.status === "done",
+    "child finished",
+  );
+});
+
+test("a client tool result wakes a turn waiting on the client", { skip }, async () => {
+  const thread = `web:alice:${randomUUID()}`;
+  const admitted = await admit(thread, "read the page");
+  const started: OrchestratorInput[] = [];
+  const orchestrator = {
+    async handleTurn(input: OrchestratorInput): Promise<TurnResult> {
+      started.push(input);
+      const result = (await signals.pending(input.runId!)).find(
+        ({ signal }) => signal.kind === "client_result" && signal.callId === "page-call",
+      );
+      if (result) return { status: "ok", sessionId: thread, reply: "read it" };
+      const until = input.turnWait!.resumedFrom("page-call")?.until ?? Date.now() + 60_000;
+      input.turnWait!.suspend({ reason: "client_tool", callId: "page-call", until });
+      return { status: "silent", sessionId: thread };
+    },
+  } as unknown as Orchestrator;
+  startRunner({ orchestrator, slots: 1 });
+  const first = await until(
+    () => runStore.runs.get(admitted.run.id),
+    (run) => run?.status === "pending" && run.lastStop?.kind === "waiting",
+    "turn waiting on the client",
+  );
+  const deadline = first?.lastStop?.kind === "waiting" ? first.lastStop.until : 0;
+  await signals.send(admitted.run.id, { kind: "steer", text: "hurry up" });
+  const again = await until(
+    () => runStore.runs.get(admitted.run.id),
+    (run) => run?.preemptions === 2 && run.status === "pending",
+    "turn waiting on the client again",
+  );
+  assert.equal(started.length, 2);
+  assert.equal(again?.lastStop?.kind === "waiting" ? again.lastStop.until : -1, deadline);
+  await signals.send(admitted.run.id, {
+    kind: "client_result",
+    callId: "page-call",
+    result: { content: "page text" },
+  });
+  const done = await until(
+    () => runStore.runs.get(admitted.run.id),
+    (run) => run?.status === "done",
+    "client result woke the turn",
+  );
+  assert.equal(done?.result?.reply, "read it");
+  assert.equal(started.length, 3);
+});
+
+test("a decision that arrives while the turn is still running is taken when it suspends", { skip }, async () => {
+  const thread = `web:alice:${randomUUID()}`;
+  const admitted = await admit(thread, "deploy it");
+  const { run, token } = await claim();
+  assert.equal(run.id, admitted.run.id);
+  const early = await ledger.admit({
+    sessionId: thread,
+    request: { ...request(thread, "deploy it"), approval: { requestId: "approve-deploy", approved: true } },
+    priority: 0,
+  });
+  assert.equal(early?.run.status, "queued");
+  const outcome = await ledger.suspend(run, token, {
+    stop: { kind: "waiting", reason: "approval", until: Date.now() + 60_000, requests: ["approve-deploy"] },
+    result: pendingApproval(request(thread)),
+  });
+  assert.equal(outcome, "woken");
+  assert.equal(await runStore.runs.get(early!.run.id), null);
+  const resumed = await ledger.claim("turns_people", `test:${randomUUID()}`, "test");
+  assert.equal(resumed.run?.id, admitted.run.id);
+  assert.deepEqual(resumed.approval, { requestId: "approve-deploy", approved: true });
+  assert.equal(resumed.waited?.stop.reason, "approval");
+});
+
+test("a person's message wakes a cron turn that is waiting so it can make way", { skip }, async () => {
+  const thread = `web:cron:${randomUUID()}`;
+  const cron = await admit(thread, "cron fire", undefined, 2);
+  let held: { run: Run | null } = { run: null };
+  const token = `test:${randomUUID()}`;
+  for (let i = 0; i < 20 && !held.run; i++) {
+    held = await ledger.claim("turns_background", token, "test");
+    if (!held.run) await sleep(25);
+  }
+  assert.equal(held.run?.id, cron.run.id);
+  const outcome = await ledger.suspend(held.run!, token, {
+    stop: { kind: "waiting", reason: "client_tool", callId: "page", until: Date.now() + 60_000 },
+  });
+  assert.equal(outcome, "suspended");
+  const { rows: before } = await admin.query("SELECT state FROM absurd.r_turns_background WHERE run_id = $1", [
+    held.run!.absurdRunId,
+  ]);
+  assert.equal(before[0]?.state, "sleeping");
+  const person = await admit(thread, "hello there", undefined, 0);
+  assert.equal(person.run.status, "queued");
+  const { rows: after } = await admin.query("SELECT state FROM absurd.r_turns_background WHERE run_id = $1", [
+    held.run!.absurdRunId,
+  ]);
+  assert.equal(after[0]?.state, "pending");
+  assert.equal(await ledger.mustYield((await runStore.runs.get(cron.run.id))!), true);
 });

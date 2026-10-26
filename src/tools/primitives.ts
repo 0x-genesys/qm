@@ -44,6 +44,7 @@ import type { SessionSyscalls } from "../sessions/session-syscalls.ts";
 import { evaluateCommandWithLayer } from "../policy/command-policy.ts";
 import { createNullLedger, type ToolLedger } from "../runs/tool-ledger.ts";
 import { waitForClientResult, type RunSignalStore } from "../runs/run-signal-store.ts";
+import { CLIENT_RESULT_GRACE_MS, CLIENT_RESULT_MIN_CHECK_MS, type TurnWait } from "../turns/turn-wait.ts";
 import type {
   BackgroundCredentials,
   BackgroundExecBroker,
@@ -195,6 +196,7 @@ export type AttachResult = { ok: true; files: AttachedFileMeta[]; staged: number
 export type AttachFiles = (files: readonly OutboundFile[], sandboxId?: string) => Promise<AttachResult>;
 
 export interface ToolContext extends SurfaceToolDeps {
+  turnWait?: TurnWait;
   installSharedCanvas?: (fileId: string) => Promise<string | null>;
   admin?: AdminToolAccess;
   runtime?(request: RuntimeRequest, signal?: AbortSignal): Promise<RuntimeResult>;
@@ -255,7 +257,7 @@ export interface ToolContext extends SurfaceToolDeps {
     timeoutMs: number,
     signal?: AbortSignal,
     toolName?: string,
-  ): Promise<ClientToolResult | "timeout" | "cancelled">;
+  ): Promise<ClientToolResult | "timeout" | "cancelled" | "suspended">;
   backgroundStart(
     command: string,
     opts: { purpose: string; ttlSeconds?: number; sandboxId?: string; credentials?: string[] },
@@ -477,6 +479,7 @@ export const CONTROL_UNAVAILABLE: ControlUnavailable = {
 
 export interface ToolContextDeps {
   desktopClientId?: string;
+  turnWait?: TurnWait;
   admin?: AdminToolAccess;
   installSharedCanvas?: (fileId: string) => Promise<string | null>;
   sandbox: Sandbox;
@@ -767,6 +770,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
   };
 
   return {
+    ...(deps.turnWait ? { turnWait: deps.turnWait } : {}),
     ...(deps.admin ? { admin: deps.admin } : {}),
     ...(deps.installSharedCanvas ? { installSharedCanvas: deps.installSharedCanvas } : {}),
     ...(deps.toolOutput ? { toolOutput: deps.toolOutput } : {}),
@@ -1261,7 +1265,17 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       if (toolName === "desktop" && !deps.desktopClientId)
         return { content: "Computer access unavailable; continue from QM desktop.", isError: true };
       if (!deps.signals || runId === undefined) throw new Error("client tools need a queued run");
-      return waitForClientResult(deps.signals, runId, callId, { timeoutMs, ...(signal ? { signal } : {}) });
+      const wait = deps.turnWait;
+      if (!wait) return waitForClientResult(deps.signals, runId, callId, { timeoutMs, ...(signal ? { signal } : {}) });
+      const until = wait.resumedFrom(callId)?.until ?? Date.now() + timeoutMs;
+      const graceMs = Math.max(CLIENT_RESULT_MIN_CHECK_MS, Math.min(until - Date.now(), CLIENT_RESULT_GRACE_MS));
+      const outcome = await waitForClientResult(deps.signals, runId, callId, {
+        timeoutMs: graceMs,
+        ...(signal ? { signal } : {}),
+      });
+      if (outcome !== "timeout" || Date.now() >= until) return outcome;
+      wait.suspend({ reason: "client_tool", callId, until });
+      return "suspended";
     },
 
     async backgroundStart(

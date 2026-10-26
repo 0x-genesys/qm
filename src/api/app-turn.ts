@@ -445,7 +445,21 @@ export function createTurnMethods(
           return { status: "refused", reason: "approval isn't visible in your project tenure" };
         }
       }
-      const blocked = await pendingApprovalResultForThread(conversation.threadRef, actor.id, { alwaysBlock: true });
+      const steersWaitingTurn = async (): Promise<boolean> => {
+        if (req.approval || req.surface === "web" || origin.kind !== "human" || req.spawned || req.idempotencyKey)
+          return false;
+        const live = await deps.runs.activeForThread(conversation.threadRef);
+        return (
+          live?.engine === "absurd" &&
+          live.status === "pending" &&
+          live.lastStop?.kind === "waiting" &&
+          samePerson(live.request.actor.id, actor.id)
+        );
+      };
+      const pendingApproval = await pendingApprovalResultForThread(conversation.threadRef, actor.id, {
+        alwaysBlock: true,
+      });
+      const blocked = pendingApproval && !(await steersWaitingTurn()) ? pendingApproval : null;
       let request = input;
       if (blocked) {
         const record = req.approval ? await deps.approvals?.get(req.approval.requestId) : undefined;

@@ -707,7 +707,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
           await recordStep(message);
           await flushThinking();
           if (interrupted) break;
-          const terminal = ref.runtimeHandoff || ref.silentRequested || ref.pausedOnApproval;
+          const terminal = ref.runtimeHandoff || ref.silentRequested || ref.pausedOnApproval || turn.shutdown?.aborted;
           const text = message.subtype === "success" && !terminal ? message.result.trim() : "";
           if (text) {
             await turn.emit({ kind: "AgentMessage", text });
@@ -739,7 +739,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
       }
       const finalResult = result as SDKResultMessage | null;
       const stoppedPartial = async (): Promise<HarnessTurnResult> => {
-        const terminal = ref.runtimeHandoff || ref.silentRequested || ref.pausedOnApproval;
+        const terminal = ref.runtimeHandoff || ref.silentRequested || ref.pausedOnApproval || turn.shutdown?.aborted;
         const reply = terminal ? "" : streamedText.trim();
         await flushThinking();
         if (!terminal) await recordStoppedTurn(turn, reply, stopped ? stopReason : "because the run was cancelled");
@@ -769,7 +769,7 @@ export function createClaudeHarness(opts: ClaudeHarnessOptions = {}): Harness {
       ) {
         throw new Error(`Claude utility response did not complete (${finalResult.stop_reason ?? "error"})`);
       }
-      const terminal = ref.runtimeHandoff || ref.silentRequested || ref.pausedOnApproval;
+      const terminal = ref.runtimeHandoff || ref.silentRequested || ref.pausedOnApproval || turn.shutdown?.aborted;
       const reply = terminal ? "" : finalResult.result.trim();
       const usageTotals = [...callUsage.values()].reduce(
         (acc, usage) => {

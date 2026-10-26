@@ -3,7 +3,7 @@ import type { OrchestratorInput } from "../core/orchestrator/types.ts";
 import type { ClientToolResult, TurnRequest } from "../types.ts";
 import { swallowAs } from "../util/errors.ts";
 
-export type RunSignalKind = "abort" | "steer" | "client_result";
+export type RunSignalKind = "abort" | "steer" | "client_result" | "approval";
 
 export interface RunSignal {
   kind: RunSignalKind;
@@ -16,6 +16,7 @@ export interface RunSignal {
   callId?: string;
   result?: ClientToolResult;
   reason?: string;
+  approval?: TurnRequest["approval"];
 }
 
 export interface RunSignalStore {
@@ -182,7 +183,7 @@ export function startSignalPoll(
     inFlight = (async () => {
       let abortDelivered = false;
       for (const { id, signal: s } of await signals.pending(runId)) {
-        if (s.kind === "client_result") continue;
+        if (s.kind === "client_result" || s.kind === "approval") continue;
         try {
           if (s.kind === "abort") {
             if (!abortDelivered) {

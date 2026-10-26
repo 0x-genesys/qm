@@ -4,7 +4,9 @@ import type { FeatureFlagStore } from "../feature-flags.ts";
 import { conversationScope } from "../resolution/resolution-service.ts";
 import type { EnqueueInput, EnqueueResult, RunStore } from "../runs/run-store.ts";
 import { isUnstarted, runLeaseHeld, runPriority } from "../runs/run-store.ts";
+import type { RunSignalStore } from "../runs/run-signal-store.ts";
 import type { SessionStore } from "../sessions/session-store.ts";
+import { swallow } from "../util/errors.ts";
 import type { ScopeId } from "../types.ts";
 import type { TurnLedger } from "./turn-ledger.ts";
 
@@ -14,7 +16,7 @@ export function routeTurns(
   base: RunStore,
   ledger: TurnLedger | undefined,
   flags: Pick<FeatureFlagStore, "enabled">,
-): Pick<RunStore, "cancelTurn" | "cancelTree" | "withdraw" | "leaseHeld"> & {
+): Pick<RunStore, "cancelTurn" | "cancelTree" | "withdraw" | "leaseHeld" | "steerQueued"> & {
   admit(input: EnqueueInput): Promise<EnqueueResult | null>;
 } {
   return {
@@ -35,6 +37,30 @@ export function routeTurns(
     },
     leaseHeld: async (run, token) =>
       run.engine === "absurd" && ledger ? ledger.fenceHeld(run.id, token) : runLeaseHeld(base, run, token),
+    async steerQueued(queuedRunId, targetRunId, signal, signals) {
+      const moved = await base.steerQueued(queuedRunId, targetRunId, signal, signals);
+      if (moved) await wakeTurn(ledger, targetRunId, signal.kind);
+      return moved;
+    },
+  };
+}
+
+async function wakeTurn(ledger: TurnLedger | undefined, turnId: string, cause: string): Promise<void> {
+  try {
+    await ledger?.wake(turnId, cause);
+  } catch (error) {
+    swallow(`turns: waking turn=${turnId} for ${cause} failed; it wakes at its timeout`, error);
+  }
+}
+
+export function wakeTurnsOnSignal(signals: RunSignalStore, ledger: () => TurnLedger | undefined): RunSignalStore {
+  return {
+    ...signals,
+    async send(runId, signal) {
+      const sent = await signals.send(runId, signal);
+      if (sent) await wakeTurn(ledger(), runId, signal.kind);
+      return sent;
+    },
   };
 }
 

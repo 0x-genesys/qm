@@ -1,4 +1,6 @@
 import { toolCallApprovalKey } from "../core/approval-id.ts";
+import { INTERRUPTED_TOOL_RESULT } from "./context-compaction.ts";
+import { BARRIER_MAIL_GRACE_MS } from "../turns/turn-wait.ts";
 import { canonicalJson } from "../../cli/src/canonical-json.ts";
 import { adminOperations } from "../tools/admin.ts";
 import { parkIfOverCap } from "../sessions/tool-output.ts";
@@ -1694,6 +1696,8 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         interrupt?: boolean;
         limit?: number;
       };
+      if (p.action === "wait" && tc?.turnWait)
+        retryMarks.set(callId, { safe: true, rerun: { tool: "subagents", input: { ...p } } });
       await recordCall(callId, {
         tool: "subagents",
         action: p.action,
@@ -1713,7 +1717,23 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         );
       }
       if (p.action === "wait") {
-        await syscalls.receive?.(delegateWork ? 0 : (p.timeoutMs ?? 60_000));
+        const timeoutMs = delegateWork ? 0 : (p.timeoutMs ?? 60_000);
+        const wait = tc?.turnWait;
+        const resumed = wait?.resumedFrom(callId);
+        if (!wait || timeoutMs === 0) await syscalls.receive?.(timeoutMs);
+        else if (resumed)
+          await syscalls.receive?.(
+            (await wait.childrenBusy()) ? 0 : Math.min(Math.max(0, resumed.until - Date.now()), BARRIER_MAIL_GRACE_MS),
+          );
+        else if (!(await syscalls.receive?.(0))?.length && (await wait.childrenBusy())) {
+          wait.suspend({ reason: "barrier", callId, until: Date.now() + timeoutMs });
+          return recordCoreAuthoredResult(
+            callId,
+            { tool: "subagents", action: "wait", waiting: true },
+            { ...text(INTERRUPTED_TOOL_RESULT), terminate: true },
+            true,
+          );
+        }
         return recordCoreAuthoredResult(
           callId,
           { tool: "subagents", action: "wait" },
@@ -4321,7 +4341,10 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         async execute(callId, params) {
           const tc = ref.current;
           if (!tc) return text("[error] no active tool context");
+          if (tc.turnWait && isObj(params) && JSON.stringify(params).length <= RERUN_INPUT_MAX_CHARS)
+            retryMarks.set(callId, { safe: true, rerun: { tool: d.name, input: params } });
           await recordCall(callId, { tool: d.name, client: true, args: params });
+          retryMarks.delete(callId);
           try {
             const outcome = await tc.awaitClientResult(
               callId,
@@ -4329,6 +4352,13 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
               ref.abortSignal,
               d.name,
             );
+            if (outcome === "suspended")
+              return recordCoreAuthoredResult(
+                callId,
+                { tool: d.name, client: true, waiting: true },
+                { ...text(INTERRUPTED_TOOL_RESULT), terminate: true },
+                true,
+              );
             if (outcome === "timeout" || outcome === "cancelled")
               return recordCoreAuthoredResult(
                 callId,

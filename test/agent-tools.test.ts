@@ -4638,3 +4638,90 @@ test("a tool that needs approval fails closed without an approval gate", async (
   assert.match(textOut(await call(tool!, {})), /blocked: needs human approval/);
   assert.equal(called, false);
 });
+
+function waitingTurn(resumed?: { callId: string; until: number }) {
+  const suspended: Array<{ reason: string; callId?: string; until: number }> = [];
+  const shutdown = new AbortController();
+  const turnWait = {
+    resumedFrom: (callId: string) =>
+      resumed?.callId === callId ? { kind: "waiting" as const, reason: "barrier" as const, ...resumed } : undefined,
+    childrenBusy: async () => true,
+    suspend(wait: { reason: "approval" | "client_tool" | "barrier"; callId?: string; until: number }) {
+      suspended.push(wait);
+      shutdown.abort({ kind: "waiting", ...wait });
+    },
+    waiting: () => suspended.length > 0,
+  };
+  return { suspended, shutdown, turnWait };
+}
+
+test("a client tool with no answer yet ends a waiting turn's segment and is retried on resume", async () => {
+  const { shutdown, turnWait } = waitingTurn();
+  const emitted: Emitted[] = [];
+  const ref: ToolContextRef = {
+    current: {
+      ...fakeToolContext(),
+      turnWait,
+      awaitClientResult: async (callId) => {
+        turnWait.suspend({ reason: "client_tool", callId, until: Date.now() + 60_000 });
+        return "suspended";
+      },
+    },
+    emit: (e) => {
+      emitted.push(emittedItem(e));
+    },
+    scopeLabel: "personal:U1",
+    shutdown: shutdown.signal,
+  };
+  const [tool] = createAgentTools(ref, { clientTools: [clientTool("ui__get_selection")] }).slice(-1);
+  const ret = (await call(tool, { note: "hi" })) as { terminate?: boolean };
+  assert.equal(ret.terminate, true);
+  const toolCall = emitted.find((e) => e.kind === "ToolCall")!.fields;
+  assert.equal(toolCall.retrySafe, true);
+  assert.deepEqual(toolCall.rerun, { tool: "ui__get_selection", input: { note: "hi" } });
+  const toolResult = emitted.find((e) => e.kind === "ToolResult")!.fields;
+  assert.equal(toolResult.interrupted, true);
+  assert.equal(toolResult.stop.kind, "waiting");
+  const entries = emitted.map((e, i) => storedItem(e, { sessionId: "s", seq: i + 2, createdAt: i + 2 }));
+  assert.deepEqual(resumeStrategy(entries, { userSeq: 1, workEntries: entries.length }), {
+    kind: "retry",
+    call: { callId: "t", tool: "ui__get_selection", input: { note: "hi" } },
+  });
+});
+
+test("subagents wait on a turn that can wait suspends while children work and completes once woken", async () => {
+  const receives: number[] = [];
+  const syscalls = {
+    receive: async (timeout = 0) => {
+      receives.push(timeout);
+      return [];
+    },
+    open: async () => ({ ok: false as const, message: "unused" }),
+    write: async () => ({ ok: false as const, message: "unused" }),
+    read: async () => ({ ok: false as const, message: "unused" }),
+  };
+  const first = waitingTurn();
+  const tc = { ...fakeToolContext(), turnWait: first.turnWait, sessionSyscalls: syscalls };
+  const subagents = createAgentTools({ current: tc, shutdown: first.shutdown.signal }).find(
+    (tool) => tool.name === "subagents",
+  )!;
+  const ret = (await call(subagents, { action: "wait", timeoutMs: 30_000 })) as { terminate?: boolean };
+  assert.equal(ret.terminate, true);
+  assert.equal(first.suspended[0]?.reason, "barrier");
+  assert.equal(first.suspended[0]?.callId, "t");
+  assert.ok(receives.every((timeout) => timeout === 0));
+  receives.length = 0;
+  const woken = waitingTurn({ callId: "t", until: Date.now() + 30_000 });
+  woken.turnWait.childrenBusy = async () => false;
+  const resumedTools = createAgentTools({
+    current: { ...fakeToolContext(), turnWait: woken.turnWait, sessionSyscalls: syscalls },
+  }).find((tool) => tool.name === "subagents")!;
+  const done = (await call(resumedTools, { action: "wait", timeoutMs: 30_000 })) as {
+    content: Array<{ text: string }>;
+    terminate?: boolean;
+  };
+  assert.equal(done.terminate, undefined);
+  assert.match(done.content[0]?.text ?? "", /^Wait complete/);
+  assert.equal(woken.suspended.length, 0);
+  assert.ok(receives.some((timeout) => timeout > 0 && timeout <= 5_000));
+});

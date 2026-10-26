@@ -1295,7 +1295,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         );
       };
       const recordedTurn = isRetry ? await recordedTurnForRun() : null;
-      if (recordedTurn?.answer) {
+      if (recordedTurn?.answer && input.resumeCause?.kind !== "waiting") {
         const recordedAnswer = recordedTurn.answer;
         deps.auditLog.record({
           at: Date.now(),
@@ -2612,6 +2612,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           (await deps.featureFlags?.enabled("ui_canvas", personalScope(actor.id))) === true;
         const baseTools = createToolContext({
           desktopClientId: desktopClientForTurn(input),
+          ...(input.turnWait ? { turnWait: input.turnWait } : {}),
           ...(canInstallCanvas
             ? {
                 installSharedCanvas: (fileId: string) =>
@@ -3716,6 +3717,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           ...(inbound.metas.length ? { attachments: inbound.metas } : {}),
           ...(inbound.images.length ? { images: inbound.images } : {}),
         });
+        if (input.turnWait?.waiting()) return { status: "silent", sessionId: session.id };
         if (
           input.addressed &&
           !strictReadOnly &&

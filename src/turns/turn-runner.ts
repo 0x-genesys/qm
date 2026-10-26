@@ -26,7 +26,8 @@ import {
   swarmTurnLimits,
 } from "../runs/worker.ts";
 import type { TurnQueue } from "./absurd-schema.ts";
-import { TURN_EXTEND_INTERVAL_MS, type TurnLedger, type TurnOutcome } from "./turn-ledger.ts";
+import { TURN_EXTEND_INTERVAL_MS, type ClaimedTurn, type TurnLedger, type TurnOutcome } from "./turn-ledger.ts";
+import { APPROVAL_WAIT_MS, isWaitStop, type TurnWait, type WaitStop } from "./turn-wait.ts";
 
 const CANCEL_GRACE_MS = 10_000;
 const FALLBACK_POLL_MS = 1_000;
@@ -51,11 +52,15 @@ export interface TurnRunnerDeps {
   pollMs?: number;
   retryDelayMs?: (priorErrors: number) => number;
   maxClaims?: number;
+  approvalWaitMs?: number;
 }
 
 interface HeldTurn {
   run: Run;
   token: string;
+  approval?: ClaimedTurn["approval"];
+  waited?: ClaimedTurn["waited"];
+  wait?: WaitStop;
   cancel: AbortController;
   shutdown: AbortController;
   cancelled: boolean;
@@ -156,9 +161,41 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     });
   }
 
+  async function suspendHeld(held: HeldTurn, stop: WaitStop, result?: TurnResult): Promise<void> {
+    let outcome: Awaited<ReturnType<TurnLedger["suspend"]>> | "handed_back" | "failed";
+    try {
+      outcome = await deps.ledger.suspend(held.run, held.token, { stop, ...(result ? { result } : {}) });
+    } catch (error) {
+      reportFailure(`turns: suspending turn=${held.run.id} failed; handing the turn back`, error);
+      outcome = await deps.ledger
+        .handBack(held.run, held.token, { stop })
+        .then((ok) => (ok ? "handed_back" : "lost"))
+        .catch((fallback: unknown) => {
+          reportFailure(
+            `turns: handback after a failed suspend failed turn=${held.run.id}; the claim will expire`,
+            fallback,
+          );
+          return "failed" as const;
+        });
+    }
+    console.log(`[turns] waiting turn=${held.run.id} reason=${stop.reason} outcome=${outcome}`);
+  }
+
   async function runTurn(held: HeldTurn): Promise<void> {
     const { run, token, cancel, shutdown } = held;
-    const { trace: _trace, ...request } = run.request;
+    const { trace: _trace, approval: priorApproval, ...rest } = run.request;
+    const approval = held.approval ?? (isWaitStop(run.lastStop) ? undefined : priorApproval);
+    const request = approval ? { ...rest, approval } : rest;
+    const turnWait: TurnWait = {
+      resumedFrom: (callId) => (isWaitStop(run.lastStop) && run.lastStop.callId === callId ? run.lastStop : undefined),
+      childrenBusy: () => deps.ledger.childrenBusy(run.sessionId),
+      suspend(wait) {
+        if (held.wait || shutdown.signal.aborted) return;
+        held.wait = { kind: "waiting", ...wait };
+        shutdown.abort(held.wait);
+      },
+      waiting: () => held.wait !== undefined,
+    };
     let lost = false;
     let misses = 0;
     let extendFailures = 0;
@@ -224,13 +261,20 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         await yieldHeld(held, "person");
         return;
       }
+      const lapsed = held.waited;
+      if (lapsed?.stop.reason === "approval" && !held.approval && lapsed.result && Date.now() >= lapsed.stop.until) {
+        clearInterval(beat);
+        held.yielding = true;
+        await finishWith({ status: "done", result: lapsed.result });
+        return;
+      }
       workDeadline = swarmTurnLimits(run, cancel);
       if (deps.maxClaims !== undefined && countedClaims(run) > deps.maxClaims)
         throw new NonRetryableTurnError(crashLoopReason(countedClaims(run) - 1));
       ended = {
         kind: "result",
-        result: await deps.orchestrator.handleTurn(
-          runTurnInput(
+        result: await deps.orchestrator.handleTurn({
+          ...runTurnInput(
             { ...run, request },
             {
               token,
@@ -241,18 +285,43 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
               fenced: true,
             },
           ),
-        ),
+          turnWait,
+        }),
       };
     } catch (err) {
       ended = { kind: "error", err };
     }
     try {
-      if (shutdown.signal.aborted || lost) {
+      if (held.wait && !lost && !held.cancelled && !held.yielding) {
+        if (ended.kind === "error") swallow(`turns: turn ${run.id} ended its segment to wait`, ended.err);
+        held.yielding = true;
+        await suspendHeld(held, held.wait);
+        return;
+      }
+      if ((shutdown.signal.aborted && !held.wait) || lost) {
         if (ended.kind === "error")
           swallow(`turns: turn ${run.id} ended after ${lost ? "losing its claim" : "handback"}`, ended.err);
         return;
       }
       held.yielding = true;
+      if (
+        ended.kind === "result" &&
+        !held.cancelled &&
+        ended.result.status === "pending_approval" &&
+        ended.result.pendingApprovals?.some((pending) => pending.blocksInput !== false)
+      ) {
+        await suspendHeld(
+          held,
+          {
+            kind: "waiting",
+            reason: "approval",
+            until: Date.now() + (deps.approvalWaitMs ?? APPROVAL_WAIT_MS),
+            requests: (ended.result.pendingApprovals ?? []).map((pending) => pending.requestId),
+          },
+          ended.result,
+        );
+        return;
+      }
       if (ended.kind === "result") {
         await finishWith({
           status: "done",
@@ -292,11 +361,13 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     }
   }
 
-  function launch(run: Run, token: string): void {
+  function launch(run: Run, token: string, claimed: Pick<ClaimedTurn, "approval" | "waited">): void {
     let settle!: () => void;
     const held: HeldTurn = {
       run,
       token,
+      ...(claimed.approval ? { approval: claimed.approval } : {}),
+      ...(claimed.waited ? { waited: claimed.waited } : {}),
       cancel: new AbortController(),
       shutdown: new AbortController(),
       cancelled: false,
@@ -334,14 +405,15 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
             const people = queue === "turns_people";
             if (inFlight.size >= limit + (people ? overcommit : 0)) break;
             const token = `${processId}:${randomUUID()}`;
-            const { claimed, run } = await deps.ledger.claim(queue, token, processId);
+            const turn = await deps.ledger.claim(queue, token, processId);
+            const { claimed, run } = turn;
             if (!claimed) break;
             if (!run) continue;
             if (!mayClaim()) {
               await deps.ledger.handBack(run, token, { unstarted: true });
               break;
             }
-            launch(run, token);
+            launch(run, token, turn);
             if (people && inFlight.size > limit) parkForCapacity();
           }
         }

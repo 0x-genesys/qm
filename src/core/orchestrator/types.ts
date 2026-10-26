@@ -1,4 +1,5 @@
 import type { TraceCarrier } from "../../../plugins/chassis/src/error-reporting.ts";
+import type { TurnWait } from "../../turns/turn-wait.ts";
 import type { GoalCreateInput } from "../../harness/goal.ts";
 import type { RunStop } from "../../runs/run-store.ts";
 import type { ExternalSlackPolicies } from "../../resolution/external-slack.ts";
@@ -103,6 +104,7 @@ export interface OrchestratorInput extends Omit<
   resumeCause?: RunStop;
   runLeaseToken?: string;
   turnFenceToken?: string;
+  turnWait?: TurnWait;
 
   runStartedAt?: number;
   finalAttempt?: boolean;

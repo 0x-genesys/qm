@@ -4,6 +4,7 @@ import type { TurnResult } from "../types.ts";
 import type { OrchestratorInput } from "../core/orchestrator.ts";
 import { isPersonAuthored, resolveTurnOrigin } from "../core/turn-origin.ts";
 import { traceCarrier } from "../../plugins/chassis/src/error-reporting.ts";
+import { isObj } from "../util/objects.ts";
 
 type RunStatus = "queued" | "pending" | "running" | "done" | "failed";
 type RunEngine = "legacy" | "absurd";
@@ -42,7 +43,15 @@ export type RunStop =
   | { kind: "shutdown" }
   | { kind: "parked" }
   | { kind: "lease_expired" }
-  | { kind: "error"; code?: string; status?: number };
+  | { kind: "error"; code?: string; status?: number }
+  | {
+      kind: "waiting";
+      reason: "approval" | "client_tool" | "barrier";
+      until: number;
+      callId?: string;
+      requests?: string[];
+      event?: string;
+    };
 
 export const PARKED: RunStop = { kind: "parked" };
 
@@ -51,7 +60,9 @@ export function stopErrorCode(stop: RunStop | undefined): { errorCode?: string }
 }
 
 export function handbackStop(shutdown: AbortSignal): RunStop {
-  return shutdown.reason === PARKED ? PARKED : { kind: "shutdown" };
+  const reason: unknown = shutdown.reason;
+  if (reason === PARKED || (isObj(reason) && reason.kind === "waiting")) return reason as RunStop;
+  return { kind: "shutdown" };
 }
 
 export interface Run {

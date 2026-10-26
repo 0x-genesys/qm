@@ -2249,6 +2249,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
                 blocked: () =>
                   userAborted ||
                   !!turn.cancel?.aborted ||
+                  !!turn.shutdown?.aborted ||
                   !!entry.ref.runtimeHandoff ||
                   !!entry.ref.pausedOnApproval ||
                   !!entry.ref.pendingApprovals?.length ||
@@ -2289,7 +2290,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             const note = emptyEndingNote({
               wallClock,
               userAborted,
-              cancelled: !!turn.cancel?.aborted,
+              cancelled: !!turn.cancel?.aborted || !!turn.shutdown?.aborted,
               surfaceTools: !!turn.surfaceTools,
               pollFire: !!turn.pollFire,
               ref: entry.ref,
@@ -2437,6 +2438,7 @@ export function createPiHarness(opts?: PiHarnessOptions): Harness {
             await turn.saveGoal?.(g);
             if (g.status === "complete") entry.ref.goal = null;
           }
+          if (turn.shutdown?.aborted) return { reply: "", modelCalls: entry.ref.modelCalls ?? 0 };
           const closingText = recoveryDead ? "" : (piLastAssistantTextOrThrow(entry.agentSession) ?? "");
           // A stall auto-waive stays visible even when the final stop attempt was a silent finish.
           const reply = entry.ref.silentRequested ? "" : closingText;

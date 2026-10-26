@@ -26,6 +26,7 @@ const STOP_CAUSES = {
   lease_expired: "A worker crash",
   error: "An internal error",
   provider: "A model-provider failure",
+  waiting: "A wait for a person, a page or a subagent",
 };
 
 export function unrecordedToolResult(stop: RunStop | undefined): string {

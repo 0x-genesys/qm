@@ -328,7 +328,7 @@ import { createPostgresRunSignalStore } from "./runs/postgres-run-signal-store.t
 import { isTerminal, type Run, type RunStore } from "./runs/run-store.ts";
 import { createTurnLedger, TURN_CANCEL_CHANNEL, TURN_READY_CHANNEL, TURN_YIELD_CHANNEL } from "./turns/turn-ledger.ts";
 import { createTurnRunner, type TurnRunner } from "./turns/turn-runner.ts";
-import { repairStaleTurns, routeTurns } from "./turns/turn-engine.ts";
+import { repairStaleTurns, routeTurns, wakeTurnsOnSignal } from "./turns/turn-engine.ts";
 import { createRunPreemption, createWorker, type Worker } from "./runs/worker.ts";
 import {
   createNoopInstanceRegistry,
@@ -1323,10 +1323,12 @@ export function buildApp(
         })
       : createMemoryToolOutputStore({ sessions });
   const runStoreKind = config.runStore;
-  const runSignals: RunSignalStore =
+  const runSignals: RunSignalStore = wakeTurnsOnSignal(
     runStoreKind === "postgres"
       ? createPostgresRunSignalStore(requireDbUrl("RUN_STORE"))
-      : createMemoryRunSignalStore();
+      : createMemoryRunSignalStore(),
+    () => turnLedger,
+  );
   const writeModelRegistry = <T>(fn: () => Promise<T>): Promise<T> =>
     advisoryLock.withLock("model-registry", async () => {
       await refreshModels();
@@ -1569,6 +1571,7 @@ export function buildApp(
     cancelTree: turnRouting.cancelTree,
     withdraw: turnRouting.withdraw,
     leaseHeld: turnRouting.leaseHeld,
+    steerQueued: turnRouting.steerQueued,
     async enqueue(input) {
       const enqueue = async () => {
         const known = await sessions.getByThread(input.sessionId);

@@ -215,6 +215,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
           run.result ?? { status: "failed", sessionId: run.sessionId, reason: "run produced no result" },
         );
       }
+      if (run.status === "pending" && run.lastStop?.kind === "waiting" && run.result) return withAdminLink(run.result);
       const shutdown = deps.shutdown?.();
       if (shutdown?.aborted) return { status: "queued", sessionId: run.sessionId, runId };
       const claimed =
@@ -743,7 +744,7 @@ export function createAppHelpers(deps: AppDeps, app: App) {
       return drained;
     }
     for (const signal of await deps.signals.takePending(runId)) {
-      if (signal.kind === "abort" || signal.kind === "client_result") continue;
+      if (signal.kind === "abort" || signal.kind === "client_result" || signal.kind === "approval") continue;
       let replayRunId: string | undefined;
       let replayOutcomeKnown = true;
       if (signal.request) {
