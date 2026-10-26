@@ -16,6 +16,7 @@ import { testConfig } from "./support/test-config.ts";
 import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
 
 const SECRET = "dm-relay-secret".repeat(3);
 
@@ -78,7 +79,10 @@ describe("agent → teammate DM: the cron recipient route (§10)", () => {
       { groupId: "G-jrs", principalId: "U-alice" },
       { groupId: "G-jrs", principalId: "U-sam1" },
     ]);
-    server = createServer(built.app, { signingSecret: SECRET });
+    server = createServer(built.app, {
+      replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
+      signingSecret: SECRET,
+    });
     await new Promise<void>((resolve) => server.listen(0, resolve));
     base = `http://localhost:${(server.address() as AddressInfo).port}`;
   });

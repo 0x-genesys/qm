@@ -21,6 +21,7 @@ import { singleProcessDeps } from "./support/single-process.ts";
 import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { testDatabaseUrl, testDeployBackings, testMap } from "./support/test-database.ts";
+import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
 
 const execFileP = promisify(execFile);
 const SECRET = "deploy-git-rw-secret".repeat(3);
@@ -57,7 +58,12 @@ function fixture(urls: { apiBaseUrl?: string; publicUrl?: string } = {}) {
     sessions: createPostgresSessionStore(testDatabaseUrl()),
     identity,
   } as unknown as Parameters<typeof createApp>[0]);
-  const server: Server = createServer(app, { signingSecret: SECRET, identity, ...urls });
+  const server: Server = createServer(app, {
+    replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
+    signingSecret: SECRET,
+    identity,
+    ...urls,
+  });
   server.listen(0);
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return { app, deploy, acl, identity, base, close: () => new Promise<void>((r) => server.close(() => r())) };

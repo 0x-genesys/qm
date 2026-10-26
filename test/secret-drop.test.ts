@@ -28,7 +28,8 @@ import { signedRequestHeaders } from "../plugins/chassis/src/source-auth-sign.ts
 import { scopeId, type TurnRequest, type TurnResult } from "../src/types.ts";
 import { testConfig } from "./support/test-config.ts";
 import { materializeGrant } from "./support/materialize-grant.ts";
-import { testMap } from "./support/test-database.ts";
+import { testMap, testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
 
 const SECRET = "secret-drop-test-secret".repeat(3);
 const execFileAsync = promisify(execFile);
@@ -243,6 +244,7 @@ describe("/v1/keychain/drops — mint, form, redeem", async () => {
       ],
     );
     server = createServer(built.app, {
+      replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
       signingSecret: SECRET,
       keychain: built.keychain,
       secretDrops: built.secretDrops,
@@ -659,6 +661,7 @@ describe("/v1/keychain/drops — sibling-aware resume", () => {
     const fires: DropResolution[] = [];
     let fired: (() => void) | undefined;
     const server = createServer(built.app, {
+      replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
       signingSecret: SECRET,
       keychain: built.keychain,
       secretDrops: built.secretDrops,

@@ -25,7 +25,8 @@ import {
 } from "../src/auth/capability-token.ts";
 import { testConfig } from "./support/test-config.ts";
 import { mintSignedPayload } from "../src/auth/signed-token.ts";
-import { testAdvisoryLock, testMap } from "./support/test-database.ts";
+import { testAdvisoryLock, testMap, testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
 
 const SECRET = "agent-admin-test-secret".repeat(3);
 const ORG = scopeId("org", "default-org");
@@ -54,6 +55,7 @@ function start(withConfig = true) {
     key: deriveConnectorKey("admin-agent-capability-keychain"),
   });
   const server = createServer(built.app, {
+    replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
     admin: built.admin,
     memory: built.memory,
     ...(withConfig ? { config: built.config } : {}),

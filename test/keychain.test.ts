@@ -28,7 +28,8 @@ import { fakeSprites } from "./support/auto-fake-sprites.ts";
 import { testConfig } from "./support/test-config.ts";
 import { selectDefaultSandbox } from "./support/default-sandbox.ts";
 import { materializeGrant } from "./support/materialize-grant.ts";
-import { testAdvisoryLock, testMap } from "./support/test-database.ts";
+import { testAdvisoryLock, testMap, testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
 
 const KEY = deriveConnectorKey("keychain-test-key");
 
@@ -1033,6 +1034,7 @@ describe("/v1/keychain routes (capability-authed)", () => {
       { groupId: "G_CONN", principalId: "carol@conn" },
     ]);
     server = createServer(built.app, {
+      replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
       signingSecret: SECRET,
       keychain: built.keychain,
       workspace: built.workspace,

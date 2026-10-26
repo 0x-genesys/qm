@@ -10,12 +10,17 @@ import { createServer } from "../src/api/server.ts";
 import { signRequest } from "../src/auth/source-auth.ts";
 import { buildApp } from "./support/build-app.ts";
 import { testConfig } from "./support/test-config.ts";
+import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 const SECRET = "test-signing-secret".repeat(3);
 
 function start(): { base: string; app: ReturnType<typeof buildApp>["app"]; close: () => Promise<void> } {
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "claim-")) }));
-  const server = createServer(built.app, { signingSecret: SECRET });
+  const server = createServer(built.app, {
+    replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
+    signingSecret: SECRET,
+  });
   server.listen(0);
   const base = `http://localhost:${(server.address() as AddressInfo).port}`;
   return { base, app: built.app, close: () => new Promise<void>((r) => server.close(() => r())) };

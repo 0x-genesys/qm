@@ -11,7 +11,8 @@ import { mintPortalIdentity } from "../src/auth/portal-identity.ts";
 import { signRequest } from "../src/auth/source-auth.ts";
 import { buildApp } from "../src/wiring.ts";
 import { testConfig } from "./support/test-config.ts";
-import { testConfigStore, testMap } from "./support/test-database.ts";
+import { testConfigStore, testMap, testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
 
 const SECRET = "personal-account-test-signing-secret";
 
@@ -33,6 +34,7 @@ test("personal account choice persists across instances without changing anyone 
 test("account API binds choice to the signed-in person, preserves connections, and fails closed after disconnect", async () => {
   const built = buildApp(testConfig({ dataDir: mkdtempSync(join(tmpdir(), "personal-account-")) }));
   const server = createServer(built.app, {
+    replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
     signingSecret: SECRET,
     requireSignedPortalIdentity: true,
     capabilitySecret: SECRET + "capability",
