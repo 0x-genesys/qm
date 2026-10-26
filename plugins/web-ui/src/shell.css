@@ -1109,7 +1109,7 @@ a.chat-row-open {
   width: 100%;
 }
 .settings-slack-account .slack-connected,
-.settings-slack-account .welcome-slack {
+.settings-slack-account .slack-connect {
   margin-bottom: 0;
 }
 .settings-row-copy {
@@ -1161,17 +1161,6 @@ a.chat-row-open {
   background: var(--background);
   color: var(--foreground);
 }
-.settings-theme-controls {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  margin-left: auto;
-  gap: 7px;
-}
-.settings-theme-import {
-  display: inline-flex;
-  gap: 12px;
-}
 .settings-theme-link {
   padding: 0;
   border: 0;
@@ -1188,16 +1177,6 @@ a.chat-row-open {
 }
 .settings-row-error {
   color: var(--destructive);
-}
-.theme-swatches {
-  display: inline-flex;
-  gap: 2px;
-}
-.theme-swatch {
-  width: 8px;
-  height: 14px;
-  border-radius: 2px;
-  border: 1px solid color-mix(in srgb, var(--foreground) 25%, transparent);
 }
 
 .main {
@@ -1663,11 +1642,6 @@ a.chat-row-open {
   text-align: center;
 }
 @container chat (min-width: 471px) {
-  .empty-stack:has(.welcome-greeting) {
-    width: min(calc(var(--content-w) * 0.75), 75%);
-    padding-inline: 0;
-  }
-
   .custom-chat-shell.empty-chat .composer-wrap,
   .custom-chat-shell.empty-chat .suggested-activities {
     width: min(calc(var(--content-w) * 0.75), 75%);
@@ -1680,26 +1654,6 @@ a.chat-row-open {
   }
 }
 
-.message-row.welcome-greeting {
-  align-self: center;
-  width: 100%;
-  max-width: var(--content-w);
-  padding-bottom: 24px;
-}
-.welcome-greeting .assistant-body {
-  font-size: max(min(12px, var(--chat-font-size)), calc(var(--chat-font-size) * var(--text-scale)));
-  line-height: 1.55;
-}
-.welcome-greeting h1 {
-  margin: 0 0 12px;
-  font-size: var(--font-26);
-  font-weight: 450;
-  letter-spacing: -0.01em;
-}
-.welcome-greeting p {
-  margin: 0;
-  color: var(--muted-foreground);
-}
 .message-row {
   display: flex;
   min-width: 0;
