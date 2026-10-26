@@ -67,16 +67,21 @@ test("a worker whose turn is interrupted while its goal is active is woken to co
   assert.equal((await workerRuns()).filter((run) => run.status === "pending").length, 0);
 });
 
-test("a goal continuation is queued even when the swarm's message and notification budgets are spent", async () => {
+test("a goal continuation is queued outside the swarm's message and notification budgets", async () => {
   const { f, member, setGoal, finishOpenRun, continuation, continuations } = await goalWorker({
-    messages: 1,
+    messages: 2,
     notifications: 1,
   });
   await setGoal({ ...createGoalRecord({ objective: "Exhaust the lane" }), tokensUsed: 10 });
   await finishOpenRun();
-  await assert.rejects(f.service.send(f.caller, { requestId: "over", audience: [member.id], text: "more" }), /budget/);
+  await assert.rejects(
+    f.service.send(f.caller, { requestId: "over", audience: [member.id], text: "more", notify: true }),
+    /budget/,
+  );
   await continuation.sweep();
   assert.equal((await continuations()).length, 1);
+  assert.equal((await f.store.get(f.root.id))!.notificationCount, 1);
+  await f.service.send(f.caller, { requestId: "mailbox", audience: [member.id], text: "later", notify: false });
 });
 
 for (const [name, prepare] of [

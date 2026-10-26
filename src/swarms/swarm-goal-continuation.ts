@@ -69,9 +69,9 @@ export function createSwarmGoalContinuation(deps: {
           actorId: current.ownerId,
           text: GOAL_CONTINUATION_TEXT,
           audience: [recipient.id],
+          unbudgeted: true,
         },
         [recipient.id],
-        { budgeted: false },
       );
     });
   }

@@ -195,9 +195,9 @@ about a minute. A person's stop pauses the goal, so it gets no wake-up, and
 ordinary failures are left to run retries. A wake-up is queued only while the worker is active, the goal's token cap
 is not spent, and the goal used tokens since the last such message, so a turn that
 cannot start is not retried forever. A sweep of recently finished swarm runs, on
-startup and every minute, queues these wake-ups, so one survives a restart. These messages count toward the
-`messages` and `notifications` budgets but are never refused by them; the progress
-check and the goal's token cap bound them instead. `floor` and `token_cap` take the same keys as the goal tool, and
+startup and every minute, queues these wake-ups, so one survives a restart. These messages are outside the
+`messages` and `notifications` budgets: they neither count toward nor are refused
+by them, and the progress check and the goal's token cap bound them instead. `floor` and `token_cap` take the same keys as the goal tool, and
 neither is required. Goals go to workers, not the root session (a goal sent to
 `all` skips the root and the sender), and a goal needs `notify`. The worker treats the agent that sent the goal as the user for it and
 messages that agent when it needs a decision. When a goal is complete, the worker

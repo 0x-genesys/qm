@@ -51,6 +51,7 @@ export interface SwarmMessage {
   audience: string[];
   replyTo?: string;
   goal?: GoalCreateInput;
+  unbudgeted?: true;
   createdAt: number;
   notifications: Record<string, { state: "pending" | "mailbox" | "queued" | "handed" | "failed"; runId?: string }>;
 }
@@ -109,7 +110,8 @@ export function controlState(swarm: Swarm, memberId: string): SwarmControlState 
 }
 
 function messageBudget(swarm: Swarm, woken: number): string | undefined {
-  if (swarm.messages.length >= (swarm.settings.messages ?? Infinity)) return "swarm message budget exhausted";
+  const counted = swarm.messages.filter((message) => !message.unbudgeted).length;
+  if (counted >= (swarm.settings.messages ?? Infinity)) return "swarm message budget exhausted";
   if (swarm.notificationCount + woken > (swarm.settings.notifications ?? Infinity))
     return "swarm notification budget exhausted";
   return undefined;
@@ -119,11 +121,10 @@ export function appendMessage(
   swarm: Swarm,
   message: Omit<SwarmMessage, "id" | "seq" | "createdAt" | "notifications"> & { id?: string },
   recipients: readonly string[],
-  options: { wakes?: boolean; budgeted?: boolean } = {},
+  wakes = true,
 ): void {
-  const wakes = options.wakes ?? true;
-  const woken = wakes ? recipients.length : 0;
-  const budget = options.budgeted === false ? undefined : messageBudget(swarm, woken);
+  const woken = wakes && !message.unbudgeted ? recipients.length : 0;
+  const budget = message.unbudgeted ? undefined : messageBudget(swarm, woken);
   if (budget) throw new Error(budget);
   swarm.notificationCount += woken;
   swarm.messages.push({

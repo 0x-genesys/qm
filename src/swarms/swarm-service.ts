@@ -769,7 +769,7 @@ export function createSwarmService(deps: {
             ...(goal ? { goal } : {}),
           },
           recipients,
-          { wakes: input.notify ?? (!!goal || caller.kind === "human") },
+          input.notify ?? (!!goal || caller.kind === "human"),
         );
         swarm.messageRequests[key] = { messageId: id, signature: fingerprint };
       });
