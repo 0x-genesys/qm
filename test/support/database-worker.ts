@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { parentPort, workerData, type MessagePort } from "node:worker_threads";
 import pg from "pg";
@@ -21,12 +20,6 @@ function quoted(name: string): string {
   return `"${name.replaceAll('"', '""')}"`;
 }
 
-function databaseUrl(name: string): string {
-  const url = new URL(baseUrl);
-  url.pathname = `/${name}`;
-  return url.toString();
-}
-
 async function createDatabase(template: string): Promise<string> {
   const name = `${prefix}_${randomBytes(6).toString("hex")}`;
   await (await admin()).query(`CREATE DATABASE ${quoted(name)}${template ? ` TEMPLATE ${quoted(template)}` : ""}`);
@@ -39,25 +32,15 @@ function prepare(template: string): void {
   prepared.set(template, next);
 }
 
-async function migratedTemplate(): Promise<string> {
-  const name = await createDatabase("");
-  await new Promise<void>((resolve, reject) => {
-    execFile(process.execPath, [new URL("./test-template.ts", import.meta.url).pathname, databaseUrl(name)], (error) =>
-      error ? reject(error) : resolve(),
-    );
-  });
-  return name;
-}
-
 async function take(template: string): Promise<string> {
   const name = await (prepared.get(template) ?? createDatabase(template));
   prepare(template);
   return name;
 }
 
-parentPort!.on("message", async (request: { template?: string; migrate?: boolean }) => {
+parentPort!.on("message", async (request: { template?: string }) => {
   try {
-    const name = request.migrate ? await migratedTemplate() : await take(request.template ?? "");
+    const name = await take(request.template ?? "");
     port.postMessage({ ok: true, name });
   } catch (error) {
     port.postMessage({ ok: false, message: error instanceof Error ? error.message : String(error) });

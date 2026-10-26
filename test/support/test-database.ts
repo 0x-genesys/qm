@@ -17,7 +17,7 @@ function baseDatabaseUrl(): URL {
 
 let databaseWorker: { worker: Worker; signal: Int32Array; port: MessagePort } | undefined;
 
-function createDatabaseSync(request: { template?: string; migrate?: boolean }): string {
+function createDatabaseSync(request: { template?: string }): string {
   if (!databaseWorker) {
     const signal = new Int32Array(new SharedArrayBuffer(4));
     const { port1, port2 } = new MessageChannel();
@@ -48,11 +48,8 @@ export function testDatabaseUrl(): string {
   return databaseUrl(createDatabaseSync({}));
 }
 
-let migratedTemplate: string | undefined;
-
 export function testMigratedDatabaseUrl(): string {
-  migratedTemplate ??= process.env.QM_TEST_TEMPLATE_DATABASE || createDatabaseSync({ migrate: true });
-  return databaseUrl(createDatabaseSync({ template: migratedTemplate }));
+  return databaseUrl(createDatabaseSync({ template: process.env.QM_TEST_TEMPLATE_DATABASE ?? "" }));
 }
 
 let shared: { url: string; maps: ReturnType<typeof createPostgresMapFactory> } | undefined;
