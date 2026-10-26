@@ -380,11 +380,12 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     return provisioned;
   };
 
-  const provisionScratchJob = async (): Promise<SandboxHandle> => {
+  const provisionScratchJob = async (): Promise<{ handle: SandboxHandle; sandboxId: string }> => {
     if (!deps.scratchJobs) throw new Error("background jobs on a scratch computer are not available here");
-    const handle = { ...(await provisionScratch()), resourceId: scratchJobComputerId(scratchKey()) };
-    deps.scratchJobs.hold(handle);
-    return handle;
+    const handle = await provisionScratch();
+    const sandboxId = scratchJobComputerId(scratchKey());
+    deps.scratchJobs.hold(sandboxId, handle);
+    return { handle, sandboxId };
   };
   const provisionScratch = (): Promise<SandboxHandle> => {
     if (scratchBox.pending)

@@ -75,13 +75,13 @@ function fixture() {
 test("a scratch computer running a background job outlives its turn until the job exits", async () => {
   const f = fixture();
   const first = f.turn("turn-one");
-  const handle = await first.provisionScratchJob();
-  const job = await f.broker.start(handle, "sync", "Sync mail", 60_000);
+  const { handle, sandboxId } = await first.provisionScratchJob();
+  const job = await f.broker.start(handle, "sync", "Sync mail", 60_000, undefined, sandboxId);
   const record = await f.processes.get(job.processId);
-  assert.equal(record?.sandboxId, handle.resourceId);
+  assert.equal(record?.sandboxId, sandboxId);
   await first.reclaimBox();
   assert.deepEqual(f.destroyed, []);
-  assert.equal(f.scratchJobs.get(handle.resourceId!)?.id, handle.id);
+  assert.equal(f.scratchJobs.get(sandboxId)?.id, handle.id);
   const quiet = f.turn("turn-two");
   await quiet.provisionScratch();
   await quiet.reclaimBox();
@@ -90,14 +90,14 @@ test("a scratch computer running a background job outlives its turn until the jo
   await settle(() => f.destroyed.includes(handle.id));
   assert.equal((await f.processes.get(job.processId))?.status, "exited");
   assert.deepEqual(f.finished, [job.processId]);
-  assert.equal(f.scratchJobs.get(handle.resourceId!), undefined);
+  assert.equal(f.scratchJobs.get(sandboxId), undefined);
 });
 
 test("the reaper kills a retained scratch job in place and skips one this process no longer holds", async () => {
   const f = fixture();
   const first = f.turn("turn-one");
-  const handle = await first.provisionScratchJob();
-  const job = await f.broker.start(handle, "sync", "Sync mail", 60_000);
+  const { handle, sandboxId } = await first.provisionScratchJob();
+  const job = await f.broker.start(handle, "sync", "Sync mail", 60_000, undefined, sandboxId);
   await first.reclaimBox();
   const kill = createReaperKillHook(f.sandbox, { termGraceMs: 5, killGraceMs: 5, scratchJobs: f.scratchJobs });
   const provisionsBefore = f.provisions.length;
@@ -111,8 +111,8 @@ test("the reaper kills a retained scratch job in place and skips one this proces
 test("draining destroys scratch computers still held for background jobs", async () => {
   const f = fixture();
   const first = f.turn("turn-one");
-  const handle = await first.provisionScratchJob();
-  await f.broker.start(handle, "sync", "Sync mail", 60_000);
+  const { handle, sandboxId } = await first.provisionScratchJob();
+  await f.broker.start(handle, "sync", "Sync mail", 60_000, undefined, sandboxId);
   await first.reclaimBox();
   assert.deepEqual(f.destroyed, []);
   await f.scratchJobs.drain();

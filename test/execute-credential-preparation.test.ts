@@ -267,11 +267,11 @@ test("without a scratch computer private credentials are refused and brokered on
 
 test("background jobs with private credentials start on the turn's scratch computer", async () => {
   const events: string[] = [];
-  const started: Array<[string, string, Record<string, string> | undefined]> = [];
+  const started: Array<[string, string | undefined, string, Record<string, string> | undefined]> = [];
   const { ctx } = scratchContext(events, {
     async provisionScratchJob() {
       events.push("scratch-job");
-      return { id: "scratch", rootDir: "/scratch", resourceId: "scratch-job:turn" };
+      return { handle: { id: "scratch", rootDir: "/scratch" }, sandboxId: "scratch-job:turn" };
     },
     backgroundBroker: {
       async start(
@@ -280,8 +280,9 @@ test("background jobs with private credentials start on the turn's scratch compu
         _purpose: string,
         _ttl: number,
         credentials?: { env?: Record<string, string> },
+        jobSandboxId?: string,
       ) {
-        started.push([target.resourceId!, command, credentials?.env]);
+        started.push([target.id, jobSandboxId, command, credentials?.env]);
         return { processId: "p1", output: "", cursor: 0, status: { state: "running" }, reattached: false };
       },
     } as unknown as ToolContextDeps["backgroundBroker"],
@@ -291,8 +292,8 @@ test("background jobs with private credentials start on the turn's scratch compu
   const plain = await ctx.backgroundStart("gh auth login", { purpose: "Log in" });
   assert.equal(plain.scratchReroute, undefined);
   assert.deepEqual(started, [
-    ["scratch-job:turn", "sync", { GRANTED_TOKEN: "granted-secret" }],
-    [undefined, "gh auth login", undefined],
+    ["scratch", "scratch-job:turn", "sync", { GRANTED_TOKEN: "granted-secret" }],
+    ["credential-preparation", undefined, "gh auth login", undefined],
   ]);
   assert.ok(!events.includes("resource"));
 });

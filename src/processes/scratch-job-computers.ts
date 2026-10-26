@@ -13,7 +13,7 @@ export const SCRATCH_JOB_GONE_MESSAGE =
   "this background job's computer belonged to an earlier server process and was retired on deploy; the job and its files are gone";
 
 export interface ScratchJobComputers {
-  hold(handle: SandboxHandle & { resourceId: string }): void;
+  hold(sandboxId: string, handle: SandboxHandle): void;
   get(sandboxId: string): SandboxHandle | undefined;
   retainWhileJobsRun(sandboxId: string, retire: () => Promise<void>): Promise<boolean>;
   drain(): Promise<void>;
@@ -65,8 +65,8 @@ export function createScratchJobComputers(deps: {
       entry.timer.unref();
     });
   return {
-    hold(handle) {
-      if (!held.has(handle.resourceId)) held.set(handle.resourceId, { handle });
+    hold(sandboxId, handle) {
+      if (!held.has(sandboxId)) held.set(sandboxId, { handle });
     },
     get: (sandboxId) => held.get(sandboxId)?.handle,
     async retainWhileJobsRun(sandboxId, retireComputer) {

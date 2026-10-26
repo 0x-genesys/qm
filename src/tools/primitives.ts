@@ -484,7 +484,7 @@ export interface ToolContextDeps {
   resolveCommandCredentials?: (handles: readonly string[]) => Promise<readonly CommandCredential[]>;
   provision: () => Promise<SandboxHandle>;
   provisionScratch?: () => Promise<SandboxHandle>;
-  provisionScratchJob?: () => Promise<SandboxHandle>;
+  provisionScratchJob?: () => Promise<{ handle: SandboxHandle; sandboxId: string }>;
   provisionResource?: (
     input: string | SandboxAccessPlan,
     authorize?: (access: SandboxAccessPlan) => void,
@@ -1283,9 +1283,10 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       if (scratchOnly && !deps.provisionScratchJob) throw new Error(SCRATCH_REQUIRED_MESSAGE);
       const policy = deps.commandPolicy;
       let handle: SandboxHandle;
+      let jobSandboxId: string | undefined;
       if (scratchOnly) {
         authorizeExecution(command, undefined, policy());
-        handle = await deps.provisionScratchJob!();
+        ({ handle, sandboxId: jobSandboxId } = await deps.provisionScratchJob!());
       } else if (opts?.sandboxId !== undefined) {
         if (!deps.sandboxResources || !deps.provisionResource) throw new Error("sandbox inventory unavailable");
         const access = await accessSandbox(opts.sandboxId);
@@ -1323,6 +1324,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
             opts.purpose,
             opts?.ttlSeconds ? opts.ttlSeconds * 1000 : undefined,
             credentials,
+            jobSandboxId,
           );
           return scratchOnly ? { ...started, scratchReroute: true } : started;
         },
