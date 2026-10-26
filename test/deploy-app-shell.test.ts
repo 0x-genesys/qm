@@ -20,6 +20,7 @@ import { singleProcessDeps } from "./support/single-process.ts";
 import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { testDatabaseUrl, testMap, testDeployBackings } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 const auditLog = { record() {}, events: async () => [], tail: async () => [] };
 const GATE_SECRET = "gate-secret";
@@ -27,7 +28,7 @@ const PORTAL = "https://portal.example.com";
 
 function appServingUpstream(upstreamPort: number) {
   const deployStore = createDeployStore(testDeployBackings());
-  const acl = createAclStore();
+  const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   const directory = createPostgresDirectoryStore(testDatabaseUrl());
   const deploy = createDeployService({
     ...singleProcessDeps(),

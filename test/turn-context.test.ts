@@ -9,6 +9,7 @@ import { createPostgresAuditLog } from "../src/admin/postgres-audit-log.ts";
 import { createPostgresFileArtifactStore } from "../src/files/postgres-file-artifact-store.ts";
 import { createPostgresMemoryService } from "../src/memory/postgres-memory-service.ts";
 import { testConfigStore, testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 async function fixture() {
   const memory = createPostgresMemoryService(testDatabaseUrl());
@@ -25,7 +26,9 @@ async function fixture() {
     sharingPosture: "open",
     grantedHandles: [],
   } as unknown as Resolution;
-  const acl = createAclStore(undefined, { resolveFiles: (refs) => files.resolveByIds(refs) });
+  const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()), {
+    resolveFiles: (refs) => files.resolveByIds(refs),
+  });
   const input: Parameters<typeof resolveTurnContext>[0] = {
     actor: { id: "alice", type: "internal" },
     audience: [{ id: "alice", type: "internal" }],

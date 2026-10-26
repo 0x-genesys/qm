@@ -552,7 +552,6 @@ test("live() reports the runtime source and durable reflects the backing", async
     skills,
     scopeId: scopeId("org", "default-org"),
   });
-  assert.equal(none.durable, false);
   assert.deepEqual(none.live(), { source: "none", contentHash: null, resolved: null });
 
   const fsRuntime = resolvedDeploymentLayer("/layer", []);
@@ -562,9 +561,7 @@ test("live() reports the runtime source and durable reflects the backing", async
     runtime: fsRuntime,
     skills,
     scopeId: scopeId("org", "default-org"),
-    durable: true,
   });
-  assert.equal(fs.durable, true);
   assert.equal(fs.live().source, "filesystem");
   await fs.put({ contract: 1, tools: [tool("acme CLI")], skills: [] }, "api");
   assert.equal(fs.live().source, "durable");

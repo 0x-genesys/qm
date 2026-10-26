@@ -16,6 +16,7 @@ import { createAttachStaging } from "../src/core/orchestrator/attach-tool.ts";
 import { createMemoryBlobTransferStore, collectBlob } from "../src/persistence/blob-transfer.ts";
 import { createPostgresFileArtifactStore } from "../src/files/postgres-file-artifact-store.ts";
 import { testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 const person = (id: string, teamIds?: string[]): Principal => ({
   id,
@@ -28,7 +29,12 @@ const grantee = scopeId("personal", "U2");
 
 function fixture() {
   const files = createPostgresFileArtifactStore(testDatabaseUrl(), createMemoryDurableByteStore());
-  return { files, acl: createAclStore(undefined, { resolveFiles: (refs) => files.resolveByIds(refs) }) };
+  return {
+    files,
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl()), {
+      resolveFiles: (refs) => files.resolveByIds(refs),
+    }),
+  };
 }
 
 async function put(files: FileArtifactStore, ownerScopeId: string, name: string, data: Uint8Array) {

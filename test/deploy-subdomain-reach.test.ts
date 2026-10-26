@@ -22,6 +22,7 @@ import { createPostgresDirectoryStore } from "../src/directory/postgres-director
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { testDatabaseUrl, testDeployBackings, testMap } from "./support/test-database.ts";
 import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 const audits: Array<(e: AuditEvent) => void> = [];
 const onceKeys = new Set<string>();
@@ -59,7 +60,7 @@ function serviceWithProvider(provider: DeployProvider) {
     deployStore,
     provider,
     auditLog,
-    acl: createAclStore(),
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl())),
     deployDir: mkdtempSync(join(tmpdir(), "seam-")),
   });
   return { deploy, deployStore };
@@ -152,12 +153,12 @@ function appServingUpstream(upstreamPort: number) {
       destroy: async () => {},
     },
     auditLog,
-    acl: createAclStore(),
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl())),
     deployDir: mkdtempSync(join(tmpdir(), "subdomain-")),
   });
   const app = createApp({
     deploy,
-    acl: createAclStore(),
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl())),
     directory: createPostgresDirectoryStore(testDatabaseUrl()),
     sessions: createPostgresSessionStore(testDatabaseUrl()),
     identity: createIdentityService(testMap(), { externalMembers: testMap() }),

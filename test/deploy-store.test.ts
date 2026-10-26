@@ -17,7 +17,8 @@ import type { DeployGitArchive } from "../src/deploy/deploy-git-store.ts";
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
 import { scopeId } from "../src/types.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
-import { testMap, testDeployBackings } from "./support/test-database.ts";
+import { testMap, testDeployBackings, testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 test("deploy versions are immutable and rollback flips the pointer", async () => {
   const s = createDeployStore(testDeployBackings());
@@ -102,7 +103,7 @@ test("a provider without reconcile receives durable Git contents after a push", 
     },
     deployDir: join(root, "snapshots"),
     auditLog: { record() {}, events: async () => [], tail: async () => [] },
-    acl: createAclStore(),
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl())),
   });
   const d = await deploy.deploy({
     ownerScopeId: scopeId("personal", "U1"),
@@ -569,7 +570,7 @@ test("resident home files are held to the same path rules as app files", async (
   const repoRoot = mkdtempSync(join(tmpdir(), "deploy-git-homefiles-"));
   const deployDir = mkdtempSync(join(tmpdir(), "deploy-home-snap-"));
   const s = createDeployStore(testDeployBackings({ git: { repoRoot } }));
-  const acl = createAclStore();
+  const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   const deploy = createDeployService({
     ...singleProcessDeps(),
     deployStore: s,

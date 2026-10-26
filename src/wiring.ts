@@ -657,7 +657,6 @@ export function buildApp(
     skills,
     skillBundles,
     scopeId: orgScope,
-    durable: true,
     advisoryLock,
     auditPersisted: (record) =>
       auditLog.recordOnce!(`deployment-layer:${orgScope}:${record.version}`, {

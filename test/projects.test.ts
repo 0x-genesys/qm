@@ -24,7 +24,8 @@ import { buildApp } from "./support/build-app.ts";
 import { testConfig } from "./support/test-config.ts";
 import { runNowSettled } from "./support/settle.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
-import { testMap, testDeployBackings } from "./support/test-database.ts";
+import { testMap, testDeployBackings, testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 test("ProjectStore atomically maintains a managed-group roster", async () => {
   let at = 10;
@@ -449,7 +450,7 @@ test("Project routes use ordinary group sessions with the durable roster as auth
     approval: { requestId: pendingApproval.requestId, approved: true },
   });
   assert.equal(forgedApproval.status, "refused");
-  const deployAcl = createAclStore();
+  const deployAcl = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   const deploy = createDeployService({
     ...singleProcessDeps(),
     deployStore: createDeployStore(testDeployBackings()),

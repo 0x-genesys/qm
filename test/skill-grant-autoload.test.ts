@@ -6,7 +6,8 @@ import { principalEntitledToScope } from "../src/resolution/context-filter.ts";
 import { type DurableMap } from "../src/persistence/durable-map.ts";
 import { createSkillStore, type Skill, type SkillManifest, type SkillStore } from "../src/skills/skill-store.ts";
 import { scopeId, type Principal, type ScopeId } from "../src/types.ts";
-import { testMap, testAdvisoryLock } from "./support/test-database.ts";
+import { testMap, testAdvisoryLock, testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 const ORG = scopeId("org", "default-org");
 const JOSH = scopeId("personal", "josh");
@@ -27,7 +28,7 @@ async function publishedSkill(store: SkillStore, scope: ScopeId, name: string) {
 }
 
 test("person-to-person skill grant reaches the grantee's audience", async () => {
-  const acl = createAclStore();
+  const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   await acl.grant({
     ownerScopeId: JOSH,
     ref: encodeRef(skillRef("s1")),

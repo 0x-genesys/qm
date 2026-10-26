@@ -37,6 +37,7 @@ import {
   testMap,
   testDeployBackings,
 } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 function fakeSandbox(): Sandbox {
   const unreached = () => {
@@ -106,7 +107,7 @@ async function scenario() {
       },
     },
   );
-  const acl = createAclStore();
+  const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   const auditLog = createPostgresAuditLog(testDatabaseUrl());
   const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "session-mail-")));
   const orchestrator = createOrchestrator({

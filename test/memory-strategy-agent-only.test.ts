@@ -5,7 +5,8 @@ import { AGENT_ONLY_PROMPT_LINES, createAgentOnlyStrategy } from "../src/memory/
 import { createResolutionService } from "../src/resolution/resolution-service.ts";
 import { createAclStore } from "../src/acl/acl-store.ts";
 import type { Conversation, Principal } from "../src/types.ts";
-import { testConfigStore } from "./support/test-database.ts";
+import { testConfigStore, testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 const actor: Principal = { id: "u1", type: "internal" };
 const conversation: Conversation = { kind: "dm", threadRef: "t1", audience: [actor] };
@@ -32,7 +33,11 @@ test("createMemoryStrategy('agent-only') returns the agent-only strategy", () =>
 });
 
 test("resolution systemPrompt no longer embeds the memory section — it moved to shared-core + the orchestrator strategy block", async () => {
-  const resolution = createResolutionService("default-org", testConfigStore("default-org"), createAclStore());
+  const resolution = createResolutionService(
+    "default-org",
+    testConfigStore("default-org"),
+    createAclStore(createPostgresGrantStore(testDatabaseUrl())),
+  );
   const res = await resolution.resolve(conversation, actor);
   assert.ok(!res.systemPrompt.includes(AGENT_ONLY_PROMPT_LINES[0] as string));
 });

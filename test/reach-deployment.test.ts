@@ -18,10 +18,11 @@ import { createPostgresDirectoryStore } from "../src/directory/postgres-director
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { testDatabaseUrl, testDeployBackings, testMap } from "./support/test-database.ts";
 import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 function appWithFakeRuntime() {
   const deployStore = createDeployStore(testDeployBackings());
-  const acl: AclStore = createAclStore();
+  const acl: AclStore = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   const deploy = createDeployService({
     ...singleProcessDeps(),
     deployStore,

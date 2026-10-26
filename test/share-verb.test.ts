@@ -18,6 +18,7 @@ import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts
 import type { ManagesArtifactHome } from "../src/resolution/scope-membership.ts";
 import { createPostgresFileArtifactStore } from "../src/files/postgres-file-artifact-store.ts";
 import { testDatabaseUrl, testAdvisoryLock, testMap } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 const ORG = "default-org";
 
@@ -119,7 +120,7 @@ function baseState(over: Partial<FakeState> = {}): FakeState {
     recipients: {},
     privateChannels: new Set(),
     files,
-    acl: createAclStore(undefined, {
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl()), {
       manages: (p, s, a) => manages(s, a ?? "", p),
       resolveFiles: (refs) => files.resolveByIds(refs),
     }),

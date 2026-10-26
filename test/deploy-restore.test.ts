@@ -8,7 +8,8 @@ import { createDeployStore, type DeployStore } from "../src/deploy/deploy-store.
 import { createAclStore } from "../src/acl/acl-store.ts";
 import { scopeId } from "../src/types.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
-import { testDeployBackings } from "./support/test-database.ts";
+import { testDeployBackings, testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 function harness(failRestore = false) {
   let applies = 0;
@@ -28,7 +29,7 @@ function harness(failRestore = false) {
       },
     },
     auditLog: { record() {}, events: async () => [], tail: async () => [] },
-    acl: createAclStore(),
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl())),
     deployDir: mkdtempSync(join(tmpdir(), "deploy-restore-")),
   });
   return { deploy, counts: () => ({ applies, destroys }) };
@@ -63,7 +64,7 @@ function persistenceFailureHarness(failMethod: "setVersionImage" | "setEndpoint"
       },
     },
     auditLog: { record() {}, events: async () => [], tail: async () => [] },
-    acl: createAclStore(),
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl())),
     deployDir: mkdtempSync(join(tmpdir(), "deploy-restore-persistence-")),
   });
   return {

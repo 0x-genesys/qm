@@ -12,6 +12,7 @@ import type { Sandbox, SandboxHandle } from "../src/sandbox/sandbox.ts";
 import { createIdentityService } from "../src/identity/identity-service.ts";
 import { createPostgresFileArtifactStore } from "../src/files/postgres-file-artifact-store.ts";
 import { testDatabaseUrl, testMap } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 const ORG = "default-org";
 const initiator = "U1";
@@ -70,7 +71,9 @@ function makeApp(files: FileArtifactStore, acl: ReturnType<typeof createAclStore
 
 test("a file delivered in a PUBLIC channel is auto-shared (read) with the org — visible to other members", async () => {
   const files = createPostgresFileArtifactStore(testDatabaseUrl(), createMemoryDurableByteStore());
-  const acl = createAclStore(undefined, { resolveFiles: (refs) => files.resolveByIds(refs) });
+  const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()), {
+    resolveFiles: (refs) => files.resolveByIds(refs),
+  });
   await collectNamedOutbound(
     memSandbox({ "flag.png": PNG }),
     HANDLE,
@@ -93,7 +96,9 @@ test("a file delivered in a PUBLIC channel is auto-shared (read) with the org �
 
 test("a file delivered in a DM stays owner-only — no auto-share", async () => {
   const files = createPostgresFileArtifactStore(testDatabaseUrl(), createMemoryDurableByteStore());
-  const acl = createAclStore(undefined, { resolveFiles: (refs) => files.resolveByIds(refs) });
+  const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()), {
+    resolveFiles: (refs) => files.resolveByIds(refs),
+  });
   await collectNamedOutbound(
     memSandbox({ "note.txt": Buffer.from("private") }),
     HANDLE,

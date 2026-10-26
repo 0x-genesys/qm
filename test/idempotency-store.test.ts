@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createIdempotencyStore, type IdempotencyRecord } from "../src/idempotency/idempotency-store.ts";
 import { testMap } from "./support/test-database.ts";
 
-test("once runs fn the first time and skips on replay (in-memory)", async () => {
+test("once runs fn the first time and skips on replay", async () => {
   const store = createIdempotencyStore(testMap());
   let runs = 0;
   assert.equal(await store.once("k", async () => void runs++), true);

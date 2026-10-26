@@ -23,6 +23,7 @@ import { createPostgresAuditLog } from "../src/admin/postgres-audit-log.ts";
 import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { testDatabaseUrl, testDeployBackings, testMap } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 const owner = "alice@example.com";
 const requester = "bob@example.com";
@@ -39,7 +40,7 @@ const request = { deploymentId: "00000000-0000-4000-8000-000000000001", requeste
 async function fixture(t: { after(fn: () => void): void }) {
   const dir = mkdtempSync(join(tmpdir(), "deploy-access-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const acl = createAclStore();
+  const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   const auditLog = createPostgresAuditLog(testDatabaseUrl());
   const deliveries = createDeliveryStore();
   const identity = createIdentityService(testMap(), { externalMembers: testMap() });

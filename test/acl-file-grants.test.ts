@@ -7,6 +7,7 @@ import { principalEntitledToScope } from "../src/resolution/context-filter.ts";
 import type { Grant, Principal } from "../src/types.ts";
 import { createPostgresFileArtifactStore } from "../src/files/postgres-file-artifact-store.ts";
 import { testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 const owner = "personal:alice";
 const recipient = "personal:bob";
@@ -32,7 +33,12 @@ async function fixture() {
     data: Buffer.from("hello"),
     direction: "out",
   });
-  return { files, acl: createAclStore(undefined, { resolveFiles: (refs) => files.resolveByIds(refs) }) };
+  return {
+    files,
+    acl: createAclStore(createPostgresGrantStore(testDatabaseUrl()), {
+      resolveFiles: (refs) => files.resolveByIds(refs),
+    }),
+  };
 }
 
 test("file grants require a real, enabled Files ID owned by the granting scope", async () => {
@@ -53,7 +59,7 @@ test("file grants require a real, enabled Files ID owned by the granting scope",
 });
 
 test("missing Files resolver fails closed for grants and replacement grants", async () => {
-  const acl = createAclStore();
+  const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   await assert.rejects(acl.grant(grant), /Files record ID/);
   await assert.rejects(acl.replaceGrantsIfCurrent(owner, "F1", [], [grant], "alice"), /Files record ID/);
   assert.deepEqual(await acl.list(), []);

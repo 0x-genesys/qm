@@ -13,6 +13,7 @@ import { scopeId } from "../src/types.ts";
 import { orgId } from "../src/config.ts";
 import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
 import { testAdvisoryLock, testDatabaseUrl, testMap } from "./support/test-database.ts";
+import { createPostgresGrantStore } from "../src/acl/postgres-grant-store.ts";
 
 function fixture() {
   const keychain = createKeychain({
@@ -22,7 +23,7 @@ function fixture() {
     asks: testMap(),
     key: deriveConnectorKey("composio-test"),
   });
-  const acl = createAclStore();
+  const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()));
   const app = { getSessionForViewer: async (_id: string, _viewer: string): Promise<unknown> => null };
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   const replies: unknown[] = [];
