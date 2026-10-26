@@ -14,6 +14,15 @@ import { createSlackRuntimeReconciler } from "./surfaces/slack-runtime.ts";
 import { migrateRegisteredPgSchemas } from "./persistence/pg-pool.ts";
 
 const config = loadConfig();
+if (!config.roles.includes("api"))
+  throw new Error(
+    `QM_ROLES=${config.roles.join(",")} has no api role; run src/harness-main.ts for a harness-only process.`,
+  );
+// A split core (api,surfaces without harness) owns Slack ingress even though it runs no background work.
+const slackIngress =
+  config.roles.includes("surfaces") &&
+  !config.backgroundDeploymentId &&
+  (config.backgroundWorkEnabled || !config.roles.includes("harness"));
 
 const built = buildApp(config);
 await migrateRegisteredPgSchemas(config.databaseUrl);
@@ -32,8 +41,7 @@ const managedSlack = process.env.QM_SLACK_SERVICE_URL
       token: process.env.QM_SLACK_SERVICE_TOKEN ?? "",
       appId: process.env.QM_SLACK_APP_ID ?? "",
       store: built.slackInstallation,
-      reconcile:
-        config.backgroundWorkEnabled || config.backgroundDeploymentId ? () => slackRuntime.reconcile() : undefined,
+      reconcile: slackIngress || config.backgroundDeploymentId ? () => slackRuntime.reconcile() : undefined,
     })
   : undefined;
 const server = createServer(built.app, {
@@ -113,7 +121,7 @@ const slackRuntime = createSlackRuntimeReconciler({
   startPlugin: (desired) => startSlackPlugin(desired, built.slackCore),
   onError: reportFailureAs("slack plugin reconciliation", undefined),
 });
-if (config.backgroundWorkEnabled && !config.backgroundDeploymentId) slackRuntime.start();
+if (slackIngress) slackRuntime.start();
 
 const slackAccountRuntimes = slackAccountConfigsFromEnv(process.env).map((account) =>
   createSlackRuntimeReconciler({
@@ -123,8 +131,7 @@ const slackAccountRuntimes = slackAccountConfigsFromEnv(process.env).map((accoun
     onError: reportFailureAs("slack account reconciliation", undefined, `account=${account.accountId}`),
   }),
 );
-if (config.backgroundWorkEnabled && !config.backgroundDeploymentId)
-  for (const runtime of slackAccountRuntimes) runtime.start();
+if (slackIngress) for (const runtime of slackAccountRuntimes) runtime.start();
 
 let backgroundController: ReturnType<typeof createBackgroundController> | undefined;
 if (built.backgroundOwnership) {
