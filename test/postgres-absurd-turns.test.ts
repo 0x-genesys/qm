@@ -238,7 +238,10 @@ test("pointer repair ends a turn whose task was cancelled with nobody left to wr
   assert.ok(candidate);
   const repaired = await ledger.repair(candidate, { status: "failed", sessionId: thread, reason: "repaired" });
   assert.equal(repaired?.status, "failed");
+  assert.equal(await pointer(thread), run.id);
+  await ledger.release(candidate);
   assert.equal(await pointer(thread), queued.run.id);
+  assert.equal((await runStore.runs.get(queued.run.id))?.status, "pending");
 });
 
 test("the runner hands a turn back on shutdown and another runner resumes it from the queue", { skip }, async () => {
@@ -319,4 +322,40 @@ test("the runner retries a failed turn within QM's error budget and then records
   assert.equal(run?.errorAttempts, 2);
   assert.match(run?.result?.reason ?? "", /model exploded|failed/);
   assert.equal(await pointer(thread), null);
+});
+
+test("a claim handed straight back before the turn starts does not count as an attempt", { skip }, async () => {
+  const thread = `web:alice:${randomUUID()}`;
+  const admitted = await admit(thread);
+  const { run, token } = await claim();
+  assert.equal(run.attempts, 1);
+  assert.equal(await ledger.handBack(run, token, { unstarted: true }), true);
+  const handed = await runStore.runs.get(admitted.run.id);
+  assert.equal(handed?.attempts, 0);
+  assert.equal(handed?.status, "pending");
+});
+
+test("a turn over the crash-loop claim cap fails instead of running again", { skip }, async () => {
+  const thread = `web:alice:${randomUUID()}`;
+  const admitted = await admit(thread);
+  await admin.query("UPDATE runs SET attempts = 3 WHERE id = $1", [admitted.run.id]);
+  let calls = 0;
+  const orchestrator = {
+    async handleTurn(): Promise<TurnResult> {
+      calls += 1;
+      return { status: "ok" };
+    },
+  } as unknown as Orchestrator;
+  const runner = createTurnRunner({ ledger, orchestrator, queue: "turns_people", slots: 1, pollMs: 50, maxClaims: 3 });
+  runner.start();
+  let run: Run | null = null;
+  for (let i = 0; i < 200; i++) {
+    run = await runStore.runs.get(admitted.run.id);
+    if (run?.status === "failed") break;
+    await sleep(20);
+  }
+  await runner.stopClaims();
+  assert.equal(calls, 0);
+  assert.equal(run?.status, "failed");
+  assert.match(run?.result?.reason ?? "", /crash loop/);
 });

@@ -11,7 +11,7 @@ import { isHalt, routeWake, type Wake } from "../wake/wake.ts";
 import type { OrchestratorInput } from "../core/orchestrator.ts";
 import { desktopClientForTurn, isPersonAuthored, isSessionTurn, resolveTurnOrigin } from "../core/turn-origin.ts";
 import { conversationScope } from "../resolution/resolution-service.ts";
-import { isTerminal, leaseLapsed } from "../runs/run-store.ts";
+import { isTerminal, isUnstarted, leaseLapsed } from "../runs/run-store.ts";
 import type { SessionStateEvent } from "../runs/session-state-bus.ts";
 import { turnModelOptions, turnRuntimePurpose, validateWebTurnModelOptions } from "../core/turn-options.ts";
 import { isProjectGroupRef, projectIdFromGroupRef } from "../projects/project-store.ts";
@@ -899,7 +899,7 @@ export function createTurnMethods(
           queued.request.conversation.threadRef !== run.request.conversation.threadRef
         )
           return { accepted: false, reason: "conversation_mismatch" };
-        if (queued.id === run.id || queued.status !== "pending") return { accepted: false, reason: "queued_started" };
+        if (queued.id === run.id || !isUnstarted(queued)) return { accepted: false, reason: "queued_started" };
         const text = queued.request.displayText ?? queued.request.text;
         signal = {
           ...signal,
@@ -944,7 +944,7 @@ export function createTurnMethods(
         if (!(await deps.runs.steerQueued(signal.queuedRunId, runId, outbound, deps.signals))) {
           if (await deps.signals.hasDedupeKey(queuedKey!)) return { accepted: true };
           const queued = await deps.runs.get(signal.queuedRunId);
-          return { accepted: false, reason: queued?.status === "pending" ? "queued_changed" : "queued_started" };
+          return { accepted: false, reason: queued && isUnstarted(queued) ? "queued_changed" : "queued_started" };
         }
       } else await deps.signals.send(runId, outbound);
       const after = await deps.runs.get(runId);

@@ -1,24 +1,27 @@
 import { randomUUID } from "node:crypto";
 import type { ErrorLog } from "../admin/error-log.ts";
 import type { Orchestrator } from "../core/orchestrator.ts";
-import { isNonRetryable, ProviderTurnError, turnFailureMessage } from "../core/turn-error.ts";
+import { isNonRetryable, NonRetryableTurnError, turnFailureMessage } from "../core/turn-error.ts";
 import { resolveTurnOrigin } from "../core/turn-origin.ts";
-import { conversationScope } from "../resolution/resolution-service.ts";
 import { resolveSwarmSettings } from "../swarms/swarm-settings.ts";
 import type { TurnResult } from "../types.ts";
 import { sleep } from "../util/async.ts";
-import { errMessage, errorAlreadyReported, reportFailure, swallow } from "../util/errors.ts";
+import { reportFailure, swallow } from "../util/errors.ts";
 import type { EventBus } from "../util/event-bus.ts";
 import { retryDelay } from "../runs/retry-delay.ts";
-import { stopErrorCode, type Run, type RunStop } from "../runs/run-store.ts";
+import { countedClaims, stopErrorCode, type Run, type RunStop } from "../runs/run-store.ts";
+import { recordTurnError, runStopFor } from "../runs/worker.ts";
 import type { TurnQueue } from "./absurd-schema.ts";
-import { TURN_EXTEND_INTERVAL_MS, type TurnLedger } from "./turn-ledger.ts";
+import { TURN_EXTEND_INTERVAL_MS, type TurnLedger, type TurnOutcome } from "./turn-ledger.ts";
 
 export const LEASE_LOST_CONSECUTIVE = 3;
 export const CANCEL_GRACE_MS = 10_000;
 const FALLBACK_POLL_MS = 1_000;
 const HANDBACK_SETTLE_MS = 2_000;
 const CLAIM_FAIL_REPORT_CONSECUTIVE = 20;
+const FINISH_ATTEMPTS = 5;
+const FINISH_RETRY_MS = 500;
+const SWARM_CLAIM_BUDGET = 3;
 
 export interface TurnRunnerDeps {
   ledger: TurnLedger;
@@ -33,6 +36,7 @@ export interface TurnRunnerDeps {
   extendIntervalMs?: number;
   pollMs?: number;
   retryDelayMs?: (priorErrors: number) => number;
+  maxClaims?: number;
 }
 
 interface HeldTurn {
@@ -50,12 +54,6 @@ export interface TurnRunner {
   stopClaims(): Promise<void>;
   releaseInFlight(): Promise<void>;
   held(): readonly Run[];
-}
-
-function runStopFor(err: unknown): RunStop {
-  if (err instanceof ProviderTurnError)
-    return { kind: "error", code: err.code, ...(err.status !== undefined ? { status: err.status } : {}) };
-  return { kind: "error" };
 }
 
 export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
@@ -122,59 +120,75 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         .catch((error: unknown) => swallow(`turns: extend failed for turn ${run.id} (transient)`, error));
     }, extendMs);
     beat.unref?.();
-    const finishWith = async (outcome: Parameters<TurnLedger["finish"]>[2]): Promise<void> => {
-      if (!(await deps.ledger.finish(run, token, outcome)))
-        console.warn(`[turns] turn ${run.id} ended after losing its claim; its result was not recorded`);
+    const finishWith = async (outcome: TurnOutcome): Promise<void> => {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          if (!(await deps.ledger.finish(run, token, outcome)))
+            console.warn(`[turns] turn ${run.id} ended after losing its claim; its result was not recorded`);
+          return;
+        } catch (error) {
+          if (attempt >= FINISH_ATTEMPTS) throw error;
+          swallow(`turns: turn end failed for turn ${run.id} (retrying)`, error);
+          await sleep(FINISH_RETRY_MS * attempt);
+        }
+      }
     };
+    let ended: { kind: "result"; result: TurnResult } | { kind: "error"; err: unknown };
     try {
       if (run.request.swarm && !run.request.swarmGoal) {
         const { turnMs } = resolveSwarmSettings({ turnMs: run.request.turnWallClockMs });
         workDeadline = setTimeout(() => cancel.abort(), turnMs);
       }
-      const result: TurnResult = await deps.orchestrator.handleTurn({
-        ...request,
-        origin: resolveTurnOrigin(request),
-        runId: run.id,
-        attempt: run.attempts,
-        ...(run.lastStop ? { resumeCause: run.lastStop } : {}),
-        runLeaseToken: token,
-        turnFenceToken: token,
-        finalAttempt: run.errorAttempts + 1 >= run.maxAttempts,
-        background: true,
-        cancel: cancel.signal,
-        shutdown: shutdown.signal,
-        ...(run.startedAt !== null ? { runStartedAt: run.startedAt } : {}),
-      });
-      clearInterval(beat);
-      if (shutdown.signal.aborted || lost) return;
-      await finishWith({ status: "done", result: held.cancelled ? { ...result, stopped: true } : result });
+      if (run.request.swarm && countedClaims(run) > SWARM_CLAIM_BUDGET)
+        throw new NonRetryableTurnError("swarm claim budget exhausted");
+      if (deps.maxClaims !== undefined && countedClaims(run) > deps.maxClaims)
+        throw new NonRetryableTurnError(
+          `run parked after ${countedClaims(run) - 1} claims without completing (suspected crash loop)`,
+        );
+      ended = {
+        kind: "result",
+        result: await deps.orchestrator.handleTurn({
+          ...request,
+          origin: resolveTurnOrigin(request),
+          runId: run.id,
+          attempt: run.attempts,
+          ...(run.lastStop ? { resumeCause: run.lastStop } : {}),
+          runLeaseToken: token,
+          turnFenceToken: token,
+          finalAttempt: run.errorAttempts + 1 >= run.maxAttempts,
+          background: true,
+          cancel: cancel.signal,
+          shutdown: shutdown.signal,
+          ...(run.startedAt !== null ? { runStartedAt: run.startedAt } : {}),
+        }),
+      };
     } catch (err) {
+      ended = { kind: "error", err };
+    }
+    try {
       clearInterval(beat);
       if (shutdown.signal.aborted || lost) return;
+      if (ended.kind === "result") {
+        await finishWith({
+          status: "done",
+          result: held.cancelled ? { ...ended.result, stopped: true } : ended.result,
+        });
+        return;
+      }
       if (held.cancelled) {
         await finishWith({ status: "done", result: { status: "ok", sessionId: run.sessionId, stopped: true } });
         return;
       }
-      console.error(`[turns] turn ${run.id} failed: ${errMessage(err)}`);
-      if (!errorAlreadyReported(err))
-        deps.errors?.record(
-          {
-            category: "turn",
-            code: "error",
-            message: `run ${run.id}: ${errMessage(err)}`,
-            scopeLabel: conversationScope(run.request.conversation, run.request.actor.id),
-          },
-          err,
-        );
-      const stop = runStopFor(err);
-      if (isNonRetryable(err) || run.errorAttempts + 1 >= run.maxAttempts)
+      recordTurnError(deps.errors, run, ended.err);
+      const stop = runStopFor(ended.err);
+      if (isNonRetryable(ended.err) || run.errorAttempts + 1 >= run.maxAttempts)
         await finishWith({
           status: "failed",
           countsAsError: true,
           result: {
             status: "failed",
             sessionId: run.sessionId,
-            reason: turnFailureMessage(err),
+            reason: turnFailureMessage(ended.err),
             ...stopErrorCode(stop),
           },
         });
@@ -230,12 +244,13 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         continue;
       }
       try {
-        while (!stopped && inFlight.size < deps.slots) {
+        while (!stopped && inFlight.size < deps.slots && (!deps.canClaim || deps.canClaim())) {
           const token = `${processId}:${randomUUID()}`;
           const { claimed, run } = await deps.ledger.claim(deps.queue, token, processId);
           if (!claimed) break;
           if (run) {
-            if (stopped) await deps.ledger.handBack(run, token, {});
+            if (stopped || (deps.canClaim && !deps.canClaim()))
+              await deps.ledger.handBack(run, token, { unstarted: true });
             else launch(run, token);
           }
         }

@@ -133,17 +133,7 @@ async function attemptRun(
   } catch (err) {
     stopBeat();
     if (opts?.shutdown?.aborted) throw err;
-    console.error(`[worker] run ${run.id} turn failed: ${errMessage(err)}`);
-    if (!errorAlreadyReported(err))
-      deps.errors?.record(
-        {
-          category: "turn",
-          code: "error",
-          message: `run ${run.id}: ${errMessage(err)}`,
-          scopeLabel: conversationScope(run.request.conversation, run.request.actor.id),
-        },
-        err,
-      );
+    recordTurnError(deps.errors, run, err);
     await deps.runs.fail(run.id, token, turnFailureMessage(err), {
       retry: !isNonRetryable(err),
       retryAfterMs: retryDelay(run.errorAttempts),
@@ -159,6 +149,20 @@ async function attemptRun(
         .releaseLease(run.id, token, started ? handbackStop(opts.shutdown) : undefined)
         .catch((e) => swallow(`worker: shutdown handback failed run=${run.id}; lease will expire after exit`, e));
   }
+}
+
+export function recordTurnError(errors: ErrorLog | undefined, run: Run, err: unknown): void {
+  console.error(`[worker] run ${run.id} turn failed: ${errMessage(err)}`);
+  if (!errorAlreadyReported(err))
+    errors?.record(
+      {
+        category: "turn",
+        code: "error",
+        message: `run ${run.id}: ${errMessage(err)}`,
+        scopeLabel: conversationScope(run.request.conversation, run.request.actor.id),
+      },
+      err,
+    );
 }
 
 export interface WorkerDeps extends ProcessDeps {
@@ -325,7 +329,7 @@ export function createWorker(deps: WorkerDeps): Worker {
   };
 }
 
-function runStopFor(err: unknown): RunStop {
+export function runStopFor(err: unknown): RunStop {
   if (err instanceof ProviderTurnError)
     return { kind: "error", code: err.code, ...(err.status !== undefined ? { status: err.status } : {}) };
   return { kind: "error" };

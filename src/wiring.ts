@@ -334,7 +334,7 @@ import {
   type RunStore,
 } from "./runs/run-store.ts";
 import { createTurnLedger, TURN_CANCEL_CHANNEL, TURN_READY_CHANNEL } from "./turns/turn-ledger.ts";
-import { createTurnRunner } from "./turns/turn-runner.ts";
+import { createTurnRunner, type TurnRunner } from "./turns/turn-runner.ts";
 import { turnFailureItem } from "./core/turn-error.ts";
 import { createRunPreemption, createWorker, type Worker } from "./runs/worker.ts";
 import {
@@ -1544,7 +1544,7 @@ export function buildApp(
       ? createPostgresRunStore(requireDbUrl("RUN_STORE"), { maxClaims: config.maxClaims })
       : createMemoryRunStore({ maxClaims: config.maxClaims });
   const turnLedger =
-    runStoreKind === "postgres"
+    runStoreKind === "postgres" && config.sessionStore === "postgres"
       ? createTurnLedger(requireDbUrl("RUN_STORE"), { onTerminal: (run) => runStore.runs.emitTerminal?.(run) })
       : undefined;
   const admitAbsurdTurn = async (input: EnqueueInput): Promise<EnqueueResult | null> => {
@@ -2783,6 +2783,27 @@ export function buildApp(
       : createNoopInstanceRegistry();
   const drain: DrainController = createDrainController({ registry: instanceRegistry });
   const canClaimRuns = () => backgroundAdmission() && drain.canClaim();
+  const turnReady = turnLedger
+    ? createPostgresNotifyBus<string>(requireDbUrl("RUN_STORE"), TURN_READY_CHANNEL, "turn readiness")
+    : undefined;
+  const turnCancels = turnLedger
+    ? createPostgresNotifyBus<string>(requireDbUrl("RUN_STORE"), TURN_CANCEL_CHANNEL, "turn cancels")
+    : undefined;
+  const turnRunner: TurnRunner | undefined = turnLedger
+    ? createTurnRunner({
+        ledger: turnLedger,
+        orchestrator,
+        queue: "turns_people",
+        slots: Math.max(1, config.workers),
+        ...(turnReady ? { ready: turnReady } : {}),
+        ...(turnCancels ? { cancels: turnCancels } : {}),
+        canClaim: () => canClaimRunSlot(),
+        errors,
+        maxClaims: config.maxClaims,
+      })
+    : undefined;
+  const busyRuns = () => workers.filter((worker) => worker.held()).length + (turnRunner?.held().length ?? 0);
+  const canClaimRunSlot = () => canClaimRuns() && busyRuns() < Math.max(1, config.workers);
   const workers: Worker[] = Array.from({ length: Math.max(1, config.workers) }, () =>
     createWorker({
       admittedWork,
@@ -2792,27 +2813,9 @@ export function buildApp(
       heartbeatIntervalMs: config.heartbeatIntervalMs,
       errors,
       pollMs: 250,
-      canClaim: canClaimRuns,
+      canClaim: canClaimRunSlot,
     }),
   );
-  const turnReady = turnLedger
-    ? createPostgresNotifyBus<string>(requireDbUrl("RUN_STORE"), TURN_READY_CHANNEL, "turn readiness")
-    : undefined;
-  const turnCancels = turnLedger
-    ? createPostgresNotifyBus<string>(requireDbUrl("RUN_STORE"), TURN_CANCEL_CHANNEL, "turn cancels")
-    : undefined;
-  const turnRunner = turnLedger
-    ? createTurnRunner({
-        ledger: turnLedger,
-        orchestrator,
-        queue: "turns_people",
-        slots: Math.max(1, config.workers),
-        ...(turnReady ? { ready: turnReady } : {}),
-        ...(turnCancels ? { cancels: turnCancels } : {}),
-        canClaim: canClaimRuns,
-        errors,
-      })
-    : undefined;
   const turnPointerRepair = turnLedger
     ? createSweeper(
         () =>
@@ -2829,17 +2832,16 @@ export function buildApp(
                 message: `turn ${candidate.turnId}: ${candidate.reason}`,
                 scopeLabel: "turns:pointer-repair" as ScopeId,
               });
-              if (!repaired) continue;
-              const session = await sessions.getByThread(candidate.threadRef);
-              if (!session) continue;
-              await sessions.forceReleaseLease(session.id);
-              const { lease } = await sessions.acquireLease(session.id, "turn");
-              if (!lease) continue;
-              try {
-                await sessions.append(lease, turnFailureItem(TURN_REPAIRED_REASON, candidate.turnId));
-              } finally {
-                await sessions.releaseLease(lease);
+              const session = repaired ? await sessions.getByThread(candidate.threadRef) : null;
+              if (session) {
+                await sessions.forceReleaseLease(session.id);
+                const { lease } = await sessions.acquireLease(session.id, "turn");
+                if (lease)
+                  await sessions
+                    .append(lease, turnFailureItem(TURN_REPAIRED_REASON, candidate.turnId))
+                    .finally(() => sessions.releaseLease(lease));
               }
+              await turnLedger.release(candidate);
             }
           }),
         60_000,

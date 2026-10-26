@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { OrchestratorInput } from "../core/orchestrator.ts";
 import type { AdvisoryLock } from "../persistence/advisory-lock.ts";
-import type { RunStore } from "../runs/run-store.ts";
+import { isUnstarted, type RunStore } from "../runs/run-store.ts";
 import type { RunSignalStore } from "../runs/run-signal-store.ts";
 import type { SandboxResources } from "../sandbox/sandbox-resources.ts";
 import type { SessionStore } from "../sessions/session-store.ts";
@@ -882,10 +882,7 @@ export function createSwarmService(deps: {
           ? (await runs.inFlightForThread(input.conversation.threadRef))
               .filter(
                 (run) =>
-                  run.status === "pending" &&
-                  run.attempts === 0 &&
-                  run.turnUserSeq === null &&
-                  !options.skipRuns?.has(run.id),
+                  isUnstarted(run) && run.attempts === 0 && run.turnUserSeq === null && !options.skipRuns?.has(run.id),
               )
               .map((run) => run.id)
           : [],

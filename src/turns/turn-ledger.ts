@@ -84,13 +84,14 @@ export interface TurnLedger {
   handBack(
     run: Run,
     token: string,
-    opts: { stop?: RunStop; delayMs?: number; countsAsError?: boolean },
+    opts: { stop?: RunStop; delayMs?: number; countsAsError?: boolean; unstarted?: boolean },
   ): Promise<boolean>;
   finish(run: Run, token: string, outcome: TurnOutcome): Promise<boolean>;
   fenceHeld(turnId: string, token: string, client?: PoolClient): Promise<boolean>;
   cancel(turnId: string): Promise<"withdrawn" | "cancelled" | "signalled" | null>;
   repairCandidates(limit?: number): Promise<RepairCandidate[]>;
   repair(candidate: RepairCandidate, result: TurnResult): Promise<Run | null>;
+  release(candidate: RepairCandidate): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -106,6 +107,13 @@ function queueOf(run: Pick<Run, "absurdQueue">): TurnQueue {
 
 function absurdTable(queue: TurnQueue, prefix: "r_" | "t_"): string {
   return `absurd.${pg.escapeIdentifier(prefix + queue)}`;
+}
+
+function repairReason(row: Record<string, unknown>): string {
+  if (row.turn == null) return "turn row missing";
+  if (row.status !== "pending" && row.status !== "running") return `turn is ${String(row.status)}`;
+  if (row.absurd_task_id == null) return "turn has no Absurd task";
+  return `Absurd task ${String(row.task_state ?? "missing")}`;
 }
 
 const POINTER_KEY = "tenant_id = qm_tenant_id() AND thread_ref = $1";
@@ -142,6 +150,11 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       turnId,
       Date.now(),
     ]);
+    if (turnId === null) await client.query("SELECT pg_notify('qm_run_available', 'null')");
+  }
+
+  async function lockTurn(client: PoolClient, turnId: string): Promise<void> {
+    await client.query("SELECT 1 FROM runs WHERE id = $1 FOR NO KEY UPDATE", [turnId]);
   }
 
   async function start(client: PoolClient, run: Run): Promise<void> {
@@ -255,6 +268,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
 
     async begin(queue, runId, turnId, token, workerId) {
       return tx(async (client) => {
+        await lockTurn(client, turnId);
         if (!(await holdsClaim(client, queue, runId, token))) return null;
         const expires = await claimExpiryMs(client, queue, runId);
         const { rows } = await client.query(
@@ -272,6 +286,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       const queue = queueOf(run);
       try {
         return await tx(async (client) => {
+          await lockTurn(client, run.id);
           if (!(await holdsClaim(client, queue, run.absurdRunId!, token))) {
             const fence = await client.query("SELECT qm_turn_fence($1, $2) AS ok", [run.id, token]);
             return fence.rows[0]?.ok === true ? "cancelled" : "lost";
@@ -290,15 +305,16 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       }
     },
 
-    async handBack(run, token, { stop, delayMs = 0, countsAsError = false }) {
+    async handBack(run, token, { stop, delayMs = 0, countsAsError = false, unstarted = false }) {
       const queue = queueOf(run);
       const wakeAt = Date.now() + Math.max(0, delayMs);
       return tx(async (client) => {
+        await lockTurn(client, run.id);
         if (!(await holdsClaim(client, queue, run.absurdRunId!, token))) return false;
         const { rowCount } = await client.query(
           `UPDATE runs SET status = 'pending', lease_token = NULL, lease_expires_at = NULL, worker_id = NULL,
              last_stop = COALESCE($3, last_stop), preemptions = preemptions + $4, error_attempts = error_attempts + $5,
-             retry_after = $6
+             retry_after = $6, attempts = attempts - $7
            WHERE id = $1 AND lease_token = $2 AND status = 'running'`,
           [
             run.id,
@@ -307,6 +323,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
             stop?.kind === "parked" ? 1 : 0,
             countsAsError ? 1 : 0,
             wakeAt,
+            unstarted ? 1 : 0,
           ],
         );
         if (!rowCount) return false;
@@ -320,6 +337,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       const queue = queueOf(run);
       const applied = await tx(async (client) => {
         const active = await lockPointer(client, run.sessionId);
+        await lockTurn(client, run.id);
         const fence = await client.query("SELECT qm_turn_fence($1, $2) AS ok", [run.id, token]);
         if (fence.rows[0]?.ok !== true) return false;
         const state = await client.query(`SELECT state FROM ${absurdTable(queue, "r_")} WHERE run_id = $1`, [
@@ -375,58 +393,50 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     },
 
     async repairCandidates(limit = 100) {
-      const found: RepairCandidate[] = [];
+      const joins = TURN_QUEUES.map(
+        (queue, i) =>
+          `LEFT JOIN ${absurdTable(queue, "t_")} k${i} ON t.absurd_queue = '${queue}' AND k${i}.task_id = t.absurd_task_id`,
+      ).join("\n");
+      const state = `COALESCE(${TURN_QUEUES.map((_, i) => `k${i}.state`).join(", ")})`;
+      const cancelledAt = `COALESCE(${TURN_QUEUES.map((_, i) => `k${i}.cancelled_at`).join(", ")})`;
       const { rows } = await db.query(
-        `SELECT p.thread_ref, p.active_turn_id, t.status, t.absurd_queue, t.absurd_task_id
-           FROM session_turn_pointers p LEFT JOIN runs t ON t.id = p.active_turn_id
+        `SELECT p.thread_ref, p.active_turn_id, t.id AS turn, t.status, t.absurd_task_id, ${state} AS task_state
+           FROM session_turn_pointers p
+           LEFT JOIN runs t ON t.id = p.active_turn_id
+           ${joins}
           WHERE p.tenant_id = qm_tenant_id() AND p.active_turn_id IS NOT NULL
-          ORDER BY p.updated_at LIMIT $1`,
-        [limit],
+            AND (t.id IS NULL OR t.status NOT IN ('pending','running') OR t.absurd_task_id IS NULL
+              OR ${state} IS NULL OR ${state} IN ('failed','completed')
+              OR (${state} = 'cancelled' AND ${cancelledAt} < absurd.current_time() - make_interval(secs => $2)))
+          LIMIT $1`,
+        [limit, CANCEL_WRAP_UP_GRACE_SEC],
       );
-      for (const row of rows) {
-        const threadRef = String(row.thread_ref);
-        const turnId = String(row.active_turn_id);
-        const status = row.status as string | null;
-        if (status === null) {
-          found.push({ threadRef, turnId, reason: "turn row missing" });
-          continue;
-        }
-        if (status !== "pending" && status !== "running") {
-          found.push({ threadRef, turnId, reason: `turn is ${status}` });
-          continue;
-        }
-        if (!row.absurd_task_id || !(TURN_QUEUES as readonly string[]).includes(String(row.absurd_queue))) {
-          found.push({ threadRef, turnId, reason: "turn has no Absurd task" });
-          continue;
-        }
-        const task = await db.query(
-          `SELECT state, cancelled_at < absurd.current_time() - make_interval(secs => $2) AS settled
-             FROM ${absurdTable(row.absurd_queue as TurnQueue, "t_")} WHERE task_id = $1`,
-          [row.absurd_task_id, CANCEL_WRAP_UP_GRACE_SEC],
-        );
-        const state = task.rows[0]?.state as string | undefined;
-        if (!state) found.push({ threadRef, turnId, reason: "Absurd task missing" });
-        else if (state === "failed" || state === "completed")
-          found.push({ threadRef, turnId, reason: `Absurd task ${state}` });
-        else if (state === "cancelled" && task.rows[0]?.settled === true)
-          found.push({ threadRef, turnId, reason: "Absurd task cancelled" });
-      }
-      return found;
+      return rows.map((row) => ({
+        threadRef: String(row.thread_ref),
+        turnId: String(row.active_turn_id),
+        reason: repairReason(row),
+      }));
     },
 
     async repair({ threadRef, turnId }, result) {
-      let finished = false;
-      await tx(async (client) => {
-        if ((await lockPointer(client, threadRef)) !== turnId) return;
+      const finished = await tx(async (client) => {
+        if ((await lockPointer(client, threadRef)) !== turnId) return false;
         const { rows } = await client.query("SELECT * FROM runs WHERE id = $1 FOR UPDATE", [turnId]);
         const run = rows[0] ? rowToRun(rows[0]) : null;
-        if (run && (run.status === "pending" || run.status === "running")) {
-          await terminal(client, run, "failed", result, 0);
-          finished = true;
-        }
-        await advance(client, threadRef);
+        if (!run || (run.status !== "pending" && run.status !== "running")) return false;
+        await terminal(client, run, "failed", result, 0);
+        return true;
       });
       return finished ? settle(turnId) : null;
+    },
+
+    async release({ threadRef, turnId }) {
+      await tx(async (client) => {
+        if ((await lockPointer(client, threadRef)) !== turnId) return;
+        const { rows } = await client.query("SELECT status FROM runs WHERE id = $1", [turnId]);
+        if (rows[0]?.status === "pending" || rows[0]?.status === "running") return;
+        await advance(client, threadRef);
+      });
     },
 
     close: () => db.close(),

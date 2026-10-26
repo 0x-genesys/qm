@@ -24,7 +24,7 @@ export const FEATURES = {
   swarms: { label: "Swarms", personalOnly: true },
   absurd_turns: {
     label: "Turns on Absurd (experimental)",
-    hint: "Runs new turns in the selected conversations on the Absurd durable-execution queue instead of the legacy run queue. A conversation switches once its legacy turns have finished. Turning this off sends new turns back to the legacy queue; turns already on Absurd finish there.",
+    hint: "Runs new turns in the selected conversations on the Absurd durable-execution queue instead of the legacy run queue. A conversation switches once its legacy turns have finished. Turning this off sends new turns back to the legacy queue; turns already on Absurd finish there. Turn it on only after every instance runs a build that knows about it.",
   },
   team_scopes: { label: "Team scopes" },
   ui_canvas: {
