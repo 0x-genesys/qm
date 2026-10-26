@@ -5,15 +5,16 @@ import pg from "pg";
 import { migrateRegisteredPgSchemas } from "../src/persistence/pg-pool.ts";
 import type { Orchestrator, OrchestratorInput } from "../src/core/orchestrator.ts";
 import { createPostgresRunStore } from "../src/runs/postgres-run-store.ts";
-import type { Run, RunStore } from "../src/runs/run-store.ts";
+import type { Run, RunPriority, RunStore } from "../src/runs/run-store.ts";
 import { createPostgresMapFactory } from "../src/persistence/durable-map.ts";
 import { createPostgresAdvisoryLock } from "../src/persistence/advisory-lock.ts";
 import { createSwarmStore, type SwarmStorage } from "../src/swarms/swarm-store.ts";
 import { routeTurns } from "../src/turns/turn-engine.ts";
 import { swarmFixture } from "./support/swarm-fixture.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
-import { registerAbsurdSchema } from "../src/turns/absurd-schema.ts";
-import { createTurnLedger, type TurnLedger } from "../src/turns/turn-ledger.ts";
+import { registerAbsurdSchema, TURN_QUEUES } from "../src/turns/absurd-schema.ts";
+import { createPostgresNotifyBus } from "../src/persistence/postgres-notify-bus.ts";
+import { createTurnLedger, TURN_READY_CHANNEL, TURN_YIELD_CHANNEL, type TurnLedger } from "../src/turns/turn-ledger.ts";
 import { createTurnRunner } from "../src/turns/turn-runner.ts";
 import { scopeId, type TurnResult } from "../src/types.ts";
 import { sleep } from "../src/util/async.ts";
@@ -37,11 +38,11 @@ function request(thread: string, text = "hello"): OrchestratorInput {
   } as unknown as OrchestratorInput;
 }
 
-async function admit(thread: string, text = "hello", dedupKey?: string) {
+async function admit(thread: string, text = "hello", dedupKey?: string, priority: RunPriority = 0) {
   const result = await ledger.admit({
     sessionId: thread,
     request: request(thread, text),
-    priority: 0,
+    priority,
     ...(dedupKey ? { dedupKey } : {}),
   });
   assert.ok(result);
@@ -87,9 +88,10 @@ before(async () => {
 
 beforeEach(async () => {
   if (!URL) return;
-  await admin.query(
-    "TRUNCATE absurd.t_turns_people, absurd.r_turns_people, absurd.c_turns_people, absurd.e_turns_people, absurd.w_turns_people, session_turn_pointers",
+  const tables = TURN_QUEUES.flatMap((queue) =>
+    ["t_", "r_", "c_", "e_", "w_"].map((prefix) => `absurd.${prefix}${queue}`),
   );
+  await admin.query(`TRUNCATE ${tables.join(", ")}, session_turn_pointers`);
   await admin.query("DELETE FROM runs");
 });
 
@@ -267,7 +269,7 @@ test("the runner hands a turn back on shutdown and another runner resumes it fro
       return { status: "ok", sessionId: thread, reply: "late" };
     },
   } as unknown as Orchestrator;
-  const outgoing = createTurnRunner({ ledger, orchestrator: slow, queue: "turns_people", slots: 2, pollMs: 50 });
+  const outgoing = createTurnRunner({ ledger, orchestrator: slow, queues: TURN_QUEUES, slots: 2, pollMs: 50 });
   outgoing.start();
   for (let i = 0; i < 100 && !started.length; i++) await sleep(20);
   assert.equal(started[0]?.runId, admitted.run.id);
@@ -282,7 +284,7 @@ test("the runner hands a turn back on shutdown and another runner resumes it fro
       return { status: "ok", sessionId: thread, reply: "resumed" };
     },
   } as unknown as Orchestrator;
-  const incoming = createTurnRunner({ ledger, orchestrator: fast, queue: "turns_people", slots: 2, pollMs: 50 });
+  const incoming = createTurnRunner({ ledger, orchestrator: fast, queues: TURN_QUEUES, slots: 2, pollMs: 50 });
   incoming.start();
   let finished: Run | null = null;
   for (let i = 0; i < 100; i++) {
@@ -312,7 +314,7 @@ test("the runner retries a failed turn within QM's error budget and then records
   const runner = createTurnRunner({
     ledger,
     orchestrator: failing,
-    queue: "turns_people",
+    queues: TURN_QUEUES,
     slots: 1,
     pollMs: 50,
     retryDelayMs: () => 100,
@@ -354,7 +356,7 @@ test("a turn over the crash-loop claim cap fails instead of running again", { sk
       return { status: "ok" };
     },
   } as unknown as Orchestrator;
-  const runner = createTurnRunner({ ledger, orchestrator, queue: "turns_people", slots: 1, pollMs: 50, maxClaims: 3 });
+  const runner = createTurnRunner({ ledger, orchestrator, queues: TURN_QUEUES, slots: 1, pollMs: 50, maxClaims: 3 });
   runner.start();
   let run: Run | null = null;
   for (let i = 0; i < 200; i++) {
@@ -411,4 +413,150 @@ test("swarm operations accept an Absurd turn's live claim and refuse it after ha
     await backing.delete(fixture.root.id);
     await factory.pool.close();
   }
+});
+
+function gate() {
+  const started: OrchestratorInput[] = [];
+  const releases = new Map<string, () => void>();
+  const orchestrator = {
+    async handleTurn(input: OrchestratorInput): Promise<TurnResult> {
+      started.push(input);
+      await new Promise<void>((resolve) => {
+        releases.set(input.runId!, resolve);
+        input.shutdown?.addEventListener("abort", () => resolve());
+      });
+      return { status: "ok", reply: `done ${input.text}` };
+    },
+  } as unknown as Orchestrator;
+  return { started, releases, orchestrator };
+}
+
+async function until<T>(read: () => Promise<T>, done: (value: T) => boolean, label: string): Promise<T> {
+  for (let i = 0; i < 250; i++) {
+    const value = await read();
+    if (done(value)) return value;
+    await sleep(20);
+  }
+  throw new Error(`timed out waiting for ${label}`);
+}
+
+test("admission routes each tier to its own queue and the runner prefers people", { skip }, async () => {
+  const background = await admit(`web:cron:${randomUUID()}`, "background", undefined, 2);
+  const delegated = await admit(`web:child:${randomUUID()}`, "delegated", undefined, 1);
+  const person = await admit(`web:alice:${randomUUID()}`, "person", undefined, 0);
+  assert.equal(background.run.absurdQueue, "turns_background");
+  assert.equal(delegated.run.absurdQueue, "turns_delegated");
+  assert.equal(person.run.absurdQueue, "turns_people");
+  const { started, releases, orchestrator } = gate();
+  const runner = createTurnRunner({ ledger, orchestrator, queues: TURN_QUEUES, slots: 1, pollMs: 50 });
+  runner.start();
+  for (const expected of ["person", "delegated", "background"]) {
+    await until(
+      async () => started.length,
+      (n) => n > 0 && started.at(-1)?.text === expected,
+      expected,
+    );
+    releases.get(started.at(-1)!.runId!)!();
+  }
+  await until(
+    async () => (await runStore.runs.get(background.run.id))?.status,
+    (s) => s === "done",
+    "background done",
+  );
+  await runner.stopClaims();
+});
+
+test("a person's turn over capacity parks the newest background turn, which resumes later", { skip }, async () => {
+  const crons = [];
+  for (let i = 0; i < 4; i++) crons.push(await admit(`web:cron:${randomUUID()}`, `cron ${i}`, undefined, 2));
+  const { started, releases, orchestrator } = gate();
+  const ready = createPostgresNotifyBus<string>(URL!, TURN_READY_CHANNEL, "test turn readiness");
+  const runner = createTurnRunner({ ledger, orchestrator, queues: TURN_QUEUES, slots: 4, pollMs: 50, ready });
+  runner.start();
+  await until(
+    async () => started.length,
+    (n) => n === 4,
+    "four background turns",
+  );
+  const newest = started.at(-1)!.runId!;
+  const person = await admit(`web:alice:${randomUUID()}`, "person", undefined, 0);
+  const parked = await until(
+    () => runStore.runs.get(newest),
+    (run) => run?.status === "pending",
+    "newest background turn parked",
+  );
+  assert.deepEqual(parked?.lastStop, { kind: "parked" });
+  assert.equal(parked?.preemptions, 1);
+  await until(async () => started.some((input) => input.runId === person.run.id), Boolean, "person started");
+  releases.get(person.run.id)!();
+  await until(
+    async () => (await runStore.runs.get(person.run.id))?.status,
+    (s) => s === "done",
+    "person done",
+  );
+  for (const input of started.slice(0, 3)) releases.get(input.runId!)!();
+  const resumed = await until(
+    async () => started.filter((input) => input.runId === newest),
+    (inputs) => inputs.length === 2,
+    "parked turn resumed",
+  );
+  assert.deepEqual(resumed[1]?.resumeCause, { kind: "parked" });
+  releases.get(newest)!();
+  await until(
+    async () => (await runStore.runs.get(newest))?.status,
+    (s) => s === "done",
+    "parked turn done",
+  );
+  await runner.stopClaims();
+  await ready.close?.();
+});
+
+test("a person writing into a running cron turn parks it until the person's turn ends", { skip }, async () => {
+  const thread = `web:alice:${randomUUID()}`;
+  const cron = await admit(thread, "cron", undefined, 2);
+  const { started, releases, orchestrator } = gate();
+  const yields = createPostgresNotifyBus<string>(URL!, TURN_YIELD_CHANNEL, "test turn yields");
+  const ready = createPostgresNotifyBus<string>(URL!, TURN_READY_CHANNEL, "test turn readiness");
+  const runner = createTurnRunner({ ledger, orchestrator, queues: TURN_QUEUES, slots: 2, pollMs: 50, yields, ready });
+  runner.start();
+  await until(
+    async () => started.length,
+    (n) => n === 1,
+    "cron started",
+  );
+  await sleep(100);
+  const person = await admit(thread, "person", undefined, 0);
+  assert.equal(person.run.status, "queued");
+  await until(
+    async () => started.length,
+    (n) => n === 2,
+    "person started",
+  );
+  assert.equal(started[1]?.runId, person.run.id);
+  const parked = await runStore.runs.get(cron.run.id);
+  assert.equal(parked?.status, "pending");
+  assert.equal(await pointer(thread), person.run.id);
+  const { rows } = await admin.query("SELECT state FROM absurd.r_turns_background WHERE run_id = $1", [
+    parked!.absurdRunId,
+  ]);
+  assert.equal(rows[0]?.state, "sleeping");
+  releases.get(person.run.id)!();
+  await until(
+    async () => started.length,
+    (n) => n === 3,
+    "cron resumed",
+  );
+  assert.equal(started[2]?.runId, cron.run.id);
+  assert.deepEqual(started[2]?.resumeCause, { kind: "parked" });
+  assert.equal(await pointer(thread), cron.run.id);
+  releases.get(cron.run.id)!();
+  await until(
+    async () => (await runStore.runs.get(cron.run.id))?.status,
+    (s) => s === "done",
+    "cron done",
+  );
+  assert.equal(await pointer(thread), null);
+  await runner.stopClaims();
+  await yields.close?.();
+  await ready.close?.();
 });

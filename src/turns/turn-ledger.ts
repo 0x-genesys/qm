@@ -7,9 +7,11 @@ import type { EnqueueInput, EnqueueResult, Run, RunPriority, RunStop } from "../
 import { releasesDedupKey, withTraceCarrier } from "../runs/run-store.ts";
 import { rowToRun } from "../runs/postgres-run-store.ts";
 import {
+  awaitEvent,
   cancelTask,
   claimTasks,
   cleanup as cleanupQueue,
+  emitEvent,
   completeRun,
   extendClaim,
   holdsClaim,
@@ -23,6 +25,7 @@ import { turnFenceHeld } from "./turn-fence.ts";
 const TURN_TASK = "turn";
 export const TURN_READY_CHANNEL = "qm_turn_ready";
 export const TURN_CANCEL_CHANNEL = "qm_turn_cancel";
+export const TURN_YIELD_CHANNEL = "qm_turn_yield";
 const TURN_MAX_ATTEMPTS = 10;
 const TURN_CLAIM_TIMEOUT_SEC = 60;
 export const TURN_EXTEND_INTERVAL_MS = 20_000;
@@ -97,11 +100,23 @@ export interface TurnLedger {
   repair(candidate: RepairCandidate, result: TurnResult): Promise<Run | null>;
   release(candidate: RepairCandidate): Promise<void>;
   cleanup(): Promise<number>;
+  personWaiting(threadRef: string): Promise<boolean>;
+  yieldTo(run: Run, token: string): Promise<"yielded" | "handed_back" | "lost">;
   close(): Promise<void>;
 }
 
-function turnQueueFor(_priority: RunPriority): TurnQueue {
-  return "turns_people";
+const QUEUE_BY_PRIORITY: Record<RunPriority, TurnQueue> = {
+  0: "turns_people",
+  1: "turns_delegated",
+  2: "turns_background",
+};
+
+function turnQueueFor(priority: RunPriority): TurnQueue {
+  return QUEUE_BY_PRIORITY[priority];
+}
+
+function resumeEvent(turnId: string, parkings: number): string {
+  return `resume:${turnId}:${parkings}`;
 }
 
 function queueOf(run: Pick<Run, "absurdQueue">): TurnQueue {
@@ -177,7 +192,21 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     await client.query("SELECT pg_notify($1, $2)", [TURN_READY_CHANNEL, JSON.stringify(queue)]);
   }
 
-  async function advance(client: PoolClient, threadRef: string): Promise<void> {
+  async function advance(client: PoolClient, threadRef: string, ending: string): Promise<void> {
+    const parked = await client.query(
+      `SELECT * FROM runs WHERE session_id = $1 AND engine = 'absurd' AND status = 'pending' AND id <> $2
+         AND absurd_task_id IS NOT NULL
+       ORDER BY created_at ASC, seq ASC LIMIT 1 FOR UPDATE`,
+      [threadRef, ending],
+    );
+    if (parked.rows[0]) {
+      const run = rowToRun(parked.rows[0]);
+      const queue = queueOf(run);
+      await point(client, threadRef, run.id);
+      await emitEvent(client, queue, resumeEvent(run.id, run.preemptions), { turnId: run.id });
+      await client.query("SELECT pg_notify($1, $2)", [TURN_READY_CHANNEL, JSON.stringify(queue)]);
+      return;
+    }
     const { rows } = await client.query(
       `SELECT * FROM runs WHERE session_id = $1 AND status = 'queued'
        ORDER BY claim_priority ASC, created_at ASC, seq ASC LIMIT 1 FOR UPDATE`,
@@ -244,7 +273,11 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
           return { run: rowToRun(existing.rows[0]!), deduped: true };
         }
         const queued = rowToRun(rows[0]);
-        if (active) return { run: queued, deduped: false };
+        if (active) {
+          if (priority === 0)
+            await client.query("SELECT pg_notify($1, $2)", [TURN_YIELD_CHANNEL, JSON.stringify(active)]);
+          return { run: queued, deduped: false };
+        }
         await start(client, queued);
         return { run: { ...queued, status: "pending" }, deduped: false };
       });
@@ -342,7 +375,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
         ]);
         const errorIncrement = outcome.status === "failed" && outcome.countsAsError ? 1 : 0;
         await terminal(client, run, outcome.status, outcome.result, errorIncrement);
-        if (active === run.id) await advance(client, run.sessionId);
+        if (active === run.id) await advance(client, run.sessionId, run.id);
         if (state.rows[0]?.state === "running") await completeRun(client, queue, run.absurdRunId!, { ok: true });
         return true;
       });
@@ -377,7 +410,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
           await terminal(client, run, "done", { status: "ok", sessionId: run.sessionId, stopped: true }, 0);
           settled = true;
         }
-        if (active === turnId) await advance(client, threadRef);
+        if (active === turnId) await advance(client, threadRef, turnId);
         return "cancelled" as const;
       });
       if (settled) await settle(turnId);
@@ -434,12 +467,58 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       return removed;
     },
 
+    async personWaiting(threadRef) {
+      const { rows } = await db.query(
+        "SELECT 1 FROM runs WHERE session_id = $1 AND status = 'queued' AND claim_priority = 0 LIMIT 1",
+        [threadRef],
+      );
+      return rows.length > 0;
+    },
+
+    async yieldTo(run, token) {
+      const queue = queueOf(run);
+      const stop: RunStop = { kind: "parked" };
+      return tx(async (client) => {
+        const active = await lockPointer(client, run.sessionId);
+        await lockTurn(client, run.id);
+        if (!(await holdsClaim(client, queue, run.absurdRunId!, token))) return "lost";
+        const next = await client.query(
+          `SELECT * FROM runs WHERE session_id = $1 AND status = 'queued' AND claim_priority = 0
+           ORDER BY created_at ASC, seq ASC LIMIT 1 FOR UPDATE`,
+          [run.sessionId],
+        );
+        const { rows } = await client.query(
+          `UPDATE runs SET status = 'pending', lease_token = NULL, lease_expires_at = NULL, worker_id = NULL,
+             last_stop = $3, preemptions = preemptions + 1
+           WHERE id = $1 AND lease_token = $2 AND status = 'running' RETURNING preemptions`,
+          [run.id, token, JSON.stringify(stop)],
+        );
+        if (!rows[0]) return "lost";
+        if (active !== run.id || !next.rows[0]) {
+          await scheduleRun(client, queue, run.absurdRunId!, new Date());
+          await client.query("SELECT pg_notify($1, $2)", [TURN_READY_CHANNEL, JSON.stringify(queue)]);
+          return "handed_back";
+        }
+        const parkings = Number(rows[0].preemptions);
+        await awaitEvent(
+          client,
+          queue,
+          run.absurdTaskId!,
+          run.absurdRunId!,
+          `park:${parkings}`,
+          resumeEvent(run.id, parkings),
+        );
+        await start(client, rowToRun(next.rows[0]));
+        return "yielded";
+      });
+    },
+
     async release({ threadRef, turnId }) {
       await tx(async (client) => {
         if ((await lockPointer(client, threadRef)) !== turnId) return;
         const { rows } = await client.query("SELECT status FROM runs WHERE id = $1", [turnId]);
         if (rows[0]?.status === "pending" || rows[0]?.status === "running") return;
-        await advance(client, threadRef);
+        await advance(client, threadRef, turnId);
       });
     },
 

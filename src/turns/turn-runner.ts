@@ -11,6 +11,8 @@ import {
   countedClaims,
   crashLoopReason,
   errorParks,
+  MAX_PREEMPTIONS,
+  PARKED,
   stopErrorCode,
   type Run,
   type RunStop,
@@ -36,10 +38,12 @@ const FAILURE_REPORT_CONSECUTIVE = 5;
 export interface TurnRunnerDeps {
   ledger: TurnLedger;
   orchestrator: Orchestrator;
-  queue: TurnQueue;
+  queues: readonly TurnQueue[];
   slots: number;
+  capacity?: () => number;
   ready?: EventBus<string>;
   cancels?: EventBus<string>;
+  yields?: EventBus<string>;
   canClaim?: () => boolean;
   errors?: ErrorLog;
   processId?: string;
@@ -55,6 +59,7 @@ interface HeldTurn {
   cancel: AbortController;
   shutdown: AbortController;
   cancelled: boolean;
+  yielding: boolean;
   done: Promise<void>;
   onCancel(): void;
 }
@@ -71,6 +76,36 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
   const extendMs = deps.extendIntervalMs ?? TURN_EXTEND_INTERVAL_MS;
   const pollMs = deps.pollMs ?? FALLBACK_POLL_MS;
   const inFlight = new Map<string, HeldTurn>();
+  const overcommit = Math.floor(deps.slots / 4);
+  const capacity = (): number => Math.min(deps.slots, deps.capacity?.() ?? deps.slots);
+  const mayClaim = (): boolean => !stopped && (!deps.canClaim || deps.canClaim());
+
+  async function yieldHeld(held: HeldTurn, reason: "capacity" | "person"): Promise<void> {
+    if (held.yielding) return;
+    held.yielding = true;
+    held.shutdown.abort(PARKED);
+    held.cancel.abort();
+    let outcome: "yielded" | "handed_back" | "lost";
+    if (reason === "person") outcome = await deps.ledger.yieldTo(held.run, held.token);
+    else outcome = (await deps.ledger.handBack(held.run, held.token, { stop: PARKED })) ? "handed_back" : "lost";
+    console.log(`[turns] parked turn=${held.run.id} reason=${reason} outcome=${outcome}`);
+  }
+
+  function parkForCapacity(): void {
+    const victim = [...inFlight.values()]
+      .filter(
+        (held) =>
+          held.run.absurdQueue === "turns_background" &&
+          held.run.preemptions < MAX_PREEMPTIONS &&
+          !held.yielding &&
+          !held.shutdown.signal.aborted,
+      )
+      .at(-1);
+    if (victim)
+      void yieldHeld(victim, "capacity").catch((error: unknown) =>
+        swallow(`turns: capacity parking failed turn=${victim.run.id}`, error),
+      );
+  }
   let stopped = true;
   let loopDone: Promise<void> | null = null;
   let wake: (() => void) | null = null;
@@ -153,6 +188,11 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     };
     let ended: { kind: "result"; result: TurnResult } | { kind: "error"; err: unknown };
     try {
+      if (run.priority === 2 && (await deps.ledger.personWaiting(run.sessionId))) {
+        clearInterval(beat);
+        await yieldHeld(held, "person");
+        return;
+      }
       workDeadline = swarmTurnLimits(run, cancel);
       if (deps.maxClaims !== undefined && countedClaims(run) > deps.maxClaims)
         throw new NonRetryableTurnError(crashLoopReason(countedClaims(run) - 1));
@@ -228,6 +268,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       cancel: new AbortController(),
       shutdown: new AbortController(),
       cancelled: false,
+      yielding: false,
       done: new Promise<void>((resolve) => {
         settle = resolve;
       }),
@@ -255,14 +296,21 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         continue;
       }
       try {
-        while (!stopped && inFlight.size < deps.slots && (!deps.canClaim || deps.canClaim())) {
-          const token = `${processId}:${randomUUID()}`;
-          const { claimed, run } = await deps.ledger.claim(deps.queue, token, processId);
-          if (!claimed) break;
-          if (run) {
-            if (stopped || (deps.canClaim && !deps.canClaim()))
+        for (const queue of deps.queues) {
+          while (mayClaim()) {
+            const limit = capacity();
+            const people = queue === "turns_people";
+            if (inFlight.size >= limit + (people ? overcommit : 0)) break;
+            const token = `${processId}:${randomUUID()}`;
+            const { claimed, run } = await deps.ledger.claim(queue, token, processId);
+            if (!claimed) break;
+            if (!run) continue;
+            if (!mayClaim()) {
               await deps.ledger.handBack(run, token, { unstarted: true });
-            else launch(run, token);
+              break;
+            }
+            launch(run, token);
+            if (people && inFlight.size > limit) parkForCapacity();
           }
         }
         failures = 0;
@@ -293,6 +341,16 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         unsubscribe.push(
           deps.cancels.subscribe((turnId) => {
             inFlight.get(turnId)?.onCancel();
+          }),
+        );
+      if (deps.yields)
+        unsubscribe.push(
+          deps.yields.subscribe((turnId) => {
+            const held = inFlight.get(turnId);
+            if (held?.run.priority === 2)
+              void yieldHeld(held, "person").catch((error: unknown) =>
+                swallow(`turns: yield to a person failed turn=${turnId}`, error),
+              );
           }),
         );
       loopDone = loop().finally(() => {

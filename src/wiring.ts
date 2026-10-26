@@ -322,11 +322,11 @@ import {
 import { createControlService } from "./api/control-service.ts";
 import { createMemoryRunStore } from "./runs/memory-run-store.ts";
 import { createPostgresRunStore } from "./runs/postgres-run-store.ts";
-import { registerAbsurdSchema } from "./turns/absurd-schema.ts";
+import { registerAbsurdSchema, TURN_QUEUES } from "./turns/absurd-schema.ts";
 import { createMemoryRunSignalStore, type RunSignalStore } from "./runs/run-signal-store.ts";
 import { createPostgresRunSignalStore } from "./runs/postgres-run-signal-store.ts";
 import { isTerminal, type Run, type RunStore } from "./runs/run-store.ts";
-import { createTurnLedger, TURN_CANCEL_CHANNEL, TURN_READY_CHANNEL } from "./turns/turn-ledger.ts";
+import { createTurnLedger, TURN_CANCEL_CHANNEL, TURN_READY_CHANNEL, TURN_YIELD_CHANNEL } from "./turns/turn-ledger.ts";
 import { createTurnRunner, type TurnRunner } from "./turns/turn-runner.ts";
 import { repairStaleTurns, routeTurns } from "./turns/turn-engine.ts";
 import { createRunPreemption, createWorker, type Worker } from "./runs/worker.ts";
@@ -2778,15 +2778,20 @@ export function buildApp(
   const turnCancels = turnLedger
     ? createPostgresNotifyBus<string>(requireDbUrl("RUN_STORE"), TURN_CANCEL_CHANNEL, "turn cancels")
     : undefined;
+  const turnYields = turnLedger
+    ? createPostgresNotifyBus<string>(requireDbUrl("RUN_STORE"), TURN_YIELD_CHANNEL, "turn yields")
+    : undefined;
   const turnRunner: TurnRunner | undefined = turnLedger
     ? createTurnRunner({
         ledger: turnLedger,
         orchestrator,
-        queue: "turns_people",
+        queues: TURN_QUEUES,
         slots: Math.max(1, config.workers),
+        capacity: () => Math.max(1, config.workers) - workers.filter((worker) => worker.held()).length,
         ...(turnReady ? { ready: turnReady } : {}),
         ...(turnCancels ? { cancels: turnCancels } : {}),
-        canClaim: () => canClaimRunSlot(),
+        ...(turnYields ? { yields: turnYields } : {}),
+        canClaim: canClaimRuns,
         errors,
         maxClaims: config.maxClaims,
       })
@@ -3048,6 +3053,7 @@ export function buildApp(
           turnLedger?.close(),
           turnReady?.close?.(),
           turnCancels?.close?.(),
+          turnYields?.close?.(),
           sessionStateBus.close?.(),
           ledgerEventBus.close?.(),
           runActivity.close?.(),
