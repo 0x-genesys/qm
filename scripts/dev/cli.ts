@@ -23,7 +23,6 @@ import {
   listLeases,
   lockDir,
   myLease,
-  readMeta,
   readPidFile,
   releaseSlotLock,
   supervisorAlive,
@@ -303,7 +302,6 @@ async function bootOnSlot(slot: string, worktree: string, branch: string): Promi
 function printSuccess(result: BootResult, branch: string): void {
   const ports = slotPorts(result.slot);
   const lock = lockDir(result.slot, store);
-  const meta = readMeta(lock);
   out("");
   const slackLive = result.slackEnabled !== false;
   out(

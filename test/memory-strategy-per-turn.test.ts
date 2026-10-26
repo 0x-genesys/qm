@@ -1,9 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { createMemoryStrategy, parseMemoryStrategyKind } from "../src/memory/strategy.ts";
 import { createPerTurnStrategy, MEMORY_EXTRACTION_PROMPT, parseFacts } from "../src/memory/strategies/per-turn.ts";
 import { createMockHarness } from "./support/mock-harness.ts";
@@ -14,7 +10,6 @@ import { testDatabaseUrl } from "./support/test-database.ts";
 const SCOPE = "user:U1";
 
 function freshMemory() {
-  const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "mst-")));
   return { memory: createPostgresMemoryService(testDatabaseUrl()) };
 }
 
