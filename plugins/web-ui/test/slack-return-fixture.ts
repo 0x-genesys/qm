@@ -7,6 +7,9 @@ export function slackReturnTest(outcome: "success" | "expired" | "cancelled" | "
     const h = await harness({
       path: `${session ? "/s/sess-deep?" : "/settings?"}slackReturn=qa-slack-nonce${outcome === "cancelled" ? "&error=access_denied" : ""}`,
       slackReturn: outcome,
+      ...(session
+        ? { entries: [{ seq: 1, type: "assistant", createdAt: 1, payload: { text: "::link-slack-account{}" } }] }
+        : {}),
     });
     try {
       h.releaseSessions();

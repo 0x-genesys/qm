@@ -20,14 +20,14 @@ test("unavailable connections produce one setup message and recover together", a
     for (let i = 0; i < 100 && !h.mainText().includes("App connections aren’t available"); i++)
       await new Promise((resolve) => setTimeout(resolve, 10));
     assert.equal(h.mainText().split("App connections aren’t available").length - 1, 1);
-    assert.doesNotMatch(h.mainText(), /Could not check connected apps|Link your Slack account/);
+    assert.doesNotMatch(h.mainText(), /Could not check connected apps/);
     unavailable = false;
     const retry = [...document.querySelectorAll<HTMLButtonElement>(".connect-apps-load button")][0];
     assert.ok(retry);
     retry.click();
-    for (let i = 0; i < 100 && !h.mainText().includes("Link your Slack account"); i++)
+    for (let i = 0; i < 100 && !document.querySelector(".connection-picker"); i++)
       await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.match(h.mainText(), /Link your Slack account/);
+    assert.ok(document.querySelector(".connection-picker"));
     assert.doesNotMatch(h.mainText(), /App connections aren’t available|Could not check connected apps/);
   } finally {
     globalThis.fetch = previousFetch;
