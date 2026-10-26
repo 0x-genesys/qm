@@ -151,21 +151,12 @@ setSigninRequiredHandler((detail) => {
 
 onExitCanvas(() => exitSplitIfActive());
 
+let uiOutdated = false;
+
 window.addEventListener(UI_OUTDATED_EVENT, () => {
-  let host = document.getElementById("ui-outdated");
-  if (!host) {
-    host = document.createElement("div");
-    host.id = "ui-outdated";
-    document.body.append(host);
-  }
-  render(
-    html`<div class="top-banner" role="alert">
-      <span>This page is out of date. Reload to continue.</span>
-      <button class="top-banner-action" type="button" @click=${() => location.reload()}>Reload</button>
-    </div>`,
-    host,
-  );
-  document.querySelector(".layout")?.classList.add("bannered");
+  if (uiOutdated) return;
+  uiOutdated = true;
+  if (appEl?.querySelector(".layout")) mountShell();
 });
 
 export const ADMIN_BASE = (() => {
@@ -317,6 +308,13 @@ function impersonationBanner(by: string) {
       <button class="impersonation-banner-exit" type="button" @click=${exitImpersonation}>Exit impersonation</button>
     </div>
   `;
+}
+
+function outdatedBanner() {
+  return html`<div class="top-banner" role="alert">
+    <span>This page is out of date. Reload to continue.</span>
+    <button class="top-banner-action" type="button" @click=${() => location.reload()}>Reload</button>
+  </div>`;
 }
 
 function devBanner(user: string) {
@@ -502,7 +500,8 @@ export function mountShell(): void {
   applySavedSidebarWidth();
   const impersonatedBy = appState.me?.impersonatedBy ?? null;
   let banner: TemplateResult | typeof nothing = nothing;
-  if (impersonatedBy) banner = impersonationBanner(impersonatedBy);
+  if (uiOutdated) banner = outdatedBanner();
+  else if (impersonatedBy) banner = impersonationBanner(impersonatedBy);
   else if (authMode === "dev") banner = devBanner(appState.me?.user ?? "");
   render(
     html`
