@@ -52,7 +52,7 @@ function fixture(fail?: Error) {
   return { cache, calls, notes, readHistory };
 }
 
-async function joinedLate(cache: ReturnType<typeof createMemorySurfaceCache>) {
+async function joinedLate(cache: ReturnType<typeof createPostgresSurfaceCache>) {
   await cache.ingest([
     { container: "C1", ts: "20.000000", text: "root", authorId: "U1" },
     { container: "C1", ts: "21.000000", sub: "20.000000", text: "what did we decide above?", authorId: "U1" },

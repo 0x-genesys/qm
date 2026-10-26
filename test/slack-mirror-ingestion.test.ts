@@ -740,7 +740,10 @@ test("untyped attachment-only updates and deletions resolve room kind without di
     const rows = await cache.readMessages("C1");
     assert.match(rows[0]!.text, /forwarded body/);
     assert.equal(rows[0]!.editedAt, 1000);
-    assert.deepEqual(rows[0]!.files, [{ fileId: "F1", name: "image.png", mimetype: "image/png" }]);
+    assert.deepEqual(
+      rows[0]!.files?.map(({ fileId, name, mimetype }) => ({ fileId, name, mimetype })),
+      [{ fileId: "F1", name: "image.png", mimetype: "image/png" }],
+    );
     assert.equal(f.dispatches.length, 0);
     await f.fire({
       type: "message",

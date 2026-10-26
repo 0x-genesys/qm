@@ -25,7 +25,8 @@ import type { SessionStore } from "../src/sessions/session-store.ts";
 import type { RunStore } from "../src/runs/run-store.ts";
 import type { OrchestratorInput } from "../src/core/orchestrator.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
-import { testDatabaseUrl, testMap } from "./support/test-database.ts";
+import type { AdvisoryLock } from "../src/persistence/advisory-lock.ts";
+import { testAdvisoryLock, testDatabaseUrl, testMap } from "./support/test-database.ts";
 
 const actor: Principal = { id: "U1", type: "internal", displayName: "Alex" };
 const scope: ScopeId = scopeId("personal", "U1");
@@ -36,6 +37,7 @@ interface Rig {
   sessions: SessionStore;
   runs: RunStore;
   signals: ReturnType<typeof createMemoryRunSignalStore>;
+  advisoryLock: AdvisoryLock;
   room: Session;
   syscallsFor(session: Session): ReturnType<ReturnType<typeof createSessionSyscalls>["forTurn"]>;
 }
@@ -48,11 +50,13 @@ async function rig(opts?: {
   const { runs } = createMemoryRunStore();
   const signals = createMemoryRunSignalStore();
   const mailbox = createSessionMailbox(testMap<SessionMessage>());
+  const advisoryLock = testAdvisoryLock();
   const factory = createSessionSyscalls({
     mailbox,
     sessions,
     runs,
     signals,
+    advisoryLock,
     maxAttempts: 3,
     ...(opts?.treeRunCap !== undefined ? { treeRunCap: opts.treeRunCap } : {}),
     ...(opts?.prepareRequest ? { prepareRequest: opts.prepareRequest } : {}),
@@ -76,6 +80,7 @@ async function rig(opts?: {
     sessions,
     runs,
     signals,
+    advisoryLock,
     room,
     syscallsFor: (session) => factory.forTurn(binding(session)),
   };
@@ -411,6 +416,7 @@ test("child runs retain the managed roster and read-only floor", async () => {
     sessions: r.sessions,
     runs: r.runs,
     signals: r.signals,
+    advisoryLock: r.advisoryLock,
     maxAttempts: 3,
   }).forTurn({
     session: r.room,
@@ -587,6 +593,7 @@ test("read-only callers cannot steer writable children and preserve the floor wh
     sessions: r.sessions,
     runs: r.runs,
     signals: r.signals,
+    advisoryLock: r.advisoryLock,
     maxAttempts: 3,
   }).forTurn({
     session: r.room,
@@ -614,6 +621,7 @@ test("writes revalidate access even while a target is running", async () => {
     sessions: r.sessions,
     runs: r.runs,
     signals: r.signals,
+    advisoryLock: r.advisoryLock,
     maxAttempts: 3,
     authorize: async (session) => session.id !== child.id,
   }).forTurn({ session: r.room, scopeId: scope, request: { actor, conversation } });
@@ -690,6 +698,7 @@ test("private session replies stay read-only, queue behind running work, and do 
     sessions: r.sessions,
     runs: r.runs,
     signals: r.signals,
+    advisoryLock: r.advisoryLock,
     maxAttempts: 3,
   });
   const privateCaller = factory.forTurn({
@@ -726,6 +735,7 @@ test("session tools cannot bypass swarm worker admission or message budgets", as
     sessions: r.sessions,
     runs: r.runs,
     signals: r.signals,
+    advisoryLock: r.advisoryLock,
     maxAttempts: 3,
   });
   const rootNotification = factory.forTurn({
@@ -1685,6 +1695,7 @@ test("children of a Slack group turn keep its source so external-workspace polic
     sessions,
     runs,
     signals: createMemoryRunSignalStore(),
+    advisoryLock: testAdvisoryLock(),
     maxAttempts: 3,
   });
   const cases = [
@@ -1738,6 +1749,7 @@ test("sessions list shows only sidebar sessions the whole audience can see and c
     sessions,
     runs,
     signals: createMemoryRunSignalStore(),
+    advisoryLock: testAdvisoryLock(),
     maxAttempts: 3,
     conversations: {
       list: async () => [

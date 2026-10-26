@@ -11,7 +11,7 @@ import { createSessionMailbox, type SessionMessage } from "../src/sessions/sessi
 import { createMemoryRunStore } from "../src/runs/memory-run-store.ts";
 import { createMemoryRunSignalStore } from "../src/runs/run-signal-store.ts";
 import { scopeId, type Principal } from "../src/types.ts";
-import { testMap } from "./support/test-database.ts";
+import { testAdvisoryLock, testMap } from "./support/test-database.ts";
 
 const alice: Principal = { id: "alice@example.com", type: "internal" };
 const bob: Principal = { id: "bob@example.com", type: "internal" };
@@ -46,6 +46,7 @@ test("session search reuses indexed search with participant intersection, tenure
     signals: createMemoryRunSignalStore(),
     mailbox: createSessionMailbox(testMap<SessionMessage>()),
     maxAttempts: 1,
+    advisoryLock: testAdvisoryLock(),
     prepareRequest: async (request) => ({
       ...request,
       conversation: { ...request.conversation, publishMembers: members },

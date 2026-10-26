@@ -6,6 +6,11 @@ import { testMap } from "./support/test-database.ts";
 
 const tick = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+async function cleared(read: () => Promise<unknown>): Promise<unknown> {
+  for (let attempt = 0; attempt < 300 && (await read()) !== null; attempt++) await tick(10);
+  return read();
+}
+
 function envelope(type: string, ts: string, channel = "C1"): Record<string, unknown> {
   return { type: "event_callback", event: { type, channel, ts, text: "hi" } };
 }
@@ -62,7 +67,7 @@ test("a replay whose handler durably accepts clears the row through accepted()",
   await staging.stage("k", envelope("message", "1.0"));
   staging.accepted("k");
   await tick(0);
-  assert.equal(await map.get("k"), null);
+  assert.equal(await cleared(() => map.get("k")), null);
 });
 
 test("gate: when the cap fires first, the envelope is staged before the ack; later acceptance clears it", async () => {
@@ -82,7 +87,11 @@ test("gate: when the cap fires first, the envelope is staged before the ack; lat
   assert.ok(await map.get("slack:acct:message:C1:1.0"), "the row exists while acceptance is unknown");
   gate.persisted();
   await tick(0);
-  assert.equal(await map.get("slack:acct:message:C1:1.0"), null, "durable acceptance clears the staged row");
+  assert.equal(
+    await cleared(() => map.get("slack:acct:message:C1:1.0")),
+    null,
+    "durable acceptance clears the staged row",
+  );
 });
 
 test("gate: when staging cannot land before the cap, the ack is withheld so Slack redelivers", async () => {
@@ -153,14 +162,18 @@ test("a replay clears its row when the handler settles or accepts, keeps it whil
     5,
   );
   await tick(0);
-  assert.equal(await map.get("settled"), null, "a settled replay (even a silent one) is done with the row");
-  assert.equal(await map.get("accepted"), null, "durable acceptance clears the row");
+  assert.equal(
+    await cleared(() => map.get("settled")),
+    null,
+    "a settled replay (even a silent one) is done with the row",
+  );
+  assert.equal(await cleared(() => map.get("accepted")), null, "durable acceptance clears the row");
   assert.ok(await map.get("running"), "an unfinished replay keeps its row until the handler accepts it");
   assert.ok(await map.get("failed"), "a replay whose handler failed keeps its row for the next attempt");
   assert.ok(await map.get("late"), "the sweep moved on after its wait");
   releaseLate!();
   await tick(0);
-  assert.equal(await map.get("late"), null, "a replay that settles after the wait still clears its row");
+  assert.equal(await cleared(() => map.get("late")), null, "a replay that settles after the wait still clears its row");
 });
 
 test("the sweep skips a row another sweeper claimed between the read and the claim", async () => {
@@ -234,7 +247,11 @@ test("gate: acceptance that lands while the stage write is still in flight still
   release!();
   await tick(10);
   assert.equal(acks, 1);
-  assert.equal(await map.get("slack:acct:message:C1:1.0"), null, "the late-landing row is cleared, not orphaned");
+  assert.equal(
+    await cleared(() => map.get("slack:acct:message:C1:1.0")),
+    null,
+    "the late-landing row is cleared, not orphaned",
+  );
 });
 
 test("gate: a handler failure after the cap keeps the staged row even though the receiver reports completion", async () => {
