@@ -94,6 +94,43 @@ export interface ServiceDef {
   tcpIngress?: { healthCheck: string[] };
 }
 
+export interface BrandEnv {
+  botName?: string;
+  orgName?: string;
+}
+
+const brandEnvOf = (c: { botName?: string; orgName?: string }): BrandEnv | undefined =>
+  c.botName || c.orgName
+    ? { ...(c.botName ? { botName: c.botName } : {}), ...(c.orgName ? { orgName: c.orgName } : {}) }
+    : undefined;
+
+export function orgEnv(
+  service: string,
+  orgId: string,
+  publicUrl: string,
+  hasPortal: boolean,
+  brand?: BrandEnv,
+): Record<string, string> {
+  const base = publicUrl.replace(/\/$/, "");
+  const identity: Record<string, string> = service === "core" ? { ORG_ID: orgId } : { CORE_ORG_ID: orgId };
+  const webUiUrl = base;
+  if (service === "core") {
+    return {
+      ...identity,
+      PUBLIC_WEB_URL: base,
+      WEB_UI_PUBLIC_URL: webUiUrl,
+      ...(brand?.botName ? { ORG_BRAND_SELF_LABEL: brand.botName } : {}),
+      ...(brand?.orgName ? { ORG_BRAND_ORG_NAME: brand.orgName } : {}),
+    };
+  }
+  if (service === "web-ui") return { ...identity, WEB_UI_PUBLIC_URL: webUiUrl, ADMIN_BASE_PATH: "/admin" };
+  if (service === "portal")
+    return { ...identity, PORTAL_PUBLIC_URL: base, ...(brand?.botName ? { AUTH_BRAND_NAME: brand.botName } : {}) };
+  if (service === "admin" && hasPortal) return { ...identity, ADMIN_BASE_PATH: "/admin" };
+  if (service === "auth") return { ...identity, ...(brand?.botName ? { AUTH_BRAND_NAME: brand.botName } : {}) };
+  return identity;
+}
+
 const AUTH_PATH_PREFIX = "/idp";
 const AUTH_CLIENT_ID = "qm-portal";
 const AUTH_LOOPBACK = "http://127.0.0.1:8099";
@@ -137,21 +174,20 @@ export function brokerWiring(o: { publicUrl: string; allowedEmailDomain?: string
 }
 
 export function coreWebEnv(c: WebConfig): Record<string, string> {
-  const base = c.publicUrl.replace(/\/$/, "");
   const edge = hostsWebEdge(c.services);
+  const brand = brandEnvOf(c);
+  const hosted = c.services
+    .filter(isVirtualService)
+    .flatMap((service) => Object.entries(orgEnv(service, c.orgId, c.publicUrl, edge, brand)))
+    .filter(([name]) => name !== "CORE_ORG_ID");
   return {
-    ORG_ID: c.orgId,
-    PUBLIC_WEB_URL: base,
-    WEB_UI_PUBLIC_URL: base,
-    ...(c.botName ? { ORG_BRAND_SELF_LABEL: c.botName } : {}),
-    ...(c.orgName ? { ORG_BRAND_ORG_NAME: c.orgName } : {}),
+    ...Object.fromEntries(hosted),
+    ...orgEnv("core", c.orgId, c.publicUrl, edge, brand),
     ...(edge
       ? {
           PUBLIC_PORT: String(PUBLIC_PORT),
-          PORTAL_PUBLIC_URL: base,
           REQUIRE_SIGNED_PORTAL_IDENTITY: "1",
           ADMIN_ENABLED: c.services.includes("admin") ? "1" : "0",
-          ...(c.botName ? { AUTH_BRAND_NAME: c.botName } : {}),
         }
       : {}),
     ...(c.services.includes("auth")

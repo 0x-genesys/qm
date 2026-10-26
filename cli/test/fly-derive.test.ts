@@ -5,7 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfigAt, type QmConfig } from "../src/config.ts";
 import { derivedTomlFor } from "../src/backends/fly.ts";
-import { coreWebEnv, runnableServices } from "../src/services.ts";
+import { orgEnv as contractOrgEnv } from "../src/contract.ts";
+import { orgEnv, runnableServices } from "../src/services.ts";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -30,38 +31,58 @@ test("Fly core defaults can sustain the 16-worker baseline", () => {
   assert.match(core, /\[\[vm\]\]\n\s*size = "performance-2x"\n\s*memory = "4gb"/);
 });
 
-const webConfig = (
-  publicUrl: string,
-  portal: boolean,
-  brand: { botName?: string; orgName?: string } = {},
-): Parameters<typeof coreWebEnv>[0] => ({
-  orgId: "acme",
-  publicUrl,
-  services: portal ? ["core", "portal"] : ["core"],
-  env: {},
-  ...brand,
+test("web-ui serves at the root in both shapes — publicUrl IS the web-ui URL (no /web-ui suffix)", () => {
+  const url = "https://acme-web-ui.fly.dev";
+  assert.equal(orgEnv("core", "acme", url, false).WEB_UI_PUBLIC_URL, url);
+  assert.equal(orgEnv("web-ui", "acme", url, false).WEB_UI_PUBLIC_URL, url);
+  assert.equal(orgEnv("core", "acme", `${url}/`, true).WEB_UI_PUBLIC_URL, url);
+  assert.equal(orgEnv("web-ui", "acme", url, true).WEB_UI_PUBLIC_URL, url);
+  assert.equal(orgEnv("admin", "acme", url, true).ADMIN_BASE_PATH, "/admin");
+  assert.equal(orgEnv("admin", "acme", url, false).ADMIN_BASE_PATH, undefined);
 });
 
-test("the web UI serves at the root in both shapes — publicUrl IS the web UI URL", () => {
-  const url = "https://acme-core.fly.dev";
-  assert.equal(coreWebEnv(webConfig(url, false)).WEB_UI_PUBLIC_URL, url);
-  assert.equal(coreWebEnv(webConfig(`${url}/`, true)).WEB_UI_PUBLIC_URL, url);
-  assert.equal(coreWebEnv(webConfig(`${url}/`, true)).PORTAL_PUBLIC_URL, url);
-  assert.equal(coreWebEnv(webConfig(url, false)).PUBLIC_PORT, undefined);
-});
-
-test("brand env reaches core as ORG_BRAND_* and its sign-in pages as AUTH_BRAND_NAME, only when configured", () => {
-  const url = "https://acme-core.fly.dev";
+test("brand env reaches core as ORG_BRAND_* and auth as AUTH_BRAND_NAME, and only when configured", () => {
+  const url = "https://acme-web-ui.fly.dev";
   const brand = { botName: "straylight", orgName: "Acme Corp" };
-  const core = coreWebEnv(webConfig(url, true, brand));
+  const core = orgEnv("core", "acme", url, false, brand);
   assert.equal(core.ORG_BRAND_SELF_LABEL, "straylight");
   assert.equal(core.ORG_BRAND_ORG_NAME, "Acme Corp");
-  assert.equal(core.AUTH_BRAND_NAME, "straylight");
-  assert.equal(coreWebEnv(webConfig(url, false, brand)).AUTH_BRAND_NAME, undefined);
-  const bare = coreWebEnv(webConfig(url, true));
+  assert.equal(orgEnv("auth", "acme", url, false, brand).AUTH_BRAND_NAME, "straylight");
+  const bare = orgEnv("core", "acme", url, false);
   assert.equal(bare.ORG_BRAND_SELF_LABEL, undefined);
   assert.equal(bare.ORG_BRAND_ORG_NAME, undefined);
-  assert.equal(bare.AUTH_BRAND_NAME, undefined);
+  assert.equal(orgEnv("auth", "acme", url, false).AUTH_BRAND_NAME, undefined);
+  assert.equal(orgEnv("web-ui", "acme", url, false, brand).ORG_BRAND_SELF_LABEL, undefined);
+});
+
+test("the contract's orgEnv keeps its per-service outputs", () => {
+  const url = "https://agent.example.com";
+  const brand = { botName: "straylight", orgName: "Acme Corp" };
+  assert.equal(contractOrgEnv, orgEnv);
+  assert.deepEqual(contractOrgEnv("core", "acme", `${url}/`, true, brand), {
+    ORG_ID: "acme",
+    PUBLIC_WEB_URL: url,
+    WEB_UI_PUBLIC_URL: url,
+    ORG_BRAND_SELF_LABEL: "straylight",
+    ORG_BRAND_ORG_NAME: "Acme Corp",
+  });
+  assert.deepEqual(contractOrgEnv("portal", "acme", url, true, brand), {
+    CORE_ORG_ID: "acme",
+    PORTAL_PUBLIC_URL: url,
+    AUTH_BRAND_NAME: "straylight",
+  });
+  assert.deepEqual(contractOrgEnv("web-ui", "acme", url, true), {
+    CORE_ORG_ID: "acme",
+    WEB_UI_PUBLIC_URL: url,
+    ADMIN_BASE_PATH: "/admin",
+  });
+  assert.deepEqual(contractOrgEnv("admin", "acme", url, true), { CORE_ORG_ID: "acme", ADMIN_BASE_PATH: "/admin" });
+  assert.deepEqual(contractOrgEnv("admin", "acme", url, false), { CORE_ORG_ID: "acme" });
+  assert.deepEqual(contractOrgEnv("auth", "acme", url, true, brand), {
+    CORE_ORG_ID: "acme",
+    AUTH_BRAND_NAME: "straylight",
+  });
+  assert.deepEqual(contractOrgEnv("egress-proxy", "acme", url, true), { CORE_ORG_ID: "acme" });
 });
 
 const imageFromStack = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "imagefrom-stack.json");
