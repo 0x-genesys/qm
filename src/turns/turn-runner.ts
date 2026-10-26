@@ -9,19 +9,23 @@ import { sleep } from "../util/async.ts";
 import { reportFailure, swallow } from "../util/errors.ts";
 import type { EventBus } from "../util/event-bus.ts";
 import { retryDelay } from "../runs/retry-delay.ts";
-import { countedClaims, stopErrorCode, type Run, type RunStop } from "../runs/run-store.ts";
-import { recordTurnError, runStopFor } from "../runs/worker.ts";
+import { countedClaims, errorParks, stopErrorCode, type Run, type RunStop } from "../runs/run-store.ts";
+import {
+  CLAIM_FAIL_REPORT_CONSECUTIVE,
+  LEASE_LOST_CONSECUTIVE,
+  recordTurnError,
+  runStopFor,
+  SWARM_CLAIM_BUDGET,
+} from "../runs/worker.ts";
 import type { TurnQueue } from "./absurd-schema.ts";
 import { TURN_EXTEND_INTERVAL_MS, type TurnLedger, type TurnOutcome } from "./turn-ledger.ts";
 
-export const LEASE_LOST_CONSECUTIVE = 3;
 export const CANCEL_GRACE_MS = 10_000;
 const FALLBACK_POLL_MS = 1_000;
 const HANDBACK_SETTLE_MS = 2_000;
-const CLAIM_FAIL_REPORT_CONSECUTIVE = 20;
 const FINISH_RETRY_MAX_MS = 5_000;
 const FINISH_RETRY_MS = 500;
-const SWARM_CLAIM_BUDGET = 3;
+const FAILURE_REPORT_CONSECUTIVE = 5;
 
 export interface TurnRunnerDeps {
   ledger: TurnLedger;
@@ -90,6 +94,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     const { trace: _trace, ...request } = run.request;
     let lost = false;
     let misses = 0;
+    let extendFailures = 0;
     let workDeadline: ReturnType<typeof setTimeout> | undefined;
     let cancelTimer: ReturnType<typeof setTimeout> | undefined;
     held.onCancel = () => {
@@ -102,6 +107,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       void deps.ledger
         .extend(run, token)
         .then((outcome) => {
+          extendFailures = 0;
           if (outcome === "held") {
             misses = 0;
             return;
@@ -117,7 +123,12 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
             cancel.abort();
           }
         })
-        .catch((error: unknown) => swallow(`turns: extend failed for turn ${run.id} (transient)`, error));
+        .catch((error: unknown) => {
+          extendFailures += 1;
+          if (extendFailures === FAILURE_REPORT_CONSECUTIVE)
+            reportFailure(`turns: claim extension keeps failing for turn ${run.id}`, error);
+          else swallow(`turns: extend failed for turn ${run.id} (transient)`, error);
+        });
     }, extendMs);
     beat.unref?.();
     const finishWith = async (outcome: TurnOutcome): Promise<void> => {
@@ -127,7 +138,9 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
             console.warn(`[turns] turn ${run.id} ended after losing its claim; its result was not recorded`);
           return;
         } catch (error) {
-          swallow(`turns: turn end failed for turn ${run.id} (retrying)`, error);
+          if (attempt === FAILURE_REPORT_CONSECUTIVE)
+            reportFailure(`turns: turn end keeps failing for turn ${run.id}`, error);
+          else swallow(`turns: turn end failed for turn ${run.id} (retrying)`, error);
           await sleep(Math.min(FINISH_RETRY_MS * attempt, FINISH_RETRY_MAX_MS));
         }
       }
@@ -154,7 +167,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
           ...(run.lastStop ? { resumeCause: run.lastStop } : {}),
           runLeaseToken: token,
           turnFenceToken: token,
-          finalAttempt: run.errorAttempts + 1 >= run.maxAttempts,
+          finalAttempt: errorParks(run, deps.maxClaims),
           background: true,
           cancel: cancel.signal,
           shutdown: shutdown.signal,
@@ -165,7 +178,11 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       ended = { kind: "error", err };
     }
     try {
-      if (shutdown.signal.aborted || lost) return;
+      if (shutdown.signal.aborted || lost) {
+        if (ended.kind === "error")
+          swallow(`turns: turn ${run.id} ended after ${lost ? "losing its claim" : "handback"}`, ended.err);
+        return;
+      }
       if (ended.kind === "result") {
         await finishWith({
           status: "done",
@@ -179,7 +196,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       }
       recordTurnError(deps.errors, run, ended.err);
       const stop = runStopFor(ended.err);
-      if (isNonRetryable(ended.err) || run.errorAttempts + 1 >= run.maxAttempts)
+      if (isNonRetryable(ended.err) || errorParks(run, deps.maxClaims))
         await finishWith({
           status: "failed",
           countsAsError: true,
@@ -223,9 +240,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     inFlight.set(run.id, held);
     console.log(`[turns] claimed process=${processId} turn=${run.id} thread=${run.sessionId} attempt=${run.attempts}`);
     void runTurn(held)
-      .catch((error: unknown) => {
-        if (!held.shutdown.signal.aborted) swallow(`turns: turn ${run.id} crashed`, error);
-      })
+      .catch((error: unknown) => swallow(`turns: turn ${run.id} crashed`, error))
       .finally(() => {
         inFlight.delete(run.id);
         settle();

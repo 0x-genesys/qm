@@ -9,6 +9,7 @@ import { rowToRun } from "../runs/postgres-run-store.ts";
 import {
   cancelTask,
   claimTasks,
+  cleanup as cleanupQueue,
   completeRun,
   extendClaim,
   holdsClaim,
@@ -25,6 +26,8 @@ export const TURN_MAX_ATTEMPTS = 10;
 export const TURN_CLAIM_TIMEOUT_SEC = 60;
 export const TURN_EXTEND_INTERVAL_MS = 20_000;
 export const CANCEL_WRAP_UP_GRACE_SEC = 30;
+const TURN_RETENTION_SEC = 7 * 24 * 60 * 60;
+const CLEANUP_BATCH = 1_000;
 
 export interface TurnTaskParams {
   tenantId: string;
@@ -92,6 +95,7 @@ export interface TurnLedger {
   repairCandidates(limit?: number): Promise<RepairCandidate[]>;
   repair(candidate: RepairCandidate, result: TurnResult): Promise<Run | null>;
   release(candidate: RepairCandidate): Promise<void>;
+  cleanup(): Promise<number>;
   close(): Promise<void>;
 }
 
@@ -182,14 +186,6 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     else await point(client, threadRef, null);
   }
 
-  async function claimExpiryMs(client: PoolClient, queue: TurnQueue, runId: string): Promise<number | null> {
-    const { rows } = await client.query(
-      `SELECT (extract(epoch FROM claim_expires_at) * 1000)::bigint AS at FROM ${absurdTable(queue, "r_")} WHERE run_id = $1`,
-      [runId],
-    );
-    return rows[0]?.at == null ? null : Number(rows[0].at);
-  }
-
   async function settle(id: string): Promise<Run | null> {
     const { rows } = await db.query("SELECT * FROM runs WHERE id = $1", [id]);
     const run = rows[0] ? rowToRun(rows[0]) : null;
@@ -278,13 +274,12 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       return tx(async (client) => {
         await lockTurn(client, turnId);
         if (!(await holdsClaim(client, queue, runId, token))) return null;
-        const expires = await claimExpiryMs(client, queue, runId);
         const { rows } = await client.query(
-          `UPDATE runs SET status = 'running', lease_token = $2, lease_expires_at = $3, worker_id = $4,
-             attempts = attempts + 1, started_at = COALESCE(started_at, $5), absurd_run_id = $6
-           WHERE id = $1 AND engine = 'absurd' AND absurd_queue = $7 AND status IN ('pending','running')
+          `UPDATE runs SET status = 'running', lease_token = $2, lease_expires_at = NULL, worker_id = $3,
+             attempts = attempts + 1, started_at = COALESCE(started_at, $4), absurd_run_id = $5
+           WHERE id = $1 AND engine = 'absurd' AND absurd_queue = $6 AND status IN ('pending','running')
            RETURNING *`,
-          [turnId, token, expires, workerId, Date.now(), runId, queue],
+          [turnId, token, workerId, Date.now(), runId, queue],
         );
         return rows[0] ? rowToRun(rows[0]) : null;
       });
@@ -300,12 +295,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
             return fence.rows[0]?.ok === true ? "cancelled" : "lost";
           }
           await extendClaim(client, queue, run.absurdRunId!, TURN_CLAIM_TIMEOUT_SEC);
-          const expires = await claimExpiryMs(client, queue, run.absurdRunId!);
-          const { rowCount } = await client.query(
-            `UPDATE runs SET lease_expires_at = $3 WHERE id = $1 AND lease_token = $2 AND status = 'running'`,
-            [run.id, token, expires],
-          );
-          return (rowCount ?? 0) > 0 ? "held" : "lost";
+          return "held";
         });
       } catch (error) {
         if (error instanceof TaskCancelled) return "cancelled";
@@ -322,8 +312,8 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
         const { rowCount } = await client.query(
           `UPDATE runs SET status = 'pending', lease_token = NULL, lease_expires_at = NULL, worker_id = NULL,
              last_stop = COALESCE($3, last_stop), preemptions = preemptions + $4, error_attempts = error_attempts + $5,
-             retry_after = $6, attempts = attempts - $7,
-             started_at = CASE WHEN $7 = 1 AND attempts = 1 THEN NULL ELSE started_at END
+             attempts = attempts - $6,
+             started_at = CASE WHEN $6 = 1 AND attempts = 1 THEN NULL ELSE started_at END
            WHERE id = $1 AND lease_token = $2 AND status = 'running'`,
           [
             run.id,
@@ -331,7 +321,6 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
             stop ? JSON.stringify(stop) : null,
             stop?.kind === "parked" ? 1 : 0,
             countsAsError ? 1 : 0,
-            wakeAt,
             unstarted ? 1 : 0,
           ],
         );
@@ -437,6 +426,18 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
         return true;
       });
       return finished ? settle(turnId) : null;
+    },
+
+    async cleanup() {
+      let removed = 0;
+      for (const queue of TURN_QUEUES) {
+        for (;;) {
+          const { tasks } = await cleanupQueue(await db.pool(), queue, TURN_RETENTION_SEC, CLEANUP_BATCH);
+          removed += tasks;
+          if (tasks < CLEANUP_BATCH) break;
+        }
+      }
+      return removed;
     },
 
     async release({ threadRef, turnId }) {

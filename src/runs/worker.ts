@@ -32,7 +32,8 @@ export interface ProcessDeps {
 
 export const LEASE_LOST_CONSECUTIVE = 3;
 
-const CLAIM_FAIL_REPORT_CONSECUTIVE = 20;
+export const CLAIM_FAIL_REPORT_CONSECUTIVE = 20;
+export const SWARM_CLAIM_BUDGET = 3;
 
 export async function processRun(
   deps: ProcessDeps,
@@ -109,7 +110,8 @@ async function attemptRun(
       const { turnMs } = resolveSwarmSettings({ turnMs: run.request.turnWallClockMs });
       workDeadline = setTimeout(() => cancel.abort(), turnMs);
     }
-    if (run.request.swarm && countedClaims(run) > 3) throw new NonRetryableTurnError("swarm claim budget exhausted");
+    if (run.request.swarm && countedClaims(run) > SWARM_CLAIM_BUDGET)
+      throw new NonRetryableTurnError("swarm claim budget exhausted");
     started = true;
     const result = await deps.orchestrator.handleTurn({
       ...run.request,

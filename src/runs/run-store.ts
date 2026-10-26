@@ -143,6 +143,7 @@ export interface RunStore {
 
   onTerminal(listener: (run: Run) => void): void;
   emitTerminal?(run: Run): void;
+  leaseHeld?(run: Run, token: string): Promise<boolean>;
   cancelTurn?(runId: string): Promise<unknown>;
 
   get(runId: string): Promise<Run | null>;
@@ -194,6 +195,20 @@ export function errorParks(
   maxClaims?: number,
 ): boolean {
   return run.errorAttempts + 1 >= run.maxAttempts || (maxClaims !== undefined && countedClaims(run) >= maxClaims);
+}
+
+export function legacyLeaseHeld(
+  run: Pick<Run, "status" | "leaseToken" | "leaseExpiresAt">,
+  token: string,
+  asOf = Date.now(),
+): boolean {
+  return (
+    run.status === "running" && run.leaseToken === token && run.leaseExpiresAt !== null && run.leaseExpiresAt > asOf
+  );
+}
+
+export async function runLeaseHeld(runs: Pick<RunStore, "leaseHeld">, run: Run, token: string): Promise<boolean> {
+  return runs.leaseHeld ? runs.leaseHeld(run, token) : legacyLeaseHeld(run, token);
 }
 
 export function leaseLapsed(run: Pick<Run, "status" | "leaseExpiresAt">, asOf: number): boolean {

@@ -88,7 +88,7 @@ import { installPrincipalLinks } from "./directory/person.ts";
 import type { ExternalMember } from "./identity/external-members.ts";
 import { resendMailer } from "../plugins/chassis/src/resend.ts";
 import { configStoreMaps, createMemoryConfigStore, type ScopedConfigStore } from "./resolution/config-store.ts";
-import { conversationScope, createResolutionService } from "./resolution/resolution-service.ts";
+import { createResolutionService } from "./resolution/resolution-service.ts";
 import { createAclStore, type AclStore } from "./acl/acl-store.ts";
 import { createPostgresGrantStore } from "./acl/postgres-grant-store.ts";
 import { createSkillStore, type SkillStore, type Skill } from "./skills/skill-store.ts";
@@ -325,18 +325,10 @@ import { createPostgresRunStore } from "./runs/postgres-run-store.ts";
 import { registerAbsurdSchema } from "./turns/absurd-schema.ts";
 import { createMemoryRunSignalStore, type RunSignalStore } from "./runs/run-signal-store.ts";
 import { createPostgresRunSignalStore } from "./runs/postgres-run-signal-store.ts";
-import {
-  isTerminal,
-  isUnstarted,
-  runPriority,
-  type EnqueueInput,
-  type EnqueueResult,
-  type Run,
-  type RunStore,
-} from "./runs/run-store.ts";
+import { isTerminal, type Run, type RunStore } from "./runs/run-store.ts";
 import { createTurnLedger, TURN_CANCEL_CHANNEL, TURN_READY_CHANNEL } from "./turns/turn-ledger.ts";
 import { createTurnRunner, type TurnRunner } from "./turns/turn-runner.ts";
-import { turnFailureItem } from "./core/turn-error.ts";
+import { repairStaleTurns, routeTurns } from "./turns/turn-engine.ts";
 import { createRunPreemption, createWorker, type Worker } from "./runs/worker.ts";
 import {
   createNoopInstanceRegistry,
@@ -564,7 +556,6 @@ export interface BuiltApp {
 }
 
 const MEMORY_CAPTURE_ENTRY_WINDOW = 2_000;
-const TURN_REPAIRED_REASON = "This turn stopped unexpectedly and could not be resumed.";
 
 export function buildApp(
   config: Config,
@@ -1548,13 +1539,8 @@ export function buildApp(
     runStoreKind === "postgres" && config.sessionStore === "postgres"
       ? createTurnLedger(requireDbUrl("RUN_STORE"), { onTerminal: (run) => runStore.runs.emitTerminal?.(run) })
       : undefined;
-  const admitAbsurdTurn = async (input: EnqueueInput): Promise<EnqueueResult | null> => {
-    if (!turnLedger) return null;
-    const scope = conversationScope(input.request.conversation, input.request.actor.id);
-    if (!(await featureFlags.enabled("absurd_turns", scope))) return null;
-    const delegating = input.request.delegatingRunId ? await runStore.runs.get(input.request.delegatingRunId) : null;
-    return turnLedger.admit({ ...input, priority: runPriority(input.request, delegating?.priority ?? null) });
-  };
+  const turnRouting = routeTurns(runStore.runs, turnLedger, featureFlags);
+
   const blockingApprovalSessions = async (sessionIds: readonly string[]): Promise<Set<string>> => {
     if (!sessionIds.length) return new Set();
     const wanted = new Set(sessionIds);
@@ -1579,13 +1565,9 @@ export function buildApp(
   };
   const runs: RunStore = {
     ...runStore.runs,
-    cancelTurn: async (runId) => turnLedger?.cancel(runId) ?? null,
-    async withdraw(runId, opts) {
-      if (await runStore.runs.withdraw(runId, opts)) return true;
-      const run = turnLedger ? await runStore.runs.get(runId) : null;
-      if (!turnLedger || run?.engine !== "absurd" || !isUnstarted(run)) return false;
-      return (await turnLedger.cancel(runId)) !== null;
-    },
+    cancelTurn: turnRouting.cancelTurn,
+    withdraw: turnRouting.withdraw,
+    leaseHeld: turnRouting.leaseHeld,
     async enqueue(input) {
       const enqueue = async () => {
         const known = await sessions.getByThread(input.sessionId);
@@ -1599,7 +1581,7 @@ export function buildApp(
           throw new Error(`all ${SUBAGENT_TREE_RUN_CAP} session run slots are in use`);
         const participants = known ? await sessions.participantsOf(known.id) : [];
         const ancestors = known?.parentSessionId ? await workingAncestors(known) : [];
-        const result = (await admitAbsurdTurn(input)) ?? (await runStore.runs.enqueue(input));
+        const result = (await turnRouting.admit(input)) ?? (await runStore.runs.enqueue(input));
         if (result.deduped) return result;
         sessionStateBus.emit({
           threadRef: input.sessionId,
@@ -2826,34 +2808,15 @@ export function buildApp(
   const turnPointerRepair = turnLedger
     ? createSweeper(
         () =>
-          leaderLease.hold("turns:pointer-repair", async () => {
-            for (const candidate of await turnLedger.repairCandidates()) {
-              const repaired = await turnLedger.repair(candidate, {
-                status: "failed",
-                sessionId: candidate.threadRef,
-                reason: TURN_REPAIRED_REASON,
-              });
-              errors.record({
-                category: "runs",
-                code: "turn_pointer_repaired",
-                message: `turn ${candidate.turnId}: ${candidate.reason}`,
-                scopeLabel: "turns:pointer-repair" as ScopeId,
-              });
-              const session = repaired ? await sessions.getByThread(candidate.threadRef) : null;
-              if (session) {
-                await sessions.forceReleaseLease(session.id);
-                const { lease } = await sessions.acquireLease(session.id, "turn");
-                if (lease)
-                  await sessions
-                    .append(lease, turnFailureItem(TURN_REPAIRED_REASON, candidate.turnId))
-                    .finally(() => sessions.releaseLease(lease));
-              }
-              await turnLedger.release(candidate);
-            }
-          }),
+          leaderLease.hold("turns:pointer-repair", () => repairStaleTurns({ ledger: turnLedger, sessions, errors })),
         60_000,
         { label: "turn-pointer-repair" },
       )
+    : null;
+  const turnCleanup = turnLedger
+    ? createSweeper(() => leaderLease.hold("turns:cleanup", () => turnLedger.cleanup()), 60 * 60_000, {
+        label: "turn-cleanup",
+      })
     : null;
   const preemption = createRunPreemption({ runs, workers, canClaim: canClaimRuns });
   const preemptionSweeper = createSweeper(() => preemption.sweep(), 1_000, { label: "run-preemption" });
@@ -2985,6 +2948,7 @@ export function buildApp(
       queuedPostSweeper.start();
       approvalDeliverySweeper.start();
       turnPointerRepair?.start();
+      turnCleanup?.start();
     };
     if (backgroundStopping)
       void backgroundClaimsStopping.then(startPeriodic).catch(swallowAs("wiring: periodic resume failed", undefined));
@@ -3020,6 +2984,7 @@ export function buildApp(
       approvalDeliverySweeper.stop(),
       preemptionSweeper.stop(),
       turnPointerRepair?.stop(),
+      turnCleanup?.stop(),
       turnRunner?.stopClaims(),
       ...workers.map((worker) => worker.stopClaims()),
     ];

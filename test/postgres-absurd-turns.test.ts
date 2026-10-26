@@ -131,7 +131,7 @@ test("turn end completes the task, records the result, and starts the queued tur
   assert.equal(run.id, first.run.id);
   assert.equal(run.status, "running");
   assert.equal(run.attempts, 1);
-  assert.ok(run.leaseExpiresAt && run.leaseExpiresAt > Date.now());
+  assert.equal(await ledger.fenceHeld(run.id, token), true);
   assert.equal(await ledger.extend(run, token), "held");
   assert.equal(await ledger.finish(run, token, { status: "done", result: ok(run) }), true);
   assert.equal((await absurdRun(run.absurdRunId!)).state, "completed");

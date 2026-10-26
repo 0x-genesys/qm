@@ -126,10 +126,19 @@ export function createSwarmStore(
         await client.query("SET LOCAL lock_timeout = '10s'");
         await client.query("SET LOCAL statement_timeout = '15s'");
         const result = await client.query<Run>(
-          `SELECT status, attempts, lease_token AS "leaseToken", lease_expires_at::double precision AS "leaseExpiresAt", session_id AS "sessionId", request::jsonb AS request FROM runs WHERE id=$1 FOR UPDATE`,
+          `SELECT status, attempts, lease_token AS "leaseToken", lease_expires_at::double precision AS "leaseExpiresAt", session_id AS "sessionId", request::jsonb AS request, engine FROM runs WHERE id=$1 FOR UPDATE`,
           [fence.runId],
         );
-        const run = result.rows[0] ?? null;
+        const row = result.rows[0] ?? null;
+        const run =
+          row?.engine === "absurd"
+            ? {
+                ...row,
+                turnFenceHeld:
+                  (await client.query("SELECT qm_turn_fence($1, $2) AS ok", [fence.runId, fence.leaseToken])).rows[0]
+                    ?.ok === true,
+              }
+            : row;
         assertSwarmRun(fence, run);
         const session = await client.query(
           "SELECT id FROM sessions WHERE id=$1 AND scope_id=$2 AND thread_ref=$3 FOR SHARE",
