@@ -2004,21 +2004,6 @@ const apiRoutes: readonly WebRoute[] = [
   },
   {
     method: "GET",
-    path: "/api/sessions/:id/swarm",
-    handle: async (c) => relayCore(c.res, "GET", `/v1/sessions/${encodeURIComponent(c.params.id!)}/swarm`),
-  },
-  {
-    method: "POST",
-    path: "/api/sessions/:id/swarm",
-    handle: async (c) => {
-      const body = await readJson<{ action?: unknown }>(c.req, c.res, false);
-      if (!body) return;
-      if (body.action !== "control") return json(c.res, 400, { error: "only swarm controls are available here" });
-      return relayCore(c.res, "POST", `/v1/sessions/${encodeURIComponent(c.params.id!)}/swarm`, JSON.stringify(body));
-    },
-  },
-  {
-    method: "GET",
     path: "/api/sessions/:id/approvals",
     handle: async (c) => {
       const { res, user } = c;
@@ -2491,7 +2476,7 @@ const apiRoutes: readonly WebRoute[] = [
       const threadRef =
         typeof record.request?.conversation?.threadRef === "string" ? record.request.conversation.threadRef : "";
       const actor = typeof record.request?.actor?.externalId === "string" ? record.request.actor.externalId : "";
-      const delegated = threadRef.startsWith("swarm:") || threadRef.startsWith(SUBAGENT_THREAD_PREFIX);
+      const delegated = threadRef.startsWith(SUBAGENT_THREAD_PREFIX);
       if ((!threadRef.startsWith("web:") && !delegated) || actor !== user || !record.request) {
         return json(res, 404, { error: "not_found" });
       }
@@ -2510,9 +2495,8 @@ const apiRoutes: readonly WebRoute[] = [
           : null;
         if (visible?.status !== 200) return json(res, 404, { error: "not_found" });
         if (delegated) {
-          const session = (JSON.parse(visible.text) as { session?: { threadRef?: string; surface?: string } }).session;
-          const surfaceOk = threadRef.startsWith("swarm:") ? session?.surface === "swarm" : true;
-          if (!surfaceOk || session?.threadRef !== threadRef) return json(res, 404, { error: "not_found" });
+          const session = (JSON.parse(visible.text) as { session?: { threadRef?: string } }).session;
+          if (session?.threadRef !== threadRef) return json(res, 404, { error: "not_found" });
         }
       }
 

@@ -331,8 +331,6 @@ import { createMemoryRunActivityStore, type RunActivityStore } from "./runs/run-
 import { createPostgresRunActivityStore } from "./runs/postgres-run-activity-store.ts";
 import { createApp, type App } from "./api/app.ts";
 import { startSession } from "./api/start-session.ts";
-import { createSwarmStore, type SwarmStorage } from "./swarms/swarm-store.ts";
-import { createSwarmService } from "./swarms/swarm-service.ts";
 import { createSlackCoreClient, type SlackCoreClient } from "./api/slack-core-client.ts";
 import { createSlackSurface } from "./chat-surface/slack.ts";
 import { createHttpChatSurface } from "./chat-surface/http-chat.ts";
@@ -1435,33 +1433,6 @@ export function buildApp(
       return advisoryLock.withLock("session-run-admission", enqueue);
     },
   };
-  const swarmStoreKind = config.databaseUrl ? "postgres" : "memory";
-  const swarms =
-    config.swarmsEnabled !== false && config.sessionStore === swarmStoreKind && runStoreKind === swarmStoreKind
-      ? createSwarmService({
-          defaults: config.swarmDefaults,
-          store: createSwarmStore(artifactMap<SwarmStorage>("swarms", ["pending"]), {
-            runs,
-            sessions,
-            ...(pgArtifactMap && runStoreKind === "postgres" ? { pg: pgArtifactMap.pool } : {}),
-          }),
-          sessions,
-          runs,
-          sandboxes: sandboxResources,
-          lock: advisoryLock,
-          signals: runSignals,
-          enabled: (actorId) => featureFlags.enabled("swarms", scopeId("personal", actorId)),
-          authorize: async (claims) => {
-            if (!(await featureFlags.enabled("swarms", scopeId("personal", claims.actorId)))) return false;
-            await identity.refresh();
-            return (
-              identity.isInternal(identity.classify(claims.actorId)) &&
-              (claims.members ?? []).every((member) => identity.isInternal(identity.classify(member.id))) &&
-              app.authorizesCapabilityScope(claims)
-            );
-          },
-        })
-      : undefined;
   const productAnalytics = createProductAnalytics(config.orgId, config.productAnalytics);
   runs.onTerminal((run) => void productAnalytics.responseFinished(run));
   const ledger = runStore.ledger;
@@ -1792,6 +1763,15 @@ export function buildApp(
     ],
   });
   pgArtifactMap?.pool.registerMigration({
+    id: "durable-map/swarms/0002-drop",
+    statements: [
+      `DO $$ BEGIN IF to_regclass('runs') IS NOT NULL THEN UPDATE runs SET status = 'failed', result = json_build_object('status', 'failed', 'sessionId', session_id, 'reason', 'swarms were removed')::text, lease_token = NULL, lease_expires_at = NULL, worker_id = NULL, finished_at = (extract(epoch FROM clock_timestamp()) * 1000)::bigint WHERE status IN ('pending', 'running') AND (session_id LIKE 'swarm:%' OR request LIKE '%"swarm":%'); END IF; END $$`,
+      "DROP TABLE IF EXISTS swarms",
+      "DELETE FROM durable_map_versions WHERE tbl = 'swarms'",
+      "DO $$ BEGIN IF to_regclass('feature_flags') IS NOT NULL THEN DELETE FROM feature_flags WHERE id = 'swarms'; END IF; END $$",
+    ],
+  });
+  pgArtifactMap?.pool.registerMigration({
     id: "durable-map/suggested_activity_profiles/0001-nightly-on-use",
     statements: [
       "CREATE TABLE IF NOT EXISTS crons (id TEXT PRIMARY KEY, json JSONB NOT NULL)",
@@ -1929,7 +1909,6 @@ export function buildApp(
     toolOutput,
     sandbox,
     sandboxResources,
-    swarms,
     connectorTokens,
     modelGateway,
     auditLog,
@@ -2116,7 +2095,6 @@ export function buildApp(
     admittedWork,
     shutdown: () => inlineShutdown.signal,
     ...(pgArtifactMap ? { resourceSearch: createPostgresResourceSearch(pgArtifactMap.pool) } : {}),
-    swarms,
     identity,
     ...(config.publicWebUrl ? { publicWebUrl: config.publicWebUrl } : {}),
     sessions,
@@ -2725,7 +2703,6 @@ export function buildApp(
       deployMaintenanceSweeper.start();
       deepIdleSweeper?.start();
       wakeSweep.start();
-      swarms?.start();
       orphanedSignalSweeper.start();
       sessionReturnSweeper.start();
       runResultSweeper.start();
@@ -2759,7 +2736,6 @@ export function buildApp(
       composioReturnSweeper.stop(),
       fileUploads?.stop(),
       wakeSweep.stop(),
-      swarms?.stop(),
       orphanedSignalSweeper.stop(),
       sessionReturnSweeper.stop(),
       runResultSweeper.stop(),
