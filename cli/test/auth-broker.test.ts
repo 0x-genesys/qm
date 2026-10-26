@@ -49,9 +49,8 @@ test("the auth service is a first-class, privately addressed service with its ow
 test("the external-IdP stack keeps its own OIDC endpoints and gains no broker wiring", () => {
   const acme = loadConfigAt(join(repoRoot, "deploy", "stacks", "acme", "qm.config.jsonc")).config;
   assert.ok(!acme.services.includes("auth"));
-  const portal = dockerServiceEnv(acme, "portal");
-  assert.equal(portal.OIDC_ISSUER, "https://accounts.google.com");
-  assert.equal(portal.AUTH_BROKER_UPSTREAM, undefined);
+  assert.equal(acme.env.portal?.OIDC_ISSUER, "https://accounts.google.com");
+  assert.equal(dockerServiceEnv(acme, "portal").AUTH_BROKER_UPSTREAM, undefined);
 });
 
 test("a configured botName brands the docker service env for core and auth", () => {

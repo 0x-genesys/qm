@@ -197,18 +197,18 @@ test(
         execFileSync(bin, ["sandbox", "build", "--dry-run"], { cwd: deployment, encoding: "utf8", env }),
         /qm-sandbox-base@sha256:a{64}/,
       );
-      const outputs = JSON.parse(
-        execFileSync(bin, ["outputs", "--json"], { cwd: deployment, encoding: "utf8", env }),
-      ) as {
-        webUiUrl?: string;
-        adminOnboardingUrl?: string;
-      };
-      assert.equal(outputs.webUiUrl, "http://localhost:8082");
-      assert.equal(outputs.adminOnboardingUrl, "http://localhost:8082/admin/onboarding");
       execFileSync(bin, ["slack", "render"], { cwd: deployment, stdio: "pipe", env });
       execFileSync(bin, ["conformance", "--static"], { cwd: deployment, stdio: "pipe", env });
       assert.match(execFileSync(awsBin, ["check"], { cwd: awsDeployment, encoding: "utf8", env }), /check passed/);
       execFileSync(awsBin, ["infra", "render"], { cwd: awsDeployment, stdio: "pipe", env });
+      const outputs = JSON.parse(
+        execFileSync(awsBin, ["outputs", "--json"], { cwd: awsDeployment, encoding: "utf8", env }),
+      ) as {
+        webUiUrl?: string;
+        adminOnboardingUrl?: string;
+      };
+      assert.equal(outputs.webUiUrl, "https://acme-aws.example.com");
+      assert.equal(outputs.adminOnboardingUrl, "https://acme-aws.example.com/admin/onboarding");
       const awsConfigPath = join(awsDeployment, "qm.config.jsonc");
       writeFileSync(
         awsConfigPath,

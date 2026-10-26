@@ -127,7 +127,7 @@ test("init scaffolds a loadable config, generated local secrets, and a valid san
 test("init --email-transport smtp scaffolds smtp keys only and a matching config", () => {
   const dir = mkdtempSync(join(tmpdir(), "qm-init-smtp-"));
   try {
-    quiet(() => runInit({ dir, org: "acme", target: "docker", emailTransport: "smtp" }));
+    quiet(() => runInit({ dir, org: "acme", target: "aws", emailTransport: "smtp" }));
     const { config } = loadConfigInDir(dir);
     assert.equal(config.env.auth?.AUTH_EMAIL_TRANSPORT, "smtp");
     const env = readFileSync(join(dir, ".env.example"), "utf8");
