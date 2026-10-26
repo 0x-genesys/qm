@@ -3,7 +3,9 @@ import { canonicalPayload } from "../../plugins/chassis/src/source-auth-sign.ts"
 import { isStrongSigningSecret, SOURCE_AUTH_REPLAY_WINDOW_MS, verifySignature } from "../auth/source-auth.ts";
 import { tenant } from "../tenant.ts";
 import { destinationSource, type ActorAssertion } from "../types.ts";
-import { parseSurfaceDeliveryTarget } from "./refs.ts";
+import { parseSurfaceDeliveryTarget, surfaceContainerRef } from "./refs.ts";
+import type { IngestEvent } from "../surface-cache/types.ts";
+import { swallowAs } from "../util/errors.ts";
 import type { InboundMessage, InboundOutcome, Surface, SurfaceUser } from "./surface.ts";
 
 const RESERVED_SURFACES = new Set([
@@ -64,6 +66,7 @@ const messageEventSchema = z.object({
       .max(20)
       .optional(),
     thread_has_bot: z.boolean().optional(),
+    sent_at: z.number().int().positive().optional(),
   }),
   author: userSchema,
 });
@@ -107,11 +110,18 @@ function permanent(message: string): Error {
 
 export function createHttpChatSurface(
   config: HttpChatConfig,
-  opts: { fetch?: typeof fetch; now?: () => number } = {},
+  opts: { fetch?: typeof fetch; now?: () => number; mirror?: (events: IngestEvent[]) => Promise<unknown> } = {},
 ): Surface {
   const doFetch = opts.fetch ?? fetch;
   const now = opts.now ?? Date.now;
   const apiBase = config.apiUrl.replace(/\/+$/, "");
+  let mirrorSeq = 0;
+  const mirrorTs = (at: number): string => `${(at / 1000).toFixed(3)}${String(mirrorSeq++ % 1000).padStart(3, "0")}`;
+  const conversationKey = (container: string): string =>
+    surfaceContainerRef({ surface: config.surface, account: config.account, container });
+  const mirror = (event: IngestEvent): void => {
+    if (opts.mirror) void opts.mirror([event]).catch(swallowAs(`${config.surface}: mirror message`, undefined));
+  };
 
   const internalDomains = new Set(config.internalEmailDomains);
   const internal = (u: z.output<typeof userSchema>): boolean =>
@@ -125,6 +135,15 @@ export function createHttpChatSurface(
       ...(internal(u) ? {} : { guest: true }),
       ...(u.bot ? { bot: true } : {}),
       ...(u.timezone ? { timezone: u.timezone } : {}),
+    };
+  }
+
+  function principalFor(u: SurfaceUser): ActorAssertion {
+    return {
+      externalId: u.email?.trim() || `${config.surface}:${config.account}:user:${u.id}`,
+      ...(u.guest ? { isExternalGuest: true } : {}),
+      ...(u.bot ? { isBot: true } : {}),
+      ...(u.displayName ? { displayName: u.displayName } : {}),
     };
   }
 
@@ -184,7 +203,28 @@ export function createHttpChatSurface(
       const event = messageEventSchema.safeParse(body);
       if (!event.success) return { status: 400, reason: event.error.issues[0]?.message ?? "invalid event" };
       if (event.data.chat.kind !== "dm") return { status: 200, messages: [] };
-      return { status: 200, messages: [normalizeEvent(event.data)] };
+      const message = normalizeEvent(event.data);
+      const { conversation } = message;
+      mirror({
+        container: conversationKey(conversation.key),
+        ts: mirrorTs(event.data.message.sent_at ?? now()),
+        sub: conversation.thread ?? null,
+        authorId: message.author.id,
+        ...(message.author.displayName ? { authorName: message.author.displayName } : {}),
+        text: message.text,
+        ...(message.author.bot ? { bot: true } : {}),
+        ...(message.mentionsSelf ? { mentionsSelf: true } : {}),
+        files: message.attachments.map((a) => ({
+          fileId: a.id,
+          ...(a.name ? { name: a.name } : {}),
+          ...(a.mimetype ? { mimetype: a.mimetype } : {}),
+          ...(a.size !== undefined ? { size: a.size } : {}),
+        })),
+        kind: conversation.kind,
+        ...(conversation.name ? { containerName: conversation.name } : {}),
+        members: (conversation.members ?? [message.author]).map((u) => principalFor(u).externalId),
+      });
+      return { status: 200, messages: [message] };
     },
     async deliver(ctx, item) {
       const { account } = destinationSource(ctx.destination);
@@ -209,15 +249,16 @@ export function createHttpChatSurface(
       if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429)
         throw permanent(`${config.surface} refused the post: HTTP ${response.status}`);
       if (!response.ok) throw new Error(`${config.surface} post failed: HTTP ${response.status}`);
+      mirror({
+        container: conversationKey(target.container),
+        ts: mirrorTs(now()),
+        sub: target.thread ?? null,
+        text,
+        self: true,
+        handled: true,
+      });
     },
-    principalFor(u: SurfaceUser): ActorAssertion {
-      return {
-        externalId: u.email?.trim() || `${config.surface}:${config.account}:user:${u.id}`,
-        ...(u.guest ? { isExternalGuest: true } : {}),
-        ...(u.bot ? { isBot: true } : {}),
-        ...(u.displayName ? { displayName: u.displayName } : {}),
-      };
-    },
+    principalFor,
     native() {
       return null;
     },

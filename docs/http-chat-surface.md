@@ -40,6 +40,7 @@ and ignored.
     "text": "Markdown text",
     "mentions_bot": false,
     "thread_has_bot": false,
+    "sent_at": 1767225600000,
     "attachments": [{ "id": "f1", "name": "deck.pdf", "mimetype": "application/pdf", "size": 1024, "url": "https://…" }]
   },
   "author": {
@@ -77,6 +78,10 @@ Conversation references are qualified by surface and account: a DM in chat 42 is
 Turn replies, failure notices, approval requests and background work addressed to the
 conversation (crons, webhooks) all arrive through this endpoint. A 4xx response other than 408
 or 429 is final; QM retries 5xx responses and network errors for up to six hours.
+
+QM keeps a copy of each DM message and each reply in its surface message store, keyed by
+surface, account and chat, so later context reads see the conversation. `sent_at` (Unix
+milliseconds) orders the stored copy; when it is absent QM uses the time it received the event.
 
 Attachments in an event are passed to the model as `[attachment: <name> <url>]` lines; QM does
 not fetch them. Files QM sends back arrive as the same kind of line in `text`.

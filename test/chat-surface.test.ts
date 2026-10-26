@@ -16,6 +16,7 @@ import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { conversationScope } from "../src/resolution/resolution-service.ts";
 import { tenant } from "../src/tenant.ts";
 import type { PendingApprovalRecord, TurnRequest } from "../src/types.ts";
+import type { IngestEvent } from "../src/surface-cache/types.ts";
 import { buildApp } from "./support/build-app.ts";
 import { testConfig } from "./support/test-config.ts";
 import { settle } from "./support/settle.ts";
@@ -305,6 +306,44 @@ test("an approval on a non-Slack surface is posted to the conversation as text w
       },
     ],
   );
+});
+
+test("http-chat writes its inbound and outbound messages to the surface message store under its own key", async () => {
+  const mirrored: IngestEvent[] = [];
+  const adapter = createHttpChatSurface(config(), {
+    now: () => 1_700_000_000_000,
+    fetch: async () => new Response("{}", { status: 201 }),
+    mirror: async (events) => void mirrored.push(...events),
+  });
+  await adapter.normalize!(
+    signed(
+      dmEvent({
+        message: { id: 9001, text: "hello", thread_id: 500, sent_at: 1_700_000_000_000 },
+        author: { id: 7, email: "alice@example.com", name: "Alice" },
+      }),
+      SECRET,
+      1_700_000_000,
+    ),
+  );
+  await adapter.deliver(
+    { tenant: tenant(), destination: { type: "forum", target: "42:500" }, idempotencyKey: "run:1" },
+    { text: "hi back" },
+  );
+  await settle(async () => mirrored.length === 2);
+  assert.deepEqual(mirrored, [
+    {
+      container: "forum:prod:42",
+      ts: "1700000000.000000",
+      sub: "500",
+      authorId: "7",
+      authorName: "Alice",
+      text: "hello",
+      files: [],
+      kind: "dm",
+      members: ["alice@example.com"],
+    },
+    { container: "forum:prod:42", ts: "1700000000.000001", sub: "500", text: "hi back", self: true, handled: true },
+  ]);
 });
 
 async function readBody(req: IncomingMessage): Promise<string> {

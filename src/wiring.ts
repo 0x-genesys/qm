@@ -1812,7 +1812,12 @@ export function buildApp(
   outbound.register(["web"], createWebSender(transcripts));
   const slackSurface = createSlackSurface();
   const chatSurfaces = createSurfaceRegistry({
-    surfaces: [slackSurface, ...(config.chatSurfaces ?? []).map((surface) => createHttpChatSurface(surface))],
+    surfaces: [
+      slackSurface,
+      ...(config.chatSurfaces ?? []).map((surface) =>
+        createHttpChatSurface(surface, { mirror: (events) => app.ingestSurfaceEvents(events, surface.surface) }),
+      ),
+    ],
     outbound,
     turn: (request) => app.turn(request),
   });
