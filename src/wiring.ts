@@ -349,6 +349,9 @@ import { startSession } from "./api/start-session.ts";
 import { createSwarmStore, type SwarmStorage } from "./swarms/swarm-store.ts";
 import { createSwarmService } from "./swarms/swarm-service.ts";
 import { createSlackCoreClient, type SlackCoreClient } from "./api/slack-core-client.ts";
+import { createSlackSurface } from "./chat-surface/slack.ts";
+import { createHttpChatSurface } from "./chat-surface/http-chat.ts";
+import { createSurfaceRegistry, type SurfaceRegistry } from "./chat-surface/registry.ts";
 import { createSurfaceContextPuller } from "./api/surface-context-puller.ts";
 import { createEngagedRegistry } from "./wake/engaged-registry.ts";
 import { createWakeSweep, type WakeSweep } from "./wake/sweep.ts";
@@ -541,6 +544,7 @@ export interface BuiltApp {
   sessionShareBytes: DurableByteStore;
   skillSyncEngine: SkillSyncEngine;
   slackCore: SlackCoreClient;
+  chatSurfaces: SurfaceRegistry;
 }
 
 const MEMORY_CAPTURE_ENTRY_WINDOW = 2_000;
@@ -1778,6 +1782,17 @@ export function buildApp(
     },
   });
   outbound.register(["web"], createWebSender(transcripts));
+  const slackSurface = createSlackSurface();
+  const chatSurfaces = createSurfaceRegistry({
+    surfaces: [
+      slackSurface,
+      ...(config.chatSurfaces ?? []).map((surface) =>
+        createHttpChatSurface(surface, { mirror: (events) => app.ingestSurfaceEvents(events, surface.surface) }),
+      ),
+    ],
+    outbound,
+    turn: (request) => app.turn(request),
+  });
   pgArtifactMap?.pool.registerMigration({
     id: "delivery/store/0007-drop",
     statements: ["DROP TABLE IF EXISTS deliveries"],
@@ -1941,7 +1956,11 @@ export function buildApp(
       `UPDATE webhooks SET json = jsonb_set(json, '{enabled}', 'false'::jsonb) WHERE (json ->> 'enabled')::boolean`,
     ],
   });
-  const approvals = createApprovalStore(artifactMap<PendingApprovalRecord>("approvals", ["sessionId"]), outbound);
+  const webUiBase = (config.slack?.webUiPublicUrl ?? config.publicWebUrl)?.replace(/\/+$/, "");
+  const approvals = createApprovalStore(artifactMap<PendingApprovalRecord>("approvals", ["sessionId"]), outbound, {
+    surfaces: chatSurfaces,
+    webSessionUrl: (sessionId) => (webUiBase ? `${webUiBase}/s/${encodeURIComponent(sessionId)}` : undefined),
+  });
   let securityScreener = overrides.securityScreener;
   if (!securityScreener && config.securityScreen !== "off" && config.securityScreenProxy) {
     securityScreener = createSecurityScreenProxy({
@@ -2026,6 +2045,7 @@ export function buildApp(
   });
   const uiState = artifactMap<PersistedUiState>("web_ui_state");
   const orchestratorDeps: OrchestratorDeps = {
+    surfaceLabel: chatSurfaces.label,
     installSharedCanvas: async (actorId, fileId, where) => {
       const canvas = await installSharedCanvas(uiState, actorId, await app.openFileForViewer(fileId, actorId));
       if (typeof canvas === "string") return canvas;
@@ -2140,6 +2160,7 @@ export function buildApp(
   const runResultRecovery = wireRunResultPosts(runs, outbound, {
     ...(recoveryAdminUrlFor ? { adminUrlFor: recoveryAdminUrlFor } : {}),
     sessions,
+    postsImmediately: (surface) => chatSurfaces.get(surface)?.normalize !== undefined,
   });
   const skillFetcher = createGitFetcher(
     keychain
@@ -2349,7 +2370,7 @@ export function buildApp(
     config: configStore,
     runtimeFallback: fallback,
     blobTransfer,
-    outbound,
+    slack: slackSurface.slack,
     errors,
     runs,
     turnStream,
@@ -3108,6 +3129,7 @@ export function buildApp(
       : createLocalDurableByteStore(join(config.dataDir, "session-shares")),
     skillSyncEngine,
     slackCore,
+    chatSurfaces,
   };
 }
 
@@ -3160,6 +3182,7 @@ export function serverDeps(
     slackInstallation: built.slackInstallation,
     slackEnvironmentState,
     ...(config.slackEventsPort ? { slackEventsPort: config.slackEventsPort } : {}),
+    chatSurfaces: built.chatSurfaces,
     ...(slackEnvBotToken ? { slackEnvBotToken } : {}),
     resolveClient: built.resolveClient,
     consentLinks: built.consentLinks,

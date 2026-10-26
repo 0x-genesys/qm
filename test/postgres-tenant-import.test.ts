@@ -81,6 +81,8 @@ test(
       }
       await seedSource(sources.alpha, "Alpha", 1200);
       await seedSource(sources.beta, "Beta", 30);
+      await withClient(sources.beta, (client) => client.query("CREATE TABLE retired_store(id int PRIMARY KEY)"));
+      await withClient(target, (client) => client.query("CREATE TABLE runtime_store(id int PRIMARY KEY)"));
       const sourceTenants = Object.fromEntries(
         await Promise.all(
           Object.entries(sources).map(async ([name, url]) => [
@@ -138,6 +140,8 @@ test(
       assert.equal(dry.committed, false);
       const alpha = await run("alpha", databaseNamed("stage_alpha"), "sql");
       const beta = await run("beta", databaseNamed("stage_beta"), "pg-dump");
+      assert.ok(lines.some((line) => /only in the target.*runtime_store/.test(line)));
+      assert.ok(lines.some((line) => /empty tables only in staging \(skipped\): retired_store/.test(line)));
       assert.equal(alpha.tenantId, sourceTenants.alpha);
       assert.equal(beta.tenantId, sourceTenants.beta);
       for (const result of [alpha, beta]) {

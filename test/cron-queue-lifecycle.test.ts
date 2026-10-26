@@ -10,6 +10,8 @@ let emitError: (e: Error) => void = () => {};
 
 mock.module("../src/persistence/pg-pool.ts", {
   namedExports: {
+    pgTenancyEnabled: () => false,
+    pgTenantId: () => undefined,
     createPgPool: () => {
       const state = { closed: false };
       pools.push(state);

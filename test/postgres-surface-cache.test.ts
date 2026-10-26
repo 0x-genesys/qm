@@ -475,3 +475,56 @@ test("pg channel guidance edits compare the stored text atomically across connec
     await Promise.all([left.close(), right.close()]);
   }
 });
+
+test(
+  "pg surface-cache: each surface's conversations stay out of another surface's search and listings",
+  { skip },
+  async () => {
+    const cache = createPostgresSurfaceCache(URL!);
+    try {
+      await cache.ingest([
+        { container: "CSURF", ts: "100.000001", text: "quarterly zebra plan", kind: "channel", createdAt: 1 },
+        {
+          surface: "forum",
+          container: "forum:prod:42",
+          ts: "100.000002",
+          sub: "100.000001",
+          text: "private zebra note",
+          kind: "dm",
+          members: ["alice@example.com"],
+          createdAt: 1,
+        },
+      ]);
+      assert.deepEqual(
+        (await cache.search("zebra")).map((m) => m.container),
+        ["CSURF"],
+      );
+      assert.deepEqual(
+        (await cache.search("zebra", { surface: "forum" })).map((m) => [m.container, m.surface]),
+        [["forum:prod:42", "forum"]],
+      );
+      assert.equal(
+        (await cache.listContainers()).some((c) => c.container === "forum:prod:42"),
+        false,
+      );
+      assert.deepEqual(
+        (await cache.listContainers({ surface: "forum" })).map((c) => c.container),
+        ["forum:prod:42"],
+      );
+      assert.equal(
+        (await cache.activeThreads()).some((t) => t.container === "forum:prod:42"),
+        false,
+      );
+      assert.deepEqual(
+        (await cache.activeThreads({ surface: "forum" })).map((t) => t.container),
+        ["forum:prod:42"],
+      );
+      const [dm] = await cache.readMessages("forum:prod:42", { noFallback: true });
+      assert.equal(dm?.surface, "forum");
+      assert.equal((await cache.readMessages("CSURF", { noFallback: true }))[0]?.surface, undefined);
+      assert.equal(await cache.isMember("forum:prod:42", "alice@example.com"), true);
+    } finally {
+      await cache.close();
+    }
+  },
+);
