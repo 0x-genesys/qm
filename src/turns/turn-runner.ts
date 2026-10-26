@@ -23,7 +23,7 @@ import {
   recordTurnError,
   runTurnInput,
   runStopFor,
-  swarmTurnLimits,
+  assertSwarmClaimBudget,
 } from "../runs/worker.ts";
 import type { TurnQueue } from "./absurd-schema.ts";
 import { TURN_EXTEND_INTERVAL_MS, type TurnLedger, type TurnOutcome } from "./turn-ledger.ts";
@@ -162,7 +162,6 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     let lost = false;
     let misses = 0;
     let extendFailures = 0;
-    let workDeadline: ReturnType<typeof setTimeout> | undefined;
     let cancelTimer: ReturnType<typeof setTimeout> | undefined;
     held.onCancel = () => {
       if (held.cancelled) return;
@@ -224,7 +223,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         await yieldHeld(held, "person");
         return;
       }
-      workDeadline = swarmTurnLimits(run, cancel);
+      assertSwarmClaimBudget(run);
       if (deps.maxClaims !== undefined && countedClaims(run) > deps.maxClaims)
         throw new NonRetryableTurnError(crashLoopReason(countedClaims(run) - 1));
       ended = {
@@ -287,7 +286,6 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
         console.warn(`[turns] turn ${run.id} could not be requeued after an error; its claim was already gone`);
     } finally {
       clearInterval(beat);
-      clearTimeout(workDeadline);
       clearTimeout(cancelTimer);
     }
   }

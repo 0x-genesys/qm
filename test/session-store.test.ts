@@ -285,7 +285,7 @@ for (const [name, make] of backends) {
 
   test(`${name}: scopeSessionSummaries paginates newest-activity-first`, async () => {
     let clock = Date.now() + 1_000_000;
-    const store = createPostgresSessionStore(testDatabaseUrl(), { now: () => ++clock });
+    const store = createPostgresSessionStore(testDatabaseUrl(), { now: () => (clock += 61_000) });
     const scope = scopeId("personal", "U1");
     const a = await store.getOrCreateByThread("dm:A", "dm", scope);
     const b = await store.getOrCreateByThread("dm:B", "dm", scope);

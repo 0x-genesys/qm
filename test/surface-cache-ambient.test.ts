@@ -78,9 +78,11 @@ test("a prompt-injected ambient judge reason is screened even when the shown mes
         createdAt: 1,
       },
     ]);
-    await sleep(250);
+    const flagged = async () =>
+      (await built.auditLog.events()).some((event) => event.action === "security_posture.flagged");
+    await settle(flagged);
     assert.equal((await built.posts.pending("slack")).length, 0);
-    assert.ok((await built.auditLog.events()).some((event) => event.action === "security_posture.flagged"));
+    assert.ok(await flagged());
   } finally {
     await built.runtime.stop();
   }
@@ -230,7 +232,7 @@ test("no standing orders → an informal address does NOT engage (mention-only d
         createdAt: 1,
       },
     ]);
-    await sleep(250);
+    await settle(async () => (await built.ambientJudgments!.list({ container })).length > 0);
     assert.equal(((await built.posts.pending("slack")) as any[]).length, 0, "an unwatched room is mention-only");
     const rows = await built.ambientJudgments!.list({ container });
     assert.equal(rows.length, 1);

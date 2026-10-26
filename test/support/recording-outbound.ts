@@ -1,6 +1,4 @@
 import { createOutbound, type Outbound, type OutboundPost } from "../../src/surfaces/outbound.ts";
-import { createIdempotencyStore } from "../../src/idempotency/idempotency-store.ts";
-import { testMap } from "./test-database.ts";
 
 const SURFACES = ["slack", "group", "principal"] as const;
 
@@ -18,6 +16,13 @@ export function recordSurfacePosts(outbound: Pick<Outbound, "register">, types: 
 }
 
 export function recordingOutbound(types: readonly string[] = [...SURFACES, "web"]): Outbound & PostLog {
-  const outbound = createOutbound({ idempotency: createIdempotencyStore(testMap()) });
+  const sent = new Set<string>();
+  const once = async (key: string, fn: () => Promise<void>) => {
+    if (sent.has(key)) return false;
+    sent.add(key);
+    await fn();
+    return true;
+  };
+  const outbound = createOutbound({ idempotency: { once } });
   return Object.assign(outbound, recordSurfacePosts(outbound, types));
 }
