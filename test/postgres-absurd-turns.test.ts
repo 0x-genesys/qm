@@ -153,7 +153,7 @@ test("handback frees the claim without spending an attempt and fences the old ho
   const session = await sessions.getOrCreateByThread(thread, "dm", scopeId("personal", "alice@example.com"));
   await admit(thread);
   const { run, token } = await claim();
-  const { lease } = await sessions.acquireLease(session.id);
+  const { lease } = await sessions.acquireLease(session.id, "turn");
   assert.ok(lease);
   const fenced = { ...lease, turnId: run.id, fenceToken: token };
   await sessions.append(fenced, { kind: "UserMessage", text: "hello" });
@@ -171,12 +171,15 @@ test("handback frees the claim without spending an attempt and fences the old ho
   assert.equal(await ledger.finish(run, token, { status: "done", result: ok(run) }), false);
   const resumed = await claim();
   assert.equal(resumed.run.id, run.id);
+  await assert.rejects(sessions.append(lease, { kind: "AgentMessage", text: "old lease" }), /lease/);
+  const { lease: fresh } = await sessions.acquireLease(session.id, "turn");
+  assert.ok(fresh);
   assert.equal(resumed.run.absurdRunId, run.absurdRunId);
   assert.equal((await absurdRun(run.absurdRunId!)).attempt, 1);
   assert.equal(resumed.run.attempts, 2);
-  await sessions.append({ ...lease, turnId: run.id, fenceToken: resumed.token }, { kind: "AgentMessage", text: "ok" });
+  await sessions.append({ ...fresh, turnId: run.id, fenceToken: resumed.token }, { kind: "AgentMessage", text: "ok" });
   assert.equal(await ledger.finish(resumed.run, resumed.token, { status: "done", result: ok(run) }), true);
-  await sessions.releaseLease(lease);
+  await sessions.releaseLease(fresh);
   const items = await sessions.getItems(session.id);
   assert.deepEqual(
     items.map((item) => item.text),

@@ -278,7 +278,14 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
            RETURNING *`,
           [turnId, token, expires, workerId, Date.now(), runId, queue],
         );
-        return rows[0] ? rowToRun(rows[0]) : null;
+        if (!rows[0]) return null;
+        const run = rowToRun(rows[0]);
+        await client.query(
+          `DELETE FROM session_leases WHERE holder = 'turn'
+             AND session_id IN (SELECT id FROM sessions WHERE thread_ref = $1)`,
+          [run.sessionId],
+        );
+        return run;
       });
     },
 
