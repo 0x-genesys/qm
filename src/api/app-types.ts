@@ -637,7 +637,7 @@ export interface AppDeps {
   externalSlackPolicies?: ExternalSlackPolicies;
   admittedWork?: AdmittedWork;
   shutdown?: () => AbortSignal;
-  resourceSearch?: ResourceSearchStore;
+  resourceSearch: ResourceSearchStore;
   swarms?: SwarmService;
   identity: IdentityService;
   publicWebUrl?: string;
