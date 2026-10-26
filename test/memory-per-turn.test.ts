@@ -19,6 +19,15 @@ function freshMemory() {
 const INPUT = "remember that my task list is ship the launch";
 const REPLY = "Noted.";
 
+async function flushed(read: () => Promise<string>, patterns: RegExp[]): Promise<string> {
+  let body = await read();
+  for (let attempt = 0; attempt < 300 && !patterns.every((p) => p.test(body)); attempt++) {
+    await new Promise((r) => setTimeout(r, 10));
+    body = await read();
+  }
+  return body;
+}
+
 for (const origin of [CHANNEL, GROUP, DM]) {
   test(`automatic capture writes only to ${origin} and leaves existing notebooks untouched`, async () => {
     const { memory } = freshMemory();
@@ -54,8 +63,7 @@ test("burst debounce: turns within the quiet window flush as one extraction afte
   await strategy.onTurnEnd!({ scopeId: DM, input: "remember that fact two is beta", reply: REPLY, actorId: ACTOR });
 
   assert.equal(await memory.read(DM), "", "nothing captured before the quiet window elapses");
-  await new Promise((r) => setTimeout(r, 120));
-  const body = await memory.read(DM);
+  const body = await flushed(() => memory.read(DM), [/fact one is alpha/, /fact two is beta/]);
   assert.match(body, /fact one is alpha/);
   assert.match(body, /fact two is beta/);
 });
@@ -91,7 +99,7 @@ test("burst debounce: different speakers in one channel keep separate bursts in 
     reply: REPLY,
     actorId: "U2",
   });
-  await new Promise((r) => setTimeout(r, 120));
+  await flushed(() => memory.read(CHANNEL), [/ship the launch/, /write the memo/]);
 
   assert.match(await memory.read(CHANNEL), /ship the launch/);
   assert.match(await memory.read(CHANNEL), /write the memo/);
