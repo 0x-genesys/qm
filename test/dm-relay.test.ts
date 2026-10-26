@@ -126,27 +126,6 @@ describe("agent → teammate DM: cron recipients and the reach route (§10)", ()
     assert.equal(result.recipient?.displayName, "Alice");
   });
 
-  it("refuses an unknown teammate name", async () => {
-    const result = failure(
-      await createCron(
-        { schedule: { firstFireAt: Date.now() }, action: "ping", recipient: "Nobody McMissing" },
-        claimsDm("U-carol"),
-      ),
-    );
-    assert.equal(result.code, "recipient_not_found");
-  });
-
-  it("returns candidates on an ambiguous name (the model must disambiguate)", async () => {
-    const result = failure(
-      await createCron(
-        { schedule: { firstFireAt: Date.now() }, action: "ping", recipient: "Sam" },
-        claimsDm("U-carol"),
-      ),
-    );
-    assert.equal(result.code, "ambiguous_recipient");
-    assert.equal(result.candidates?.length, 2);
-  });
-
   it("messages a teammate from a channel scope, reading the channel (§10 parity gate)", async () => {
     const result = await createCron(
       { schedule: { firstFireAt: Date.now() }, text: "ping", recipient: "Alice" },

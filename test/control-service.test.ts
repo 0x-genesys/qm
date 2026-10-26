@@ -760,6 +760,12 @@ test("cron get honors read-only visibility: a delivery-targeted viewer reads, ne
 
 test("webhook create surfaces the inbound url + the secret verbatim; list elides; disable is owner-gated", async () => {
   const { control } = setup();
+  const unattended = await control.createWebhook(
+    { action: "handle the event", verification: { scheme: "github", secret: "shh-secret" } },
+    claims("U1"),
+    "https://portal.example",
+  );
+  assert.equal(unattended.ok ? "" : unattended.code, "forbidden");
   const r = await control.createWebhook(
     {
       action: "handle the event",

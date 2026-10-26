@@ -1,4 +1,4 @@
-import { memoryForRequest } from "./memory-access.ts";
+import { disclosedMemory } from "../../memory/disclosure.ts";
 import type { MemoryEdit, MemoryService } from "../../memory/memory-service.ts";
 import { suggestedActivityRoutes } from "./suggested-activities.ts";
 import { runtimeFallback, runtimeConfigBody, userRuntimeConfigBody, webuiModelEnabled } from "../runtime-config.ts";
@@ -641,9 +641,19 @@ async function selfMemory(ctx: ApiCtx): Promise<void> {
     method === "GET" ? url.searchParams.get("principalId") : (body as { principalId?: unknown }).principalId;
   if (typeof principalId !== "string" || !principalId)
     return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
-  const memory = memoryForRequest(ctx, principalId);
-  if (!memory) return sendJson(res, 404, { error: "not_found" });
+  if (!deps.memory) return sendJson(res, 404, { error: "not_found" });
   const scope = makeScopeId("personal", principalId);
+  const actor = deps.identity?.classify(principalId) ?? { id: principalId, type: "internal" as const };
+  const memory = disclosedMemory(deps.memory, {
+    actor,
+    targetScope: scope,
+    nativeScopes: [scope],
+    audience: [actor],
+    open: true,
+    config: deps.config,
+    isCurrentSharedScopeMember: (person, target) => ctx.app.isCurrentSharedScopeMember(person, target),
+    currentScopeMembers: (target) => ctx.app.currentScopeMembers(target),
+  });
   if (method === "PATCH") {
     const edits = parseEdits(body);
     if (typeof edits === "string") return sendJson(res, 400, { error: "bad_request", message: edits });
@@ -1003,14 +1013,17 @@ async function getSurfaceConfig(ctx: ApiCtx): Promise<void> {
 
 async function runtimeTarget(ctx: ApiCtx): Promise<{ actorId: string; scope: ScopeId } | null> {
   const actorId =
-    isObj(ctx.body) && typeof ctx.body.principalId === "string"
+    ctx.capability?.actorId ??
+    (isObj(ctx.body) && typeof ctx.body.principalId === "string"
       ? ctx.body.principalId
-      : ctx.url.searchParams.get("principalId");
+      : ctx.url.searchParams.get("principalId"));
   const scope =
-    isObj(ctx.body) && typeof ctx.body.scopeId === "string" ? ctx.body.scopeId : ctx.url.searchParams.get("scopeId");
+    ctx.capability?.scopeId ??
+    (isObj(ctx.body) && typeof ctx.body.scopeId === "string" ? ctx.body.scopeId : ctx.url.searchParams.get("scopeId"));
   if (!actorId || !scope) return null;
   const parsed = parseScopeId(scope);
   if (parsed.kind === "personal" && parsed.ref === actorId) return { actorId, scope: scope as ScopeId };
+  if (ctx.capability && parsed.kind !== "org") return { actorId, scope: scope as ScopeId };
   if (parsed.kind !== "org" && (await ctx.app.belongsToScope(actorId, scope as ScopeId)))
     return { actorId, scope: scope as ScopeId };
   return null;
@@ -1101,6 +1114,8 @@ async function getChannelHeaderPin(ctx: ApiCtx): Promise<void> {
 
 async function putChannelHeaderPin(ctx: ApiCtx): Promise<void> {
   if (!ctx.deps.config || !isObj(ctx.body)) return sendJson(ctx.res, 400, { error: "bad_request" });
+  if (ctx.capability && !livePersonCapability(ctx.capability))
+    return sendJson(ctx.res, 403, { error: "live_actor_required" });
   const target = await runtimeTarget(ctx);
   if (!target) return sendJson(ctx.res, 403, { error: "forbidden" });
   if (typeof ctx.body.on !== "boolean" && ctx.body.on !== null)

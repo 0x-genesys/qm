@@ -185,6 +185,22 @@ describe("capability-token control plane (SOUL)", () => {
     assert.equal(got.effectiveSoul.includes("Private U8 instruction."), false);
   });
 
+  it("channel-header-pin takes the actor and scope from the token and refuses non-live tokens", async () => {
+    const put = (body: unknown, token: string) =>
+      fetch(`${base}/v1/channel-header-pin`, {
+        method: "PUT",
+        headers: { "content-type": "application/json", "x-agent-capability": token },
+        body: JSON.stringify(body),
+      });
+    const live = await capChannel("U1", { liveActor: true });
+    const spoofed = await put({ on: true, principalId: "U2", scopeId: "channel:OTHER" }, live);
+    assert.equal(spoofed.status, 200);
+    assert.equal(((await spoofed.json()) as { scopeId: string }).scopeId, "channel:C");
+    const triggered = await put({ on: false }, await capChannel("U1", { triggered: true }));
+    assert.equal(triggered.status, 403);
+    assert.deepEqual(await triggered.json(), { error: "live_actor_required" });
+  });
+
   it("rejects an invalid/expired token with 401", async () => {
     assert.equal((await post("/v1/soul", { soul: "x" }, { "x-agent-capability": "garbage" })).status, 401);
     const expired = await mintCapabilityToken({ actorId: "U1", scopeId: "personal:U1", exp: Date.now() - 1 }, SECRET);
