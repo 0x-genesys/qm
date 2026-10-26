@@ -352,7 +352,9 @@ function formatCounts(counts: readonly TableCount[]): string {
   const width = Math.max(5, ...counts.map((count) => count.table.length));
   const lines = [`${"table".padEnd(width)}  ${"staging".padStart(10)}  ${"target".padStart(10)}`];
   for (const count of counts) {
-    const flag = count.staging === count.target ? "" : "  MISMATCH";
+    let flag = "";
+    if (count.target < count.staging) flag = "  MISSING";
+    else if (count.target > count.staging) flag = "  EXTRA";
     lines.push(
       `${count.table.padEnd(width)}  ${String(count.staging).padStart(10)}  ${String(count.target).padStart(10)}${flag}`,
     );
@@ -383,9 +385,17 @@ export async function importTenant(options: TenantImportOptions): Promise<Tenant
     try {
       counts = await copyToTarget(options, tenantId, staging, target);
       options.log(formatCounts(counts));
-      const mismatched = counts.filter((count) => count.staging !== count.target);
-      if (mismatched.length)
-        throw new Error(`row counts differ for ${mismatched.map((count) => count.table).join(", ")}`);
+      // Triggers on copied tables can derive extra rows (dirty markers, version bumps), so the target may hold more
+      // rows than staging; fewer means rows were lost.
+      for (const count of counts.filter((count) => count.target > count.staging)) {
+        options.log(
+          `warning: ${count.table} has ${count.target} target rows for ${count.staging} staging rows (trigger-derived rows)`,
+        );
+      }
+      const missing = counts.filter((count) => count.target < count.staging);
+      if (missing.length) {
+        throw new Error(`rows are missing from the target for ${missing.map((count) => count.table).join(", ")}`);
+      }
       if (options.dryRun) {
         await target.query("ROLLBACK");
         options.log("dry run: rolled back the target transaction");
