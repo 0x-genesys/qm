@@ -9,6 +9,7 @@ import { processRun } from "../src/runs/worker.ts";
 import type { Orchestrator } from "../src/core/orchestrator.ts";
 import { swarmFixture } from "./support/swarm-fixture.ts";
 import { testPgPool } from "./support/test-database.ts";
+import type { AdvisoryLock } from "../src/persistence/advisory-lock.ts";
 
 const sharedPool = testPgPool();
 
@@ -29,6 +30,10 @@ async function until(check: () => boolean | Promise<boolean>): Promise<void> {
     if (performance.now() > deadline) throw new Error("condition never held");
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
+}
+
+async function unlocked(lock: AdvisoryLock, key: string): Promise<void> {
+  await until(async () => (await lock.tryWithLock!(key, async () => true)) !== null);
 }
 
 test("delayed ready acknowledgment cannot roll back a delivered worker across phase locks", async (context) => {
@@ -65,7 +70,7 @@ test("delayed ready acknowledgment cannot roll back a delivered worker across ph
     await firstSweep;
     assert.equal(await fixture.serviceOptions.lock.tryWithLock!(resourceLock, async () => true), null);
     acknowledgment.resolve();
-    await fixture.serviceOptions.lock.withLock(resourceLock, async () => undefined);
+    await unlocked(fixture.serviceOptions.lock, resourceLock);
     await second.sweep();
     const final = (await fixture.store.get(fixture.root.id))!;
     const member = final.members.find((peer) => peer.id === worker!.id)!;
@@ -201,10 +206,7 @@ test("provisioning deadlines isolate healthy swarms and retire late private reso
     const sweep = first.service.sweep();
     await entered;
     await until(async () => (await first.store.get(second.root.id))!.members[1]!.state === "ready");
-    await until(
-      async () =>
-        (await first.serviceOptions.lock.tryWithLock!(`swarm-reconcile:${second.root.id}`, async () => true)) !== null,
-    );
+    await unlocked(first.serviceOptions.lock, `swarm-reconcile:${second.root.id}`);
     context.mock.timers.tick((SWARM_LIMITS.provisionMs ?? 10_000) + 1);
     await until(async () => (await first.store.get(first.root.id))!.members[1]!.state === "failed");
     context.mock.timers.tick(SWARM_LIMITS.reconcileMs);
@@ -217,7 +219,7 @@ test("provisioning deadlines isolate healthy swarms and retire late private reso
     assert.equal((await first.store.get(first.root.id))!.members[1]!.attempts, 1);
     release();
     await late;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await unlocked(first.serviceOptions.lock, `swarm-reconcile:${first.root.id}`);
     await createSwarmService(first.serviceOptions).sweep();
     assert.equal((await first.records.get(slow!.id))!.state, "retired");
     assert.equal((await first.records.get(forum.id))!.state, "ready");
@@ -430,7 +432,7 @@ test("late session creation remains fenced from cleanup until its side effect se
     release();
     await until(() => late !== undefined);
     await late;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await unlocked(fixture.serviceOptions.lock, `swarm-reconcile:${fixture.root.id}`);
     await createSwarmService(fixture.serviceOptions).sweep();
     assert.equal(await fixture.sessions.getByThread(member!.threadRef), null);
     assert.equal((await fixture.records.get(member!.id))!.state, "retired");
