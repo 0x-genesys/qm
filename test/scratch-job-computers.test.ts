@@ -58,6 +58,7 @@ function fixture() {
     finish: async (_handle, processId) => void finished.push(processId),
     onError: (code) => void errors.push(code),
     pollMs: 5,
+    keepAfterExitMs: 0,
   });
   const broker = createBackgroundBroker({ sandbox, registry: processes, scopeId: "channel:room", pollMs: 1 });
   const turn = (transferId: string) =>
@@ -74,7 +75,9 @@ function fixture() {
     } as unknown as TurnSandboxContext);
   const startJob = async () => {
     const boxes = turn("turn-one");
+    const foreground = await boxes.provisionScratch();
     const { handle, sandboxId } = await boxes.provisionScratchJob();
+    assert.notEqual(handle.id, foreground.id);
     const job = await broker.start(handle, "sync", "Sync mail", 60_000, undefined, sandboxId);
     await boxes.reclaimBox();
     return { handle, sandboxId, job };
@@ -86,12 +89,12 @@ test("a scratch computer running a background job outlives its turn until the jo
   const f = fixture();
   const { handle, sandboxId, job } = await f.startJob();
   assert.equal((await f.processes.get(job.processId))?.sandboxId, sandboxId);
-  assert.deepEqual(f.destroyed, []);
+  assert.deepEqual(f.destroyed, ["scratch-1"]);
   assert.equal(f.scratchJobs.get(sandboxId), handle);
   const quiet = f.turn("turn-two");
   await quiet.provisionScratch();
   await quiet.reclaimBox();
-  assert.deepEqual(f.destroyed, ["scratch-2"]);
+  assert.deepEqual(f.destroyed, ["scratch-1", "scratch-3"]);
   f.exited.add(job.processId);
   await settle(() => f.destroyed.includes(handle.id));
   assert.equal((await f.processes.get(job.processId))?.status, "exited");
@@ -118,5 +121,5 @@ test("draining reaps running scratch jobs, writes their credentials back, and de
   await f.scratchJobs.drain();
   assert.equal((await f.processes.get(job.processId))?.status, "reaped");
   assert.deepEqual(f.finished, [job.processId]);
-  assert.deepEqual(f.destroyed, [handle.id]);
+  assert.deepEqual(f.destroyed, ["scratch-1", handle.id]);
 });

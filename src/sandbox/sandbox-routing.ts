@@ -15,11 +15,7 @@ import {
   type StageOptions,
   type TeardownOptions,
 } from "./sandbox.ts";
-import {
-  isScratchJobComputer,
-  SCRATCH_JOB_GONE_MESSAGE,
-  type HeldComputers,
-} from "../processes/scratch-job-computers.ts";
+import { isScratchJobComputer, ScratchJobComputerGoneError, type HeldComputers } from "./held-computers.ts";
 
 export type SandboxBackendName =
   | "sprites"
@@ -118,7 +114,7 @@ export function createSandboxRouter(opts: RoutingSandboxOptions): Sandbox {
     async provision(layers: WorkspaceLayer[], provOpts?: ProvisionOptions): Promise<SandboxHandle> {
       if (provOpts?.sandboxId !== undefined && isScratchJobComputer(provOpts.sandboxId)) {
         const held = opts.heldComputers?.get(provOpts.sandboxId);
-        if (!held) throw new Error(SCRATCH_JOB_GONE_MESSAGE);
+        if (!held) throw new ScratchJobComputerGoneError();
         return held;
       }
       const scope = provOpts?.routeScopeId ?? writableScope(layers);

@@ -67,7 +67,7 @@ import {
   type KeychainManifestInput,
 } from "../credentials/keychain.ts";
 import { finishProcessCredentials } from "../credentials/execute-files.ts";
-import { isScratchJobComputer } from "../processes/scratch-job-computers.ts";
+import { isScratchJobComputer } from "../sandbox/held-computers.ts";
 import {
   configuredConnectorProviders,
   connectorStatusIsStale,
@@ -2408,8 +2408,19 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ? createBackgroundBroker({
                 sandbox: deps.sandbox,
                 registry: deps.processes,
-                provisionSandbox: (id) =>
-                  isScratchJobComputer(id) ? deps.sandbox.provision([], { sandboxId: id }) : provisionResource(id),
+                provisionSandbox: async (id) => {
+                  if (!isScratchJobComputer(id)) return provisionResource(id);
+                  return deps.sandbox.provision([], { sandboxId: id }).catch(async (error: unknown) => {
+                    const jobs = (await deps.processes!.listByScope(memoryScopeId)).filter(
+                      (job) => job.sandboxId === id,
+                    );
+                    if (jobs.length && jobs.every((job) => job.status !== "running"))
+                      throw new Error(
+                        "this background job finished and its scratch computer has been discarded; its output is no longer available",
+                      );
+                    throw error;
+                  });
+                },
                 onExit: (handle, processId) =>
                   finishProcessCredentials(
                     {

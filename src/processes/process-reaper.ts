@@ -5,7 +5,7 @@ import { awaitProcessExit } from "../sandbox/await-process-exit.ts";
 import { ProcessSessionGoneError } from "../sandbox/exec-process-session.ts";
 import type { ProcessSandbox, SandboxHandle } from "../sandbox/sandbox.ts";
 import { errMessage, swallow } from "../util/errors.ts";
-import { isScratchJobComputer, type HeldComputers } from "./scratch-job-computers.ts";
+import { isScratchJobComputer, type HeldComputers } from "../sandbox/held-computers.ts";
 
 const PROCESS_REAPER_LEASE_KEY = "processes:reaper";
 

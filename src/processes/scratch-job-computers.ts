@@ -1,20 +1,7 @@
 import type { ProcessSandbox, SandboxHandle } from "../sandbox/sandbox.ts";
 import type { ProcessRegistry } from "./process-registry.ts";
 import { reconcileProcesses } from "./reconcile.ts";
-
-const SCRATCH_JOB_PREFIX = "scratch-job:";
-
-export const scratchJobComputerId = (scratchKey: string): string => `${SCRATCH_JOB_PREFIX}${scratchKey}`;
-
-export const isScratchJobComputer = (sandboxId: string): boolean => sandboxId.startsWith(SCRATCH_JOB_PREFIX);
-
-export const SCRATCH_JOB_GONE_MESSAGE =
-  "this background job's computer belonged to an earlier server process and was retired on deploy; the job and its files are gone";
-
-export interface HeldComputers {
-  get(sandboxId: string): SandboxHandle | undefined;
-  holds(handle: SandboxHandle): boolean;
-}
+import type { HeldComputers } from "../sandbox/held-computers.ts";
 
 export interface ScratchJobComputers extends HeldComputers {
   hold(sandboxId: string, scopeId: string, handle: SandboxHandle): void;
@@ -30,8 +17,11 @@ export function createScratchJobComputers(deps: {
   finish: (handle: SandboxHandle, processId: string) => Promise<void>;
   onError: (code: string, error: unknown, scopeId: string) => void;
   pollMs?: number;
+  keepAfterExitMs?: number;
 }): ScratchJobComputers {
   const pollMs = deps.pollMs ?? 10_000;
+  const keepAfterExitMs = deps.keepAfterExitMs ?? 5 * 60_000;
+  let draining = false;
   const held = new Map<
     string,
     {
@@ -39,7 +29,9 @@ export function createScratchJobComputers(deps: {
       scopeId: string;
       retire?: () => Promise<void>;
       timer?: NodeJS.Timeout;
+      checking?: Promise<void>;
       failedChecks: number;
+      idleSince?: number;
     }
   >();
   const jobs = async (sandboxId: string, scopeId: string) =>
@@ -47,7 +39,9 @@ export function createScratchJobComputers(deps: {
   const schedule = (sandboxId: string): void => {
     const entry = held.get(sandboxId);
     if (!entry) return;
-    entry.timer = setTimeout(() => void check(sandboxId), pollMs);
+    entry.timer = setTimeout(() => {
+      entry.checking = check(sandboxId).finally(() => (entry.checking = undefined));
+    }, pollMs);
     entry.timer.unref();
   };
   const retire = async (sandboxId: string): Promise<void> => {
@@ -64,7 +58,7 @@ export function createScratchJobComputers(deps: {
   };
   const check = async (sandboxId: string): Promise<void> => {
     const entry = held.get(sandboxId);
-    if (!entry) return;
+    if (!entry || draining) return;
     try {
       await reconcileProcesses(deps.sandbox, entry.handle, deps.processes, entry.scopeId, deps.finish, sandboxId);
       entry.failedChecks = 0;
@@ -78,7 +72,9 @@ export function createScratchJobComputers(deps: {
     });
     const running = remaining?.some((process) => process.status === "running");
     const pending = remaining?.some((process) => process.credentialsPending);
-    if (remaining && !running && (!pending || entry.failedChecks >= FINISH_ATTEMPTS)) return retire(sandboxId);
+    const settled = remaining && !running && (!pending || entry.failedChecks >= FINISH_ATTEMPTS);
+    entry.idleSince = settled ? (entry.idleSince ?? Date.now()) : undefined;
+    if (entry.idleSince !== undefined && Date.now() - entry.idleSince >= keepAfterExitMs) return retire(sandboxId);
     schedule(sandboxId);
   };
   return {
@@ -90,14 +86,14 @@ export function createScratchJobComputers(deps: {
     async retainWhileJobsRun(sandboxId, retireComputer) {
       const entry = held.get(sandboxId);
       if (!entry) return false;
-      const running = await jobs(sandboxId, entry.scopeId).then(
-        (records) => records.some((process) => process.status === "running"),
+      const live = await jobs(sandboxId, entry.scopeId).then(
+        (records) => records.some((process) => process.status === "running" || process.credentialsPending),
         (error) => {
           held.delete(sandboxId);
           throw error;
         },
       );
-      if (!running) {
+      if (!live || draining) {
         held.delete(sandboxId);
         return false;
       }
@@ -106,10 +102,12 @@ export function createScratchJobComputers(deps: {
       return true;
     },
     async drain() {
+      draining = true;
       await Promise.all(
         [...held].map(async ([sandboxId, entry]) => {
-          if (!entry.retire) return;
           clearTimeout(entry.timer);
+          await entry.checking;
+          if (!entry.retire) return;
           const records = await jobs(sandboxId, entry.scopeId).catch((error) => {
             deps.onError("scratch_job_check_failed", error, entry.scopeId);
             return [];
