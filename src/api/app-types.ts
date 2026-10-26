@@ -637,6 +637,7 @@ export interface AppDeps {
   leaseTtlMs: number;
   maxAttempts: number;
   runWaitMs?: number;
+  inlineTurns?: boolean;
   turnStream?: TurnStream;
   runStreamEvents?: EventBus<RunStreamEvent>;
   runActivity?: RunActivityStore;

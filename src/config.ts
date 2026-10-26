@@ -116,7 +116,6 @@ export interface Config {
   runWaitMs: number;
   backgroundJobTtlMs: number;
   backgroundJobTtlMaxMs: number;
-  /** What this process does: `api` (HTTP and admission), `surfaces` (Slack ingress), `harness` (runs turns, crons and sweepers). */
   roles: QmRole[];
   backgroundWorkEnabled: boolean;
   backgroundDeploymentId?: string;
@@ -928,6 +927,10 @@ function rolesFromEnv(value: string | undefined): QmRole[] {
 }
 
 function backgroundWorkFor(roles: readonly QmRole[], env: NodeJS.ProcessEnv): boolean {
+  if (roles.includes("surfaces") && !roles.includes("harness"))
+    throw new Error(
+      "QM_ROLES with surfaces needs harness too: Slack sending and context reads run in the process that runs turns.",
+    );
   const explicit = boolEnvStrict("BACKGROUND_WORK_ENABLED", env.BACKGROUND_WORK_ENABLED);
   if (roles.includes("harness")) return explicit ?? CONFIG_DEFAULTS.backgroundWorkEnabled;
   if (explicit)
@@ -1089,6 +1092,9 @@ function resolveStoreKinds(env: NodeJS.ProcessEnv): Pick<Config, "sessionStore" 
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  const roles = rolesFromEnv(env.QM_ROLES);
+  if (roles.length < QM_ROLES.length && env.BACKGROUND_DEPLOYMENT_ID)
+    throw new Error("QM_ROLES cannot split roles while BACKGROUND_DEPLOYMENT_ID is set; unset one of them.");
   const token = env.SPEND_EXPORT_TOKEN;
   if (token) {
     const reused = Object.entries(env).some(([name, value]) => name !== "SPEND_EXPORT_TOKEN" && value === token);
@@ -1417,8 +1423,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     runWaitMs: CONFIG_DEFAULTS.runMaxAgeMs + 60_000,
     backgroundJobTtlMs: CONFIG_DEFAULTS.backgroundJobTtlSec * 1000,
     backgroundJobTtlMaxMs: CONFIG_DEFAULTS.backgroundJobTtlMaxSec * 1000,
-    roles: rolesFromEnv(env.QM_ROLES),
-    backgroundWorkEnabled: backgroundWorkFor(rolesFromEnv(env.QM_ROLES), env),
+    roles,
+    backgroundWorkEnabled: backgroundWorkFor(roles, env),
     ...(env.BACKGROUND_DEPLOYMENT_ID
       ? { backgroundDeploymentId: env.BACKGROUND_DEPLOYMENT_ID, deploymentControlSecret: env.DEPLOYMENT_CONTROL_SECRET }
       : {}),

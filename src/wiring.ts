@@ -2334,6 +2334,7 @@ export function buildApp(
     providerKeys,
     modelProviders: modelProviderAvailabilityFor(config.harness, providerKeys),
     runWaitMs: config.runWaitMs,
+    inlineTurns: config.roles.includes("harness"),
   });
   const inboxRealtime = createInboxRealtime({
     loops: loopStore,

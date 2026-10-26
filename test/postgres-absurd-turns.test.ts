@@ -679,6 +679,35 @@ test("a person's message is not held behind a capped background turn", { skip },
   await ledger.cancel(person.run.id);
 });
 
+test("withdrawing a capped head moves its conversation on", { skip }, async () => {
+  const swarmId = randomUUID();
+  const members = [];
+  for (let i = 0; i < FAIR_ACTIVE_CAP + 1; i++)
+    members.push(await admitSwarm(swarmId, `swarm:${swarmId}:${i}`, `member ${i}`));
+  const capped = members.at(-1)!.run;
+  const next = await admit(capped.sessionId, "after the capped turn", undefined, 1);
+  assert.equal(next.run.status, "queued");
+  const routing = routeTurns(runStore.runs, ledger, { enabled: async () => true });
+  assert.equal(await routing.withdraw(capped.id), true);
+  assert.equal(await runStore.runs.get(capped.id), null);
+  assert.equal(await pointer(capped.sessionId), next.run.id);
+  for (const member of members.slice(0, -1)) await ledger.cancel(member.run.id);
+  await ledger.cancel(next.run.id);
+});
+
+test("a background turn's subagents are not counted against its owner's cap", { skip }, async () => {
+  const parent = await admit(`web:cron:${randomUUID()}`, "cron", undefined, 2);
+  const child = await ledger.admit({
+    sessionId: `agent:main:subagent:${randomUUID()}`,
+    request: { ...request("child", "child work"), delegatingRunId: parent.run.id },
+    priority: 2,
+  });
+  assert.equal(child?.run.fairKey ?? null, null);
+  assert.equal(parent.run.fairKey, "owner:alice@example.com");
+  await ledger.cancel(child!.run.id);
+  await ledger.cancel(parent.run.id);
+});
+
 test("stopping a tree stops every turn in its conversations in one step", { skip }, async () => {
   const parent = `web:alice:${randomUUID()}`;
   const child = `agent:main:subagent:${randomUUID()}`;
@@ -702,4 +731,17 @@ test("stopping a tree stops every turn in its conversations in one step", { skip
     true,
   );
   assert.equal(await pointer(parent), null);
+});
+
+test("slots freed together by one owner are refilled without waiting for the sweep", { skip }, async () => {
+  const swarmId = randomUUID();
+  const members = [];
+  for (let i = 0; i < FAIR_ACTIVE_CAP + 4; i++)
+    members.push(await admitSwarm(swarmId, `swarm:${swarmId}:${i}`, `member ${i}`));
+  const active = members.slice(0, FAIR_ACTIVE_CAP);
+  const capped = members.slice(FAIR_ACTIVE_CAP);
+  assert.ok(capped.every((m) => m.run.status === "queued"));
+  await Promise.all(active.map((m) => ledger.cancel(m.run.id)));
+  for (const m of capped) assert.equal((await runStore.runs.get(m.run.id))?.status, "pending");
+  for (const m of capped) await ledger.cancel(m.run.id);
 });

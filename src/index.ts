@@ -15,15 +15,9 @@ import { migrateRegisteredPgSchemas } from "./persistence/pg-pool.ts";
 import { startWebEdge } from "./web-edge.ts";
 
 const config = loadConfig();
-if (!config.roles.includes("api"))
-  throw new Error(
-    `QM_ROLES=${config.roles.join(",")} has no api role; run src/harness-main.ts for a harness-only process.`,
-  );
-// A split core (api,surfaces without harness) owns Slack ingress even though it runs no background work.
+const servesApi = config.roles.includes("api");
 const slackIngress =
-  config.roles.includes("surfaces") &&
-  !config.backgroundDeploymentId &&
-  (config.backgroundWorkEnabled || !config.roles.includes("harness"));
+  config.roles.includes("surfaces") && config.backgroundWorkEnabled && !config.backgroundDeploymentId;
 
 const built = buildApp(config);
 await migrateRegisteredPgSchemas(config.databaseUrl);
@@ -36,19 +30,22 @@ const envSlackAttempted = Boolean(process.env.SLACK_BOT_TOKEN || process.env.SLA
 let slackEnvironmentState: "absent" | "configured" | "partial" = "absent";
 if (slackConfig) slackEnvironmentState = "configured";
 else if (envSlackAttempted) slackEnvironmentState = "partial";
-const managedSlack = process.env.QM_SLACK_SERVICE_URL
-  ? createManagedSlack({
-      serviceUrl: process.env.QM_SLACK_SERVICE_URL,
-      token: process.env.QM_SLACK_SERVICE_TOKEN ?? "",
-      appId: process.env.QM_SLACK_APP_ID ?? "",
-      store: built.slackInstallation,
-      reconcile: slackIngress || config.backgroundDeploymentId ? () => slackRuntime.reconcile() : undefined,
+const managedSlack =
+  process.env.QM_SLACK_SERVICE_URL && config.roles.includes("surfaces")
+    ? createManagedSlack({
+        serviceUrl: process.env.QM_SLACK_SERVICE_URL,
+        token: process.env.QM_SLACK_SERVICE_TOKEN ?? "",
+        appId: process.env.QM_SLACK_APP_ID ?? "",
+        store: built.slackInstallation,
+        reconcile: slackIngress || config.backgroundDeploymentId ? () => slackRuntime.reconcile() : undefined,
+      })
+    : undefined;
+const server = servesApi
+  ? createServer(built.app, {
+      ...serverDeps(config, built, slackEnvironmentState, envSlackConfig?.botToken),
+      managedSlack,
     })
-  : undefined;
-const server = createServer(built.app, {
-  ...serverDeps(config, built, slackEnvironmentState, envSlackConfig?.botToken),
-  managedSlack,
-});
+  : null;
 
 await built.config.hydrate?.();
 await built.refreshCustomProviders();
@@ -57,14 +54,21 @@ await built.deploymentLayerReady;
 built.deploymentLayerRefresh.start();
 built.runtime.start();
 
-await new Promise<void>((resolve) => server.listen(config.port, resolve));
-console.log(
-  `[qm] listening on :${config.port} (org=${config.orgId}, store=${config.sessionStore}, ` +
-    `runStore=${config.runStore}, workers=${config.workers}, backgroundWork=${config.backgroundWorkEnabled})`,
-);
-const edgeServers = config.publicPort
-  ? await startWebEdge({ publicPort: config.publicPort, corePort: config.port, orgId: config.orgId }, process.env)
-  : [];
+if (server) {
+  await new Promise<void>((resolve) => server.listen(config.port, resolve));
+  console.log(
+    `[qm] listening on :${config.port} (roles=${config.roles.join(",")}, org=${config.orgId}, store=${config.sessionStore}, ` +
+      `runStore=${config.runStore}, workers=${config.workers}, backgroundWork=${config.backgroundWorkEnabled})`,
+  );
+} else {
+  console.log(
+    `[qm] running without the api role (roles=${config.roles.join(",")}, org=${config.orgId}, workers=${config.workers})`,
+  );
+}
+const edgeServers =
+  server && config.publicPort
+    ? await startWebEdge({ publicPort: config.publicPort, corePort: config.port, orgId: config.orgId }, process.env)
+    : [];
 
 if (config.deployAppsDomain) {
   const domain = config.deployAppsDomain;
@@ -199,8 +203,8 @@ function shutdown(signal: string): void {
     edge.close();
     edge.closeIdleConnections();
   }
-  server.close();
-  server.closeIdleConnections();
+  server?.close();
+  server?.closeIdleConnections();
   stopWithBackstop(
     {
       async stop() {
@@ -211,7 +215,7 @@ function shutdown(signal: string): void {
     },
     config.shutdownDrainMs,
     "qm",
-    () => server.closeAllConnections(),
+    () => server?.closeAllConnections(),
   );
 }
 process.on("SIGINT", () => shutdown("SIGINT"));
