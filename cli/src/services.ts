@@ -96,7 +96,7 @@ export interface BrandEnv {
   orgName?: string;
 }
 
-export const brandEnvOf = (c: { botName?: string; orgName?: string }): BrandEnv | undefined =>
+const brandEnvOf = (c: { botName?: string; orgName?: string }): BrandEnv | undefined =>
   c.botName || c.orgName
     ? { ...(c.botName ? { botName: c.botName } : {}), ...(c.orgName ? { orgName: c.orgName } : {}) }
     : undefined;

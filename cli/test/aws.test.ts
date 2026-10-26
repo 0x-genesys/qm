@@ -5463,39 +5463,36 @@ test("AWS layer deadline aborts a native response body that never finishes", asy
   }
 });
 
-test("AWS secrets push defers activation against pre-consolidation images", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "qm-aws-secrets-combined-"));
+test("AWS secrets push defers activation until core hosts the web edge", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "qm-aws-secrets-edge-"));
   const operator = computedSecrets(config).filter((secret) => secret.managedBy === "operator" && secret.required);
   writeFileSync(join(dir, ".env"), operator.map((secret) => `${secret.name}=${TEST_SECRET_VALUE}`).join("\n"));
   const fake = statefulAws(dir, config);
   const state = JSON.parse(readFileSync(fake.state, "utf8"));
-  const tasks = Object.fromEntries(
-    runnableServices(config.services).map((name) => [name, state.services[`acme-${name}`].taskDefinition]),
-  );
-  state.definitions[tasks["web-ui"]] = {
-    containerDefinitions: [{ name: "web-ui", image: "old-web-image", environment: [] }],
+  const tasks = { core: state.services["acme-core"].taskDefinition };
+  const image = `123456789012.dkr.ecr.us-west-2.amazonaws.com/qm-core@sha256:${"a".repeat(64)}`;
+  const edge = renderTaskDefinition(config, "core", image);
+  const container = edge.containerDefinitions[0]!;
+  state.definitions[tasks.core] = {
+    ...edge,
+    containerDefinitions: [
+      {
+        ...container,
+        environment: (container.environment as Array<{ name: string }>).filter(({ name }) => name !== "PUBLIC_PORT"),
+      },
+    ],
   };
   state.dynamo = manifestItems([{ id: "current", imageLabel: "release", tasks }], "current");
   writeFileSync(fake.state, JSON.stringify(state));
   try {
     await awsSecretsPush(config, dir);
-    const calls = readFileSync(fake.log, "utf8");
-    assert.match(calls, /secretsmanager put-secret-value/);
-    assert.doesNotMatch(calls, /ecs (?:register-task-definition|update-service)/);
-    state.definitions[tasks["web-ui"]].containerDefinitions[0].environment = [{ name: "ADMIN_ENABLED", value: "1" }];
-    state.definitions[tasks.portal] = {
-      containerDefinitions: [
-        {
-          name: "portal",
-          image: "old-portal-image",
-          environment: [{ name: "ADMIN_UPSTREAM", value: "http://admin.acme.internal:8080" }],
-        },
-      ],
-    };
+    assert.match(readFileSync(fake.log, "utf8"), /secretsmanager put-secret-value/);
+    assert.doesNotMatch(readFileSync(fake.log, "utf8"), /ecs (?:register-task-definition|update-service)/);
+    state.definitions[tasks.core] = edge;
     writeFileSync(fake.state, JSON.stringify(state));
     writeFileSync(fake.log, "");
     await awsSecretsPush(config, dir);
-    assert.doesNotMatch(readFileSync(fake.log, "utf8"), /ecs (?:register-task-definition|update-service)/);
+    assert.match(readFileSync(fake.log, "utf8"), /ecs register-task-definition/);
   } finally {
     fake.restore();
     rmSync(dir, { recursive: true, force: true });
