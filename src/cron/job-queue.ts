@@ -1,5 +1,5 @@
 import { PgBoss } from "pg-boss";
-import { createPgPool, type PgPool } from "../persistence/pg-pool.ts";
+import { createPgPool, pgTenancyEnabled, pgTenantId, type PgPool } from "../persistence/pg-pool.ts";
 import { errMessage, swallowAs } from "../util/errors.ts";
 
 export interface CronFireJob {
@@ -22,13 +22,19 @@ export interface CronJobQueue {
 
 const UNHEALTHY_AFTER_ERROR_MS = 30_000;
 
-const FIRE_QUEUE = "cron-fire";
+const BASE_FIRE_QUEUE = "cron-fire";
+
+/** pg-boss has no tenant column; tenants sharing a database each get their own fire queue. */
+export function cronFireQueueName(tenantId: string | undefined): string {
+  return tenantId ? `${BASE_FIRE_QUEUE}-t${tenantId.replaceAll("-", "").slice(0, 12)}` : BASE_FIRE_QUEUE;
+}
 
 export function createPgBossCronQueue(
   databaseUrl: string,
   schema: string = "pgboss",
   fireConcurrency: number = 1,
 ): CronJobQueue {
+  const FIRE_QUEUE = cronFireQueueName(pgTenancyEnabled() ? pgTenantId() : undefined);
   let pg: PgPool | null = null;
   const boss = new PgBoss({
     schema,
