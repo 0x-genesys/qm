@@ -9,7 +9,7 @@ import type { Run, RunPriority, RunStore } from "../src/runs/run-store.ts";
 import { createPostgresMapFactory } from "../src/persistence/durable-map.ts";
 import { createPostgresAdvisoryLock } from "../src/persistence/advisory-lock.ts";
 import { createSwarmStore, type SwarmStorage } from "../src/swarms/swarm-store.ts";
-import { routeTurns } from "../src/turns/turn-engine.ts";
+import { bindTurnLedger } from "../src/turns/turn-engine.ts";
 import { swarmFixture } from "./support/swarm-fixture.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { registerAbsurdSchema, TURN_QUEUES } from "../src/turns/absurd-schema.ts";
@@ -112,7 +112,6 @@ test("admission starts an idle conversation's turn and queues the next one behin
   const thread = `web:alice:${randomUUID()}`;
   const first = await admit(thread, "one");
   assert.equal(first.run.status, "pending");
-  assert.equal(first.run.engine, "absurd");
   assert.equal(await pointer(thread), first.run.id);
   const second = await admit(thread, "two");
   assert.equal(second.run.status, "queued");
@@ -127,13 +126,66 @@ test("admission starts an idle conversation's turn and queues the next one behin
     [first.run.id, second.run.id, again.run.id],
   );
   assert.equal((await runStore.runs.activeForThread(thread))?.id, first.run.id);
-  assert.equal(await runStore.runs.claim("legacy-worker", 60_000), null);
 });
 
-test("admission defers to a legacy run still in flight in the conversation", { skip }, async () => {
-  const thread = `web:alice:${randomUUID()}`;
-  await runStore.runs.enqueue({ sessionId: thread, request: request(thread) });
-  assert.equal(await ledger.admit({ sessionId: thread, request: request(thread), priority: 0 }), null);
+test("startup adopts legacy turns that lost their worker and leaves live ones alone", { skip }, async () => {
+  const idle = `web:alice:${randomUUID()}`;
+  const lapsed = `web:alice:${randomUUID()}`;
+  const live = `web:alice:${randomUUID()}`;
+  const legacy = async (id: string, thread: string, status: string, leaseExpiresAt: number | null, createdAt: number) =>
+    admin.query(
+      `INSERT INTO runs(id, session_id, status, request, attempts, created_at, claim_priority, lease_token,
+         lease_expires_at, worker_id)
+       VALUES ($1, $2, $3, $4, $5, $6, 0, $7, $8, $9)`,
+      [
+        id,
+        thread,
+        status,
+        JSON.stringify(request(thread)),
+        status === "running" ? 1 : 0,
+        createdAt,
+        status === "running" ? "legacy-lease" : null,
+        leaseExpiresAt,
+        status === "running" ? "legacy-worker" : null,
+      ],
+    );
+  const now = Date.now();
+  await legacy("idle-first", idle, "pending", null, now - 2_000);
+  await legacy("idle-second", idle, "pending", null, now - 1_000);
+  await legacy("lapsed", lapsed, "running", now - 60_000, now - 3_000);
+  await legacy("live", live, "running", now + 60_000, now - 4_000);
+  assert.equal(await ledger.adoptLegacy(), 3);
+  const engines = await admin.query("SELECT id, engine FROM runs ORDER BY id");
+  assert.deepEqual(Object.fromEntries(engines.rows.map((row) => [row.id, row.engine])), {
+    "idle-first": "absurd",
+    "idle-second": "absurd",
+    lapsed: "absurd",
+    live: "legacy",
+  });
+  assert.equal((await runStore.runs.get("idle-first"))?.status, "pending");
+  assert.equal((await runStore.runs.get("idle-second"))?.status, "queued");
+  assert.equal(await pointer(idle), "idle-first");
+  const resumed = await runStore.runs.get("lapsed");
+  assert.equal(resumed?.status, "pending");
+  assert.equal(resumed?.leaseToken, null);
+  assert.deepEqual(resumed?.lastStop, { kind: "shutdown" });
+  assert.equal(await pointer(lapsed), "lapsed");
+  const untouched = await runStore.runs.get("live");
+  assert.equal(untouched?.status, "running");
+  assert.equal(untouched?.leaseToken, "legacy-lease");
+  assert.equal(await pointer(live), null);
+  assert.equal(await ledger.adoptLegacy(), 0);
+  const claimed = new Map<string, { run: Run; token: string }>();
+  for (let i = 0; i < 2; i++) {
+    const next = await claim();
+    claimed.set(next.run.id, next);
+  }
+  assert.deepEqual([...claimed.keys()].sort(), ["idle-first", "lapsed"]);
+  const first = claimed.get("idle-first")!;
+  assert.equal(await ledger.finish(first.run, first.token, { status: "done", result: ok(first.run) }), true);
+  assert.equal((await runStore.runs.get("idle-second"))?.status, "pending");
+  assert.equal(await pointer(idle), "idle-second");
+  await admin.query("DELETE FROM runs WHERE id = 'live'");
 });
 
 test("turn end completes the task, records the result, and starts the queued turn", { skip }, async () => {
@@ -379,19 +431,12 @@ test("a turn over the crash-loop claim cap fails instead of running again", { sk
 test("swarm operations accept an Absurd turn's live claim and refuse it after handback", { skip }, async () => {
   const factory = createPostgresMapFactory(URL!);
   const backing = factory.map<SwarmStorage>("swarms");
-  const routing = routeTurns(runStore.runs, ledger, { enabled: async () => true });
-  const runs: RunStore = {
-    ...runStore.runs,
-    ...routing,
-    enqueue: async (input) => (await routing.admit(input))!,
-    claimById: async () => (await claim()).run,
-  };
+  const runs: RunStore = { ...runStore.runs, ...bindTurnLedger(runStore.runs, ledger) };
   const store = createSwarmStore(backing, { runs, sessions, pg: factory.pool });
-  const fixture = await swarmFixture({ store, sessions, runs, lock: createPostgresAdvisoryLock(factory.pool) });
+  const fixture = await swarmFixture({ store, sessions, runs, ledger, lock: createPostgresAdvisoryLock(factory.pool) });
   try {
     if (fixture.caller.kind !== "agent") throw new Error("wrong caller");
     const run = (await runStore.runs.get(fixture.caller.claims.runId!))!;
-    assert.equal(run.engine, "absurd");
     assert.equal(run.status, "running");
     await fixture.service.spawn(fixture.caller, { requestId: "live", text: "Work" });
     assert.ok(await store.get(fixture.root.id));
@@ -687,8 +732,7 @@ test("withdrawing a capped head moves its conversation on", { skip }, async () =
   const capped = members.at(-1)!.run;
   const next = await admit(capped.sessionId, "after the capped turn", undefined, 1);
   assert.equal(next.run.status, "queued");
-  const routing = routeTurns(runStore.runs, ledger, { enabled: async () => true });
-  assert.equal(await routing.withdraw(capped.id), true);
+  assert.equal(await bindTurnLedger(runStore.runs, ledger).withdraw(capped.id), true);
   assert.equal(await runStore.runs.get(capped.id), null);
   assert.equal(await pointer(capped.sessionId), next.run.id);
   for (const member of members.slice(0, -1)) await ledger.cancel(member.run.id);

@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { createPgPool, withPgTransaction, type PgPool, type PoolClient } from "../persistence/pg-pool.ts";
+import {
+  createPgPool,
+  migrateRegisteredPgSchemas,
+  withPgTransaction,
+  type PgPool,
+  type PoolClient,
+} from "../persistence/pg-pool.ts";
 import { jsonbStringify } from "../persistence/durable-map.ts";
 import type { TurnResult } from "../types.ts";
 import type { EnqueueInput, EnqueueResult, Run, RunPriority, RunStop } from "../runs/run-store.ts";
@@ -38,18 +44,7 @@ interface TurnTaskParams {
   turnId: string;
 }
 
-const TURN_LEDGER_MIGRATION = {
-  id: "turns/0001-ledger",
-  statements: [
-    `CREATE TABLE IF NOT EXISTS session_turn_pointers(
-      tenant_id UUID NOT NULL DEFAULT qm_tenant_id(),
-      thread_ref TEXT NOT NULL,
-      active_turn_id TEXT,
-      updated_at BIGINT NOT NULL,
-      PRIMARY KEY(tenant_id, thread_ref)
-    )`,
-    `CREATE INDEX IF NOT EXISTS session_turn_pointers_active ON session_turn_pointers(tenant_id, updated_at) WHERE active_turn_id IS NOT NULL`,
-    `CREATE OR REPLACE FUNCTION qm_turn_fence(p_turn text, p_token text) RETURNS boolean LANGUAGE plpgsql AS $qm_turn_fence$
+const FENCE_ON_RUNS = `CREATE OR REPLACE FUNCTION qm_turn_fence(p_turn text, p_token text) RETURNS boolean LANGUAGE plpgsql AS $qm_turn_fence$
      DECLARE
        v_queue text;
        v_run uuid;
@@ -66,8 +61,26 @@ const TURN_LEDGER_MIGRATION = {
          'r_' || v_queue)
          INTO v_ok USING v_run, p_token;
        RETURN COALESCE(v_ok, false);
-     END $qm_turn_fence$`,
+     END $qm_turn_fence$`;
+
+const TURN_LEDGER_MIGRATION = {
+  id: "turns/0001-ledger",
+  statements: [
+    `CREATE TABLE IF NOT EXISTS session_turn_pointers(
+      tenant_id UUID NOT NULL DEFAULT qm_tenant_id(),
+      thread_ref TEXT NOT NULL,
+      active_turn_id TEXT,
+      updated_at BIGINT NOT NULL,
+      PRIMARY KEY(tenant_id, thread_ref)
+    )`,
+    `CREATE INDEX IF NOT EXISTS session_turn_pointers_active ON session_turn_pointers(tenant_id, updated_at) WHERE active_turn_id IS NOT NULL`,
+    FENCE_ON_RUNS,
   ],
+};
+
+const TURN_FENCE_MIGRATION = {
+  id: "turns/0002-fence-reads-turns",
+  statements: [FENCE_ON_RUNS.replace(" FROM runs\n", " FROM turns\n")],
 };
 
 export type TurnOutcome =
@@ -94,7 +107,8 @@ function fairKeyFor(request: EnqueueInput["request"], priority: RunPriority): st
 
 export interface TurnLedger {
   claim(queue: TurnQueue, token: string, workerId: string): Promise<{ claimed: boolean; run: Run | null }>;
-  admit(input: EnqueueInput & { priority: RunPriority }): Promise<EnqueueResult | null>;
+  admit(input: EnqueueInput & { priority: RunPriority }): Promise<EnqueueResult>;
+  adoptLegacy(limit?: number): Promise<number>;
   extend(run: Run, token: string): Promise<ExtendOutcome>;
   handBack(
     run: Run,
@@ -149,7 +163,24 @@ function repairReason(row: Record<string, unknown>): string {
 const POINTER_KEY = "tenant_id = qm_tenant_id() AND thread_ref = $1";
 
 export function createTurnLedger(connectionString: string, opts: { onTerminal?: (run: Run) => void } = {}): TurnLedger {
-  const db: PgPool = createPgPool(connectionString, [TURN_LEDGER_MIGRATION]);
+  const store: PgPool = createPgPool(connectionString, [TURN_LEDGER_MIGRATION, TURN_FENCE_MIGRATION]);
+  let schema: Promise<void> | null = null;
+  const ready = (): Promise<void> =>
+    (schema ??= migrateRegisteredPgSchemas(connectionString).catch((error: unknown) => {
+      schema = null;
+      throw error;
+    }));
+  const db = {
+    async pool() {
+      await ready();
+      return store.pool();
+    },
+    async query(text: string, params: unknown[] = []) {
+      await ready();
+      return store.query(text, params);
+    },
+    close: () => store.close(),
+  };
   let tenant: Promise<string> | null = null;
   const tenantId = (client: PoolClient): Promise<string> =>
     (tenant ??= client
@@ -196,11 +227,10 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       turnId,
       Date.now(),
     ]);
-    if (turnId === null) await client.query("SELECT pg_notify('qm_run_available', 'null')");
   }
 
   async function lockTurn(client: PoolClient, turnId: string): Promise<void> {
-    await client.query("SELECT 1 FROM runs WHERE id = $1 FOR NO KEY UPDATE", [turnId]);
+    await client.query("SELECT 1 FROM turns WHERE id = $1 FOR NO KEY UPDATE", [turnId]);
   }
 
   async function fairRoom(client: PoolClient, fairKey: string): Promise<number> {
@@ -217,7 +247,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       held.add(fairKey);
     }
     const { rows } = await client.query(
-      `SELECT count(*)::int AS n FROM runs WHERE fair_key = $1 AND engine = 'absurd' AND status IN ('pending','running')`,
+      `SELECT count(*)::int AS n FROM turns WHERE fair_key = $1 AND engine = 'absurd' AND status IN ('pending','running')`,
       [fairKey],
     );
     return FAIR_ACTIVE_CAP - Number(rows[0]!.n);
@@ -234,7 +264,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       idempotencyKey: run.id,
       maxAttempts: TURN_MAX_ATTEMPTS,
     });
-    await client.query(`UPDATE runs SET status = 'pending', absurd_task_id = $2 WHERE id = $1`, [
+    await client.query(`UPDATE turns SET status = 'pending', absurd_task_id = $2 WHERE id = $1`, [
       run.id,
       spawned.taskId,
     ]);
@@ -244,7 +274,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
 
   async function advance(client: PoolClient, threadRef: string, ending: string): Promise<void> {
     const parked = await client.query(
-      `SELECT * FROM runs WHERE session_id = $1 AND engine = 'absurd' AND status = 'pending' AND id <> $2
+      `SELECT * FROM turns WHERE session_id = $1 AND engine = 'absurd' AND status = 'pending' AND id <> $2
          AND absurd_task_id IS NOT NULL AND (last_stop::jsonb)->>'kind' = 'parked'
        ORDER BY created_at ASC, seq ASC LIMIT 1 FOR UPDATE`,
       [threadRef, ending],
@@ -258,7 +288,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       return;
     }
     const { rows } = await client.query(
-      `SELECT * FROM runs WHERE session_id = $1 AND status = 'queued'
+      `SELECT * FROM turns WHERE session_id = $1 AND status = 'queued'
        ORDER BY claim_priority ASC, created_at ASC, seq ASC LIMIT 1 FOR UPDATE`,
       [threadRef],
     );
@@ -273,7 +303,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     change: { stop: RunStop | null; parks: number; errors: number; unstarted: boolean },
   ): Promise<number | null> {
     const { rows } = await client.query(
-      `UPDATE runs SET status = 'pending', lease_token = NULL, lease_expires_at = NULL, worker_id = NULL,
+      `UPDATE turns SET status = 'pending', lease_token = NULL, lease_expires_at = NULL, worker_id = NULL,
          last_stop = COALESCE($3, last_stop), preemptions = preemptions + $4, error_attempts = error_attempts + $5,
          attempts = attempts - $6,
          started_at = CASE WHEN $6 = 1 AND attempts = 1 THEN NULL ELSE started_at END
@@ -297,7 +327,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
 
   async function askToYield(client: PoolClient, activeId: string): Promise<boolean> {
     const { rows } = await client.query(
-      `SELECT * FROM runs WHERE id = $1 AND engine = 'absurd' AND claim_priority = $2 AND status IN ('pending','running')
+      `SELECT * FROM turns WHERE id = $1 AND engine = 'absurd' AND claim_priority = $2 AND status IN ('pending','running')
        FOR UPDATE`,
       [activeId, BACKGROUND_PRIORITY],
     );
@@ -306,7 +336,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       await client.query("SELECT pg_notify($1, $2)", [TURN_YIELD_CHANNEL, JSON.stringify(activeId)]);
       return false;
     }
-    await client.query("UPDATE runs SET last_stop = $2, preemptions = preemptions + 1 WHERE id = $1", [
+    await client.query("UPDATE turns SET last_stop = $2, preemptions = preemptions + 1 WHERE id = $1", [
       activeId,
       JSON.stringify(PARKED),
     ]);
@@ -320,12 +350,12 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     token: string,
     workerId: string,
   ): Promise<Run | "suspended" | null> {
-    const found = await db.query("SELECT session_id FROM runs WHERE id = $1", [turnId]);
+    const found = await db.query("SELECT session_id FROM turns WHERE id = $1", [turnId]);
     const threadRef = found.rows[0]?.session_id as string | undefined;
     if (!threadRef) return null;
     return tx(async (client) => {
       const active = await lockPointer(client, threadRef);
-      const { rows: current } = await client.query("SELECT * FROM runs WHERE id = $1 FOR NO KEY UPDATE", [turnId]);
+      const { rows: current } = await client.query("SELECT * FROM turns WHERE id = $1 FOR NO KEY UPDATE", [turnId]);
       if (!(await holdsClaim(client, queue, absurdRunId, token))) return null;
       const run = current[0] ? rowToRun(current[0]) : null;
       if (run && active !== turnId && run.status === "pending" && run.lastStop?.kind === "parked") {
@@ -340,7 +370,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
         return "suspended";
       }
       const { rows } = await client.query(
-        `UPDATE runs SET status = 'running', lease_token = $2, lease_expires_at = NULL, worker_id = $3,
+        `UPDATE turns SET status = 'running', lease_token = $2, lease_expires_at = NULL, worker_id = $3,
            attempts = attempts + 1, started_at = COALESCE(started_at, $4), absurd_run_id = $5
          WHERE id = $1 AND engine = 'absurd' AND absurd_queue = $6 AND status IN ('pending','running')
          RETURNING *`,
@@ -354,7 +384,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     const room = await fairRoom(client, fairKey);
     if (room <= 0) return;
     const { rows } = await client.query(
-      `SELECT r.* FROM session_turn_pointers p JOIN runs r ON r.id = p.active_turn_id
+      `SELECT r.* FROM session_turn_pointers p JOIN turns r ON r.id = p.active_turn_id
         WHERE p.tenant_id = qm_tenant_id() AND r.fair_key = $1 AND ${cappedHead("r")}
         ORDER BY r.claim_priority ASC, r.created_at ASC, r.seq ASC LIMIT $2 FOR UPDATE OF p SKIP LOCKED`,
       [fairKey, room],
@@ -371,7 +401,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     active: string | null,
   ): Promise<{ outcome: "withdrawn" | "cancelled" | "signalled"; settled: boolean } | null> {
     if (run.status === "queued") {
-      await client.query("DELETE FROM runs WHERE id = $1", [run.id]);
+      await client.query("DELETE FROM turns WHERE id = $1", [run.id]);
       if (active === run.id) await advance(client, run.sessionId, run.id);
       return { outcome: "withdrawn", settled: false };
     }
@@ -383,7 +413,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     }
     let settled = false;
     if (run.attempts === 0) {
-      await client.query("DELETE FROM runs WHERE id = $1", [run.id]);
+      await client.query("DELETE FROM turns WHERE id = $1", [run.id]);
       if (run.fairKey) await releaseFair(client, run.fairKey);
     } else {
       await terminal(client, run, "done", { status: "ok", sessionId: run.sessionId, stopped: true }, 0);
@@ -394,7 +424,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
   }
 
   async function settle(id: string): Promise<Run | null> {
-    const { rows } = await db.query("SELECT * FROM runs WHERE id = $1", [id]);
+    const { rows } = await db.query("SELECT * FROM turns WHERE id = $1", [id]);
     const run = rows[0] ? rowToRun(rows[0]) : null;
     if (run) opts.onTerminal?.(run);
     return run;
@@ -408,7 +438,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     errorIncrement: number,
   ): Promise<void> {
     await client.query(
-      `UPDATE runs SET status = $2, result = $3, lease_token = NULL, lease_expires_at = NULL, worker_id = NULL,
+      `UPDATE turns SET status = $2, result = $3, lease_token = NULL, lease_expires_at = NULL, worker_id = NULL,
          finished_at = $4, error_attempts = error_attempts + $5,
          idempotency_key = CASE WHEN $6 THEN NULL ELSE idempotency_key END
        WHERE id = $1`,
@@ -421,48 +451,81 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     async admit({ sessionId, request, dedupKey, maxAttempts = 3, priority }) {
       return tx(async (client) => {
         const active = await lockPointer(client, sessionId);
-        if (dedupKey) {
-          const { rows } = await client.query("SELECT * FROM runs WHERE idempotency_key = $1", [dedupKey]);
-          if (rows[0]) return { run: rowToRun(rows[0]), deduped: true };
+        let inserted: Record<string, unknown> | undefined;
+        while (!inserted) {
+          if (dedupKey) {
+            const { rows } = await client.query("SELECT * FROM turns WHERE idempotency_key = $1", [dedupKey]);
+            if (rows[0]) return { run: rowToRun(rows[0]), deduped: true };
+          }
+          const { rows } = await client.query(
+            `INSERT INTO turns(id, session_id, status, request, idempotency_key, attempts, max_attempts, created_at,
+               claim_priority, engine, absurd_queue, fair_key)
+             VALUES ($1, $2, 'queued', $3, $4, 0, $5, $6, $7, 'absurd', $8, $9)
+             ON CONFLICT (idempotency_key) DO NOTHING RETURNING *`,
+            [
+              randomUUID(),
+              sessionId,
+              jsonbStringify(withTraceCarrier(request)),
+              dedupKey ?? null,
+              maxAttempts,
+              Date.now(),
+              priority,
+              turnQueueFor(priority),
+              fairKeyFor(request, priority),
+            ],
+          );
+          inserted = rows[0];
         }
-        const legacy = await client.query(
-          `SELECT 1 FROM runs WHERE session_id = $1 AND engine = 'legacy' AND status IN ('pending','running') LIMIT 1`,
-          [sessionId],
-        );
-        if (legacy.rows[0]) return null;
-        const { rows } = await client.query(
-          `INSERT INTO runs(id, session_id, status, request, idempotency_key, attempts, max_attempts, created_at,
-             claim_priority, engine, absurd_queue, fair_key)
-           VALUES ($1, $2, 'queued', $3, $4, 0, $5, $6, $7, 'absurd', $8, $9)
-           ON CONFLICT (idempotency_key) DO NOTHING RETURNING *`,
-          [
-            randomUUID(),
-            sessionId,
-            jsonbStringify(withTraceCarrier(request)),
-            dedupKey ?? null,
-            maxAttempts,
-            Date.now(),
-            priority,
-            turnQueueFor(priority),
-            fairKeyFor(request, priority),
-          ],
-        );
-        if (!rows[0]) {
-          const existing = await client.query("SELECT * FROM runs WHERE idempotency_key = $1", [dedupKey]);
-          return { run: rowToRun(existing.rows[0]!), deduped: true };
-        }
-        const queued = rowToRun(rows[0]);
+        const queued = rowToRun(inserted);
         let capped = false;
         if (active && priority === 0) {
-          const head = await client.query(`SELECT 1 FROM runs r WHERE r.id = $1 AND ${cappedHead("r")}`, [active]);
+          const head = await client.query(`SELECT 1 FROM turns r WHERE r.id = $1 AND ${cappedHead("r")}`, [active]);
           capped = head.rows.length > 0;
         }
         if (active && !capped && !(priority === 0 && (await askToYield(client, active))))
           return { run: queued, deduped: false };
         await start(client, queued);
-        const state = await client.query("SELECT status FROM runs WHERE id = $1", [queued.id]);
+        const state = await client.query("SELECT status FROM turns WHERE id = $1", [queued.id]);
         return { run: { ...queued, status: state.rows[0]!.status as Run["status"] }, deduped: false };
       });
+    },
+
+    async adoptLegacy(limit = 100) {
+      const live = `engine = 'legacy' AND (status = 'pending' OR (status = 'running'
+        AND (lease_expires_at IS NULL OR lease_expires_at <= $1)))`;
+      const { rows } = await db.query(`SELECT DISTINCT session_id FROM turns WHERE ${live} LIMIT $2`, [
+        Date.now(),
+        limit,
+      ]);
+      let adopted = 0;
+      for (const row of rows) {
+        const threadRef = String(row.session_id);
+        adopted += await tx(async (client) => {
+          const active = await lockPointer(client, threadRef);
+          const legacy = await client.query(
+            `SELECT * FROM turns WHERE session_id = $2 AND ${live} ORDER BY created_at ASC, seq ASC FOR UPDATE`,
+            [Date.now(), threadRef],
+          );
+          for (const found of legacy.rows) {
+            const run = rowToRun(found);
+            await client.query(
+              `UPDATE turns SET engine = 'absurd', status = 'queued', absurd_queue = $2, fair_key = $3,
+                 lease_token = NULL, lease_expires_at = NULL, worker_id = NULL,
+                 last_stop = CASE WHEN status = 'running' THEN $4 ELSE last_stop END
+               WHERE id = $1`,
+              [
+                run.id,
+                turnQueueFor(run.priority),
+                fairKeyFor(run.request, run.priority),
+                JSON.stringify({ kind: "shutdown" } satisfies RunStop),
+              ],
+            );
+          }
+          if (legacy.rows.length && active === null) await advance(client, threadRef, "");
+          return legacy.rows.length;
+        });
+      }
+      return adopted;
     },
 
     async claim(queue, token, workerId) {
@@ -544,12 +607,12 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     fenceHeld: async (turnId, token, client) => turnFenceHeld(client ?? db, turnId, token),
 
     async cancel(turnId) {
-      const found = await db.query("SELECT session_id FROM runs WHERE id = $1 AND engine = 'absurd'", [turnId]);
+      const found = await db.query("SELECT session_id FROM turns WHERE id = $1 AND engine = 'absurd'", [turnId]);
       const threadRef = found.rows[0]?.session_id as string | undefined;
       if (!threadRef) return null;
       const done = await tx(async (client) => {
         const active = await lockPointer(client, threadRef);
-        const { rows } = await client.query("SELECT * FROM runs WHERE id = $1 FOR UPDATE", [turnId]);
+        const { rows } = await client.query("SELECT * FROM turns WHERE id = $1 FOR UPDATE", [turnId]);
         return rows[0] ? cancelLocked(client, rowToRun(rows[0]), active) : null;
       });
       if (done?.settled) await settle(turnId);
@@ -560,7 +623,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       const refs = [...new Set(threadRefs)].sort();
       if (!refs.length) return 0;
       const busy = await db.query(
-        `SELECT DISTINCT session_id FROM runs WHERE session_id = ANY($1::text[]) AND engine = 'absurd'
+        `SELECT DISTINCT session_id FROM turns WHERE session_id = ANY($1::text[]) AND engine = 'absurd'
            AND status IN ('queued','pending','running') ORDER BY session_id`,
         [refs],
       );
@@ -571,7 +634,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
         for (const row of busy.rows)
           active.set(String(row.session_id), await lockPointer(client, String(row.session_id)));
         const { rows } = await client.query(
-          `SELECT * FROM runs WHERE session_id = ANY($1::text[]) AND engine = 'absurd'
+          `SELECT * FROM turns WHERE session_id = ANY($1::text[]) AND engine = 'absurd'
              AND status IN ('queued','pending','running') ORDER BY id FOR UPDATE`,
           [[...active.keys()]],
         );
@@ -582,7 +645,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
         const runs = rows.map(rowToRun).sort((a, b) => rank(a) - rank(b));
         let n = 0;
         for (const run of runs) {
-          const current = await client.query("SELECT * FROM runs WHERE id = $1", [run.id]);
+          const current = await client.query("SELECT * FROM turns WHERE id = $1", [run.id]);
           if (!current.rows[0]) continue;
           const pointer = await client.query(`SELECT active_turn_id FROM session_turn_pointers WHERE ${POINTER_KEY}`, [
             run.sessionId,
@@ -604,7 +667,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
 
     async releaseCapped() {
       const { rows } = await db.query(
-        `SELECT DISTINCT r.fair_key FROM session_turn_pointers p JOIN runs r ON r.id = p.active_turn_id
+        `SELECT DISTINCT r.fair_key FROM session_turn_pointers p JOIN turns r ON r.id = p.active_turn_id
           WHERE p.tenant_id = qm_tenant_id() AND ${cappedHead("r")} LIMIT 100`,
       );
       for (const row of rows) await tx((client) => releaseFair(client, String(row.fair_key)));
@@ -620,7 +683,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       const { rows } = await db.query(
         `SELECT p.thread_ref, p.active_turn_id, t.id AS turn, t.status, t.absurd_task_id, ${state} AS task_state
            FROM session_turn_pointers p
-           LEFT JOIN runs t ON t.id = p.active_turn_id
+           LEFT JOIN turns t ON t.id = p.active_turn_id
            ${joins}
           WHERE p.tenant_id = qm_tenant_id() AND p.active_turn_id IS NOT NULL
             AND NOT (${cappedHead("t")})
@@ -640,7 +703,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     async repair({ threadRef, turnId }, result) {
       const finished = await tx(async (client) => {
         if ((await lockPointer(client, threadRef)) !== turnId) return false;
-        const { rows } = await client.query("SELECT * FROM runs WHERE id = $1 FOR UPDATE", [turnId]);
+        const { rows } = await client.query("SELECT * FROM turns WHERE id = $1 FOR UPDATE", [turnId]);
         const run = rows[0] ? rowToRun(rows[0]) : null;
         if (!run || (run.status !== "pending" && run.status !== "running")) return false;
         await terminal(client, run, "failed", result, 0);
@@ -663,7 +726,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
 
     async mustYield(run) {
       const { rows } = await db.query(
-        "SELECT 1 FROM runs WHERE session_id = $1 AND status = 'queued' AND claim_priority = 0 LIMIT 1",
+        "SELECT 1 FROM turns WHERE session_id = $1 AND status = 'queued' AND claim_priority = 0 LIMIT 1",
         [run.sessionId],
       );
       return rows.length > 0;
@@ -676,7 +739,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
         await lockTurn(client, run.id);
         if (!(await holdsClaim(client, queue, run.absurdRunId!, token))) return "lost";
         const next = await client.query(
-          `SELECT * FROM runs WHERE session_id = $1 AND status = 'queued' AND claim_priority = 0
+          `SELECT * FROM turns WHERE session_id = $1 AND status = 'queued' AND claim_priority = 0
            ORDER BY created_at ASC, seq ASC LIMIT 1 FOR UPDATE`,
           [run.sessionId],
         );
@@ -707,7 +770,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     async release({ threadRef, turnId }) {
       await tx(async (client) => {
         if ((await lockPointer(client, threadRef)) !== turnId) return;
-        const { rows } = await client.query("SELECT status FROM runs WHERE id = $1", [turnId]);
+        const { rows } = await client.query("SELECT status FROM turns WHERE id = $1", [turnId]);
         if (rows[0]?.status === "pending" || rows[0]?.status === "running") return;
         await advance(client, threadRef, turnId);
       });

@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { ErrorLog } from "../admin/error-log.ts";
-import type { Orchestrator } from "../core/orchestrator.ts";
-import { isNonRetryable, NonRetryableTurnError, turnFailureMessage } from "../core/turn-error.ts";
+import type { Orchestrator, OrchestratorInput } from "../core/orchestrator.ts";
+import { isNonRetryable, NonRetryableTurnError, ProviderTurnError, turnFailureMessage } from "../core/turn-error.ts";
+import { resolveTurnOrigin } from "../core/turn-origin.ts";
+import { conversationScope } from "../resolution/resolution-service.ts";
+import { resolveSwarmSettings } from "../swarms/swarm-settings.ts";
 import type { TurnResult } from "../types.ts";
 import { sleep } from "../util/async.ts";
-import { reportFailure, swallow } from "../util/errors.ts";
+import { errMessage, errorAlreadyReported, reportFailure, swallow } from "../util/errors.ts";
 import type { EventBus } from "../util/event-bus.ts";
 import { retryDelay } from "../runs/retry-delay.ts";
 import {
@@ -17,14 +20,6 @@ import {
   type Run,
   type RunStop,
 } from "../runs/run-store.ts";
-import {
-  CLAIM_FAIL_REPORT_CONSECUTIVE,
-  LEASE_LOST_CONSECUTIVE,
-  recordTurnError,
-  runTurnInput,
-  runStopFor,
-  swarmTurnLimits,
-} from "../runs/worker.ts";
 import type { TurnQueue } from "./absurd-schema.ts";
 import { TURN_EXTEND_INTERVAL_MS, type TurnLedger, type TurnOutcome } from "./turn-ledger.ts";
 
@@ -34,6 +29,66 @@ const HANDBACK_SETTLE_MS = 2_000;
 const FINISH_RETRY_MAX_MS = 5_000;
 const FINISH_RETRY_MS = 500;
 const FAILURE_REPORT_CONSECUTIVE = 5;
+const LEASE_LOST_CONSECUTIVE = 3;
+const CLAIM_FAIL_REPORT_CONSECUTIVE = 20;
+const SWARM_CLAIM_BUDGET = 3;
+
+function runTurnInput(
+  run: Run,
+  opts: {
+    token: string;
+    maxClaims: number | undefined;
+    background: boolean;
+    cancel: AbortSignal;
+    shutdown?: AbortSignal;
+  },
+): OrchestratorInput {
+  return {
+    ...run.request,
+    origin: resolveTurnOrigin(run.request),
+    runId: run.id,
+    attempt: run.attempts,
+    ...(run.lastStop ? { resumeCause: run.lastStop } : {}),
+    runLeaseToken: opts.token,
+    turnFenceToken: opts.token,
+    finalAttempt: errorParks(run, opts.maxClaims),
+    background: opts.background,
+    cancel: opts.cancel,
+    ...(opts.shutdown ? { shutdown: opts.shutdown } : {}),
+    ...(run.startedAt !== null ? { runStartedAt: run.startedAt } : {}),
+  };
+}
+
+function swarmTurnLimits(
+  run: Pick<Run, "request" | "attempts" | "preemptions">,
+  cancel: AbortController,
+): ReturnType<typeof setTimeout> | undefined {
+  if (run.request.swarm && countedClaims(run) > SWARM_CLAIM_BUDGET)
+    throw new NonRetryableTurnError("swarm claim budget exhausted");
+  if (!run.request.swarm || run.request.swarmGoal) return undefined;
+  const { turnMs } = resolveSwarmSettings({ turnMs: run.request.turnWallClockMs });
+  return setTimeout(() => cancel.abort(), turnMs);
+}
+
+function recordTurnError(errors: ErrorLog | undefined, run: Run, err: unknown): void {
+  console.error(`[turns] turn ${run.id} failed: ${errMessage(err)}`);
+  if (!errorAlreadyReported(err))
+    errors?.record(
+      {
+        category: "turn",
+        code: "error",
+        message: `run ${run.id}: ${errMessage(err)}`,
+        scopeLabel: conversationScope(run.request.conversation, run.request.actor.id),
+      },
+      err,
+    );
+}
+
+function runStopFor(err: unknown): RunStop {
+  if (err instanceof ProviderTurnError)
+    return { kind: "error", code: err.code, ...(err.status !== undefined ? { status: err.status } : {}) };
+  return { kind: "error" };
+}
 
 export interface TurnRunnerDeps {
   ledger: TurnLedger;
@@ -238,7 +293,6 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
               background: true,
               cancel: cancel.signal,
               shutdown: shutdown.signal,
-              fenced: true,
             },
           ),
         ),

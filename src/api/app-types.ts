@@ -636,10 +636,9 @@ export interface AppDeps {
   screenSecurity?: SecurityScreenProbe;
   orchestrator: Orchestrator;
   runs: RunStore;
-  leaseTtlMs: number;
+  startTurns?: () => void;
   maxAttempts: number;
   runWaitMs?: number;
-  inlineTurns?: boolean;
   turnStream?: TurnStream;
   runStreamEvents?: EventBus<RunStreamEvent>;
   runActivity?: RunActivityStore;
@@ -682,7 +681,6 @@ export interface AppDeps {
   processes?: ProcessRegistry;
   monitors?: MonitorStore;
   sandbox?: Sandbox;
-  reaperPoke?: () => void;
   engaged?: EngagedRegistry;
   surfaceCache?: SurfaceCache;
   channelPolicy?: ChannelPolicyStore;
@@ -785,8 +783,6 @@ export class SoulVersionConflictError extends Error {
 }
 
 export const CONTEXT_REQUEST_EXPIRY_MS = 2 * 60_000;
-
-export const STALE_LEASE_GRACE_MS = 30_000;
 
 interface SessionPageQuery {
   limit: number;
