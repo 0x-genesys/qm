@@ -403,7 +403,7 @@ export function createSpritesSandbox(workspace: WorkspaceStore, opts: SpritesSan
       forget,
       restart,
       ...(opts.egressProxyUrl ? { ensureEgress: ensureEgressPolicy } : {}),
-      checkpoints: { machineBound: "export-before-destroy", capture: captureCheckpoint, restore: restoreCheckpoint },
+      checkpoints: { machineBound: true, capture: captureCheckpoint, restore: restoreCheckpoint },
     },
     opts,
     opts.store,

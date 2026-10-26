@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createE2bSandbox, type StoredE2bSandbox } from "../src/sandbox/e2b-sandbox.ts";
 import { sandboxScopeName } from "../src/sandbox/exec-sandbox-base.ts";
-import { instrumentedSnapshotStore } from "./support/snapshot-stores.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { supportsBlobStaging, supportsProcessSessions } from "../src/sandbox/sandbox.ts";
 import { createMemoryMap, type DurableMap } from "../src/persistence/durable-map.ts";
@@ -18,7 +17,6 @@ import { installFakeE2b, type FakeE2b } from "./support/fake-e2b.ts";
 import type { Sandbox } from "../src/sandbox/sandbox.ts";
 import { createMemoryAdvisoryLock } from "../src/persistence/advisory-lock.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
-import { createMemorySnapshotStore } from "../src/sandbox/home-snapshot.ts";
 
 let fake: FakeE2b;
 let sandbox: Sandbox;
@@ -28,7 +26,6 @@ const scopeName = (): string => sandboxScopeName("qmt", scope);
 
 function make(extra: Record<string, unknown> = {}): Sandbox {
   return createE2bSandbox(createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "e2b-ws-"))), {
-    snapshots: createMemorySnapshotStore(),
     store: createMemoryMap(),
     ...singleProcessDeps(),
     client: fake.client,
@@ -350,19 +347,17 @@ test("stageIn pulls a blob into the guest atomically (temp then mv)", async () =
   assert.match(script, /curl -fsS/, "-f so an HTTP error fails loudly instead of writing the error body");
 });
 
-test("used-turn teardown captures a native checkpoint without a tar and status does not wake a paused sandbox", async () => {
+test("used-turn teardown captures a native checkpoint and status does not wake a paused sandbox", async () => {
   const store = createMemoryMap<StoredE2bSandbox>();
-  const portable = instrumentedSnapshotStore();
-  const first = make({ store, snapshots: portable.store });
+  const first = make({ store });
   const handle = await first.provision(layers);
   await first.writeFile(handle, "work.txt", "keep");
   await first.teardown(handle);
-  assert.equal(portable.puts(), 0);
   assert.ok((await store.get(scope))?.checkpointId);
   const status = await first.computerStatus!(scope);
   assert.equal(status.lifecycleState, "paused");
   assert.equal(fake.current(scopeName())?.state, "paused");
-  const restarted = make({ store, snapshots: portable.store });
+  const restarted = make({ store });
   const resumed = await restarted.provision(layers);
   assert.equal(await restarted.readFile(resumed, "work.txt"), "keep");
   assert.equal(fake.createdCount(scopeName()), 1);
@@ -619,7 +614,6 @@ test("destroyScope deletes paused state without resuming and retains metadata on
   let fail = true;
   const backend = make({
     store,
-    snapshots: undefined,
     client: {
       ...fake.client,
       async create() {
@@ -648,7 +642,7 @@ test("destroyScope deletes paused state without resuming and retains metadata on
 
 test("destroyScope clears a live E2B session cache after deleting its machine", async () => {
   const store = createMemoryMap<StoredE2bSandbox>();
-  const backend = make({ store, snapshots: undefined });
+  const backend = make({ store });
   const first = await backend.provision(layers);
   const firstId = (await store.get(scope))!.sandboxId;
   await backend.destroyScope!(scope);

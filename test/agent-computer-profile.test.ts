@@ -29,9 +29,7 @@ function awsSandbox(extraTools: string[]) {
     ...singleProcessDeps(),
     region: "us-west-2",
     imageIdentifier: "img",
-    s3Bucket: "bucket",
     api: fake.api,
-    s3: fake.s3,
     fetchImpl: fake.fetchImpl,
     extraTools,
   });

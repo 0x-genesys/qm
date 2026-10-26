@@ -229,7 +229,6 @@ import {
   type StoredManagedAgentsSandbox,
 } from "./sandbox/managed-agents-sandbox.ts";
 import { createSdkManagedAgentsClient } from "./sandbox/managed-agents-client.ts";
-import { createS3SnapshotStore } from "./sandbox/home-snapshot.ts";
 import { createModalSandbox, type StoredModalSandbox } from "./sandbox/modal-sandbox.ts";
 import { createSdkModalClient } from "./sandbox/modal-client.ts";
 import { createPorterSandbox, type StoredPorterSandbox } from "./sandbox/porter-sandbox.ts";
@@ -834,9 +833,8 @@ export function buildApp(
       },
       error,
     );
-  const { snapshotS3Bucket: sandboxSnapshotBucket, ...sandboxEnvShared } = config.sandbox;
   const sandboxShared = {
-    ...sandboxEnvShared,
+    ...config.sandbox,
     keepWarmSec: Math.ceil(config.backgroundJobTtlMaxMs / 1000),
     advisoryLock,
     blobTransfer,
@@ -848,8 +846,6 @@ export function buildApp(
     ...(config.apiBaseUrl ? { apiBaseUrl: config.apiBaseUrl } : {}),
     onError: sandboxOnError,
   };
-  const homeSnapshots = (prefix: string) =>
-    sandboxSnapshotBucket ? { snapshots: createS3SnapshotStore({ bucket: sandboxSnapshotBucket, prefix }) } : {};
   const e2bBodies = artifactMap<StoredE2bSandbox>("e2b_sandbox_bodies");
   const modalBodies = artifactMap<StoredModalSandbox>("modal_sandbox_bodies");
   const awsBodies = artifactMap<StoredMicrovm>("aws_sandbox_bodies");
@@ -864,7 +860,6 @@ export function buildApp(
     createSpritesSandbox(workspace, {
       ...sandboxShared,
       ...config.spritesSandbox,
-      ...homeSnapshots("sprites-home"),
       store: artifactMap<StoredSpritesSandbox>("sprites_initialization"),
       connectorSdk: loadConnectorSdk,
     });
@@ -872,7 +867,6 @@ export function buildApp(
     createSmolmachinesSandbox(workspace, {
       ...sandboxShared,
       ...config.smolmachinesSandbox,
-      ...homeSnapshots("smolmachines-home"),
       store: artifactMap<StoredSmolmachinesSandbox>("smolmachines_sandbox_bodies"),
     });
   const e2bClient = (use: "computers" | "apps"): E2bClient => {
@@ -893,7 +887,6 @@ export function buildApp(
   const buildE2b = (): Sandbox =>
     createE2bSandbox(workspace, {
       ...sandboxShared,
-      ...homeSnapshots("e2b-home"),
       client: e2bClient("computers"),
       extraTools: [...(config.e2bSandbox.templateId ? E2B_TEMPLATE_TOOLS : []), ...deploymentLayer.advertisedTools],
       store: e2bBodies,
@@ -903,7 +896,6 @@ export function buildApp(
     if (!managedAgents.apiToken) throw new Error("SANDBOX_BACKEND=do-managed-agents requires DO_AGENTS_API_TOKEN");
     return createManagedAgentsSandbox(workspace, {
       ...sandboxShared,
-      ...homeSnapshots("managed-agents-home"),
       client: createSdkManagedAgentsClient({
         apiToken: managedAgents.apiToken,
         ...(managedAgents.template ? { template: managedAgents.template } : {}),
@@ -920,7 +912,6 @@ export function buildApp(
       throw new Error("SANDBOX_BACKEND=modal requires MODAL_TOKEN_ID and MODAL_TOKEN_SECRET");
     return createModalSandbox(workspace, {
       ...sandboxShared,
-      ...homeSnapshots("modal-home"),
       client: createSdkModalClient({
         tokenId: modal.tokenId,
         tokenSecret: modal.tokenSecret,
@@ -941,7 +932,6 @@ export function buildApp(
     createAgent37Sandbox(workspace, {
       ...sandboxShared,
       ...config.agent37Sandbox,
-      ...homeSnapshots("agent37-home"),
       store: artifactMap<StoredAgent37Sandbox>("agent37_sandbox_bodies"),
     });
   const superserveEpochs = artifactMap<StoredConfigEpoch>("superserve_config_epochs");
@@ -972,20 +962,12 @@ export function buildApp(
       store: superserveBodies,
     });
   };
-  const buildAws = (): Sandbox => {
-    if (!sandboxSnapshotBucket) throw new Error("SANDBOX_BACKEND=aws requires SANDBOX_SNAPSHOT_S3_BUCKET");
-    return createAwsSandbox(workspace, {
-      ...sandboxShared,
-      ...config.awsSandbox,
-      s3Bucket: sandboxSnapshotBucket,
-      store: awsBodies,
-    });
-  };
+  const buildAws = (): Sandbox =>
+    createAwsSandbox(workspace, { ...sandboxShared, ...config.awsSandbox, store: awsBodies });
   const buildPorter = (): Sandbox =>
     createPorterSandbox(workspace, {
       ...sandboxShared,
       ...config.porterSandbox,
-      ...homeSnapshots("porter-home"),
       store: artifactMap<StoredPorterSandbox>("porter_sandbox_bodies"),
     });
   const buildBackend: Record<Config["sandboxBackend"], () => Sandbox> = {
@@ -1586,11 +1568,9 @@ export function buildApp(
         : {}),
     },
   });
-  const awsSandboxBucket = config.sandboxBackend === "aws" ? sandboxSnapshotBucket : undefined;
   const buildAwsDeploy = (): DeployProvider =>
     createAwsDeployProvider({
       ...config.awsDeploy,
-      ...(!config.awsDeploy.dataBucket && awsSandboxBucket ? { dataBucket: awsSandboxBucket } : {}),
       advisoryLock,
       store: artifactMap<StoredDeployBody>("aws_deploy_bodies"),
       onError: sandboxOnError,
@@ -1642,9 +1622,9 @@ export function buildApp(
     throw new Error("Fly durable application storage requires DATABASE_URL for persistent rollback configuration");
   }
   const deployProvider: DeployProvider = buildDeployProvider[config.deployProvider]();
-  if (config.deployProvider === "aws" && !config.awsDeploy.dataBucket && !awsSandboxBucket) {
+  if (config.deployProvider === "aws" && !config.awsDeploy.dataBucket) {
     console.warn(
-      "[wiring] aws deploy: no data bucket resolved (AWS_DEPLOY_DATA_BUCKET unset, sandbox is not aws) — deployed apps have NO durable /data",
+      "[wiring] aws deploy: no data bucket resolved (AWS_DEPLOY_DATA_BUCKET unset) — deployed apps have NO durable /data",
     );
   }
   const adminGrantPersist = config.databaseUrl

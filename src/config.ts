@@ -259,7 +259,6 @@ interface SandboxEnv {
   namePrefix?: string;
   defaultTimeoutSec?: number;
   egressProxyUrl?: string;
-  snapshotS3Bucket?: string;
   snapshotIntervalSec?: number;
   cpus?: number;
   memoryMb?: number;
@@ -274,7 +273,6 @@ function sandboxEnv(env: NodeJS.ProcessEnv): SandboxEnv {
     ["namePrefix", env.SANDBOX_NAME_PREFIX?.trim() || undefined],
     ["defaultTimeoutSec", num("SANDBOX_TIMEOUT_SEC")],
     ["egressProxyUrl", env.SANDBOX_EGRESS_PROXY_URL?.trim() || undefined],
-    ["snapshotS3Bucket", env.SANDBOX_SNAPSHOT_S3_BUCKET?.trim() || undefined],
     ["snapshotIntervalSec", num("SANDBOX_SNAPSHOT_INTERVAL_SEC")],
     ["cpus", num("SANDBOX_CPUS")],
     ["memoryMb", num("SANDBOX_MEMORY_MB")],
@@ -766,7 +764,7 @@ export function enabledSandboxBackends(config: Config): Array<Config["sandboxBac
     e2b: Boolean(config.e2bSandbox?.apiKey),
     "do-managed-agents": Boolean(config.managedAgentsSandbox?.apiToken),
     modal: Boolean(config.modalSandbox?.tokenId && config.modalSandbox?.tokenSecret),
-    aws: Boolean(config.awsSandbox?.executionRoleArn && config.sandbox?.snapshotS3Bucket),
+    aws: Boolean(config.awsSandbox?.executionRoleArn),
     porter: Boolean(config.porterSandbox?.token),
   };
   const enabled = new Set<Config["sandboxBackend"]>([config.sandboxBackend]);
@@ -1019,11 +1017,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (selectedBackend && selectedBackend !== "local" && !env.SANDBOX_EGRESS_PROXY_URL?.trim()) {
     console.warn(
       `[config] SANDBOX_BACKEND=${selectedBackend} without SANDBOX_EGRESS_PROXY_URL — sandboxes run with NO egress enforcement (fail-open); set SANDBOX_EGRESS_PROXY_URL to the public egress proxy to force sandbox traffic through it.`,
-    );
-  }
-  if (selectedBackend && selectedBackend !== "local" && !env.SANDBOX_SNAPSHOT_S3_BUCKET?.trim()) {
-    console.warn(
-      `[config] SANDBOX_BACKEND=${selectedBackend} without SANDBOX_SNAPSHOT_S3_BUCKET — homes have no portable snapshot, so a sandbox the provider loses or a retired computer comes back with an empty home; set SANDBOX_SNAPSHOT_S3_BUCKET for durable home recovery.`,
     );
   }
   const superserveSelected = sandboxBackend === "superserve";

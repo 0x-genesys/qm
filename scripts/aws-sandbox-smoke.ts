@@ -7,20 +7,17 @@ import { createAwsSandbox, type StoredMicrovm } from "../src/sandbox/aws-sandbox
 import { createMicrovmApi } from "../src/sandbox/aws-microvm-api.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { scopeId } from "../src/types.ts";
-import { scopeStorageKey } from "../cli/src/scope-storage-key.ts";
 import { createNoopAdvisoryLock } from "../src/persistence/advisory-lock.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 
 const region = process.env.AWS_SANDBOX_REGION ?? "us-west-2";
 const profile = process.env.AWS_SANDBOX_PROFILE ?? "dev";
-const s3Bucket = process.env.SANDBOX_SNAPSHOT_S3_BUCKET;
 const imageIdentifier = process.env.AWS_SANDBOX_IMAGE ?? "qm-microvm-sandbox";
 const executionRoleArn = process.env.AWS_SANDBOX_EXEC_ROLE_ARN;
 
 const log = (...a: unknown[]) => console.log("[aws-smoke]", ...a);
 
 async function main(): Promise<void> {
-  if (!s3Bucket) throw new Error("SANDBOX_SNAPSHOT_S3_BUCKET is required");
   const ws = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "aws-smoke-ws-")));
   const store = createMemoryMap<StoredMicrovm>();
   const sandbox = createAwsSandbox(ws, {
@@ -29,7 +26,6 @@ async function main(): Promise<void> {
     region,
     profile,
     imageIdentifier,
-    s3Bucket,
     ...(executionRoleArn ? { executionRoleArn } : {}),
   });
   const api = createMicrovmApi({ region, profile });
@@ -57,7 +53,7 @@ async function main(): Promise<void> {
     assert.equal(await sandbox.readFile(h1, "notes/marker.txt"), marker);
     log("wrote marker", marker);
 
-    log("teardown #1 (snapshot $HOME -> S3, then suspend)...");
+    log("teardown #1 (suspend)...");
     await sandbox.teardown(h1);
 
     log("provision #2 (should resume the same body, warm)...");
@@ -68,26 +64,10 @@ async function main(): Promise<void> {
     log("warm resume OK, marker intact");
     await sandbox.teardown(h2);
 
-    log("simulating the body dying (8h cap / external terminate)...");
-    await api.terminate(bodyId);
-    await api.waitForState(bodyId, "TERMINATED", { timeoutMs: 60_000 }).catch(() => {});
-
-    log("provision #3 (fresh body, rehydrate $HOME from S3)...");
-    const h3 = await sandbox.provision(layers);
-    assert.notEqual(await currentBody(), bodyId, "a new body was launched");
-    bodyId = await currentBody();
-    assert.equal(h3.coldStart, false, "rehydrated from S3, not cold");
-    assert.equal(await sandbox.readFile(h3, "notes/marker.txt"), marker, "durable state survived the body dying");
-    log("durability across body death OK");
-
     log("\n=== ALL LIVE ASSERTIONS PASSED ===");
   } finally {
-    log("cleanup: terminate body + delete S3 snapshot...");
+    log("cleanup: terminate body...");
     if (bodyId) await api.terminate(bodyId).catch(() => {});
-    const { S3Client, DeleteObjectCommand } = await import("@aws-sdk/client-s3");
-    const s3 = new S3Client({ region, profile });
-    const key = `sandbox-home/${scopeStorageKey(scope)}.tar`;
-    await s3.send(new DeleteObjectCommand({ Bucket: s3Bucket, Key: key })).catch(() => {});
     log("done");
   }
 }

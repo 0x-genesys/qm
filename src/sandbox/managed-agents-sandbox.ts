@@ -220,7 +220,7 @@ export function createManagedAgentsSandbox(workspace: WorkspaceStore, opts: Mana
       isLive: (name) => sessions.has(name),
       forget,
       checkpoints: {
-        machineBound: "export-on-capture",
+        machineBound: true,
         capture: async (name) =>
           (await withSession(name, (session) => session.createCheckpoint(CHECKPOINT_LABEL))).checkpointId,
         restore: rollback,
@@ -241,6 +241,5 @@ export function createManagedAgentsSandbox(workspace: WorkspaceStore, opts: Mana
     computerStatus: (scopeId) => (remember(scopeId), sandbox.computerStatus!(scopeId)),
     restartComputer: (scopeId) => (remember(scopeId), sandbox.restartComputer!(scopeId)),
     destroyScope: (scopeId) => (remember(scopeId), sandbox.destroyScope!(scopeId)),
-    persistHomeSnapshot: (scopeId) => (remember(scopeId), sandbox.persistHomeSnapshot!(scopeId)),
   };
 }

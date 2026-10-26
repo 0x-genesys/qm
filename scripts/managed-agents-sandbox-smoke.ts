@@ -9,7 +9,6 @@ import { createSdkManagedAgentsClient } from "../src/sandbox/managed-agents-clie
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { scopeId } from "../src/types.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
-import { createMemorySnapshotStore } from "../src/sandbox/home-snapshot.ts";
 import { createMemoryAdvisoryLock } from "../src/persistence/advisory-lock.ts";
 
 const apiToken = process.env.DO_AGENTS_API_TOKEN;
@@ -34,7 +33,6 @@ async function main(): Promise<void> {
       namePrefix: prefix,
       store: createMemoryMap(),
       advisoryLock: createMemoryAdvisoryLock(),
-      snapshots: createMemorySnapshotStore(),
     },
   );
   const scope = scopeId("personal", "smoke");

@@ -15,7 +15,6 @@ import {
 import { createExecSandboxBase, sandboxScopeName } from "./exec-sandbox-base.ts";
 import { createLayerToolInstaller } from "./layer-tool-install.ts";
 import { withConnectorSdk, type ConnectorSdkBundle } from "./connector-sdk.ts";
-import { createHomeSnapshotOps, HOME_SNAPSHOT_PRUNE, snapshotDue, type HomeSnapshotStore } from "./home-snapshot.ts";
 import { visibleNotInstalled, visibleTools } from "./sandbox.ts";
 import type {
   AgentComputerProfile,
@@ -41,7 +40,6 @@ export interface SandboxShared extends BlobStagingOptions {
   namePrefix?: string;
   defaultTimeoutSec?: number;
   egressProxyUrl?: string;
-  snapshots?: HomeSnapshotStore;
   snapshotIntervalSec?: number;
   cpus?: number;
   memoryMb?: number;
@@ -73,7 +71,7 @@ export interface MachineState {
 }
 
 interface DriverCheckpoints {
-  machineBound?: "export-before-destroy" | "export-on-capture";
+  machineBound?: boolean;
   capture(name: string): Promise<string>;
   restore(name: string, checkpointId: string): Promise<void>;
   drop?(name: string, checkpointId: string): Promise<void>;
@@ -112,7 +110,7 @@ export type ProviderSandbox = Sandbox & {
   readonly scopeFor: (name: string) => string | undefined;
   readonly nameFor: (scopeId: string) => string;
   readonly lifecycle: <T>(scopeId: string, fn: () => Promise<T>) => Promise<T>;
-  readonly captureHome: (scopeId: string, name: string) => Promise<void>;
+  readonly captureCheckpoint: (scopeId: string, name: string) => Promise<void>;
   readonly ensureResident: (scopeId: string) => Promise<void>;
 };
 
@@ -137,6 +135,10 @@ export function createProviderSandbox(
   const prefix = shared.namePrefix ?? "qm";
   const defaultTimeoutSec = shared.defaultTimeoutSec ?? DEFAULT_TIMEOUT_SEC;
   const snapshotIntervalMs = (shared.snapshotIntervalSec ?? DEFAULT_SNAPSHOT_INTERVAL_SEC) * 1000;
+  const checkpointDue = (stored: StoredSandboxRecord | null | undefined, opts?: TeardownOptions): boolean => {
+    if (stored?.lastSnapshotMs && Date.now() - stored.lastSnapshotMs < snapshotIntervalMs) return false;
+    return !opts?.homeUnchanged || stored?.homeDirty !== false;
+  };
   const lock = <T>(scope: string, fn: () => Promise<T>): Promise<T> =>
     shared.advisoryLock.withLock(`${backend}-provision:${prefix}:${scope}`, fn);
   const scopeByName = new Map<string, string>();
@@ -152,37 +154,9 @@ export function createProviderSandbox(
     shared.onError?.({ category, code, message: errMessage(e), ...(scopeLabel ? { scopeLabel } : {}) });
   };
 
-  const homeSnapshots = shared.snapshots
-    ? createHomeSnapshotOps<string>({
-        label: backend,
-        homeDir,
-        homeTarPath: `${homeDir}/.qm-home.tar`,
-        prunePaths: [...HOME_SNAPSHOT_PRUNE, ...credentialPrefixes.map((rel) => `./${rel}`)],
-        store: shared.snapshots,
-        io: {
-          runCommand: async (name, script, timeoutMs) => {
-            const r = await driver.exec(name, script, Math.ceil(timeoutMs / 1000));
-            return { exitCode: r.code, stdout: r.stdout, stderr: r.stderr };
-          },
-          readFileBytes: driver.readAbsBytes,
-          writeFileBytes: driver.writeAbsBytes,
-        },
-      })
-    : undefined;
-
   async function merge(scope: string, patch: Partial<StoredSandboxRecord>): Promise<void> {
     await store.putIfAbsent(scope, {});
     await store.merge(scope, patch);
-  }
-
-  async function exportHome(scope: string, name: string): Promise<void> {
-    try {
-      await homeSnapshots!.snapshotHome(scope, name);
-      await merge(scope, { lastSnapshotMs: Date.now(), homeDirty: false, snapshotError: undefined });
-    } catch (e) {
-      await merge(scope, { snapshotError: errMessage(e) });
-      throw e;
-    }
   }
 
   async function captureCheckpoint(scope: string, name: string): Promise<void> {
@@ -208,7 +182,7 @@ export function createProviderSandbox(
 
   async function rotate(scope: string, name: string): Promise<boolean> {
     try {
-      await capture(scope, name);
+      if (driver.checkpoints) await captureCheckpoint(scope, name);
       await driver.destroy(name);
       driver.forget?.(name);
       return true;
@@ -253,7 +227,7 @@ export function createProviderSandbox(
         checkpointId && driver.checkpoints && !machineBound
           ? (await driver.checkpoints.restore(name, checkpointId), true)
           : false;
-      const hydrated = restored || retained || (homeSnapshots ? await homeSnapshots.hydrateHome(scope, name) : false);
+      const hydrated = restored || retained;
       await merge(scope, {
         initializationPending: undefined,
         ...(hydrated ? { homeDirty: false } : {}),
@@ -267,7 +241,7 @@ export function createProviderSandbox(
       if (!booted) throw e;
       report("sandbox_hydrate", "hydrate_failed", e, scope);
       throw new Error(
-        `${backend} provision: home hydration failed (${errMessage(e)}); not risking the stored snapshot`,
+        `${backend} provision: checkpoint restore failed (${errMessage(e)}); not starting an empty home`,
         {
           cause: e,
         },
@@ -358,22 +332,12 @@ export function createProviderSandbox(
     ephemeralCredentialPrefixes: credentialPrefixes,
   });
 
-  const portableOnly = !!driver.checkpoints?.machineBound && !!homeSnapshots;
-
-  async function capture(scope: string, name: string): Promise<void> {
-    const portable = homeSnapshots && (!driver.checkpoints || driver.checkpoints.machineBound === "export-on-capture");
-    let exportError: unknown;
-    if (portable) await exportHome(scope, name).catch((e: unknown) => (exportError = e));
-    if (driver.checkpoints) await captureCheckpoint(scope, name);
-    if (exportError) throw exportError;
-  }
-
   async function recovery(scope: string): Promise<Pick<ComputerStatus, "recovery">> {
-    if (!driver.checkpoints && !homeSnapshots) return {};
+    if (!driver.checkpoints) return {};
     const stored = await store.get(scope);
     return {
       recovery: {
-        strategy: driver.checkpoints ? "provider_snapshot" : "workspace_snapshot",
+        strategy: "provider_snapshot",
         ...(stored?.checkpointId ? { checkpointId: stored.checkpointId } : {}),
         ...(stored?.lastSnapshotMs ? { checkpointAtMs: stored.lastSnapshotMs } : {}),
         ...(stored?.snapshotError ? { error: stored.snapshotError } : {}),
@@ -403,14 +367,10 @@ export function createProviderSandbox(
 
   async function teardown(handle: SandboxHandle, opts?: TeardownOptions): Promise<void> {
     if (!handle.scratch) hold(handle.id, -1);
-    if (!handle.scratch && opts?.destroy && portableOnly) {
-      const scope = base.scopeFor(handle.id) ?? "default";
+    if (!handle.scratch && opts?.destroy && driver.checkpoints?.machineBound) {
+      const scope = scopeFor(handle.id) ?? "default";
       await base.provisionQueue(scope, () =>
-        lock(scope, async () => {
-          const stored = await store.get(scope);
-          if (!stored?.initializationPending && (await driver.inspect(handle.id))) await exportHome(scope, handle.id);
-          await merge(scope, { checkpointId: undefined, checkpointAtMs: undefined });
-        }),
+        lock(scope, () => merge(scope, { checkpointId: undefined, checkpointAtMs: undefined })),
       );
     }
     if (!handle.scratch && !opts?.destroy) {
@@ -421,8 +381,8 @@ export function createProviderSandbox(
           if (stored?.initializationPending) return;
           if (!opts?.homeUnchanged) await merge(scope, { homeDirty: true });
           if (residents.has(handle.id)) return;
-          if ((driver.checkpoints || homeSnapshots) && snapshotDue(stored, opts, snapshotIntervalMs)) {
-            await capture(scope, handle.id).catch((e) =>
+          if (driver.checkpoints && checkpointDue(stored, opts)) {
+            await captureCheckpoint(scope, handle.id).catch((e) =>
               report("sandbox_snapshot", "teardown_snapshot_failed", e, scope),
             );
           }
@@ -442,7 +402,7 @@ export function createProviderSandbox(
     scopeFor,
     nameFor,
     lifecycle: (scope, fn) => base.provisionQueue(scope, () => lock(scope, fn)),
-    captureHome: capture,
+    captureCheckpoint,
     ensureResident: async (scope) => {
       await base.provisionQueue(scope, () => lock(scope, () => initialize(scope, nameFor(scope))));
     },
@@ -461,20 +421,6 @@ export function createProviderSandbox(
     signalProcess: procSessions.signalProcess,
     listProcesses: procSessions.listProcesses,
     teardown,
-
-    ...(driver.checkpoints || homeSnapshots
-      ? {
-          async persistHomeSnapshot(scopeId: string): Promise<void> {
-            const name = nameFor(scopeId);
-            await base.provisionQueue(scopeId, () =>
-              lock(scopeId, async () => {
-                await initialize(scopeId, name);
-                await (portableOnly ? exportHome(scopeId, name) : capture(scopeId, name));
-              }),
-            );
-          },
-        }
-      : {}),
 
     async computerStatus(scopeId: string): Promise<ComputerStatus> {
       const name = nameFor(scopeId);
@@ -511,36 +457,28 @@ export function createProviderSandbox(
       };
     },
 
-    async restartComputer(scopeId: string): Promise<void> {
-      const name = nameFor(scopeId);
-      await base.provisionQueue(scopeId, () =>
-        lock(scopeId, async () => {
-          const stored = await store.get(scopeId);
-          if (driver.restart) return driver.restart(name, { initializationPending: !!stored?.initializationPending });
-          if (driver.checkpoints && stored?.checkpointId) {
-            await driver.checkpoints.restore(name, stored.checkpointId);
-            return;
-          }
-          if (homeSnapshots && !stored?.initializationPending && (await driver.inspect(name))) {
-            await exportHome(scopeId, name).catch((e) => {
-              if (!stored?.lastSnapshotMs) throw e;
-              report("sandbox_snapshot", "restart_export_failed", e, scopeId);
-            });
-          }
-          await driver.destroy(name);
-          driver.forget?.(name);
-          await initialize(scopeId, name);
-        }),
-      );
-    },
+    ...(driver.restart || driver.checkpoints
+      ? {
+          async restartComputer(scopeId: string): Promise<void> {
+            const name = nameFor(scopeId);
+            await base.provisionQueue(scopeId, () =>
+              lock(scopeId, async () => {
+                const stored = await store.get(scopeId);
+                if (driver.restart)
+                  return driver.restart(name, { initializationPending: !!stored?.initializationPending });
+                if (!stored?.checkpointId) throw new Error(`${backend} restart: no checkpoint to restore`);
+                await driver.checkpoints!.restore(name, stored.checkpointId);
+              }),
+            );
+          },
+        }
+      : {}),
 
     async destroyScope(scopeId: string): Promise<void> {
       const name = nameFor(scopeId);
       await base.provisionQueue(scopeId, () =>
         lock(scopeId, async () => {
           const stored = await store.get(scopeId);
-          if (homeSnapshots && !stored?.initializationPending && (await driver.inspect(name)))
-            await exportHome(scopeId, name);
           await driver.destroy(name);
           driver.forget?.(name);
           if (stored?.checkpointId)

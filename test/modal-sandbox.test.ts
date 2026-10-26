@@ -7,7 +7,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModalSandbox, type StoredModalSandbox } from "../src/sandbox/modal-sandbox.ts";
 import { sandboxScopeName } from "../src/sandbox/exec-sandbox-base.ts";
-import { instrumentedSnapshotStore } from "./support/snapshot-stores.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { supportsBlobStaging, supportsProcessSessions } from "../src/sandbox/sandbox.ts";
 import { createMemoryMap, type DurableMap } from "../src/persistence/durable-map.ts";
@@ -19,7 +18,6 @@ import { installFakeModal, type FakeModal } from "./support/fake-modal.ts";
 import { MODAL_CHECKPOINT_RETENTION_MS, type ModalClient } from "../src/sandbox/modal-client.ts";
 import type { Sandbox } from "../src/sandbox/sandbox.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
-import { createMemorySnapshotStore } from "../src/sandbox/home-snapshot.ts";
 
 let fake: FakeModal;
 let sandbox: Sandbox;
@@ -29,7 +27,6 @@ const scopeName = (): string => sandboxScopeName("qmt", scope);
 
 function make(extra: Record<string, unknown> = {}): Sandbox {
   return createModalSandbox(createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "modal-ws-"))), {
-    snapshots: createMemorySnapshotStore(),
     store: createMemoryMap(),
     ...singleProcessDeps(),
     client: fake.client,
@@ -415,13 +412,11 @@ test("a create race with another core instance adopts the winner instead of erro
 
 test("teardown checkpoints the home and leaves the sandbox running", async () => {
   const store = createMemoryMap<StoredModalSandbox>();
-  const portable = instrumentedSnapshotStore();
-  const s = make({ store, snapshots: portable.store });
+  const s = make({ store });
   const a = await s.provision(layers);
   await s.teardown(a);
   assert.equal(fake.current(a.id)?.state, "running", "no pause exists on modal — the warm path is staying up");
   assert.ok((await store.get(scope))?.checkpointId);
-  assert.equal(portable.puts(), 0, "routine checkpoints never stream a tar through core");
   const b = await s.provision(layers);
   assert.equal(b.coldStart, false);
   assert.equal(fake.createdCount(scopeName()), 1);
@@ -518,35 +513,10 @@ test("a failing checkpoint restore fails the provision instead of cold-starting 
   await s.teardown(a);
   fake.terminate(a.id);
   fake.failRestoreOnce();
-  await assert.rejects(() => s.provision(layers), /hydration failed/);
+  await assert.rejects(() => s.provision(layers), /checkpoint restore failed/);
   assert.equal(fake.runningCount(), 0, "the failed replacement is terminated");
   const b = await s.provision(layers);
   assert.equal(await s.readFile(b, "precious.txt"), "irreplaceable\n", "checkpoint survives the outage");
-});
-
-test("a scope with only a legacy portable home hydrates a replacement from the tar", async () => {
-  const store = createMemoryMap<StoredModalSandbox>();
-  const portable = instrumentedSnapshotStore();
-  const s = make({ store, snapshots: portable.store });
-  const a = await s.provision(layers);
-  await s.writeFile(a, "legacy.txt", "portable generation\n");
-  await s.destroyScope!(scope);
-  assert.equal(portable.puts(), 1);
-  assert.equal(await store.get(scope), null);
-  const b = await s.provision(layers);
-  assert.equal(b.coldStart, false);
-  assert.equal(await s.readFile(b, "legacy.txt"), "portable generation\n");
-});
-
-test("persistHomeSnapshot checkpoints the live home on demand, ignoring the teardown throttle", async () => {
-  const store = createMemoryMap<StoredModalSandbox>();
-  const s = make({ store, snapshotIntervalSec: 3600 });
-  const h = await s.provision(layers);
-  await s.teardown(h);
-  const before = (await store.get(scope))?.checkpointId;
-  await s.persistHomeSnapshot!(scope);
-  assert.notEqual((await store.get(scope))?.checkpointId, before);
-  assert.equal(fake.snapshotCount(), 2);
 });
 
 test("rotation aborts and keeps the old box when the pre-rotation checkpoint fails", async () => {
@@ -806,8 +776,8 @@ test("checkpoint writers from separate cores share the durable lifecycle lock", 
   const release = Promise.withResolvers<void>();
   let writers = 0;
   let maximum = 0;
-  const first = make({ store, advisoryLock });
-  const second = make({ store, advisoryLock });
+  const first = make({ store, advisoryLock, snapshotIntervalSec: 0 });
+  const second = make({ store, advisoryLock, snapshotIntervalSec: 0 });
   const a = await first.provision(layers);
   const b = await second.provision(layers);
   fake.onSnapshot(async () => {
@@ -822,9 +792,10 @@ test("checkpoint writers from separate cores share the durable lifecycle lock", 
   });
   const saving = first.teardown(a);
   await entered.promise;
-  const exporting = second.persistHomeSnapshot!(scope);
+  assert.equal((await second.run(b, "echo second core")).stdout.trim(), "second core");
+  const exporting = second.teardown(b);
   try {
-    assert.equal((await second.run(b, "echo second core")).stdout.trim(), "second core");
+    await new Promise((resolve) => setTimeout(resolve, 20));
   } finally {
     release.resolve();
     await Promise.all([saving, exporting]);

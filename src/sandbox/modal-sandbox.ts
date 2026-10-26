@@ -283,7 +283,8 @@ export function createModalSandbox(workspace: WorkspaceStore, opts: ModalSandbox
 
   async function renew(scope: string, name: string, rec: StoredModalSandbox): Promise<void> {
     try {
-      await provider.persistHomeSnapshot!(scope);
+      await provider.ensureResident(scope);
+      await provider.lifecycle(scope, () => provider.captureCheckpoint(scope, name));
       await provider.lifecycle(scope, async () => {
         const after = await store.get(scope);
         if (after && !after.initializationPending && after.lastActivityMs === rec.lastActivityMs) await destroy(name);
@@ -300,7 +301,7 @@ export function createModalSandbox(workspace: WorkspaceStore, opts: ModalSandbox
         if (!now || now.initializationPending || now.sandboxId !== rec.sandboxId) return 0;
         if (idleCutoffMs !== undefined && (!now.lastActivityMs || now.lastActivityMs > idleCutoffMs)) return 0;
         try {
-          await provider.captureHome(scope, name);
+          await provider.captureCheckpoint(scope, name);
           await destroy(name);
           return 1;
         } catch (e) {
@@ -343,7 +344,7 @@ export function createModalSandbox(workspace: WorkspaceStore, opts: ModalSandbox
       .lifecycle(scope, async () => {
         const after = await store.get(scope);
         if (after && after.sandboxId === rec.sandboxId && !after.initializationPending)
-          await provider.captureHome(scope, name);
+          await provider.captureCheckpoint(scope, name);
       })
       .catch((e) => {
         if (!(e instanceof ModalSandboxGoneError)) report("sandbox_snapshot", "periodic_snapshot_failed", e, scope);
@@ -426,7 +427,8 @@ export function createModalSandbox(workspace: WorkspaceStore, opts: ModalSandbox
       await provider.lifecycle(scopeId, async () => {
         const rec = await store.get(scopeId);
         if (!rec) return;
-        if (!rec.initializationPending && (await client.fromName(name))) await provider.captureHome(scopeId, name);
+        if (!rec.initializationPending && (await client.fromName(name)))
+          await provider.captureCheckpoint(scopeId, name);
         await destroy(name);
         await store.merge(scopeId, { initializationPending: undefined, snapshotError: undefined });
       });

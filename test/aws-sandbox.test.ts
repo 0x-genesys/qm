@@ -19,9 +19,7 @@ function makeSandbox(fake: FakeMicrovm, opts: Record<string, unknown> = {}) {
     ...singleProcessDeps(),
     region: "us-west-2",
     imageIdentifier: "img",
-    s3Bucket: "bucket",
     api: fake.api,
-    s3: fake.s3,
     fetchImpl: fake.fetchImpl,
     ...opts,
     store,
@@ -31,10 +29,10 @@ function makeSandbox(fake: FakeMicrovm, opts: Record<string, unknown> = {}) {
 }
 const rw = (scope: string) => [{ scopeId: scope, mountPath: "", mode: "rw" as const }];
 
-test("profile declares the AWS MicroVM substrate with S3-backed durability", () => {
+test("profile declares the AWS MicroVM substrate with a resident disk", () => {
   const sb = makeSandbox(installFakeMicrovm());
   assert.equal(sb.profile.backend, "aws");
-  assert.equal(sb.profile.writablePersistence, "snapshot_to_workspace");
+  assert.equal(sb.profile.writablePersistence, "resident_disk");
   assert.equal(sb.profile.processSessions, true);
   assert.equal(sb.profile.parksOnTeardown, true);
   assert.equal(supportsProcessSessions(sb), true);
@@ -101,7 +99,7 @@ test("between turns the body is suspended and the next turn resumes it warm (no 
   assert.equal(body.state, "RUNNING", "resumed");
 });
 
-test("a turn that ends while another is still running neither snapshots nor suspends the body", async () => {
+test("a turn that ends while another is still running does not suspend the body", async () => {
   const fake = installFakeMicrovm();
   const sb = makeSandbox(fake);
   const scope = scopeId("personal", "U-overlap");
@@ -109,51 +107,21 @@ test("a turn that ends while another is still running neither snapshots nor susp
   const b = await sb.provision(rw(scope));
   await sb.teardown(a);
   assert.equal((await sb.vm(scope)).state, "RUNNING");
-  assert.equal(fake.s3store.size, 0);
   await sb.teardown(b);
   assert.equal((await sb.vm(scope)).state, "SUSPENDED");
-  assert.equal(fake.s3store.size, 1);
 });
 
-test("durable $HOME: state survives the body dying via the S3 snapshot", async () => {
+test("a body past its maximum lifetime is terminated and replaced by a fresh one", async () => {
   const fake = installFakeMicrovm();
-  const sb = makeSandbox(fake);
-  const scope = scopeId("personal", "U3");
-  const h1 = await sb.provision(rw(scope));
-  await sb.writeFile(h1, "notes/todo.txt", "buy milk");
-  const first = await sb.vm(scope);
-  await sb.teardown(h1);
-
-  assert.equal(fake.s3store.size, 1, "a snapshot landed in S3");
-  assert.ok([...fake.s3store.keys()][0]!.startsWith("sandbox-home/"));
-  fake.killBody(first.id);
-
-  const fresh = makeSandbox(fake, { store: sb.store });
-  const h2 = await fresh.provision(rw(scope));
-  assert.notEqual((await sb.vm(scope)).id, first.id, "a fresh body was launched");
-  assert.equal(fake.runCount, 2);
-  assert.equal(h2.coldStart, false, "rehydrated from S3, so not cold");
-  assert.equal(await fresh.readFile(h2, "notes/todo.txt"), "buy milk");
-});
-
-test("a body nearing its maximum lifetime is rotated: snapshot, terminate, relaunch, rehydrate", async () => {
-  const fake = installFakeMicrovm();
-  const sb = makeSandbox(fake, { maxLifetimeSec: 1, snapshotIntervalSec: 3600 });
+  const sb = makeSandbox(fake, { maxLifetimeSec: 1 });
   const scope = scopeId("personal", "U4");
   const h1 = await sb.provision(rw(scope));
   const first = await sb.vm(scope);
-  await sb.writeFile(h1, "keep.txt", "v1");
   await sb.teardown(h1);
-  assert.equal(fake.s3store.size, 1);
-  const h1b = await sb.provision(rw(scope));
-  await sb.writeFile(h1b, "keep.txt", "v2");
-  await sb.teardown(h1b);
-
   const h2 = await sb.provision(rw(scope));
   assert.equal(first.state, "TERMINATED", "old body terminated");
   assert.notEqual((await sb.vm(scope)).id, first.id);
-  assert.equal(fake.runCount, 3);
-  assert.equal(await sb.readFile(h2, "keep.txt"), "v2", "the rotation snapshot carried the latest state");
+  assert.equal(h2.coldStart, true);
 });
 
 test("idle and lifetime settings reach the microVM idle policy", async () => {
@@ -210,29 +178,6 @@ test("blob staging is advertised only when the channel is actually wired", async
     apiBaseUrl: "http://core.internal:8080",
   });
   assert.equal(supportsBlobStaging(wired), true, "wired up, aws can move bytes by reference");
-});
-
-test("a hydrate failure terminates the fresh body instead of cold-starting over the stored snapshot", async () => {
-  const fake = installFakeMicrovm();
-  const sb = makeSandbox(fake);
-  const scope = scopeId("personal", "U7");
-  const h1 = await sb.provision(rw(scope));
-  await sb.writeFile(h1, "notes/todo.txt", "buy milk");
-  await sb.teardown(h1);
-  fake.killBody((await sb.vm(scope)).id);
-
-  fake.failS3Reads = true;
-  await assert.rejects(() => sb.provision(rw(scope)), /hydration failed/);
-  assert.equal(
-    [...fake.bodies.values()].filter((b) => b.state === "RUNNING").length,
-    0,
-    "the half-provisioned body was terminated, not left orphaned",
-  );
-  assert.equal(fake.s3store.size, 1, "the stored snapshot is untouched");
-
-  fake.failS3Reads = false;
-  const h2 = await sb.provision(rw(scope));
-  assert.equal(await sb.readFile(h2, "notes/todo.txt"), "buy milk");
 });
 
 test("scope retirement terminates only its body and forgets its record, including from another process", async () => {

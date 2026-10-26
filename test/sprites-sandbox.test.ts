@@ -13,12 +13,10 @@ import {
   processKeepaliveScript,
   retrySpritesControl,
   spritesErrorDetail,
-  type StoredSpritesSandbox,
 } from "../src/sandbox/sprites-sandbox.ts";
 import { sandboxScopeName } from "../src/sandbox/exec-sandbox-base.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { execFailureDetail, supportsProcessSessions, supportsBlobStaging } from "../src/sandbox/sandbox.ts";
-import { createMemorySnapshotStore } from "../src/sandbox/home-snapshot.ts";
 import { sleep } from "../src/util/async.ts";
 import { createMemoryBlobTransferStore } from "../src/persistence/blob-transfer.ts";
 import { scopeId } from "../src/types.ts";
@@ -666,34 +664,6 @@ test("a prep failure that writes nothing still names its cause", () => {
   assert.equal(execFailureDetail({ stdout: " out\n", stderr: "", code: 1, timedOut: false }, 60), "out");
 });
 
-test("destroying a scope exports the home to the snapshot store first and a replacement hydrates from it", async () => {
-  const snapshots = createMemorySnapshotStore();
-  const s = make({ snapshots });
-  const h = await s.provision(layers);
-  await s.run(h, 'printf survivor > "$HOME/notes.txt"');
-  assert.equal(await snapshots.open(scope), null);
-
-  await s.destroyScope!(scope);
-  assert.ok(!fake.names().includes(h.id), "the sprite is gone");
-  const stored = await snapshots.open(scope);
-  assert.ok(stored && stored.size > 0, "but its home was exported before deletion");
-
-  const again = await s.provision(layers);
-  assert.equal(again.coldStart, false, "the replacement is hydrated, not cold");
-  const back = await s.run(again, 'cat "$HOME/notes.txt"');
-  assert.equal(back.stdout, "survivor");
-  assert.equal(typeof s.persistHomeSnapshot, "function", "explicit export is offered when a store is wired");
-});
-
-test("a failed export refuses to destroy the sprite", async () => {
-  const snapshots = createMemorySnapshotStore();
-  const s = make({ snapshots });
-  const h = await s.provision(layers);
-  fake.fail502(h.id);
-  await assert.rejects(s.destroyScope!(scope), /WebSocket error/);
-  assert.ok(fake.names().includes(h.id), "an irreversible delete never follows a lost export");
-});
-
 test("without a snapshot store a destroy is a single delete that tolerates a missing sprite", async () => {
   await sandbox.destroyScope!(scope);
   assert.deepEqual(
@@ -766,41 +736,6 @@ for (const outcome of ["healthy", "unknown", "403", "503"]) {
   });
 }
 
-test("failed hydration and failed deletion remain pending across adapters without overwriting the saved home", async () => {
-  const snapshots = createMemorySnapshotStore();
-  const store = createMemoryMap<StoredSpritesSandbox>();
-  const advisoryLock = createMemoryAdvisoryLock();
-  let failOpen = false;
-  let opens = 0;
-  const wrapped = {
-    ...snapshots,
-    open: async (id: string) => {
-      opens++;
-      if (failOpen) throw new Error("snapshot unavailable");
-      return snapshots.open(id);
-    },
-  };
-  const options = { snapshots: wrapped, store, advisoryLock };
-  const a = make(options);
-  const h = await a.provision(layers);
-  await a.writeFile(h, "ledger", "saved");
-  await a.destroyScope!(scope);
-  failOpen = true;
-  fake.refuseDelete(403);
-  await assert.rejects(a.provision(layers), /snapshot unavailable/);
-  assert.equal((await store.get(scope))?.initializationPending, true);
-  const b = make(options);
-  await assert.rejects(b.restartComputer!(scope), /initialization is incomplete/);
-  const before = opens;
-  await assert.rejects(b.provision(layers), /snapshot unavailable/);
-  assert.equal(opens, before + 1);
-  failOpen = false;
-  fake.refuseDelete();
-  const restored = await make(options).provision(layers);
-  assert.equal(await b.readFile(restored, "ledger"), "saved");
-  assert.equal((await store.get(scope))?.initializationPending, undefined);
-});
-
 test("scratch allocation is deleted when resource initialization fails", async () => {
   const box = make({ memoryMb: 4096 });
   fake.failNext(400, { match: (call) => call.path.endsWith("/policy/resources") });
@@ -825,22 +760,4 @@ test("failed scratch initialization and deletion retain a safe retryable identit
   assert.ok(pending);
   await box.teardown(pending, { destroy: true });
   assert.ok(!fake.names().includes(pending.id));
-});
-
-test("a destroyed sprite takes its checkpoints with it, so its home is exported and the replacement hydrates from the tar", async () => {
-  const snapshots = createMemorySnapshotStore();
-  const store = createMemoryMap<StoredSpritesSandbox>();
-  const s = make({ snapshots, store });
-  const h = await s.provision(layers);
-  await s.writeFile(h, "ledger", "kept");
-  await s.teardown(h);
-  assert.equal((await store.get(scope))?.checkpointId, "v1");
-  await s.teardown(h, { destroy: true });
-  assert.ok(!fake.names().includes(h.id));
-  assert.ok((await snapshots.open(scope))?.size, "the home was exported before the delete");
-  assert.equal((await store.get(scope))?.checkpointId, undefined);
-  const again = await s.provision(layers);
-  assert.equal(again.coldStart, false);
-  assert.equal(await s.readFile(again, "ledger"), "kept");
-  assert.equal(fake.calls.filter((c) => c.path.endsWith("/restore")).length, 0);
 });

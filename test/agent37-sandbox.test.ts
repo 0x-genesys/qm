@@ -12,7 +12,6 @@ import { scopeId } from "../src/types.ts";
 import { mintCapabilityToken, EGRESS_PROXY_AUD } from "../src/auth/capability-token.ts";
 import { createMemoryAdvisoryLock } from "../src/persistence/advisory-lock.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
-import { createMemorySnapshotStore } from "../src/sandbox/home-snapshot.ts";
 import { installFakeAgent37, FAKE_AGENT37_API_KEY, type FakeAgent37 } from "./support/fake-agent37.ts";
 import { NonRetryableTurnError } from "../src/core/turn-error.ts";
 import type { Sandbox } from "../src/sandbox/sandbox.ts";
@@ -369,19 +368,4 @@ test("a refusal on exec parks the turn instead of failing it generically", async
     assert.match(e.message, /suspended for non-payment/);
     return true;
   });
-});
-
-test("a home snapshot taken at teardown restores a deleted instance warm", async () => {
-  const snapshots = createMemorySnapshotStore();
-  const first = make({ snapshots });
-  const h = await first.provision(layers);
-  await first.writeFile(h, "notes.txt", "keep me\n");
-  await first.teardown(h);
-  assert.ok(await snapshots.open(scope));
-  await first.teardown(h, { destroy: true });
-  assert.equal(fake.instance(h.id), null);
-  const second = make({ snapshots });
-  const b = await second.provision(layers);
-  assert.equal(b.coldStart, false);
-  assert.equal(await second.readFile(b, "notes.txt"), "keep me\n");
 });

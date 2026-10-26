@@ -1,9 +1,6 @@
-import { S3Client } from "@aws-sdk/client-s3";
 import type { WorkspaceStore } from "../workspace/workspace-store.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
-import { scopeStorageKey } from "../../cli/src/scope-storage-key.ts";
 import { AwsApiError, createMicrovmApi, createMicrovmClient, type AwsMicrovmApi } from "./aws-microvm-api.ts";
-import { createS3SnapshotStore } from "./home-snapshot.ts";
 import {
   createProviderSandbox,
   scopeOfName,
@@ -14,7 +11,6 @@ import {
 import type { Sandbox } from "./sandbox.ts";
 
 const HOME_DIR = "/root";
-const S3_PREFIX = "sandbox-home";
 const AGENT_PORT = 8080;
 const SUSPENDED_SEC = 3600;
 const DEFAULT_IDLE_PARK_SEC = 900;
@@ -41,10 +37,8 @@ export interface AwsSandboxOptions extends SandboxShared {
   executionRoleArn?: string;
   ingressConnectorArns?: string[];
   egressConnectorArns?: string[];
-  s3Bucket: string;
   store: DurableMap<StoredMicrovm>;
   api?: AwsMicrovmApi;
-  s3?: Pick<S3Client, "send">;
   fetchImpl?: typeof fetch;
 }
 
@@ -63,7 +57,6 @@ export function createAwsSandbox(workspace: WorkspaceStore, opts: AwsSandboxOpti
       ...(opts.profile ? { profile: opts.profile } : {}),
       ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
     });
-  const s3 = opts.s3 ?? new S3Client({ region, ...(opts.profile ? { profile: opts.profile } : {}) });
   const client = createMicrovmClient(api, {
     agentPort: AGENT_PORT,
     tokenTtlMinutes: 30,
@@ -182,7 +175,7 @@ export function createAwsSandbox(workspace: WorkspaceStore, opts: AwsSandboxOpti
       cpus: opts.cpus ?? 4,
       memoryMb: opts.memoryMb ?? 8192,
       diskGb: opts.diskGb ?? 8,
-      writablePersistence: "snapshot_to_workspace",
+      writablePersistence: "resident_disk",
       egressEnforcement: "none",
       async exec(name, script, timeoutSec) {
         const body = await live(name);
@@ -235,16 +228,7 @@ export function createAwsSandbox(workspace: WorkspaceStore, opts: AwsSandboxOpti
         if (!scratch.has(name)) drop(name);
       },
     },
-    {
-      ...opts,
-      snapshotIntervalSec: opts.snapshotIntervalSec ?? 0,
-      snapshots: createS3SnapshotStore({
-        bucket: opts.s3Bucket,
-        prefix: S3_PREFIX,
-        s3,
-        keyFor: (scope) => `${S3_PREFIX}/${scopeStorageKey(scope)}.tar`,
-      }),
-    },
+    opts,
     store,
   );
   return sandbox;
