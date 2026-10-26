@@ -418,7 +418,6 @@ test("Slack connection links verified workspace identity to the web owner and pe
   const f = fixture();
   await f.own();
   const { createPrincipalLinkService } = await import("../src/identity/principal-links.ts");
-  const { createDirectoryStore } = await import("../src/directory/directory-store.ts");
   const { installPrincipalLinks, canonicalPerson } = await import("../src/directory/person.ts");
   f.deps.principalLinks = createPrincipalLinkService(testMap(), testAdvisoryLock());
   installPrincipalLinks(f.deps.principalLinks);
@@ -462,7 +461,6 @@ test("Slack connection links verified workspace identity to the web owner and pe
 
 test("Slack link rejects changed browser accounts, wrong owner, bots, other workspaces and inactive connections", async () => {
   const { createPrincipalLinkService } = await import("../src/identity/principal-links.ts");
-  const { createDirectoryStore } = await import("../src/directory/directory-store.ts");
   const { mintSignedPayload } = await import("../src/auth/signed-token.ts");
   for (const scenario of [
     "expired",
@@ -1192,7 +1190,6 @@ test("Slack replies preserve unthreaded DMs and report Slack permission failures
 
 async function nativeSlackFixture(linked = true) {
   const f = await slackReplyFixture();
-  const { createDirectoryStore } = await import("../src/directory/directory-store.ts");
   f.deps.slackAccounts = testMap();
   f.deps.connectorTokens = f.deps.keychain;
   f.deps.oauthEnv = { SLACK_OAUTH_CLIENT_ID: "native-client", SLACK_OAUTH_CLIENT_SECRET: "native-secret" };
