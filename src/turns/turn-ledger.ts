@@ -18,6 +18,7 @@ import {
   scheduleRun,
   spawnTask,
   TaskCancelled,
+  wakeSleepingRun,
 } from "./absurd.ts";
 import { TURN_QUEUES, type TurnQueue } from "./absurd-schema.ts";
 import { turnFenceHeld } from "./turn-fence.ts";
@@ -195,7 +196,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
   async function advance(client: PoolClient, threadRef: string, ending: string): Promise<void> {
     const parked = await client.query(
       `SELECT * FROM runs WHERE session_id = $1 AND engine = 'absurd' AND status = 'pending' AND id <> $2
-         AND absurd_task_id IS NOT NULL
+         AND absurd_task_id IS NOT NULL AND (last_stop::jsonb)->>'kind' = 'parked'
        ORDER BY created_at ASC, seq ASC LIMIT 1 FOR UPDATE`,
       [threadRef, ending],
     );
@@ -214,6 +215,21 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     );
     if (rows[0]) await start(client, rowToRun(rows[0]));
     else await point(client, threadRef, null);
+  }
+
+  async function askToYield(client: PoolClient, activeId: string): Promise<void> {
+    const { rows } = await client.query(
+      "SELECT * FROM runs WHERE id = $1 AND engine = 'absurd' AND claim_priority = 2 AND status IN ('pending','running')",
+      [activeId],
+    );
+    if (!rows[0]) return;
+    const active = rowToRun(rows[0]);
+    if (active.status === "running") {
+      await client.query("SELECT pg_notify($1, $2)", [TURN_YIELD_CHANNEL, JSON.stringify(active.id)]);
+      return;
+    }
+    if (active.absurdRunId && (await wakeSleepingRun(client, queueOf(active), active.absurdRunId)))
+      await client.query("SELECT pg_notify($1, $2)", [TURN_READY_CHANNEL, JSON.stringify(queueOf(active))]);
   }
 
   async function settle(id: string): Promise<Run | null> {
@@ -274,8 +290,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
         }
         const queued = rowToRun(rows[0]);
         if (active) {
-          if (priority === 0)
-            await client.query("SELECT pg_notify($1, $2)", [TURN_YIELD_CHANNEL, JSON.stringify(active)]);
+          if (priority === 0) await askToYield(client, active);
           return { run: queued, deduped: false };
         }
         await start(client, queued);

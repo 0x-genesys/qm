@@ -154,6 +154,17 @@ export async function scheduleRun(db: AbsurdDb, queue: TurnQueue, runId: string,
   await call(db, "SELECT absurd.schedule_run($1, $2, $3)", [queue, runId, wakeAt]);
 }
 
+export async function wakeSleepingRun(db: AbsurdDb, queue: TurnQueue, runId: string): Promise<boolean> {
+  const rows = await call(
+    db,
+    `UPDATE absurd."r_${queue}" SET available_at = absurd.current_time()
+      WHERE run_id = $1 AND state = 'sleeping' AND wake_event IS NULL AND available_at > absurd.current_time()
+      RETURNING run_id`,
+    [runId],
+  );
+  return rows.length > 0;
+}
+
 export async function completeRun(db: AbsurdDb, queue: TurnQueue, runId: string, result?: unknown): Promise<void> {
   await call(db, "SELECT absurd.complete_run($1, $2, $3::jsonb)", [
     queue,

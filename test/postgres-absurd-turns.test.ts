@@ -560,3 +560,66 @@ test("a person writing into a running cron turn parks it until the person's turn
   await yields.close?.();
   await ready.close?.();
 });
+
+test("a person writing after a cron was stopped ends the cron as stopped and starts at once", { skip }, async () => {
+  const thread = `web:alice:${randomUUID()}`;
+  const cron = await admit(thread, "cron", undefined, 2);
+  const { started, releases, orchestrator } = gate();
+  const yields = createPostgresNotifyBus<string>(URL!, TURN_YIELD_CHANNEL, "test turn yields");
+  const runner = createTurnRunner({ ledger, orchestrator, queues: TURN_QUEUES, slots: 2, pollMs: 50, yields });
+  runner.start();
+  await until(
+    async () => started.length,
+    (n) => n === 1,
+    "cron started",
+  );
+  assert.equal(await ledger.cancel(cron.run.id), "signalled");
+  const person = await admit(thread, "person", undefined, 0);
+  await until(async () => started.some((input) => input.runId === person.run.id), Boolean, "person started");
+  const stopped = await runStore.runs.get(cron.run.id);
+  assert.equal(stopped?.status, "done");
+  assert.equal(stopped?.result?.stopped, true);
+  releases.get(person.run.id)!();
+  await until(
+    async () => (await runStore.runs.get(person.run.id))?.status,
+    (s) => s === "done",
+    "person done",
+  );
+  await runner.stopClaims();
+  await yields.close?.();
+});
+
+test("a person's message wakes a background turn sleeping in backoff so it yields at once", { skip }, async () => {
+  const thread = `web:alice:${randomUUID()}`;
+  const cron = await admit(thread, "cron", undefined, 2);
+  const token = `test:${randomUUID()}`;
+  const { run } = await ledger.claim("turns_background", token, "test");
+  assert.equal(run?.id, cron.run.id);
+  assert.equal(await ledger.handBack(run!, token, { delayMs: 60_000, countsAsError: true }), true);
+  const { started, releases, orchestrator } = gate();
+  const ready = createPostgresNotifyBus<string>(URL!, TURN_READY_CHANNEL, "test turn readiness");
+  const runner = createTurnRunner({ ledger, orchestrator, queues: TURN_QUEUES, slots: 2, pollMs: 50, ready });
+  runner.start();
+  const t0 = Date.now();
+  const person = await admit(thread, "person", undefined, 0);
+  await until(async () => started.some((input) => input.runId === person.run.id), Boolean, "person started");
+  assert.ok(Date.now() - t0 < 4_000);
+  assert.equal(
+    started.some((input) => input.runId === cron.run.id),
+    false,
+  );
+  releases.get(person.run.id)!();
+  const resumed = await until(
+    async () => started.filter((input) => input.runId === cron.run.id),
+    (inputs) => inputs.length === 1,
+    "cron resumed after the person",
+  );
+  releases.get(resumed[0]!.runId!)!();
+  await until(
+    async () => (await runStore.runs.get(cron.run.id))?.status,
+    (s) => s === "done",
+    "cron done",
+  );
+  await runner.stopClaims();
+  await ready.close?.();
+});
