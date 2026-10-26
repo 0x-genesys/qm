@@ -5,8 +5,6 @@ import type { SourceAdapter } from "./adapter.ts";
 
 const SOURCE_ADAPTERS: readonly SourceAdapter[] = [gmailAdapter, slackAdapter];
 
-export const SOURCE_IDS: readonly string[] = SOURCE_ADAPTERS.map((adapter) => adapter.id);
-
 export function sourceAdapter(id: unknown): SourceAdapter | undefined {
   return typeof id === "string" ? SOURCE_ADAPTERS.find((adapter) => adapter.id === id) : undefined;
 }

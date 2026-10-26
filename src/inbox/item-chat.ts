@@ -9,7 +9,7 @@ import type { InboxLedger } from "./ledger.ts";
 import { agentSourcePayload, ledgerState } from "./view.ts";
 import { adapterForItem } from "./sources/index.ts";
 
-export type ItemChatOptions = Pick<TurnRequest, "model" | "harness" | "thinkingLevel" | "fastMode" | "attachments">;
+type ItemChatOptions = Pick<TurnRequest, "model" | "harness" | "thinkingLevel" | "fastMode" | "attachments">;
 
 export interface InboxChat {
   followUp(
