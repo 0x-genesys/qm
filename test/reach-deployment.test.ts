@@ -17,6 +17,7 @@ import { singleProcessDeps } from "./support/single-process.ts";
 import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { testDatabaseUrl, testDeployBackings, testMap } from "./support/test-database.ts";
+import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
 
 function appWithFakeRuntime() {
   const deployStore = createDeployStore(testDeployBackings());
@@ -272,6 +273,7 @@ test("HTTP: each /v1/deployments row carries an authed, clonable gitUrl when ing
   );
   const secret = "deployments-list-secret".repeat(3);
   const server = createServer(app, {
+    replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
     signingSecret: secret,
     apiBaseUrl: "https://core.test",
     publicUrl: "https://web.test",

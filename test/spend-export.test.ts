@@ -13,6 +13,7 @@ import { bill } from "./support/spend-usage.ts";
 import { testConfig } from "./support/test-config.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
 
 const DAY = 86_400_000;
 const sourceSecret = "source-only-secret".repeat(3);
@@ -27,6 +28,7 @@ function fixture(options: { token?: string | null; sessions?: SessionStore | nul
     options.sessions === null ? undefined : (options.sessions ?? createPostgresSessionStore(testDatabaseUrl()));
   const token = options.token === undefined ? exportToken : options.token;
   const server = createServer(built.app, {
+    replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
     signingSecret: sourceSecret,
     portalIdentitySecret: "portal-identity-secret".repeat(3),
     capabilitySecret: "capability-only-secret".repeat(3),

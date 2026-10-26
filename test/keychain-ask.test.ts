@@ -39,6 +39,7 @@ import { materializeGrant } from "./support/materialize-grant.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
 import { testAdvisoryLock, testMap, testDatabaseUrl } from "./support/test-database.ts";
 import { createPostgresCronFireStore } from "../src/cron/fire-store.ts";
+import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
 
 const KEY = deriveConnectorKey("keychain-ask-test-key");
 const SECRET = "keychain-ask-route-secret".repeat(3);
@@ -643,6 +644,7 @@ describe("/v1/keychain/asks — card approval end to end", async () => {
       resume: (ask, grant) => built.fireAskResolution!(ask, grant),
     });
     server = createServer(built.app, {
+      replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
       signingSecret: SECRET,
       keychain: built.keychain,
       keychainApprovals: approvals,

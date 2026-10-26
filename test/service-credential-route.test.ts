@@ -23,6 +23,8 @@ import type { BrokerFetch } from "../src/api/credential-broker.ts";
 import type { GitHttpFetch } from "../src/api/git-http-broker.ts";
 import { TEST_CAPABILITY_SECRET, testConfig } from "./support/test-config.ts";
 import type { AclStore } from "../src/acl/acl-store.ts";
+import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 const SECRET = "svc-cred-route-secret".repeat(3);
 const ADMIN = { "content-type": "application/json", "x-admin-actor": "admin-alice@default-org" };
@@ -48,6 +50,7 @@ function startBroker(brokerFetch: BrokerFetch): { base: string; built: BuiltApp;
     testConfig({ dataDir: mkdtempSync(join(tmpdir(), "svc-cred-broker-")), signingSecret: SECRET }),
   );
   const server = createServer(built.app, {
+    replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
     signingSecret: SECRET,
     config: built.config,
     serviceCreds: built.serviceCreds,
@@ -66,6 +69,7 @@ function startGitBroker(gitHttpFetch: GitHttpFetch): { base: string; built: Buil
     testConfig({ dataDir: mkdtempSync(join(tmpdir(), "svc-cred-git-broker-")), signingSecret: SECRET }),
   );
   const server = createServer(built.app, {
+    replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
     signingSecret: SECRET,
     config: built.config,
     serviceCreds: built.serviceCreds,

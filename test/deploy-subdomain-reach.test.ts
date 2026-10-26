@@ -21,6 +21,7 @@ import { singleProcessDeps } from "./support/single-process.ts";
 import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { testDatabaseUrl, testDeployBackings, testMap } from "./support/test-database.ts";
+import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
 
 const audits: Array<(e: AuditEvent) => void> = [];
 const onceKeys = new Set<string>();
@@ -369,6 +370,7 @@ test("subdomain ingress: the gateway vouches for the verified viewer with a per-
   });
   const signingSecret = "s".repeat(64);
   const server = createServer(app, {
+    replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
     signingSecret,
     deployAppsDomain: "apps.example.com",
     deployGateSecret: "gate-secret",
