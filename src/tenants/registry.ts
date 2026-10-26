@@ -5,7 +5,7 @@ import type { PgPool } from "../persistence/pg-pool.ts";
 // environment overlays ({ core: {...}, portal: {...}, "web-ui": {...} }) applied on top of the deployment's own
 // environment; `secretEnv` is stored AES-256-GCM encrypted under QM_TENANT_SECRETS_KEY.
 
-export type ServiceEnv = Record<string, Record<string, string>>;
+type ServiceEnv = Record<string, Record<string, string>>;
 
 export interface TenantRecord {
   id: string;
@@ -25,14 +25,14 @@ export function tenantSecretsKey(env: NodeJS.ProcessEnv): Buffer | undefined {
   return key;
 }
 
-export function encryptSecretEnv(value: ServiceEnv, key: Buffer): Buffer {
+function encryptSecretEnv(value: ServiceEnv, key: Buffer): Buffer {
   const iv = randomBytes(12);
   const cipher = createCipheriv("aes-256-gcm", key, iv);
   const body = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
   return Buffer.concat([Buffer.from([1]), iv, cipher.getAuthTag(), body]);
 }
 
-export function decryptSecretEnv(blob: Buffer, key: Buffer): ServiceEnv {
+function decryptSecretEnv(blob: Buffer, key: Buffer): ServiceEnv {
   if (blob[0] !== 1) throw new Error("tenant secret_env: unknown format");
   const iv = blob.subarray(1, 13);
   const tag = blob.subarray(13, 29);
@@ -63,11 +63,6 @@ function rowToRecord(row: Record<string, unknown>, key: Buffer | undefined): Ten
 export async function listTenants(pool: PgPool, key: Buffer | undefined): Promise<TenantRecord[]> {
   const rows = await pool.q("SELECT * FROM tenants ORDER BY created_at, slug");
   return rows.map((row) => rowToRecord(row, key));
-}
-
-export async function getTenant(pool: PgPool, slug: string, key: Buffer | undefined): Promise<TenantRecord | null> {
-  const rows = await pool.q("SELECT * FROM tenants WHERE slug = $1", [slug]);
-  return rows[0] ? rowToRecord(rows[0], key) : null;
 }
 
 export async function upsertTenant(pool: PgPool, rec: TenantRecord, key: Buffer | undefined): Promise<void> {

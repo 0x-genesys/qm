@@ -18,7 +18,7 @@ export const TENANCY_EXCLUDED_TABLES = ["qm_tenant", "tenants", "qm_schema_migra
 
 const EXCLUDED = TENANCY_EXCLUDED_TABLES.map((t) => `'${t}'`).join(", ");
 
-export const TENANCY_FUNCTIONS: readonly string[] = [
+const TENANCY_FUNCTIONS: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS qm_tenant(id UUID PRIMARY KEY)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS qm_tenant_singleton ON qm_tenant((true))`,
   `INSERT INTO qm_tenant(id) SELECT gen_random_uuid() WHERE NOT EXISTS (SELECT 1 FROM qm_tenant)`,
