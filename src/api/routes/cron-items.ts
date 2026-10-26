@@ -25,7 +25,7 @@ import {
   INBOX_LEDGER_RETENTION_MS,
   INBOX_SYNC_DEFAULT_EVERY_MS,
 } from "../../inbox/sync-task.ts";
-import { THINKING_LEVELS, isHarnessId } from "../../model/pi-models.ts";
+import { THINKING_LEVELS } from "../../model/pi-models.ts";
 import type { AdvisoryLock } from "../../persistence/advisory-lock.ts";
 import type { CronStore } from "../../cron/cron-store.ts";
 

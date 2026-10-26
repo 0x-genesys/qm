@@ -309,22 +309,19 @@ function sqlText(text: string): string {
 
 const loopInboxSource = "substring(l.json ->> 'surface' from 7)";
 
-export const LOOPS_TO_CRONS_MIGRATION = {
-  id: "durable-map/crons/0002-loops-to-crons",
-  statements: [
-    ...["crons", "loops", "loop_items", "cron_items"].map(
-      (table) => `CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, json JSONB NOT NULL)`,
-    ),
-    `INSERT INTO cron_items (id, json)
-     SELECT i.id,
+function loopsToCrons(tenant: boolean): string {
+  const col = tenant ? "tenant_id, " : "";
+  const same = (a: string, b: string) => (tenant ? ` AND ${a}.tenant_id = ${b}.tenant_id` : "");
+  return `INSERT INTO cron_items (${col}id, json)
+     SELECT ${tenant ? "i.tenant_id, " : ""}i.id,
             (i.json - 'loopId' - 'previousLoopId' - 'triage' - 'attempts' - 'runIds' - 'outputIds' - 'claimedAt' - 'claimToken' - 'guidance')
             || jsonb_build_object('cronId', c.id, 'status', CASE WHEN i.json ->> 'status' = 'in_progress' THEN 'queued' ELSE i.json ->> 'status' END)
      FROM loop_items i
-     JOIN loops l ON l.id = i.json ->> 'loopId'
-     JOIN crons c ON c.id = l.json ->> 'cronId' AND c.json ->> 'loopId' = l.id
+     JOIN loops l ON l.id = i.json ->> 'loopId'${same("l", "i")}
+     JOIN crons c ON c.id = l.json ->> 'cronId' AND c.json ->> 'loopId' = l.id${same("c", "l")}
      WHERE l.json ->> 'state' <> 'archived'
-     ON CONFLICT (id) DO NOTHING`,
-    `UPDATE crons c SET json = (c.json - 'loopId') || jsonb_build_object(
+     ON CONFLICT DO NOTHING;
+    UPDATE crons c SET json = (c.json - 'loopId') || jsonb_build_object(
        'enabled', COALESCE((c.json ->> 'enabled')::boolean, false) AND l.json ->> 'state' = 'enabled',
        'title', CASE WHEN l.json ->> 'surface' LIKE 'inbox:%' THEN c.json ->> 'title' ELSE l.json ->> 'name' END,
        'action', CASE
@@ -334,7 +331,25 @@ export const LOOPS_TO_CRONS_MIGRATION = {
        END,
        'inbox', CASE WHEN l.json ->> 'surface' LIKE 'inbox:%' THEN jsonb_build_object('source', ${loopInboxSource}) ELSE '{}'::jsonb END)
      FROM loops l
-     WHERE c.json ->> 'loopId' = l.id AND l.json ->> 'state' <> 'archived'`,
+     WHERE c.json ->> 'loopId' = l.id${same("c", "l")} AND l.json ->> 'state' <> 'archived';`;
+}
+
+export const LOOPS_TO_CRONS_MIGRATION = {
+  id: "durable-map/crons/0002-loops-to-crons",
+  statements: [
+    ...["crons", "loops", "loop_items", "cron_items"].map(
+      (table) => `CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY, json JSONB NOT NULL)`,
+    ),
+    `DO $loops_to_crons$
+     BEGIN
+       IF EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'loops'::regclass AND attname = 'tenant_id' AND NOT attisdropped) THEN
+         ALTER TABLE cron_items ADD COLUMN IF NOT EXISTS tenant_id uuid NOT NULL DEFAULT qm_tenant_id();
+         ${loopsToCrons(true)}
+       ELSE
+         ${loopsToCrons(false)}
+       END IF;
+     END
+     $loops_to_crons$`,
     "DELETE FROM crons WHERE json ? 'loopId'",
   ],
 };

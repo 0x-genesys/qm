@@ -1,7 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { randomBytes, randomUUID } from "node:crypto";
 import { LOOPS_TO_CRONS_MIGRATION } from "../src/cron/cron-store.ts";
 import { renderSourceInboxTask } from "../src/inbox/sync-task.ts";
+import { applyTenancy } from "../src/persistence/tenancy.ts";
 
 const URL = process.env.DATABASE_URL;
 const skip = URL ? false : "set DATABASE_URL (a Postgres) to run the loops-to-crons migration test";
@@ -80,5 +82,59 @@ test("loops become crons with an inbox and keep their items", { skip }, async ()
     }
   } finally {
     await pool.end();
+  }
+});
+
+test("a tenantized database migrates each tenant's loops into that tenant's crons", { skip }, async () => {
+  const pg = (await import("pg")).default;
+  const db = `qm_loops_tenancy_${randomBytes(4).toString("hex")}`;
+  const admin = new pg.Client({ connectionString: URL });
+  await admin.connect();
+  await admin.query(`CREATE DATABASE ${db}`);
+  const target = new globalThis.URL(URL!);
+  target.pathname = `/${db}`;
+  const pool = new pg.Pool({ connectionString: target.toString() });
+  try {
+    for (const sql of LOOPS_TO_CRONS_MIGRATION.statements.slice(0, 3)) await pool.query(sql);
+    await applyTenancy(pool);
+    const [home, other] = [(await pool.query("SELECT id::text AS id FROM qm_tenant")).rows[0].id, randomUUID()];
+    const rows: Array<[string, string, string, Record<string, unknown>]> = [
+      [home, "loops", "L", { name: "Home repairs", state: "enabled", cronId: "c-home", playbook: "home" }],
+      [home, "crons", "c-home", { title: "Loop: Home repairs", enabled: true, action: "x", loopId: "L" }],
+      [home, "loop_items", "i-home", { loopId: "L", sourceKey: "E-1", status: "queued" }],
+      [other, "loops", "L", { name: "Other repairs", state: "paused", cronId: "c-other", playbook: "other" }],
+      [other, "crons", "c-other", { title: "Loop: Other repairs", enabled: true, action: "x", loopId: "L" }],
+      [other, "loop_items", "i-other", { loopId: "L", sourceKey: "E-2", status: "ready" }],
+    ];
+    for (const [tenant, table, id, json] of rows)
+      await pool.query(`INSERT INTO ${table} (tenant_id, id, json) VALUES ($1, $2, $3)`, [
+        tenant,
+        id,
+        JSON.stringify({ id, ...json }),
+      ]);
+
+    for (const sql of LOOPS_TO_CRONS_MIGRATION.statements) await pool.query(sql);
+    await applyTenancy(pool);
+
+    const crons = (await pool.query("SELECT tenant_id::text AS t, id, json FROM crons ORDER BY id")).rows;
+    assert.deepEqual(
+      crons.map((row) => [row.t, row.id, row.json.title, row.json.action, row.json.enabled, row.json.loopId]),
+      [
+        [home, "c-home", "Home repairs", "home", true, undefined],
+        [other, "c-other", "Other repairs", "other", false, undefined],
+      ],
+    );
+    const items = (await pool.query("SELECT tenant_id::text AS t, id, json FROM cron_items ORDER BY id")).rows;
+    assert.deepEqual(
+      items.map((row) => [row.t, row.id, row.json.cronId]),
+      [
+        [home, "i-home", "c-home"],
+        [other, "i-other", "c-other"],
+      ],
+    );
+  } finally {
+    await pool.end();
+    await admin.query(`DROP DATABASE IF EXISTS ${db} WITH (FORCE)`);
+    await admin.end();
   }
 });

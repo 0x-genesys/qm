@@ -9,7 +9,7 @@ import type { InboxLedger } from "./ledger.ts";
 import { agentSourcePayload, ledgerState } from "./view.ts";
 import { adapterForItem } from "./sources/index.ts";
 
-type ItemChatOptions = Pick<TurnRequest, "model" | "harness" | "thinkingLevel" | "fastMode" | "attachments">;
+type ItemChatOptions = Pick<TurnRequest, "model" | "thinkingLevel" | "fastMode" | "attachments">;
 
 export interface InboxChat {
   followUp(
@@ -112,7 +112,6 @@ export function createInboxChat(deps: { items: InboxLedger; trigger: TriggerDeps
         threadRef: `cron:${cron.id}:item:${hashId([item.id], 12)}`,
         surface: "cron",
         ...(options?.model ? { model: options.model } : {}),
-        ...(options?.harness ? { harness: options.harness } : {}),
         ...(options?.thinkingLevel ? { thinkingLevel: options.thinkingLevel } : {}),
         ...(typeof options?.fastMode === "boolean" ? { fastMode: options.fastMode } : {}),
         ...(options?.attachments?.length ? { attachments: options.attachments } : {}),
