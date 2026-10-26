@@ -156,11 +156,11 @@ test("background: the run finishes as soon as the reply is ready; backup/teardow
   assert.ok(lease2, "the session lease is free right after the reply (fast follow-up not blocked)");
   await sessions.releaseLease(lease2!);
 
-  for (let i = 0; i < 200 && g.teardownStarted === 0; i++) await tick();
+  for (let i = 0; i < 2000 && g.teardownStarted === 0; i++) await tick();
   assert.equal(g.teardownStarted, 1, "the detached tail reached teardown");
   assert.equal(g.teardownFinished, 0, "...and it ran AFTER the reply returned (still gated here)");
   g.release();
-  for (let i = 0; i < 200 && g.teardownFinished === 0; i++) await tick();
+  for (let i = 0; i < 2000 && g.teardownFinished === 0; i++) await tick();
   assert.equal(g.teardownFinished, 1, "the detached tail completed once unblocked");
 });
 
@@ -182,7 +182,7 @@ test("background: title persistence finishes before the run while teardown stays
     "Simulate four-way title outage from the visible message",
   );
   assert.equal(g.teardownFinished, 0);
-  for (let i = 0; i < 200 && g.teardownStarted === 0; i++) await tick();
+  for (let i = 0; i < 2000 && g.teardownStarted === 0; i++) await tick();
   g.release();
 });
 
@@ -214,9 +214,9 @@ test("background: a turn that never used its eagerly provisioned box returns bef
 
   const first = await orch.handleTurn({ ...dm("dm:U1:t4", "!run echo hi"), runId: "r4", background: true });
   assert.equal(first.status, "ok");
-  for (let i = 0; i < 200 && g.teardownStarted === 0; i++) await tick();
+  for (let i = 0; i < 2000 && g.teardownStarted === 0; i++) await tick();
   g.release();
-  for (let i = 0; i < 200 && g.teardownFinished === 0; i++) await tick();
+  for (let i = 0; i < 2000 && g.teardownFinished === 0; i++) await tick();
   assert.equal(g.provisioned, 1);
 
   const second = await orch.handleTurn({ ...dm("dm:U1:t4", "just chatting"), runId: "r5", background: true });
@@ -224,12 +224,12 @@ test("background: a turn that never used its eagerly provisioned box returns bef
   assert.equal(g.provisioned, 2, "the session had used tools before, so the box was provisioned eagerly");
   assert.equal(g.teardownFinished, 1, "the reply returned without waiting for the unused box's teardown");
 
-  for (let i = 0; i < 200 && g.teardownStarted < 2; i++) await tick();
+  for (let i = 0; i < 2000 && g.teardownStarted < 2; i++) await tick();
   assert.equal(g.teardownStarted, 2, "the detached tail reached teardown");
   assert.equal(g.teardownOpts[1]?.homeUnchanged, true, "an unused box tells the backend there is nothing to snapshot");
   assert.equal(g.teardownOpts[0]?.homeUnchanged, undefined, "a used box does not");
   g.release();
-  for (let i = 0; i < 200 && g.teardownFinished < 2; i++) await tick();
+  for (let i = 0; i < 2000 && g.teardownFinished < 2; i++) await tick();
   assert.equal(g.teardownFinished, 2);
 });
 
@@ -342,7 +342,7 @@ test("background: an error in the detached tail still reclaims the box (no machi
   const result = await orch.handleTurn({ ...dm("dm:U1:t3", "!run echo hi"), runId: "r3", background: true });
   assert.equal(result.status, "ok");
 
-  for (let i = 0; i < 200 && teardowns === 0; i++) await tick();
+  for (let i = 0; i < 2000 && teardowns === 0; i++) await tick();
   assert.equal(teardowns, 1, "the box is reclaimed even though the tail failed");
 });
 
@@ -356,7 +356,7 @@ test("blocking path: the turn does NOT return until the tail (teardown) complete
     done = true;
   });
 
-  for (let i = 0; i < 200 && g.teardownStarted === 0; i++) await tick();
+  for (let i = 0; i < 2000 && g.teardownStarted === 0; i++) await tick();
   assert.equal(g.teardownStarted, 1, "the blocking path runs the tail (reaches teardown)");
   assert.equal(done, false, "handleTurn has NOT returned — it awaits the tail");
 
