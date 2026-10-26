@@ -315,7 +315,7 @@ test("revisedSince returns messages edited or deleted after the watermark, stamp
     { container: "Cr", ts: "3.0", text: "c", createdAt: 3 },
   ]);
   const before = Date.now();
-  await cache.ingest([{ container: "Cr", ts: "1.0", text: "a2", editedAt: before + 10 }]);
+  await cache.ingest([{ container: "Cr", ts: "1.0", text: "a2", editedAt: before + 60_000 }]);
   await cache.ingest([{ container: "Cr", ts: "2.0", deleted: true }]);
   const revised = (await cache.revisedSince("Cr", before - 1)).sort((a, b) => (a.ts < b.ts ? -1 : 1));
   assert.deepEqual(
@@ -333,8 +333,8 @@ test("revisedSince returns messages edited or deleted after the watermark, stamp
     firstDeletedAt,
     "a repeat delete keeps the first stamp",
   );
-  assert.equal((await cache.revisedSince("Cr", before + 10)).length, 1, "the watermark itself is included");
-  assert.deepEqual(await cache.revisedSince("Cr", before + 11), []);
+  assert.equal((await cache.revisedSince("Cr", before + 60_000)).length, 1, "the watermark itself is included");
+  assert.deepEqual(await cache.revisedSince("Cr", before + 60_001), []);
   assert.deepEqual(await cache.revisedSince("Cother", 0), []);
   const byTs = (rows: { ts: string }[]) => rows.map((m) => m.ts).sort();
   assert.deepEqual(
