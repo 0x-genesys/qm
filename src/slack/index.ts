@@ -1,5 +1,5 @@
 import { continueInPrivate } from "./private-continuation.ts";
-import { externalSlackNamespace, type ExternalSlackAccess } from "./external-access.ts";
+import { externalSlackNamespace } from "./external-access.ts";
 import { registerKeychainApprovalActions } from "./keychain-approvals.ts";
 import { registerDeployAccessActions } from "./deploy-access.ts";
 import { SlackPluginStartCleanupError } from "../surfaces/slack-runtime.ts";
@@ -43,20 +43,11 @@ export type { SlackCoreClient };
 export type { SlackPluginConfig };
 export { normalizeSlackApiUrl, slackAccountConfigsFromEnv, slackPluginConfigFromEnv };
 
-const slackAccountClients = new Map<
-  string,
-  {
-    client: any;
-    teamId: string;
-    policy?: ExternalSlackAccess;
-    inFlightRuns?: { add(id: string): void; delete(id: string): void; has(id: string): boolean };
-  }
->();
-
 export async function startSlackPlugin(
   cfg: SlackPluginConfig,
   core: SlackCoreClient,
 ): Promise<{ stop(): Promise<void> }> {
+  const slackAccountClients = core.slack.accounts;
   const EVENTS_MODE = cfg.eventsMode ?? "socket";
   if (!cfg.botToken) {
     throw new Error("Slack plugin needs botToken (SLACK_BOT_TOKEN, xoxb-…)");
@@ -518,7 +509,7 @@ export async function startSlackPlugin(
   }
 
   statusSweep.start();
-  const unregisterSender = core.registerSender(["slack", "group", "principal"], sendToSlack);
+  const unregisterSender = core.slack.attach(sendToSlack);
   const reconcileTaskAcks = (): void => {
     if (!stopped)
       void core.taskAcknowledgements
