@@ -189,11 +189,11 @@ goal's governor approves completion or pauses it, or an optional `token_cap` is
 spent. While a worker's goal is open, its turns run without the swarm `turnMs`
 deadline; when `turnMs` is set, other turns keep it. If a worker's turn is interrupted while its goal is still active (the turn was
 cancelled, or its run was handed back on shutdown and then ended), the swarm wakes
-it with a message from itself to continue. Ordinary failures are left to run
-retries. A wake-up is queued only while the worker is active, the goal's token cap
+it with a message from itself to continue, within about a minute. Ordinary
+failures are left to run retries. A wake-up is queued only while the worker is active, the goal's token cap
 is not spent, and the goal used tokens since the last such message, so a turn that
-cannot start is not retried forever. A periodic sweep of recently finished swarm
-runs queues any wake-up a process missed. These messages count against `messages`
+cannot start is not retried forever. A sweep of recently finished swarm runs, on
+startup and every minute, queues these wake-ups, so one survives a restart. These messages count against `messages`
 and `notifications` when those budgets are set. `floor` and `token_cap` take the same keys as the goal tool, and
 neither is required. Goals go to workers, not the root session (a goal sent to
 `all` skips the root and the sender), and a goal needs `notify`. The worker treats the agent that sent the goal as the user for it and
@@ -311,8 +311,9 @@ any positive integer; `turnMs` is limited only by the 2,147,483,647 ms timer cei
 `spawnRequests`, `messages`, `notifications`, `lifetimeMs`, and `turnMs` are off unless a
 spawn or `SWARM_DEFAULTS` sets them. When set, they are enforced as budgets that are
 reserved atomically with the members and messages that consume them. A set `turnMs`
-is enforced as the turn's wall clock, except for workers with an open goal;
-existing organization-wide limits can shorten it. Internal reconciliation limits,
+is enforced as the turn's wall clock, except for workers with an open goal; existing
+organization-wide limits can shorten it. Without `turnMs` or the message budgets,
+only those organization-wide limits bound how long a turn runs or what it spends. Internal reconciliation limits,
 the 32-message read page, and bounded run retry counts are not swarm
 configuration.
 

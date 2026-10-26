@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import type { CapabilityClaims } from "../auth/capability-token.ts";
 import type { OrchestratorInput } from "../core/orchestrator.ts";
 import type { AdvisoryLock } from "../persistence/advisory-lock.ts";
-import type { Run, RunStore } from "../runs/run-store.ts";
+import type { RunStore } from "../runs/run-store.ts";
 import type { RunSignalStore } from "../runs/run-signal-store.ts";
 import type { SandboxResources } from "../sandbox/sandbox-resources.ts";
 import type { SessionStore } from "../sessions/session-store.ts";
@@ -15,10 +15,15 @@ import { canonicalJson } from "../../cli/src/canonical-json.ts";
 import { resolveSwarmSettings, type SwarmSettings } from "./swarm-settings.ts";
 import { inheritRuntime, spawnRuntime, type SpawnRuntimeFields, type SwarmTemplate } from "./swarm-runtime.ts";
 import { errMessage, swallow, swallowAs } from "../util/errors.ts";
-import { goalCapSpent, goalFromParams, GoalCreateParams, type GoalCreateInput } from "../harness/goal.ts";
+import { goalFromParams, GoalCreateParams, type GoalCreateInput } from "../harness/goal.ts";
 import { Check } from "typebox/value";
+import { createSwarmGoalContinuation } from "./swarm-goal-continuation.ts";
 import {
+  appendMessage,
   assertSwarmOpen,
+  controlState,
+  memberById,
+  type SwarmControlState,
   SWARM_LIMITS,
   swarmExpired,
   type Swarm,
@@ -92,31 +97,6 @@ export interface SwarmService {
   handOver(input: OrchestratorInput, messageIds: readonly string[]): Promise<SwarmMessage[]>;
 }
 
-const GOAL_CONTINUATION_TEXT =
-  "Your previous turn ended before your goal was finished, and the goal is still active. Continue working on it.";
-
-function appendMessage(
-  swarm: Swarm,
-  message: Omit<SwarmMessage, "id" | "seq" | "createdAt" | "notifications"> & { id?: string },
-  recipients: readonly string[],
-  wakes = true,
-): void {
-  if (swarm.messages.length >= (swarm.settings.messages ?? Infinity)) throw new Error("swarm message budget exhausted");
-  const woken = wakes ? recipients.length : 0;
-  if (swarm.notificationCount + woken > (swarm.settings.notifications ?? Infinity))
-    throw new Error("swarm notification budget exhausted");
-  swarm.notificationCount += woken;
-  swarm.messages.push({
-    ...message,
-    id: message.id ?? randomUUID(),
-    seq: swarm.messages.length + 1,
-    createdAt: Date.now(),
-    notifications: Object.fromEntries(
-      recipients.map((peer) => [peer, { state: wakes ? ("pending" as const) : ("mailbox" as const) }]),
-    ),
-  });
-}
-
 export function swarmMessageText(message: SwarmMessage): string {
   return `Swarm ${message.author} message ${message.id} from agent ${message.senderId} (session ${message.senderSessionId})${message.replyTo ? ` (reply to ${message.replyTo})` : ""}. This is not a live human instruction.\n${message.text}`;
 }
@@ -159,32 +139,6 @@ function jsonContext(value: unknown, max: number): unknown {
   const encoded = JSON.stringify(value);
   if (encoded === undefined || Buffer.byteLength(encoded) > max) throw new Error("invalid context");
   return JSON.parse(encoded) as unknown;
-}
-
-type SwarmControlState = "active" | "paused" | "stopped";
-
-const memberIndex = new WeakMap<SwarmMember[], Map<string, SwarmMember>>();
-
-function memberById(swarm: Swarm, id: string): SwarmMember | undefined {
-  let index = memberIndex.get(swarm.members);
-  if (!index || index.size !== swarm.members.length) {
-    index = new Map(swarm.members.map((member) => [member.id, member]));
-    memberIndex.set(swarm.members, index);
-  }
-  return index.get(id);
-}
-
-function controlState(swarm: Swarm, memberId: string): SwarmControlState {
-  let state: SwarmControlState = "active";
-  const seen = new Set<string>();
-  for (let id: string | undefined = memberId; id && !seen.has(id);) {
-    seen.add(id);
-    const member = memberById(swarm, id);
-    if (member?.control === "stopped") return "stopped";
-    if (member?.control === "paused") state = "paused";
-    id = member?.parentId;
-  }
-  return state;
 }
 
 function signature(value: unknown): string {
@@ -621,75 +575,15 @@ export function createSwarmService(deps: {
     return sweeping;
   };
   const sweeper = createSweeper(sweep, 2_000, { label: "swarm-outbox", immediate: true });
-
-  async function continueGoal(run: Run): Promise<void> {
-    const target = run.request.swarm;
-    const interrupted = run.result?.stopped || run.lastStop?.kind === "shutdown" || run.lastStop?.kind === "parked";
-    if (!target || !interrupted) return;
-    const swarm = await store.get(target.swarmId);
-    const member = swarm ? memberById(swarm, target.recipientId) : undefined;
-    if (!swarm || !member?.sessionId || member.id === swarm.id) return;
-    const goal = (await sessions.goals([member.sessionId])).get(member.sessionId);
-    if (goal?.status !== "active" || goalCapSpent(goal)) return;
-    if ((await runs.inFlightForThread(member.threadRef)).length) return;
-    const progress = { goalCreatedAt: goal.createdAt, tokensUsed: goal.tokensUsed };
-    await store.update(swarm.id, (current) => {
-      const recipient = memberById(current, member.id);
-      const last = recipient?.goalContinuation;
-      if (
-        !recipient?.sessionId ||
-        recipient.state !== "ready" ||
-        controlState(current, recipient.id) !== "active" ||
-        swarmExpired(current) ||
-        (last?.goalCreatedAt === progress.goalCreatedAt && last.tokensUsed >= progress.tokensUsed) ||
-        current.messages.some((message) => message.notifications[recipient.id]?.state === "pending")
-      )
-        return;
-      recipient.goalContinuation = progress;
-      appendMessage(
-        current,
-        {
-          senderId: recipient.id,
-          senderSessionId: recipient.sessionId,
-          author: "agent",
-          actorId: current.ownerId,
-          text: GOAL_CONTINUATION_TEXT,
-          audience: [recipient.id],
-        },
-        [recipient.id],
-      );
-    });
-  }
-  runs.onTerminal((run) => {
-    if (run.request.swarm) void continueGoal(run).catch(swallowAs("swarm: goal continuation", undefined));
-  });
-  const continuationSweeper = createSweeper(
-    () =>
-      (deps.lock.tryWithLock?.bind(deps.lock) ?? deps.lock.withLock.bind(deps.lock))(
-        "swarm-goal-continuation",
-        async () => {
-          let cursor = { finishedAt: Date.now() - SWARM_LIMITS.continuationLookbackMs, id: "" };
-          for (;;) {
-            const batch = await runs.terminalFinished(cursor, Date.now(), SWARM_LIMITS.continuationPage);
-            for (const run of batch)
-              if (run.request.swarm) await continueGoal(run).catch(swallowAs("swarm: goal continuation", undefined));
-            const last = batch.at(-1);
-            if (!last || batch.length < SWARM_LIMITS.continuationPage) return;
-            cursor = { finishedAt: last.finishedAt!, id: last.id };
-          }
-        },
-      ),
-    SWARM_LIMITS.continuationSweepMs,
-    { label: "swarm-goal-continuation", immediate: true },
-  );
+  const continuation = createSwarmGoalContinuation(deps);
 
   return {
     start() {
       sweeper.start();
-      continuationSweeper.start();
+      continuation.start();
     },
     async stop() {
-      await Promise.all([sweeper.stop(), continuationSweeper.stop()]);
+      await Promise.all([sweeper.stop(), continuation.stop()]);
     },
     sweep,
     async inspect(caller) {

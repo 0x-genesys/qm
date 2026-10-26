@@ -1,6 +1,6 @@
 import { isSubagentThreadRef } from "../sessions/session-syscalls.ts";
 import type { DeliveryProvenance, Destination, OutgoingAttachment } from "../types.ts";
-import type { Run, RunStore } from "../runs/run-store.ts";
+import { forEachTerminalRun, type Run, type RunStore } from "../runs/run-store.ts";
 import { turnDeliveryProvenance, type DeliveryStore } from "./delivery-store.ts";
 import { isSessionTurn, resolveTurnOrigin } from "../core/turn-origin.ts";
 import type { TurnFailurePayload } from "../core/turn-error.ts";
@@ -157,21 +157,24 @@ export function wireRunResultDeliveries(
   });
   return {
     async sweep(now = Date.now()) {
-      const before = now - RUN_RESULT_SWEEP_GRACE_MS;
-      let cursor = { finishedAt: now - RUN_RESULT_SWEEP_LOOKBACK_MS, id: "" };
       let recovered = 0;
-      for (;;) {
-        const batch = await runs.terminalFinished(cursor, before, RUN_RESULT_SWEEP_PAGE);
-        const existing = await deliveries.existingKeys(batch.map((run) => `run:${run.id}`));
-        for (const run of batch) {
-          if (existing.has(`run:${run.id}`) || !(await recover(run))) continue;
-          console.error(`[delivery] terminal run ${run.id} had no outbox row — enqueued its recovery delivery`);
-          recovered += 1;
-        }
-        const last = batch.at(-1);
-        if (!last || batch.length < RUN_RESULT_SWEEP_PAGE) return recovered;
-        cursor = { finishedAt: last.finishedAt!, id: last.id };
-      }
+      await forEachTerminalRun(
+        runs,
+        {
+          fromMs: now - RUN_RESULT_SWEEP_LOOKBACK_MS,
+          beforeMs: now - RUN_RESULT_SWEEP_GRACE_MS,
+          page: RUN_RESULT_SWEEP_PAGE,
+        },
+        async (batch) => {
+          const existing = await deliveries.existingKeys(batch.map((run) => `run:${run.id}`));
+          for (const run of batch) {
+            if (existing.has(`run:${run.id}`) || !(await recover(run))) continue;
+            console.error(`[delivery] terminal run ${run.id} had no outbox row — enqueued its recovery delivery`);
+            recovered += 1;
+          }
+        },
+      );
+      return recovered;
     },
   };
 }

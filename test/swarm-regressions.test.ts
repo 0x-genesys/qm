@@ -33,7 +33,6 @@ test("a swarm has no worker turn deadline unless it sets turnMs", async () => {
   await f.service.sweep();
   const swarm = (await f.store.get(f.root.id))!;
   assert.equal(swarm.settings.turnMs, undefined);
-  assert.equal(swarm.template.turnWallClockMs, undefined);
   const run = (await f.runs.list()).find((item) => item.request.swarm)!;
   assert.equal(run.request.turnWallClockMs, undefined);
 });

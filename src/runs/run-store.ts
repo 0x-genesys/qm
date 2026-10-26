@@ -80,6 +80,21 @@ interface TerminalCursor {
   id: string;
 }
 
+export async function forEachTerminalRun(
+  runs: Pick<RunStore, "terminalFinished">,
+  window: { fromMs: number; beforeMs: number; page: number },
+  visit: (batch: Run[]) => Promise<void>,
+): Promise<void> {
+  let cursor: TerminalCursor = { finishedAt: window.fromMs, id: "" };
+  for (;;) {
+    const batch = await runs.terminalFinished(cursor, window.beforeMs, window.page);
+    await visit(batch);
+    const last = batch.at(-1);
+    if (!last || batch.length < window.page) return;
+    cursor = { finishedAt: last.finishedAt!, id: last.id };
+  }
+}
+
 export interface EnqueueInput {
   sessionId: string;
   request: OrchestratorInput;

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { GoalCreateInput } from "../harness/goal.ts";
 import { NonRetryableTurnError } from "../core/turn-error.ts";
 import { withPgTransaction, type PgPool } from "../persistence/pg-pool.ts";
@@ -17,6 +18,7 @@ export const SWARM_LIMITS = {
   provisionMs: 10_000,
   continuationSweepMs: 60_000,
   continuationLookbackMs: 15 * 60_000,
+  continuationOverlapMs: 60_000,
   continuationPage: 200,
 } as const;
 
@@ -79,6 +81,60 @@ export function swarmExpired(swarm: Swarm): boolean {
 
 export function assertSwarmOpen(swarm: Swarm): void {
   if (swarmExpired(swarm)) throw new NonRetryableTurnError("swarm work window expired");
+}
+
+export type SwarmControlState = "active" | "paused" | "stopped";
+
+const memberIndex = new WeakMap<SwarmMember[], Map<string, SwarmMember>>();
+
+export function memberById(swarm: Swarm, id: string): SwarmMember | undefined {
+  let index = memberIndex.get(swarm.members);
+  if (!index || index.size !== swarm.members.length) {
+    index = new Map(swarm.members.map((member) => [member.id, member]));
+    memberIndex.set(swarm.members, index);
+  }
+  return index.get(id);
+}
+
+export function controlState(swarm: Swarm, memberId: string): SwarmControlState {
+  let state: SwarmControlState = "active";
+  const seen = new Set<string>();
+  for (let id: string | undefined = memberId; id && !seen.has(id);) {
+    seen.add(id);
+    const member = memberById(swarm, id);
+    if (member?.control === "stopped") return "stopped";
+    if (member?.control === "paused") state = "paused";
+    id = member?.parentId;
+  }
+  return state;
+}
+
+export function messageBudget(swarm: Swarm, woken: number): string | undefined {
+  if (swarm.messages.length >= (swarm.settings.messages ?? Infinity)) return "swarm message budget exhausted";
+  if (swarm.notificationCount + woken > (swarm.settings.notifications ?? Infinity))
+    return "swarm notification budget exhausted";
+  return undefined;
+}
+
+export function appendMessage(
+  swarm: Swarm,
+  message: Omit<SwarmMessage, "id" | "seq" | "createdAt" | "notifications"> & { id?: string },
+  recipients: readonly string[],
+  wakes = true,
+): void {
+  const woken = wakes ? recipients.length : 0;
+  const budget = messageBudget(swarm, woken);
+  if (budget) throw new Error(budget);
+  swarm.notificationCount += woken;
+  swarm.messages.push({
+    ...message,
+    id: message.id ?? randomUUID(),
+    seq: swarm.messages.length + 1,
+    createdAt: Date.now(),
+    notifications: Object.fromEntries(
+      recipients.map((peer) => [peer, { state: wakes ? ("pending" as const) : ("mailbox" as const) }]),
+    ),
+  });
 }
 
 export interface SwarmStore {
