@@ -151,6 +151,7 @@ test("the goal inbox holds a blocked message and everything after it, and settle
     input,
     screen: async (text) => (text.includes("BLOCK") ? null : text),
     saveGoal: async () => {},
+    heard: new Set(),
   });
   const current = createGoalRecord({ objective: "lane A", now: 0 });
   assert.deepEqual(
@@ -192,6 +193,7 @@ test("a goal message is still handed over when saving its adopted goal fails mid
     saveGoal: async () => {
       throw new Error("database blip");
     },
+    heard: new Set(),
   });
   const current = createGoalRecord({ objective: "lane A", now: 0 });
   const [shown] = await inbox.receive(current);

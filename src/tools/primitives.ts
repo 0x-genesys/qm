@@ -202,6 +202,7 @@ export interface ToolContext extends SurfaceToolDeps {
   sessionSyscalls?: SessionSyscalls;
   /** True when a person's own message started this turn (not a cron, webhook, ambient or delegated wake). */
   humanTurn?: boolean;
+  goalOwnerSpoke?(goalCreatedAt: number): Promise<boolean>;
   toolOutput?: Pick<ToolOutputStore, "inlineTokens" | "save">;
   commandCredentialHandles?: readonly string[];
   execute(
@@ -551,6 +552,7 @@ export interface ToolContextDeps {
   attach?: AttachFiles;
   sessionSyscalls?: SessionSyscalls;
   humanTurn?: boolean;
+  goalOwnerSpoke?(goalCreatedAt: number): Promise<boolean>;
   toolOutput?: ToolOutputStore;
   sessionId?: string;
 }
@@ -1236,6 +1238,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     },
 
     ...(deps.humanTurn ? { humanTurn: true } : {}),
+    ...(deps.goalOwnerSpoke ? { goalOwnerSpoke: deps.goalOwnerSpoke } : {}),
     ...(deps.sessionSyscalls ? { sessionSyscalls: deps.sessionSyscalls } : {}),
 
     async history(q: string, limit?: number): Promise<string[]> {

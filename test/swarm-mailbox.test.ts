@@ -84,6 +84,7 @@ test("a running goal turn shows a mailbox message once and hands it over when it
     input,
     screen: async (text) => text,
     saveGoal: async () => {},
+    heard: new Set(),
   });
   const goal = createGoalRecord({ objective: "Survey the lane", now: 0 });
   const [shown] = await inbox.receive(goal);

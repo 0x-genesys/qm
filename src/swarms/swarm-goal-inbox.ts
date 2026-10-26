@@ -9,6 +9,7 @@ export function createSwarmGoalInbox(deps: {
   input: OrchestratorInput;
   screen(text: string): Promise<string | null>;
   saveGoal(goal: GoalRecord): Promise<void>;
+  heard: Set<string>;
 }): { inbox: GoalInbox; settle(): Promise<void> } {
   const shown = new Map<string, SwarmMessage>();
   const skippedRuns = new Set<string>();
@@ -44,6 +45,7 @@ export function createSwarmGoalInbox(deps: {
         for (const message of messages)
           if (message.goal) supersedeGoal(goal, { ...message.goal, assignedAt: message.createdAt });
         settled.push(...ids);
+        for (const id of ids) deps.heard.add(id);
         if (messages.some((message) => message.goal))
           await deps.saveGoal(goal).catch(swallowAs("swarm: save goal adopted from a message", undefined));
       },
@@ -59,16 +61,19 @@ export async function openSwarmMailbox(deps: {
   swarms: Pick<SwarmService, "queuedMessages" | "handOver">;
   input: OrchestratorInput;
   screen(text: string): Promise<string | null>;
+  heard: Set<string>;
 }): Promise<{ text: string; settle(): Promise<void> }> {
   const messages = await deps.swarms
     .queuedMessages(deps.input, { mailboxOnly: true })
     .catch(reportFailureAs("swarm: read the mailbox", []));
   const shown = await Promise.all(
-    messages.map(
-      async (message) =>
-        (await deps.screen(swarmMessageText(message))) ??
-        `[Swarm message ${message.id} from agent ${message.senderId} was withheld by the security screen.]`,
-    ),
+    messages.map(async (message) => {
+      const text = await deps.screen(swarmMessageText(message));
+      if (text === null)
+        return `[Swarm message ${message.id} from agent ${message.senderId} was withheld by the security screen.]`;
+      deps.heard.add(message.id);
+      return text;
+    }),
   );
   return {
     text: shown.length ? `Swarm messages left in your mailbox since your last turn:\n\n${shown.join("\n\n")}` : "",

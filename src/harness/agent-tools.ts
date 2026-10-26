@@ -4138,14 +4138,15 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
             true,
           );
         }
-        // Only a person's own message can lift a pause the person put there;
-        // crons, webhooks, ambient and delegated wakes cannot.
-        if (ref.current?.humanTurn !== true) {
+        const ownerSpoke =
+          ref.current?.humanTurn === true ||
+          (await ref.current?.goalOwnerSpoke?.(goal.createdAt).catch(swallowAs("goal: check who may resume", false)));
+        if (!ownerSpoke) {
           return recordCoreAuthoredResult(
             callId,
             { tool: "goal", action: "update", error: "human_required" },
             text(
-              "Only the user can resume a paused goal, by asking in their own message; this run was not started by one. The goal stays paused.",
+              "Only the user can resume a paused goal, by asking in their own message (in a swarm, a message to you from the agent that gave you the goal or from the root also can); none reached this run. The goal stays paused.",
             ),
             true,
           );

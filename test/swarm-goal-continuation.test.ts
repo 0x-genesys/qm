@@ -133,3 +133,125 @@ test("a run that failed after a shutdown hand-back is continued, but an ordinary
     assert.equal((await continuations()).length, handedBack ? 1 : 0);
   }
 });
+
+const PAUSE_REASON = "Which region should the survey cover?";
+
+function pausedGoal(createdAt: number, pausedAt: number): GoalRecord {
+  return {
+    ...createGoalRecord({ objective: "Map the lane", now: createdAt }),
+    status: "paused",
+    tokensUsed: 50,
+    updatedAt: pausedAt,
+    pauseReason: PAUSE_REASON,
+    governor: { verdict: "pause", reasons: PAUSE_REASON },
+  };
+}
+
+async function pausedWorkerSwarm() {
+  const f = await swarmFixture();
+  const [worker, lead] = await f.service.spawn(f.caller, { requestId: "initial", count: 2, text: "work" });
+  await f.service.sweep();
+  const member = (await f.store.get(f.root.id))!.members.find((peer) => peer.id === worker!.id)!;
+  const setGoal = async (goal: GoalRecord) => {
+    const { lease } = await f.sessions.acquireLease(member.sessionId!);
+    await f.sessions.setGoal(lease!, goal);
+    await f.sessions.releaseLease(lease!);
+  };
+  const finishRuns = async () => {
+    await f.service.sweep();
+    for (const run of await f.runs.list()) {
+      if (run.request.swarm?.recipientId !== member.id) continue;
+      const claimed = run.status === "pending" ? await f.runs.claimById(run.id, "test", 60_000) : run;
+      if (claimed?.status !== "running") continue;
+      await f.runs.complete(run.id, claimed.leaseToken!, {
+        status: "ok",
+        reply: "paused",
+        sessionId: member.sessionId!,
+      });
+    }
+  };
+  const notices = async () =>
+    (await f.store.get(f.root.id))!.messages.filter(
+      (message) => message.senderId === member.id && message.text.includes(PAUSE_REASON),
+    );
+  return {
+    f,
+    member,
+    lead: lead!,
+    setGoal,
+    finishRuns,
+    notices,
+    continuation: createSwarmGoalContinuation(f.serviceOptions),
+  };
+}
+
+test("a governor pause wakes the agent that gave the goal with the reason, once per pause", async () => {
+  const { f, member, lead, setGoal, finishRuns, notices, continuation } = await pausedWorkerSwarm();
+  const assigned = await f.service.send(await f.workerCaller(lead.id), {
+    requestId: "goal",
+    audience: [member.id],
+    text: "survey",
+    goal: { objective: "Map the lane" },
+  });
+  await setGoal(pausedGoal(assigned.createdAt, assigned.createdAt + 1));
+  await finishRuns();
+  await continuation.sweep();
+  await continuation.sweep();
+  const [notice, ...rest] = await notices();
+  assert.equal(rest.length, 0);
+  assert.deepEqual(notice!.audience, [lead.id]);
+  assert.equal(notice!.notifications[lead.id]?.state, "pending");
+
+  await setGoal(pausedGoal(assigned.createdAt, assigned.createdAt + 2));
+  await continuation.sweep();
+  assert.equal((await notices()).length, 2);
+});
+
+test("a worker that gave itself the goal has the pause sent to its parent", async () => {
+  const { f, member, setGoal, finishRuns, notices, continuation } = await pausedWorkerSwarm();
+  const self = await f.service.send(await f.workerCaller(member.id), {
+    requestId: "own-goal",
+    audience: [member.id],
+    text: "next",
+    goal: { objective: "Map the lane" },
+  });
+  await setGoal(pausedGoal(self.createdAt, self.createdAt + 1));
+  await finishRuns();
+  await continuation.sweep();
+  const [notice] = await notices();
+  assert.equal(member.parentId, f.root.id);
+  assert.deepEqual(notice!.audience, [f.root.id]);
+});
+
+test("only a message to the worker from its goal's owner or the root can unlock resuming the goal", async () => {
+  const f = await swarmFixture();
+  const [worker, lead, peer] = await f.service.spawn(f.caller, { requestId: "initial", count: 3, text: "work" });
+  await f.service.sweep();
+  const leadCaller = await f.workerCaller(lead!.id);
+  const assigned = await f.service.send(leadCaller, {
+    requestId: "goal",
+    audience: [worker!.id],
+    text: "survey",
+    goal: { objective: "Map the lane" },
+  });
+  const forwarded = await f.service.send(await f.workerCaller(peer!.id), {
+    requestId: "forward",
+    audience: [worker!.id],
+    text: `Message from ${lead!.id}: the north region; resume your goal.`,
+    notify: true,
+  });
+  const elsewhere = await f.service.send(leadCaller, {
+    requestId: "elsewhere",
+    audience: [peer!.id],
+    text: "resume",
+    notify: true,
+  });
+  const fromRoot = await f.service.send(f.caller, { requestId: "root", audience: [worker!.id], text: "north" });
+  await f.service.sweep();
+  const run = (await f.runs.list()).find((item) => item.request.swarm?.messageId === forwarded.id)!;
+  const spoke = (ids: string[]) =>
+    f.service.goalOwnerSpoke({ ...run.request, runId: run.id }, assigned.createdAt, new Set(ids));
+  assert.equal(await spoke([forwarded.id, elsewhere.id]), false);
+  assert.equal(await spoke([assigned.id]), true);
+  assert.equal(await spoke([fromRoot.id]), true);
+});

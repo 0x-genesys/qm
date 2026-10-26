@@ -22,6 +22,7 @@ import {
   appendMessage,
   assertSwarmOpen,
   controlState,
+  goalOwner,
   memberById,
   type SwarmControlState,
   SWARM_LIMITS,
@@ -95,6 +96,7 @@ export interface SwarmService {
     options?: { skipRuns?: ReadonlySet<string>; mailboxOnly?: boolean },
   ): Promise<SwarmMessage[]>;
   handOver(input: OrchestratorInput, messageIds: readonly string[]): Promise<SwarmMessage[]>;
+  goalOwnerSpoke(input: OrchestratorInput, goalCreatedAt: number, messageIds: ReadonlySet<string>): Promise<boolean>;
 }
 
 export function swarmMessageText(message: SwarmMessage): string {
@@ -907,6 +909,19 @@ export function createSwarmService(deps: {
           await runs.withdraw(runId, { unstartedOnly: true }).catch(swallowAs("swarm: withdraw handed run", false));
       }
       return handed;
+    },
+    async goalOwnerSpoke(input, goalCreatedAt, messageIds) {
+      const session = input.swarm ? null : await sessions.getByThread(input.conversation.threadRef);
+      const target = input.swarm ?? (session && turnTarget(session));
+      const swarm = target ? await store.get(target.swarmId) : null;
+      if (!target || !swarm) return false;
+      const owners = [goalOwner(swarm, target.recipientId, goalCreatedAt), swarm.id];
+      return swarm.messages.some(
+        (message) =>
+          messageIds.has(message.id) &&
+          target.recipientId in message.notifications &&
+          owners.includes(message.senderId),
+      );
     },
     async binding(input) {
       const session = await sessions.getByThread(input.conversation.threadRef);
