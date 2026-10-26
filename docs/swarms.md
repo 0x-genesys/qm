@@ -204,8 +204,8 @@ messages that agent when it needs a decision. That agent is the goal's owner; wh
 a worker sent the goal to itself or set it with the goal tool, its parent is the
 owner (the root, for a first-level worker). When the governor pauses a worker's goal, the same
 sweep sends the owner a message from the worker, once per pause, carrying the
-governor's reason; it wakes the owner and, like a continuation, is never refused by
-the message budgets. Outside swarms only a person's own message can resume a paused
+governor's reason; it wakes the owner and, like a continuation, stays outside the
+message budgets. Outside swarms only a person's own message can resume a paused
 goal. A worker can also resume a goal the governor paused once the goal's owner or
 the root has sent it a message after the pause. The swarm checks the sender it
 recorded for the message, never the text, so a peer cannot resume the goal by
