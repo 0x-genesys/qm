@@ -6,6 +6,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMemoryRunStore } from "../src/runs/memory-run-store.ts";
+import { createPostgresRunStore } from "../src/runs/postgres-run-store.ts";
 import { createReaper } from "../src/runs/reaper.ts";
 import { createWorker } from "../src/runs/worker.ts";
 import type { Orchestrator } from "../src/core/orchestrator.ts";
@@ -15,12 +16,22 @@ import type { OrchestratorInput } from "../src/core/orchestrator.ts";
 import type { Principal } from "../src/types.ts";
 import type { RunStore } from "../src/runs/run-store.ts";
 import { replayableRequest } from "../src/core/orchestrator/turn-helpers.ts";
+import { settle } from "./support/settle.ts";
 import { testConfig } from "./support/test-config.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { testDatabaseUrl } from "./support/test-database.ts";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+async function reopened<T>(databaseUrl: string | undefined, fn: (runs: RunStore) => Promise<T>): Promise<T> {
+  const store = createPostgresRunStore(databaseUrl!);
+  try {
+    return await fn(store.runs);
+  } finally {
+    await store.close();
+  }
+}
 const actor: Principal = { id: "internal:U1", type: "internal" };
 const turn: OrchestratorInput = {
   actor,
@@ -153,7 +164,7 @@ test("only the leader instance's interval sweep reaps expired leases", async () 
     assert.equal((await runs.get(r.id))?.status, "running", "a non-leader's interval does not reap");
 
     leader = true;
-    await sleep(40);
+    await settle(async () => (await runs.get(r.id))?.status === "pending");
     assert.equal((await runs.get(r.id))?.status, "pending", "the leader's interval reaps the expired run");
   } finally {
     reaper.stop();
@@ -515,14 +526,13 @@ test("stop() lets an in-flight turn finish inside the drain budget — the run c
 });
 
 test("runtime.stop() drains the in-flight run even with the queue non-empty", async () => {
-  const built = buildApp(
-    testConfig({
-      dataDir: mkdtempSync(join(tmpdir(), "wr-")),
-      workers: 1,
-      leaseTtlMs: 5_000,
-      reaperIntervalMs: 60_000,
-    }),
-  );
+  const config = testConfig({
+    dataDir: mkdtempSync(join(tmpdir(), "wr-")),
+    workers: 1,
+    leaseTtlMs: 5_000,
+    reaperIntervalMs: 60_000,
+  });
+  const built = buildApp(config);
   const a = await built.app.turn({
     surface: "test",
     actor: { externalId: "U1" },
@@ -543,11 +553,13 @@ test("runtime.stop() drains the in-flight run even with the queue non-empty", as
   built.runtime.start();
   await built.runs.waitFor(a.runId!, 5_000);
   await built.runtime.stop();
-  for (const id of [a.runId!, b.runId!]) {
-    const status = (await built.runs.get(id))?.status;
-    assert.notEqual(status, "running", `run ${id} not abandoned mid-flight (status=${status})`);
-  }
-  assert.equal((await built.runs.get(a.runId!))?.status, "done", "the drained run finished");
+  await reopened(config.databaseUrl, async (runs) => {
+    for (const id of [a.runId!, b.runId!]) {
+      const status = (await runs.get(id))?.status;
+      assert.notEqual(status, "running", `run ${id} not abandoned mid-flight (status=${status})`);
+    }
+    assert.equal((await runs.get(a.runId!))?.status, "done", "the drained run finished");
+  });
 });
 
 test("a worker pool drains a queued run end-to-end", async () => {
@@ -807,13 +819,12 @@ test("inline turns remain admitted through pause and queued intake survives roll
 });
 
 test("final shutdown waits for an already-started completion instead of releasing its lease", async () => {
-  const built = buildApp(
-    testConfig({
-      dataDir: mkdtempSync(join(tmpdir(), "bounded-drain-")),
-      workers: 1,
-      shutdownDrainMs: 30,
-    }),
-  );
+  const config = testConfig({
+    dataDir: mkdtempSync(join(tmpdir(), "bounded-drain-")),
+    workers: 1,
+    shutdownDrainMs: 30,
+  });
+  const built = buildApp(config);
   const completing = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
   const complete = built.runs.complete.bind(built.runs);
@@ -846,7 +857,7 @@ test("final shutdown waits for an already-started completion instead of releasin
     assert.equal((await built.runs.get(queued.runId!))?.status, "running");
     release.resolve();
     await Promise.all([stopping, ownershipDrain]);
-    assert.equal((await built.runs.get(queued.runId!))?.status, "done");
+    assert.equal(await reopened(config.databaseUrl, async (runs) => (await runs.get(queued.runId!))?.status), "done");
   } finally {
     release.resolve();
     await built.runtime.backgroundDrained();
@@ -906,9 +917,12 @@ test("web admission and replay preserve analytics exclusions", async (t) => {
 });
 
 test("final shutdown holds an inline turn's lease until the step unwinds, then hands the run back", async () => {
-  const built = buildApp(
-    testConfig({ dataDir: mkdtempSync(join(tmpdir(), "inline-shutdown-")), workers: 1, shutdownDrainMs: 200 }),
-  );
+  const config = testConfig({
+    dataDir: mkdtempSync(join(tmpdir(), "inline-shutdown-")),
+    workers: 1,
+    shutdownDrainMs: 200,
+  });
+  const built = buildApp(config);
   const blocked = Promise.withResolvers<void>();
   const gate = Promise.withResolvers<void>();
   const append = built.sessions.append.bind(built.sessions);
@@ -944,12 +958,14 @@ test("final shutdown holds an inline turn's lease until the step unwinds, then h
     await stopping;
     assert.equal(result.status, "queued");
     assert.equal(result.runId, running.id);
-    const handedBack = (await built.runs.get(running.id))!;
-    assert.equal(handedBack.status, "pending");
-    assert.equal(handedBack.leaseToken, null);
-    assert.equal(handedBack.errorAttempts, 0);
-    assert.equal(handedBack.attempts, 1);
-    assert.equal((await built.runs.claim("replacement", 5_000))?.id, running.id);
+    await reopened(config.databaseUrl, async (runs) => {
+      const handedBack = (await runs.get(running.id))!;
+      assert.equal(handedBack.status, "pending");
+      assert.equal(handedBack.leaseToken, null);
+      assert.equal(handedBack.errorAttempts, 0);
+      assert.equal(handedBack.attempts, 1);
+      assert.equal((await runs.claim("replacement", 5_000))?.id, running.id);
+    });
   } finally {
     gate.resolve();
     await inline.catch(() => {});
