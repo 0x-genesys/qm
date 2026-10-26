@@ -85,19 +85,33 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     held.yielding = true;
     held.shutdown.abort(PARKED);
     held.cancel.abort();
-    let outcome: "yielded" | "handed_back" | "lost" | "stopped";
+    let outcome: "yielded" | "handed_back" | "lost" | "stopped" | "failed";
     try {
       if (reason === "person") outcome = await deps.ledger.yieldTo(held.run, held.token);
       else outcome = (await deps.ledger.handBack(held.run, held.token, { stop: PARKED })) ? "handed_back" : "lost";
     } catch (error) {
       reportFailure(`turns: parking failed turn=${held.run.id} reason=${reason}; handing the turn back`, error);
-      outcome = (await deps.ledger.handBack(held.run, held.token, { stop: PARKED })) ? "handed_back" : "lost";
+      outcome = await deps.ledger
+        .handBack(held.run, held.token, { stop: PARKED })
+        .then((ok) => (ok ? "handed_back" : "lost"))
+        .catch((fallback: unknown) => {
+          reportFailure(
+            `turns: handback after a failed park failed turn=${held.run.id}; the claim will expire`,
+            fallback,
+          );
+          return "failed" as const;
+        });
     }
     if (outcome === "lost") {
-      const stopped = await deps.ledger.finish(held.run, held.token, {
-        status: "done",
-        result: { status: "ok", sessionId: held.run.sessionId, stopped: true },
-      });
+      const stopped = await deps.ledger
+        .finish(held.run, held.token, {
+          status: "done",
+          result: { status: "ok", sessionId: held.run.sessionId, stopped: true },
+        })
+        .catch((error: unknown) => {
+          reportFailure(`turns: ending a stopped turn failed turn=${held.run.id}; repair will clean it up`, error);
+          return false;
+        });
       if (stopped) outcome = "stopped";
     }
     console.log(`[turns] parked turn=${held.run.id} reason=${reason} outcome=${outcome}`);
@@ -165,7 +179,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
             misses = 0;
             if (run.priority === 2 && !held.yielding)
               void deps.ledger
-                .personWaiting(run.sessionId)
+                .mustYield(run)
                 .then((waiting) => (waiting ? yieldHeld(held, "person") : undefined))
                 .catch((error: unknown) => swallow(`turns: yield check failed turn=${run.id}`, error));
             return;
@@ -205,7 +219,7 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     };
     let ended: { kind: "result"; result: TurnResult } | { kind: "error"; err: unknown };
     try {
-      if (run.priority === 2 && (await deps.ledger.personWaiting(run.sessionId))) {
+      if (run.priority === 2 && (await deps.ledger.mustYield(run))) {
         clearInterval(beat);
         await yieldHeld(held, "person");
         return;

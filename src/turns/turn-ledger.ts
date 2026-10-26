@@ -4,7 +4,7 @@ import { createPgPool, withPgTransaction, type PgPool, type PoolClient } from ".
 import { jsonbStringify } from "../persistence/durable-map.ts";
 import type { TurnResult } from "../types.ts";
 import type { EnqueueInput, EnqueueResult, Run, RunPriority, RunStop } from "../runs/run-store.ts";
-import { releasesDedupKey, withTraceCarrier } from "../runs/run-store.ts";
+import { PARKED, releasesDedupKey, withTraceCarrier } from "../runs/run-store.ts";
 import { rowToRun } from "../runs/postgres-run-store.ts";
 import {
   awaitEvent,
@@ -18,7 +18,6 @@ import {
   scheduleRun,
   spawnTask,
   TaskCancelled,
-  wakeSleepingRun,
 } from "./absurd.ts";
 import { TURN_QUEUES, type TurnQueue } from "./absurd-schema.ts";
 import { turnFenceHeld } from "./turn-fence.ts";
@@ -87,7 +86,6 @@ const UNKNOWN_TASK_DEFER_MS = 30_000;
 export interface TurnLedger {
   claim(queue: TurnQueue, token: string, workerId: string): Promise<{ claimed: boolean; run: Run | null }>;
   admit(input: EnqueueInput & { priority: RunPriority }): Promise<EnqueueResult | null>;
-  begin(queue: TurnQueue, runId: string, turnId: string, token: string, workerId: string): Promise<Run | null>;
   extend(run: Run, token: string): Promise<ExtendOutcome>;
   handBack(
     run: Run,
@@ -101,7 +99,7 @@ export interface TurnLedger {
   repair(candidate: RepairCandidate, result: TurnResult): Promise<Run | null>;
   release(candidate: RepairCandidate): Promise<void>;
   cleanup(): Promise<number>;
-  personWaiting(threadRef: string): Promise<boolean>;
+  mustYield(run: Run): Promise<boolean>;
   yieldTo(run: Run, token: string): Promise<"yielded" | "handed_back" | "lost">;
   close(): Promise<void>;
 }
@@ -217,19 +215,93 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     else await point(client, threadRef, null);
   }
 
-  async function askToYield(client: PoolClient, activeId: string): Promise<void> {
+  async function releaseClaim(
+    client: PoolClient,
+    run: Run,
+    token: string,
+    change: { stop: RunStop | null; parks: number; errors: number; unstarted: boolean },
+  ): Promise<number | null> {
     const { rows } = await client.query(
-      "SELECT * FROM runs WHERE id = $1 AND engine = 'absurd' AND claim_priority = 2 AND status IN ('pending','running')",
+      `UPDATE runs SET status = 'pending', lease_token = NULL, lease_expires_at = NULL, worker_id = NULL,
+         last_stop = COALESCE($3, last_stop), preemptions = preemptions + $4, error_attempts = error_attempts + $5,
+         attempts = attempts - $6,
+         started_at = CASE WHEN $6 = 1 AND attempts = 1 THEN NULL ELSE started_at END
+       WHERE id = $1 AND lease_token = $2 AND status = 'running' RETURNING preemptions`,
+      [
+        run.id,
+        token,
+        change.stop ? JSON.stringify(change.stop) : null,
+        change.parks,
+        change.errors,
+        change.unstarted ? 1 : 0,
+      ],
+    );
+    return rows[0] ? Number(rows[0].preemptions) : null;
+  }
+
+  async function requeue(client: PoolClient, queue: TurnQueue, absurdRunId: string, at: Date): Promise<void> {
+    await scheduleRun(client, queue, absurdRunId, at);
+    await client.query("SELECT pg_notify($1, $2)", [TURN_READY_CHANNEL, JSON.stringify(queue)]);
+  }
+
+  /** Returns true when the active background turn was parked here and the person's turn may start now. */
+  async function askToYield(client: PoolClient, activeId: string): Promise<boolean> {
+    const { rows } = await client.query(
+      `SELECT * FROM runs WHERE id = $1 AND engine = 'absurd' AND claim_priority = 2 AND status IN ('pending','running')
+       FOR UPDATE`,
       [activeId],
     );
-    if (!rows[0]) return;
-    const active = rowToRun(rows[0]);
-    if (active.status === "running") {
-      await client.query("SELECT pg_notify($1, $2)", [TURN_YIELD_CHANNEL, JSON.stringify(active.id)]);
-      return;
+    if (!rows[0]) return false;
+    if (rows[0].status === "running") {
+      await client.query("SELECT pg_notify($1, $2)", [TURN_YIELD_CHANNEL, JSON.stringify(activeId)]);
+      return false;
     }
-    if (active.absurdRunId && (await wakeSleepingRun(client, queueOf(active), active.absurdRunId)))
-      await client.query("SELECT pg_notify($1, $2)", [TURN_READY_CHANNEL, JSON.stringify(queueOf(active))]);
+    await client.query("UPDATE runs SET last_stop = $2, preemptions = preemptions + 1 WHERE id = $1", [
+      activeId,
+      JSON.stringify(PARKED),
+    ]);
+    return true;
+  }
+
+  /**
+   * Marks a claimed turn running. A turn parked at admission, whose conversation has moved on to a person's
+   * turn, instead goes back to waiting for its resume event.
+   */
+  async function begin(
+    queue: TurnQueue,
+    absurdRunId: string,
+    turnId: string,
+    token: string,
+    workerId: string,
+  ): Promise<Run | "suspended" | null> {
+    const found = await db.query("SELECT session_id FROM runs WHERE id = $1", [turnId]);
+    const threadRef = found.rows[0]?.session_id as string | undefined;
+    if (!threadRef) return null;
+    return tx(async (client) => {
+      const active = await lockPointer(client, threadRef);
+      const { rows: current } = await client.query("SELECT * FROM runs WHERE id = $1 FOR NO KEY UPDATE", [turnId]);
+      if (!(await holdsClaim(client, queue, absurdRunId, token))) return null;
+      const run = current[0] ? rowToRun(current[0]) : null;
+      if (run && active !== turnId && run.status === "pending" && run.lastStop?.kind === "parked") {
+        await awaitEvent(
+          client,
+          queue,
+          run.absurdTaskId!,
+          absurdRunId,
+          `park:${run.preemptions}`,
+          resumeEvent(run.id, run.preemptions),
+        );
+        return "suspended";
+      }
+      const { rows } = await client.query(
+        `UPDATE runs SET status = 'running', lease_token = $2, lease_expires_at = NULL, worker_id = $3,
+           attempts = attempts + 1, started_at = COALESCE(started_at, $4), absurd_run_id = $5
+         WHERE id = $1 AND engine = 'absurd' AND absurd_queue = $6 AND status IN ('pending','running')
+         RETURNING *`,
+        [turnId, token, workerId, Date.now(), absurdRunId, queue],
+      );
+      return rows[0] ? rowToRun(rows[0]) : null;
+    });
   }
 
   async function settle(id: string): Promise<Run | null> {
@@ -289,10 +361,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
           return { run: rowToRun(existing.rows[0]!), deduped: true };
         }
         const queued = rowToRun(rows[0]);
-        if (active) {
-          if (priority === 0) await askToYield(client, active);
-          return { run: queued, deduped: false };
-        }
+        if (active && !(priority === 0 && (await askToYield(client, active)))) return { run: queued, deduped: false };
         await start(client, queued);
         return { run: { ...queued, status: "pending" }, deduped: false };
       });
@@ -306,7 +375,8 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
         await scheduleRun(await db.pool(), queue, claimed.runId, new Date(Date.now() + UNKNOWN_TASK_DEFER_MS));
         return { claimed: true, run: null };
       }
-      const run = await this.begin(queue, claimed.runId, params.turnId, token, workerId);
+      const run = await begin(queue, claimed.runId, params.turnId, token, workerId);
+      if (run === "suspended") return { claimed: true, run: null };
       if (!run) {
         await completeRun(await db.pool(), queue, claimed.runId, { ok: false, reason: "turn not runnable" });
         return { claimed: true, run };
@@ -317,21 +387,6 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
         [run.sessionId],
       );
       return { claimed: true, run };
-    },
-
-    async begin(queue, runId, turnId, token, workerId) {
-      return tx(async (client) => {
-        await lockTurn(client, turnId);
-        if (!(await holdsClaim(client, queue, runId, token))) return null;
-        const { rows } = await client.query(
-          `UPDATE runs SET status = 'running', lease_token = $2, lease_expires_at = NULL, worker_id = $3,
-             attempts = attempts + 1, started_at = COALESCE(started_at, $4), absurd_run_id = $5
-           WHERE id = $1 AND engine = 'absurd' AND absurd_queue = $6 AND status IN ('pending','running')
-           RETURNING *`,
-          [turnId, token, workerId, Date.now(), runId, queue],
-        );
-        return rows[0] ? rowToRun(rows[0]) : null;
-      });
     },
 
     async extend(run, token) {
@@ -357,24 +412,14 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       return tx(async (client) => {
         await lockTurn(client, run.id);
         if (!(await holdsClaim(client, queue, run.absurdRunId!, token))) return false;
-        const { rowCount } = await client.query(
-          `UPDATE runs SET status = 'pending', lease_token = NULL, lease_expires_at = NULL, worker_id = NULL,
-             last_stop = COALESCE($3, last_stop), preemptions = preemptions + $4, error_attempts = error_attempts + $5,
-             attempts = attempts - $6,
-             started_at = CASE WHEN $6 = 1 AND attempts = 1 THEN NULL ELSE started_at END
-           WHERE id = $1 AND lease_token = $2 AND status = 'running'`,
-          [
-            run.id,
-            token,
-            stop ? JSON.stringify(stop) : null,
-            stop?.kind === "parked" ? 1 : 0,
-            countsAsError ? 1 : 0,
-            unstarted ? 1 : 0,
-          ],
-        );
-        if (!rowCount) return false;
-        await scheduleRun(client, queue, run.absurdRunId!, new Date(wakeAt));
-        await client.query("SELECT pg_notify($1, $2)", [TURN_READY_CHANNEL, JSON.stringify(queue)]);
+        const released = await releaseClaim(client, run, token, {
+          stop: stop ?? null,
+          parks: stop?.kind === "parked" ? 1 : 0,
+          errors: countsAsError ? 1 : 0,
+          unstarted,
+        });
+        if (released === null) return false;
+        await requeue(client, queue, run.absurdRunId!, new Date(wakeAt));
         return true;
       });
     },
@@ -482,17 +527,16 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
       return removed;
     },
 
-    async personWaiting(threadRef) {
+    async mustYield(run) {
       const { rows } = await db.query(
         "SELECT 1 FROM runs WHERE session_id = $1 AND status = 'queued' AND claim_priority = 0 LIMIT 1",
-        [threadRef],
+        [run.sessionId],
       );
       return rows.length > 0;
     },
 
     async yieldTo(run, token) {
       const queue = queueOf(run);
-      const stop: RunStop = { kind: "parked" };
       return tx(async (client) => {
         const active = await lockPointer(client, run.sessionId);
         await lockTurn(client, run.id);
@@ -502,19 +546,17 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
            ORDER BY created_at ASC, seq ASC LIMIT 1 FOR UPDATE`,
           [run.sessionId],
         );
-        const { rows } = await client.query(
-          `UPDATE runs SET status = 'pending', lease_token = NULL, lease_expires_at = NULL, worker_id = NULL,
-             last_stop = $3, preemptions = preemptions + 1
-           WHERE id = $1 AND lease_token = $2 AND status = 'running' RETURNING preemptions`,
-          [run.id, token, JSON.stringify(stop)],
-        );
-        if (!rows[0]) return "lost";
+        const parkings = await releaseClaim(client, run, token, {
+          stop: PARKED,
+          parks: 1,
+          errors: 0,
+          unstarted: false,
+        });
+        if (parkings === null) return "lost";
         if (active !== run.id || !next.rows[0]) {
-          await scheduleRun(client, queue, run.absurdRunId!, new Date());
-          await client.query("SELECT pg_notify($1, $2)", [TURN_READY_CHANNEL, JSON.stringify(queue)]);
+          await requeue(client, queue, run.absurdRunId!, new Date());
           return "handed_back";
         }
-        const parkings = Number(rows[0].preemptions);
         await awaitEvent(
           client,
           queue,

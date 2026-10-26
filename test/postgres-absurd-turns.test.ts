@@ -589,24 +589,28 @@ test("a person writing after a cron was stopped ends the cron as stopped and sta
   await yields.close?.();
 });
 
-test("a person's message wakes a background turn sleeping in backoff so it yields at once", { skip }, async () => {
+test("a person's message parks a background turn that is not running and starts at once", { skip }, async () => {
   const thread = `web:alice:${randomUUID()}`;
   const cron = await admit(thread, "cron", undefined, 2);
   const token = `test:${randomUUID()}`;
   const { run } = await ledger.claim("turns_background", token, "test");
   assert.equal(run?.id, cron.run.id);
-  assert.equal(await ledger.handBack(run!, token, { delayMs: 60_000, countsAsError: true }), true);
+  assert.equal(await ledger.handBack(run!, token, { delayMs: 1_500, countsAsError: true }), true);
+  const person = await admit(thread, "person", undefined, 0);
+  assert.equal(person.run.status, "pending");
+  assert.equal(await pointer(thread), person.run.id);
+  const parked = await runStore.runs.get(cron.run.id);
+  assert.deepEqual(parked?.lastStop, { kind: "parked" });
   const { started, releases, orchestrator } = gate();
   const ready = createPostgresNotifyBus<string>(URL!, TURN_READY_CHANNEL, "test turn readiness");
   const runner = createTurnRunner({ ledger, orchestrator, queues: TURN_QUEUES, slots: 2, pollMs: 50, ready });
   runner.start();
-  const t0 = Date.now();
-  const person = await admit(thread, "person", undefined, 0);
   await until(async () => started.some((input) => input.runId === person.run.id), Boolean, "person started");
-  assert.ok(Date.now() - t0 < 4_000);
+  await sleep(2_000);
   assert.equal(
     started.some((input) => input.runId === cron.run.id),
     false,
+    "the cron waits while the person's turn runs",
   );
   releases.get(person.run.id)!();
   const resumed = await until(
@@ -614,12 +618,14 @@ test("a person's message wakes a background turn sleeping in backoff so it yield
     (inputs) => inputs.length === 1,
     "cron resumed after the person",
   );
-  releases.get(resumed[0]!.runId!)!();
+  assert.deepEqual(resumed[0]?.resumeCause, { kind: "parked" });
+  releases.get(cron.run.id)!();
   await until(
     async () => (await runStore.runs.get(cron.run.id))?.status,
     (s) => s === "done",
     "cron done",
   );
+  assert.equal(await pointer(thread), null);
   await runner.stopClaims();
   await ready.close?.();
 });
