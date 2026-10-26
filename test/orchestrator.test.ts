@@ -403,11 +403,13 @@ test(
   },
 );
 
-test("a retried run RESUMES the interrupted turn from the durable ledger instead of restarting it", async () => {
+test("a retried run RESUMES the interrupted turn from the durable ledger instead of restarting it", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const { app } = freshApp();
   const req = dm("!work-then-boom", { idempotencyKey: "resume-1" });
 
   await assert.rejects(app.turn(req), /boom/);
+  t.mock.timers.tick(61_000);
 
   const res = await app.turn(req);
   assert.equal(res.status, "ok");
@@ -422,11 +424,13 @@ test("a retried run RESUMES the interrupted turn from the durable ledger instead
   );
 });
 
-test("a retry of an attempt that recorded NO work continues from the recorded request without re-sending it", async () => {
+test("a retry of an attempt that recorded NO work continues from the recorded request without re-sending it", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const { app } = freshApp();
   const req = dm("!boom", { idempotencyKey: "rerun-1" });
 
   await assert.rejects(app.turn(req), /boom/);
+  t.mock.timers.tick(61_000);
 
   const res = await app.turn(req);
   assert.equal(res.status, "ok");
@@ -4047,13 +4051,15 @@ test("an exhausted model budget refuses the turn with a plain explanation instea
   assert.match(logged!.message, /ExceededBudget: Team=team-a over 1d budget/, "operators keep the gateway's detail");
 });
 
-test("a RETRYABLE error that exhausts its budget leaves one durable turn_failure record — no dead air", async () => {
+test("a RETRYABLE error that exhausts its budget leaves one durable turn_failure record — no dead air", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const { app, runs, errors } = freshApp();
   const t1 = await app.turn(dm("hello"));
   assert.equal(t1.status, "ok");
 
   const req = dm("!boom-always", { idempotencyKey: "exhaust-1" });
   await assert.rejects(app.turn(req), /boom/);
+  t.mock.timers.tick(61_000);
   await assert.rejects(app.turn(req), /boom/);
   let found = await app.getSession(t1.sessionId!);
   assert.equal(
@@ -4064,6 +4070,7 @@ test("a RETRYABLE error that exhausts its budget leaves one durable turn_failure
   const midway = await runs.activeForThread("dm:U1:t1");
   assert.equal(midway?.status, "pending", "the run really is mid-cycle — requeued, not parked");
 
+  t.mock.timers.tick(61_000);
   await assert.rejects(app.turn(req), /boom/);
   assert.equal(await runs.activeForThread("dm:U1:t1"), null, "the run parked: no attempt is left to record it");
   assert.equal((await runs.get(midway!.id))?.status, "failed");
