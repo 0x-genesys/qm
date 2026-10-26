@@ -1409,8 +1409,13 @@ export function buildApp(
         ])
       : undefined;
   const resolveCompanyClaudeKeys = async (): Promise<ProviderKeys> => {
-    const env = await companyClaudeAuthEnv?.();
-    const token = env?.CLAUDE_CODE_OAUTH_TOKEN || env?.ANTHROPIC_AUTH_TOKEN;
+    if (!companyClaudeAuthEnv) return {};
+    const env = await companyClaudeAuthEnv();
+    const token = env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_AUTH_TOKEN;
+    if (!token)
+      console.error(
+        `[model] company Claude subscription credential ${config.claudeAuthCredential} yielded no token (missing, expired, or not an env credential)`,
+      );
     return token ? { anthropic: token } : {};
   };
   const resolvePiProviderKeys = async (): Promise<ProviderKeys> => ({
