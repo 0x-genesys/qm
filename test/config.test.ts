@@ -173,7 +173,7 @@ test("sharing posture defaults to isolated and accepts only isolated or open", (
   );
 });
 
-test("a remote sandbox backend without the shared egress proxy or snapshot bucket warns once each", () => {
+test("a remote sandbox backend without the shared egress proxy warns once", () => {
   const warnings: string[] = [];
   const original = console.warn;
   console.warn = (msg: unknown) => void warnings.push(String(msg));
@@ -184,14 +184,12 @@ test("a remote sandbox backend without the shared egress proxy or snapshot bucke
       MODAL_TOKEN_ID: "id",
       MODAL_TOKEN_SECRET: "secret",
       SANDBOX_EGRESS_PROXY_URL: "https://egress.test",
-      SANDBOX_SNAPSHOT_S3_BUCKET: "homes",
     });
     loadConfig({ SANDBOX_BACKEND: "local" });
   } finally {
     console.warn = original;
   }
   assert.equal(warnings.filter((w) => w.includes("without SANDBOX_EGRESS_PROXY_URL")).length, 1);
-  assert.equal(warnings.filter((w) => w.includes("without SANDBOX_SNAPSHOT_S3_BUCKET")).length, 1);
 });
 
 test("a leftover *=sqlite env throws (no silent downgrade to ephemeral memory)", () => {
@@ -806,7 +804,6 @@ test("shared SANDBOX_* settings are parsed once for every provider", () => {
     SANDBOX_NAME_PREFIX: "qmdev",
     SANDBOX_TIMEOUT_SEC: "900",
     SANDBOX_EGRESS_PROXY_URL: "https://proxy.example.com",
-    SANDBOX_SNAPSHOT_S3_BUCKET: "qm-home-snapshots",
     SANDBOX_SNAPSHOT_INTERVAL_SEC: "120",
     SANDBOX_CPUS: "2",
     SANDBOX_MEMORY_MB: "4096",
@@ -818,7 +815,6 @@ test("shared SANDBOX_* settings are parsed once for every provider", () => {
     namePrefix: "qmdev",
     defaultTimeoutSec: 900,
     egressProxyUrl: "https://proxy.example.com",
-    snapshotS3Bucket: "qm-home-snapshots",
     snapshotIntervalSec: 120,
     cpus: 2,
     memoryMb: 4096,
