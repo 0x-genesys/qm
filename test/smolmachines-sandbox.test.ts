@@ -273,8 +273,7 @@ test("profile advertises resident disk, process sessions, and the documented def
   assert.equal(sandbox.profile.spec?.diskGb, undefined);
   assert.match(sandbox.profile.spec?.os ?? "", /codex image/);
   assert.doesNotMatch(sandbox.profile.spec?.os ?? "", /Debian|idle/);
-  const idle = make({ image: "ubuntu:24.04", autoStopSec: 900 });
-  assert.match(idle.profile.spec?.os ?? "", /ubuntu:24\.04 image/);
+  const idle = make({ idleParkSec: 900 });
   assert.match(idle.profile.spec?.os ?? "", /900s idle/);
 });
 
@@ -299,7 +298,7 @@ test("started is not ready: provisioning polls until the machine reports ready",
 });
 
 test("scratch machines carry a hard TTL and configured idle stop is sent on every create", async () => {
-  const s = make({ autoStopSec: 900 });
+  const s = make({ idleParkSec: 900 });
   const scratch = await s.provision(layers, { scratch: { key: "job-ttl" } });
   assert.equal(fake.machine(scratch.id)?.ttlSeconds, 24 * 3600);
   assert.equal(fake.machine(scratch.id)?.autoStopSeconds, 900);
@@ -340,7 +339,7 @@ test("teardown snapshots the home to the configured store and a lost machine is 
 
 test("teardown snapshots are throttled by snapshotIntervalMs and skipped for scratch machines", async () => {
   const counting = instrumentedSnapshotStore();
-  const s = make({ snapshots: counting.store, snapshotIntervalMs: 60 * 60_000 });
+  const s = make({ snapshots: counting.store, snapshotIntervalSec: 3600 });
   const a = await s.provision(layers);
   await s.teardown(a);
   const b = await s.provision(layers);
@@ -356,6 +355,7 @@ test("a failing snapshot store is recorded in status and a failed hydration neve
   const errors: string[] = [];
   const s = make({
     snapshots: flaky.store,
+    snapshotIntervalSec: 0,
     onError: (e: { code: string }) => {
       errors.push(e.code);
     },

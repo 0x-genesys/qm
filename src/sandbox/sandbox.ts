@@ -47,7 +47,7 @@ export function hasParentPathSegment(path: string): boolean {
   return path.split("/").includes("..");
 }
 
-type WritablePersistence = "snapshot_to_workspace" | "resident_disk" | "provider_managed";
+export type WritablePersistence = "snapshot_to_workspace" | "resident_disk" | "provider_managed";
 export type EgressEnforcement = "none" | "ip_port" | "domain";
 
 export interface AgentComputerSpec {
