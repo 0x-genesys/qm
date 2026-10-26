@@ -26,7 +26,7 @@ import {
 import type { TurnQueue } from "./absurd-schema.ts";
 import { TURN_EXTEND_INTERVAL_MS, type TurnLedger, type TurnOutcome } from "./turn-ledger.ts";
 
-export const CANCEL_GRACE_MS = 10_000;
+const CANCEL_GRACE_MS = 10_000;
 const FALLBACK_POLL_MS = 1_000;
 const HANDBACK_SETTLE_MS = 2_000;
 const FINISH_RETRY_MAX_MS = 5_000;

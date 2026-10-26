@@ -8,7 +8,7 @@ import type { SessionStore } from "../sessions/session-store.ts";
 import type { ScopeId } from "../types.ts";
 import type { TurnLedger } from "./turn-ledger.ts";
 
-export const TURN_REPAIRED_REASON = "This turn stopped unexpectedly and could not be resumed.";
+const TURN_REPAIRED_REASON = "This turn stopped unexpectedly and could not be resumed.";
 
 export function routeTurns(
   base: RunStore,

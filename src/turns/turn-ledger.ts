@@ -20,22 +20,22 @@ import {
 import { TURN_QUEUES, type TurnQueue } from "./absurd-schema.ts";
 import { turnFenceHeld } from "./turn-fence.ts";
 
-export const TURN_TASK = "turn";
+const TURN_TASK = "turn";
 export const TURN_READY_CHANNEL = "qm_turn_ready";
 export const TURN_CANCEL_CHANNEL = "qm_turn_cancel";
-export const TURN_MAX_ATTEMPTS = 10;
-export const TURN_CLAIM_TIMEOUT_SEC = 60;
+const TURN_MAX_ATTEMPTS = 10;
+const TURN_CLAIM_TIMEOUT_SEC = 60;
 export const TURN_EXTEND_INTERVAL_MS = 20_000;
-export const CANCEL_WRAP_UP_GRACE_SEC = 30;
+const CANCEL_WRAP_UP_GRACE_SEC = 30;
 const TURN_RETENTION_SEC = 7 * 24 * 60 * 60;
 const CLEANUP_BATCH = 1_000;
 
-export interface TurnTaskParams {
+interface TurnTaskParams {
   tenantId: string;
   turnId: string;
 }
 
-export const TURN_LEDGER_MIGRATION = {
+const TURN_LEDGER_MIGRATION = {
   id: "turns/0001-ledger",
   statements: [
     `CREATE TABLE IF NOT EXISTS session_turn_pointers(
@@ -70,15 +70,15 @@ export const TURN_LEDGER_MIGRATION = {
 export type TurnOutcome =
   { status: "done"; result: TurnResult } | { status: "failed"; result: TurnResult; countsAsError?: boolean };
 
-export type ExtendOutcome = "held" | "lost" | "cancelled";
+type ExtendOutcome = "held" | "lost" | "cancelled";
 
-export interface RepairCandidate {
+interface RepairCandidate {
   threadRef: string;
   turnId: string;
   reason: string;
 }
 
-export const UNKNOWN_TASK_DEFER_MS = 30_000;
+const UNKNOWN_TASK_DEFER_MS = 30_000;
 
 export interface TurnLedger {
   claim(queue: TurnQueue, token: string, workerId: string): Promise<{ claimed: boolean; run: Run | null }>;
@@ -100,7 +100,7 @@ export interface TurnLedger {
   close(): Promise<void>;
 }
 
-export function turnQueueFor(_priority: RunPriority): TurnQueue {
+function turnQueueFor(_priority: RunPriority): TurnQueue {
   return "turns_people";
 }
 

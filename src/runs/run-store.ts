@@ -6,7 +6,7 @@ import { isPersonAuthored, resolveTurnOrigin } from "../core/turn-origin.ts";
 import { traceCarrier } from "../../plugins/chassis/src/error-reporting.ts";
 
 type RunStatus = "queued" | "pending" | "running" | "done" | "failed";
-export type RunEngine = "legacy" | "absurd";
+type RunEngine = "legacy" | "absurd";
 
 export type RunPriority = 0 | 1 | 2;
 export const MAX_PREEMPTIONS = 3;

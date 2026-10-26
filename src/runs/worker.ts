@@ -33,7 +33,7 @@ export interface ProcessDeps {
 export const LEASE_LOST_CONSECUTIVE = 3;
 
 export const CLAIM_FAIL_REPORT_CONSECUTIVE = 20;
-export const SWARM_CLAIM_BUDGET = 3;
+const SWARM_CLAIM_BUDGET = 3;
 
 export async function processRun(
   deps: ProcessDeps,
