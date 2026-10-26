@@ -41,10 +41,12 @@ channel's in a channel). Other authorized notebooks can be searched/read, not re
 ## Org-wide notebook (admins)
 
 When the chatting user is an org admin and asks you to remember something org-wide, use the
-`admin` tool's `add_memory`, `edit_memory` or `delete_memory` actions with the org scope ID
-(find it with `admin` action `scopes`). Those writes land in the notebook every conversation in
-the org recalls, so confirm the wording with the admin before writing and keep personal facts
-out of it. If `admin` action `whoami` says the user isn't an admin, say so rather than retrying.
+`admin` tool with the org scope ID (find it with `admin` action `scopes`): `add_memory` with
+`value: {"facts": ["…"]}`, `edit_memory` with `value: {"facts": [{"id": "…", "text": "…"}]}`,
+or `delete_memory` with `value: {"ids": ["…"]}`. Those writes land in the notebook every
+conversation in the org recalls, so confirm the wording with the admin before writing and keep
+personal facts out of it. If `admin` action `whoami` says the user isn't an admin, say so
+rather than retrying.
 
 ## Failure modes
 
