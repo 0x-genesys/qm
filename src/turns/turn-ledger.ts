@@ -244,7 +244,6 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     await client.query("SELECT pg_notify($1, $2)", [TURN_READY_CHANNEL, JSON.stringify(queue)]);
   }
 
-  /** Returns true when the active background turn was parked here and the person's turn may start now. */
   async function askToYield(client: PoolClient, activeId: string): Promise<boolean> {
     const { rows } = await client.query(
       `SELECT * FROM runs WHERE id = $1 AND engine = 'absurd' AND claim_priority = 2 AND status IN ('pending','running')
@@ -263,10 +262,6 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
     return true;
   }
 
-  /**
-   * Marks a claimed turn running. A turn parked at admission, whose conversation has moved on to a person's
-   * turn, instead goes back to waiting for its resume event.
-   */
   async function begin(
     queue: TurnQueue,
     absurdRunId: string,
