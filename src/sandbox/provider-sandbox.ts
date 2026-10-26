@@ -71,7 +71,7 @@ export interface MachineState {
 }
 
 export interface DriverCheckpoints {
-  machineBound?: boolean;
+  machineBound?: "export-before-destroy" | "export-on-capture";
   capture(name: string): Promise<string>;
   restore(name: string, checkpointId: string): Promise<void>;
   drop?(name: string, checkpointId: string): Promise<void>;
@@ -199,12 +199,17 @@ export function createProviderSandbox(
         created = true;
       }
       const checkpointId = stored?.checkpointId;
+      const machineBound = !!driver.checkpoints?.machineBound;
       const restored =
-        created && checkpointId && driver.checkpoints && !driver.checkpoints.machineBound
+        created && checkpointId && driver.checkpoints && !machineBound
           ? (await driver.checkpoints.restore(name, checkpointId), true)
           : false;
       const hydrated = restored || (homeSnapshots ? await homeSnapshots.hydrateHome(scope, name) : false);
-      await merge(scope, { initializationPending: undefined, ...(hydrated ? { homeDirty: false } : {}) });
+      await merge(scope, {
+        initializationPending: undefined,
+        ...(hydrated ? { homeDirty: false } : {}),
+        ...(created && machineBound ? { checkpointId: undefined, checkpointAtMs: undefined } : {}),
+      });
       return !hydrated;
     } catch (e) {
       if (created)
@@ -305,8 +310,11 @@ export function createProviderSandbox(
   const portableOnly = !!driver.checkpoints?.machineBound && !!homeSnapshots;
 
   async function capture(scope: string, name: string): Promise<void> {
+    const portable = homeSnapshots && (!driver.checkpoints || driver.checkpoints.machineBound === "export-on-capture");
+    let exportError: unknown;
+    if (portable) await exportHome(scope, name).catch((e: unknown) => (exportError = e));
     if (driver.checkpoints) await captureCheckpoint(scope, name);
-    else if (homeSnapshots) await exportHome(scope, name);
+    if (exportError) throw exportError;
   }
 
   async function recovery(scope: string): Promise<Pick<ComputerStatus, "recovery">> {
