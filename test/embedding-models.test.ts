@@ -51,7 +51,7 @@ test("verified embedding definitions survive registry reload but never become ch
       return Response.json({ data: [{ index: 0, embedding: [3, 4] }] });
     },
   });
-  const backing = createMemoryMap<import("../src/model/model-overlay-store.ts").StoredModelOverlay>();
+  const backing = testMap<import("../src/model/model-overlay-store.ts").StoredModelOverlay>();
   const writer = createModelOverlayStore(backing, undefined, verifier);
   await writer.upsert(definition, "admin");
   await assert.rejects(

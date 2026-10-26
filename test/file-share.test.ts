@@ -7,7 +7,7 @@ import { carriedFileHandles } from "../src/resolution/sharing-access.ts";
 import { createToolContext } from "../src/tools/primitives.ts";
 import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { createAclStore } from "../src/acl/acl-store.ts";
-import { fileArtifactId } from "../src/files/file-artifact-store.ts";
+import { fileArtifactId, type FileArtifactStore } from "../src/files/file-artifact-store.ts";
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
 import { principalEntitledToScope } from "../src/resolution/context-filter.ts";
 import { scopeId, type Principal } from "../src/types.ts";
@@ -31,12 +31,7 @@ function fixture() {
   return { files, acl: createAclStore(undefined, { resolveFiles: (refs) => files.resolveByIds(refs) }) };
 }
 
-async function put(
-  files: ReturnType<typeof createMemoryFileArtifactStore>,
-  ownerScopeId: string,
-  name: string,
-  data: Uint8Array,
-) {
+async function put(files: FileArtifactStore, ownerScopeId: string, name: string, data: Uint8Array) {
   const id = fileArtifactId(`${ownerScopeId}:${name}`, "in", 0);
   return (
     await files.put({

@@ -4,8 +4,6 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { traceStatus } from "../plugins/chassis/src/timing.ts";
-import { createPostgresErrorLog } from "../src/admin/postgres-error-log.ts";
-import { testDatabaseUrl } from "./support/test-database.ts";
 
 async function runReporting(body: string, enabled = true, env: Record<string, string> = {}) {
   const events: Record<string, any>[] = [];
@@ -141,11 +139,14 @@ test("fatal reporting preserves the core drain handler and avoids duplicate cons
 
 test("operator error records send one classified event with the record details", async () => {
   const { events, code, output } = await runReporting(`
-    const { createErrorLog, withErrorReporting } = await import('./src/admin/error-log.ts');
+    const { withErrorReporting } = await import('./src/admin/error-log.ts');
+    const { createPostgresErrorLog } = await import('./src/admin/postgres-error-log.ts');
+    const { testDatabaseUrl } = await import('./test/support/test-database.ts');
     const errors = withErrorReporting(createPostgresErrorLog(testDatabaseUrl()));
     const error = new Error('private-job-failure');
     console.error('[worker] private-job-failure');
     errors.record({category:'turn', code:'failed', message:error.message, scopeLabel:'private-scope'}, error);
+    await errors.flush();
     console.log((await errors.list())[0].message);
     await flushErrorReporting();
   `);
@@ -307,7 +308,9 @@ test("reportFailure sends one classified event per distinct failure and skips ca
   const { events, code, output } = await runReporting(`
     console.error = (line) => console.log(line);
     const { reportFailure } = await import('./src/util/errors.ts');
-    const { createErrorLog, withErrorReporting } = await import('./src/admin/error-log.ts');
+    const { withErrorReporting } = await import('./src/admin/error-log.ts');
+    const { createPostgresErrorLog } = await import('./src/admin/postgres-error-log.ts');
+    const { testDatabaseUrl } = await import('./test/support/test-database.ts');
     const errors = withErrorReporting(createPostgresErrorLog(testDatabaseUrl()));
     const recorded = new Error('private-turn-failure');
     errors.record({category:'turn', code:'error', message:recorded.message, scopeLabel:'private-scope'}, recorded);
