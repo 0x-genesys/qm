@@ -188,9 +188,10 @@ turn runs under the normal goal loop: the worker is prompted to continue until t
 goal's governor approves completion or pauses it, or an optional `token_cap` is
 spent. While a worker's goal is open, its turns run without the swarm `turnMs`
 deadline; when `turnMs` is set, other turns keep it. If a worker's turn is interrupted while its goal is still active (the turn was
-cancelled, or its run was handed back on shutdown and then ended), the swarm wakes
-it with a message from itself to continue, within about a minute. Ordinary
-failures are left to run retries. A wake-up is queued only while the worker is active, the goal's token cap
+cancelled without a person stopping it, or its run was handed back on shutdown and
+then ended), the swarm wakes it with a message from itself to continue, within
+about a minute. A person's stop pauses the goal, so it gets no wake-up, and
+ordinary failures are left to run retries. A wake-up is queued only while the worker is active, the goal's token cap
 is not spent, and the goal used tokens since the last such message, so a turn that
 cannot start is not retried forever. A sweep of recently finished swarm runs, on
 startup and every minute, queues these wake-ups, so one survives a restart. These messages count against `messages`
