@@ -112,6 +112,7 @@ import { applyTheme, renderSettings, loadOpenNewChat, watchSystemTheme } from ".
 import { contextsState, ensureContexts, renderContexts, resetContextsState, resolveProjectScope } from "./contexts";
 import { appState, can, canView, isView, type AuthMode, type Me, type View } from "./shell-state";
 import { trapDialogFocus } from "./dialog-focus";
+import { UI_OUTDATED_EVENT } from "../../chassis/src/ui-release.ts";
 import { activeSessionForDocumentTitle, updateDocumentTitle } from "./document-title";
 export { appState, can, type Me, type View } from "./shell-state";
 
@@ -149,6 +150,14 @@ setSigninRequiredHandler((detail) => {
 });
 
 onExitCanvas(() => exitSplitIfActive());
+
+let uiOutdated = false;
+
+window.addEventListener(UI_OUTDATED_EVENT, () => {
+  if (uiOutdated) return;
+  uiOutdated = true;
+  if (appEl?.querySelector(".layout")) mountShell();
+});
 
 export const ADMIN_HOME_URL = `${UI_BASE}/settings/history`;
 
@@ -296,6 +305,13 @@ function impersonationBanner(by: string) {
       <button class="impersonation-banner-exit" type="button" @click=${exitImpersonation}>Exit impersonation</button>
     </div>
   `;
+}
+
+function outdatedBanner() {
+  return html`<div class="top-banner" role="alert">
+    <span>This page is out of date. Reload to continue.</span>
+    <button class="top-banner-action" type="button" @click=${() => location.reload()}>Reload</button>
+  </div>`;
 }
 
 function devBanner(user: string) {
@@ -481,7 +497,8 @@ export function mountShell(): void {
   applySavedSidebarWidth();
   const impersonatedBy = appState.me?.impersonatedBy ?? null;
   let banner: TemplateResult | typeof nothing = nothing;
-  if (impersonatedBy) banner = impersonationBanner(impersonatedBy);
+  if (uiOutdated) banner = outdatedBanner();
+  else if (impersonatedBy) banner = impersonationBanner(impersonatedBy);
   else if (authMode === "dev") banner = devBanner(appState.me?.user ?? "");
   render(
     html`
