@@ -44,6 +44,19 @@ export function createScratchJobComputers(deps: {
     }, pollMs);
     entry.timer.unref();
   };
+  const reapRunning = async (sandboxId: string, handle: SandboxHandle, scopeId: string): Promise<void> => {
+    const records = await jobs(sandboxId, scopeId).catch((error) => {
+      deps.onError("scratch_job_check_failed", error, scopeId);
+      return [];
+    });
+    for (const process of records) {
+      if (process.status !== "running") continue;
+      if (await deps.processes.markStatus(process.processId, "reaped"))
+        await deps
+          .finish(handle, process.processId)
+          .catch((error) => deps.onError("scratch_job_finish_failed", error, scopeId));
+    }
+  };
   const retire = async (sandboxId: string): Promise<void> => {
     const entry = held.get(sandboxId);
     if (!entry?.retire) return;
@@ -95,6 +108,7 @@ export function createScratchJobComputers(deps: {
       );
       if (!live || draining) {
         held.delete(sandboxId);
+        if (live) await reapRunning(sandboxId, entry.handle, entry.scopeId);
         return false;
       }
       entry.retire = retireComputer;
@@ -108,17 +122,7 @@ export function createScratchJobComputers(deps: {
           clearTimeout(entry.timer);
           await entry.checking;
           if (!entry.retire) return;
-          const records = await jobs(sandboxId, entry.scopeId).catch((error) => {
-            deps.onError("scratch_job_check_failed", error, entry.scopeId);
-            return [];
-          });
-          for (const process of records) {
-            if (process.status !== "running") continue;
-            if (await deps.processes.markStatus(process.processId, "reaped"))
-              await deps
-                .finish(entry.handle, process.processId)
-                .catch((error) => deps.onError("scratch_job_finish_failed", error, entry.scopeId));
-          }
+          await reapRunning(sandboxId, entry.handle, entry.scopeId);
           await entry.retire().then(
             () => void held.delete(sandboxId),
             (error) => deps.onError("scratch_job_retire_failed", error, entry.scopeId),

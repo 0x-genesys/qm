@@ -88,7 +88,20 @@ function fixture() {
     await boxes.reclaimBox();
     return { handle, sandboxId, job };
   };
-  return { sandbox, processes, scratchJobs, turn, startJob, exited, provisions, destroyed, signals, finished, errors };
+  return {
+    sandbox,
+    processes,
+    scratchJobs,
+    broker,
+    turn,
+    startJob,
+    exited,
+    provisions,
+    destroyed,
+    signals,
+    finished,
+    errors,
+  };
 }
 
 test("a scratch computer running a background job outlives its turn until the job exits", async () => {
@@ -128,4 +141,16 @@ test("draining reaps running scratch jobs, writes their credentials back, and de
   assert.equal((await f.processes.get(job.processId))?.status, "reaped");
   assert.deepEqual(f.finished, [job.processId]);
   assert.deepEqual(f.destroyed, ["scratch-1", handle.id]);
+});
+
+test("a turn that ends after draining reaps its jobs and destroys the job computer", async () => {
+  const f = fixture();
+  const boxes = f.turn("turn-late");
+  const { handle, sandboxId } = await boxes.provisionScratchJob();
+  const job = await f.broker.start(handle, "sync", "Sync mail", 60_000, undefined, sandboxId);
+  await f.scratchJobs.drain();
+  await boxes.reclaimBox();
+  assert.equal((await f.processes.get(job.processId))?.status, "reaped");
+  assert.deepEqual(f.finished, [job.processId]);
+  assert.deepEqual(f.destroyed, [handle.id]);
 });
