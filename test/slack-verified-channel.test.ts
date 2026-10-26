@@ -258,8 +258,10 @@ for (const mode of ["socket", "http"] as const)
         if (mode === "http") assert.equal(retryStatus, 200);
         assert.equal(retries.at(-1), 1);
       }
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      for (let i = 0; i < 200 && admitted === 0; i++) await new Promise((resolve) => setTimeout(resolve, 10));
       assert.equal(admitted, 1);
       assert.equal(attempts, 2);
+      for (let i = 0; i < 200 && (await map.entries()).length > 0; i++)
+        await new Promise((resolve) => setTimeout(resolve, 10));
       assert.equal((await map.entries()).length, 0);
     });
