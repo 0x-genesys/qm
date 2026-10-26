@@ -1,7 +1,6 @@
 import { createPgPool } from "../persistence/pg-pool.ts";
 
 export interface ReplayDedupe {
-  readonly durable: boolean;
   claim(eventId: string, expiresAtMs: number): Promise<boolean>;
 }
 
@@ -19,7 +18,6 @@ export function createPostgresReplayDedupe(connectionString: string): ReplayDedu
   const pg = createPgPool(connectionString, "auth/replay-dedupe/0001", SCHEMA);
   let nextPruneAt = Number.NEGATIVE_INFINITY;
   return {
-    durable: true,
     async claim(eventId, expiresAtMs) {
       const t = Date.now();
       if (t >= nextPruneAt) {
