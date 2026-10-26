@@ -125,6 +125,21 @@ export async function currentConnectorStatus(
   return fresh;
 }
 
+export async function linkedConnectors(
+  resolveClient: OAuthClientResolver,
+  cache: ConnectorStatusCache,
+  tokens: ConnectorTokenStore,
+  principalId: string,
+): Promise<Record<string, boolean>> {
+  const [configured, status] = await Promise.all([
+    configuredConnectorProviders(resolveClient),
+    currentConnectorStatus(cache, tokens, principalId, Date.now()),
+  ]);
+  return Object.fromEntries(
+    configured.map((name) => [name, !!status?.providers[name]?.connected && !status.providers[name].needsReconnect]),
+  );
+}
+
 export function connectorLabel(name: string): string {
   return PROVIDERS[name]?.label ?? name.charAt(0).toUpperCase() + name.slice(1);
 }

@@ -265,9 +265,8 @@ import {
 } from "./triggers/keychain-ask.ts";
 import { createSecretDropStore, type SecretDropStore, type SecretDropRecord } from "./credentials/secret-drop.ts";
 import {
-  configuredConnectorProviders,
   createConnectorStatusCache,
-  currentConnectorStatus,
+  linkedConnectors,
   type ConnectorStatusRecord,
 } from "./credentials/connector-status.ts";
 import {
@@ -2632,18 +2631,7 @@ export function buildApp(
     crons,
     scheduler,
     enabled: config.suggestedActivitiesEnabled === true,
-    linkedSources: async (principalId) => {
-      const [configured, status] = await Promise.all([
-        configuredConnectorProviders(resolveClient),
-        currentConnectorStatus(connectorStatusCache, connectorTokens, principalId, Date.now()),
-      ]);
-      return Object.fromEntries(
-        configured.map((name) => [
-          name,
-          !!status?.providers[name]?.connected && !status.providers[name].needsReconnect,
-        ]),
-      );
-    },
+    linkedSources: (principalId) => linkedConnectors(resolveClient, connectorStatusCache, connectorTokens, principalId),
     ...(config.suggestedActivitiesContext ? { context: config.suggestedActivitiesContext } : {}),
   });
   cronChanged.notify = (id) => scheduler.notifyChanged(id);

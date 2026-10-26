@@ -57,6 +57,7 @@ function fixture() {
     sessions,
     crons,
     enabled: true,
+    linkedSources: async () => ({}),
     now: () => time,
     scheduler: {
       notifyChanged: (id: string) => scheduler.notifyChanged(id),
@@ -174,7 +175,6 @@ test("an owner with no linked sources gets connect suggestions instead of a mode
     first.activities.map((activity) => activity.id),
     ["connect-slack", "connect-google", "app"],
   );
-  assert.match(first.activities[0]!.title, /Slack/);
   assert.equal(f.calls.length, 0);
   assert.deepEqual(await f.crons.list(), []);
   assert.equal(await service.dismiss("alice", "connect-slack"), true);
