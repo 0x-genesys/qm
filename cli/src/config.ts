@@ -7,9 +7,9 @@ import {
   VIRTUAL_SERVICE_NAMES,
   isDeclaredService,
   isServiceName,
+  isVirtualService,
   pluginNameError,
   runnableServices,
-  serviceDef,
   type DeclaredServiceName,
   type ServiceName,
 } from "./services.ts";
@@ -607,12 +607,10 @@ function validate(raw: unknown, path: string): QmConfig {
     if (!services.includes(s)) services.push(s);
   }
   if (!services.includes("core")) throw new CliError(`${path}: "services" must include "core"`);
-  if (services.includes("auth") && !services.includes("portal")) {
-    throw new CliError(
-      `${path}: the "auth" sign-in broker requires "portal" — the portal is the only service that publishes it`,
-    );
+  const unfronted = (["web-ui", "auth"] as const).find((s) => services.includes(s));
+  if (unfronted && !services.includes("portal")) {
+    throw new CliError(`${path}: "${unfronted}" requires "portal" — core serves it only behind the portal`);
   }
-
   const plugins = validatePlugins(o["plugins"], path);
   const skills = validateStringArray(o["skills"], path, "skills");
   const env = validateServiceMap(o["env"], path, "env", (v, k) => validateStringMap(v, path, `env.${k}`));
@@ -663,22 +661,17 @@ function validate(raw: unknown, path: string): QmConfig {
   if (securityScreen?.classifier !== "proxy" && secretEnv.core?.SECURITY_SCREEN_PROXY_TOKEN !== undefined) {
     throw new CliError(`${path}: secretEnv.core.SECURITY_SCREEN_PROXY_TOKEN requires securityScreen classifier proxy`);
   }
-  for (const [service, values] of Object.entries(env)) {
-    if (!isServiceName(service)) continue;
-    const portEnv = serviceDef(service).docker.portEnv;
-    if (values?.[portEnv] !== undefined) {
-      throw new CliError(
-        `${path}: "env.${service}.${portEnv}" is managed by the deployment target and cannot be overridden`,
-      );
-    }
-  }
-  for (const [service, entries] of Object.entries(secretEnv)) {
-    if (!isServiceName(service)) continue;
-    const portEnv = serviceDef(service).docker.portEnv;
-    if (entries?.[portEnv] !== undefined) {
-      throw new CliError(
-        `${path}: "secretEnv.${service}.${portEnv}" is managed by the deployment target and cannot be overridden`,
-      );
+  for (const [field, map] of [
+    ["env", env],
+    ["secretEnv", secretEnv],
+  ] as const) {
+    for (const [service, values] of Object.entries(map)) {
+      const managed = ["PORT", "PUBLIC_PORT"].find((name) => values?.[name] !== undefined);
+      if (managed) {
+        throw new CliError(
+          `${path}: "${field}.${service}.${managed}" is managed by the deployment target and cannot be overridden`,
+        );
+      }
     }
   }
   for (const [i, plugin] of plugins.entries()) {
@@ -980,7 +973,6 @@ export function requiresAwsMicrovmImage(config: QmConfig): boolean {
 
 function validateAwsFrontDoor(config: QmConfig, path: string): void {
   const hasPortal = config.services.includes("portal");
-  const hasWebUi = config.services.includes("web-ui");
   const publicUrl = new URL(config.publicUrl);
   const protocol = publicUrl.protocol;
   if (publicUrl.pathname !== "/" || publicUrl.search || publicUrl.hash || publicUrl.username || publicUrl.password) {
@@ -997,14 +989,6 @@ function validateAwsFrontDoor(config: QmConfig, path: string): void {
     throw new CliError(
       `${path}: AWS requires env.core.AWS_DEPLOY_IMAGE to name a non-placeholder, stack-owned Lambda MicroVM image`,
     );
-  }
-  if (hasWebUi && !hasPortal) {
-    throw new CliError(
-      `${path}: AWS web-ui requires the authenticated portal; a portal-free ALB must never expose the Web UI`,
-    );
-  }
-  if (hasPortal && !hasWebUi) {
-    throw new CliError(`${path}: AWS portal requires web-ui`);
   }
   if (hasPortal && protocol !== "https:") {
     throw new CliError(`${path}: AWS portal requires an HTTPS publicUrl and ACM certificate`);
@@ -1280,6 +1264,15 @@ function validateAws(
     return false;
   };
   for (const [name, value] of Object.entries(servicesRaw)) {
+    if (isVirtualService(name)) {
+      const move =
+        name === "portal" && isPlainObject(value) && value["targetGroup"] !== undefined
+          ? " and move its targetGroup to aws.services.core.targetGroup"
+          : "";
+      throw new CliError(
+        `${path}: "aws.services.${name}" is no longer a workload — core runs ${name}. Delete the entry${move}; the next terraform apply retires its ECS service and ECR repository`,
+      );
+    }
     if (!isServiceName(name) && pluginNameError(name)) {
       throw new CliError(`${path}: "aws.services" has invalid workload name "${name}"`);
     }
@@ -1317,7 +1310,7 @@ function validateAws(
     if (value["publicPaths"] !== undefined) {
       const paths = validateStringArray(value["publicPaths"], path, `aws.services.${name}.publicPaths`);
       if (
-        isServiceName(name) ||
+        isDeclaredService(name) ||
         ["v1", "d", "key", "models", "slack", "api", "assets", "oauth", "healthz", "readyz", "metrics"].includes(
           name,
         ) ||
@@ -1623,8 +1616,7 @@ function validateServiceMap<T>(
   }
   const out: Partial<Record<DeclaredServiceName, T>> = {};
   for (const [k, v] of Object.entries(raw)) {
-    if (!(field === "env" || field === "secretEnv" ? isDeclaredService(k) : isServiceName(k)))
-      throw new CliError(`${path}: "${field}" has unknown service "${k}"`);
+    if (!isDeclaredService(k)) throw new CliError(`${path}: "${field}" has unknown service "${k}"`);
     out[k as DeclaredServiceName] = value(v, k);
   }
   return out;
