@@ -327,6 +327,7 @@ import { createMemoryRunSignalStore, type RunSignalStore } from "./runs/run-sign
 import { createPostgresRunSignalStore } from "./runs/postgres-run-signal-store.ts";
 import {
   isTerminal,
+  isUnstarted,
   runPriority,
   type EnqueueInput,
   type EnqueueResult,
@@ -1579,6 +1580,12 @@ export function buildApp(
   const runs: RunStore = {
     ...runStore.runs,
     cancelTurn: async (runId) => turnLedger?.cancel(runId) ?? null,
+    async withdraw(runId, opts) {
+      if (await runStore.runs.withdraw(runId, opts)) return true;
+      const run = turnLedger ? await runStore.runs.get(runId) : null;
+      if (!turnLedger || run?.engine !== "absurd" || !isUnstarted(run)) return false;
+      return (await turnLedger.cancel(runId)) !== null;
+    },
     async enqueue(input) {
       const enqueue = async () => {
         const known = await sessions.getByThread(input.sessionId);

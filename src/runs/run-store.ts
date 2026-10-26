@@ -171,8 +171,10 @@ export interface RunStore {
 }
 
 const TERMINAL = new Set<Run["status"]>(["done", "failed"]);
-export function isUnstarted(run: Pick<Run, "status" | "engine">): boolean {
-  return run.status === "queued" || (run.engine !== "absurd" && run.status === "pending");
+export function isUnstarted(run: Pick<Run, "status" | "engine" | "attempts" | "turnUserSeq">): boolean {
+  if (run.status === "queued") return true;
+  if (run.status !== "pending") return false;
+  return run.engine !== "absurd" || (run.attempts === 0 && run.turnUserSeq === null);
 }
 
 export function isTerminal(status: Run["status"]): boolean {

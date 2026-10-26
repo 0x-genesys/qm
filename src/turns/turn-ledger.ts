@@ -262,7 +262,15 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
         return { claimed: true, run: null };
       }
       const run = await this.begin(queue, claimed.runId, params.turnId, token, workerId);
-      if (!run) await completeRun(await db.pool(), queue, claimed.runId, { ok: false, reason: "turn not runnable" });
+      if (!run) {
+        await completeRun(await db.pool(), queue, claimed.runId, { ok: false, reason: "turn not runnable" });
+        return { claimed: true, run };
+      }
+      await db.query(
+        `DELETE FROM session_leases WHERE holder = 'turn'
+           AND session_id IN (SELECT id FROM sessions WHERE thread_ref = $1)`,
+        [run.sessionId],
+      );
       return { claimed: true, run };
     },
 
@@ -278,14 +286,7 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
            RETURNING *`,
           [turnId, token, expires, workerId, Date.now(), runId, queue],
         );
-        if (!rows[0]) return null;
-        const run = rowToRun(rows[0]);
-        await client.query(
-          `DELETE FROM session_leases WHERE holder = 'turn'
-             AND session_id IN (SELECT id FROM sessions WHERE thread_ref = $1)`,
-          [run.sessionId],
-        );
-        return run;
+        return rows[0] ? rowToRun(rows[0]) : null;
       });
     },
 
@@ -321,7 +322,8 @@ export function createTurnLedger(connectionString: string, opts: { onTerminal?: 
         const { rowCount } = await client.query(
           `UPDATE runs SET status = 'pending', lease_token = NULL, lease_expires_at = NULL, worker_id = NULL,
              last_stop = COALESCE($3, last_stop), preemptions = preemptions + $4, error_attempts = error_attempts + $5,
-             retry_after = $6, attempts = attempts - $7
+             retry_after = $6, attempts = attempts - $7,
+             started_at = CASE WHEN $7 = 1 AND attempts = 1 THEN NULL ELSE started_at END
            WHERE id = $1 AND lease_token = $2 AND status = 'running'`,
           [
             run.id,

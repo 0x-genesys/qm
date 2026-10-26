@@ -19,7 +19,7 @@ export const CANCEL_GRACE_MS = 10_000;
 const FALLBACK_POLL_MS = 1_000;
 const HANDBACK_SETTLE_MS = 2_000;
 const CLAIM_FAIL_REPORT_CONSECUTIVE = 20;
-const FINISH_ATTEMPTS = 5;
+const FINISH_RETRY_MAX_MS = 5_000;
 const FINISH_RETRY_MS = 500;
 const SWARM_CLAIM_BUDGET = 3;
 
@@ -121,15 +121,14 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
     }, extendMs);
     beat.unref?.();
     const finishWith = async (outcome: TurnOutcome): Promise<void> => {
-      for (let attempt = 1; ; attempt++) {
+      for (let attempt = 1; !shutdown.signal.aborted; attempt++) {
         try {
           if (!(await deps.ledger.finish(run, token, outcome)))
             console.warn(`[turns] turn ${run.id} ended after losing its claim; its result was not recorded`);
           return;
         } catch (error) {
-          if (attempt >= FINISH_ATTEMPTS) throw error;
           swallow(`turns: turn end failed for turn ${run.id} (retrying)`, error);
-          await sleep(FINISH_RETRY_MS * attempt);
+          await sleep(Math.min(FINISH_RETRY_MS * attempt, FINISH_RETRY_MAX_MS));
         }
       }
     };
@@ -166,7 +165,6 @@ export function createTurnRunner(deps: TurnRunnerDeps): TurnRunner {
       ended = { kind: "error", err };
     }
     try {
-      clearInterval(beat);
       if (shutdown.signal.aborted || lost) return;
       if (ended.kind === "result") {
         await finishWith({
