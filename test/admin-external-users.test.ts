@@ -18,8 +18,6 @@ import { coreEmailAdmission, coreEmailAllowed } from "../plugins/chassis/src/ext
 import { mintCapabilityToken, CAPABILITY_TTL_MS, CONTROL_PLANE_AUD } from "../src/auth/capability-token.ts";
 import { scopeId, type TurnRequest } from "../src/types.ts";
 import { testConfig } from "./support/test-config.ts";
-import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
-import { testDatabaseUrl } from "./support/test-database.ts";
 
 const ALICE = "admin-alice@default-org";
 const NOBODY = "user-uma@default-org";
@@ -70,7 +68,6 @@ function start(
   };
   const server = opts.signed
     ? createServer(built.app, {
-        replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
         ...deps,
         signingSecret: SECRET,
       })
