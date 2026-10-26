@@ -643,11 +643,13 @@ async function selfMemory(ctx: ApiCtx): Promise<void> {
     return sendJson(res, 400, { error: "bad_request", message: "principalId required" });
   if (!deps.memory) return sendJson(res, 404, { error: "not_found" });
   const scope = makeScopeId("personal", principalId);
-  const actor = deps.identity?.classify(principalId) ?? { id: principalId, type: "internal" as const };
+  const viewerId = ctx.actor?.p ?? principalId;
+  const actor = deps.identity?.classify(viewerId) ?? { id: viewerId, type: "internal" as const };
+  const viewerScope = makeScopeId("personal", viewerId);
   const memory = disclosedMemory(deps.memory, {
     actor,
-    targetScope: scope,
-    nativeScopes: [scope],
+    targetScope: viewerScope,
+    nativeScopes: [viewerScope],
     audience: [actor],
     open: true,
     config: deps.config,
