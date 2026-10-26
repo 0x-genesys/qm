@@ -77,8 +77,10 @@ test("audit log is now bounded (latent leak fixed) and preserves insertion order
 
 test("error log pages beyond the former 200-record window after filtering", async () => {
   const log = createPostgresErrorLog(testDatabaseUrl());
-  for (let i = 0; i < 260; i++)
+  for (let i = 0; i < 260; i++) {
     log.record({ category: "turn", code: String(i), message: "failure", scopeLabel: s1, sessionId: "one" });
+    await log.flush();
+  }
   log.record({ category: "turn", code: "other", message: "failure", scopeLabel: s2 });
   const page = await log.list({ scopeId: s1, sessionId: "one", offset: 200, limit: 50 });
   assert.equal(page.length, 50);
