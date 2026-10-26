@@ -171,7 +171,7 @@ test("spend: a window in the past excludes today's rows entirely", async () => {
 
 test("spend: from/to and bucket=week reshape the series over backdated rows", async () => {
   const clock = { at: Date.UTC(2026, 0, 5, 12) };
-  const store = createMemorySessionStore({ now: () => clock.at });
+  const store = createPostgresSessionStore(testDatabaseUrl(), { now: () => clock.at });
   const s = start(store);
   try {
     await bill(store, "dm:alice:d1", "dm", scopeId("personal", "alice"), { costUsd: 2 });
@@ -216,7 +216,7 @@ test("spend: from/to and bucket=week reshape the series over backdated rows", as
 
 test("spend: ?format=csv exports the same numbers for the same window", async () => {
   const clock = { at: Date.UTC(2026, 0, 5, 12) };
-  const store = createMemorySessionStore({ now: () => clock.at });
+  const store = createPostgresSessionStore(testDatabaseUrl(), { now: () => clock.at });
   const s = start(store);
   try {
     await seedPricedFixture(store);
@@ -319,7 +319,7 @@ test("spend: an empty deployment answers 200 with zeroed totals", async () => {
 
 test("spend: cron JSON and CSV name each billed cron, giving admins the task an untitled cron is known by", async () => {
   const clock = { at: Date.UTC(2026, 0, 5, 12) };
-  const store = createMemorySessionStore({ now: () => clock.at });
+  const store = createPostgresSessionStore(testDatabaseUrl(), { now: () => clock.at });
   const s = start(store);
   try {
     const cron = await s.built.app.createCron({
@@ -370,7 +370,7 @@ test("spend: cron JSON and CSV name each billed cron, giving admins the task an 
 
 test("spend: model CSV selects the model breakdown with its own filename", async () => {
   const clock = { at: Date.UTC(2026, 0, 5, 12) };
-  const store = createMemorySessionStore({ now: () => clock.at });
+  const store = createPostgresSessionStore(testDatabaseUrl(), { now: () => clock.at });
   const s = start(store);
   try {
     await seedPricedFixture(store);
