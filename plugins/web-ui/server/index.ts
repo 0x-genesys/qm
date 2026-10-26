@@ -2608,7 +2608,6 @@ const apiRoutes: readonly WebRoute[] = [
       let text = "";
       let threadRef = `${ownPrefix}default`;
       let model: string | undefined;
-      let harness: string | undefined;
       let thinkingLevel: string | undefined;
       let fastMode: boolean | undefined;
       let timezone: string | undefined;
@@ -2649,7 +2648,6 @@ const apiRoutes: readonly WebRoute[] = [
         if (typeof p.scopeId === "string" && p.scopeId) scope = p.scopeId;
         if (typeof p.channelName === "string" && p.channelName.trim()) channelName = p.channelName.trim().slice(0, 200);
         if (typeof p.model === "string" && p.model) model = p.model;
-        if (typeof p.harness === "string") harness = p.harness;
         if (typeof p.thinkingLevel === "string") thinkingLevel = p.thinkingLevel;
         if (typeof p.fastMode === "boolean") fastMode = p.fastMode;
         if (typeof p.timezone === "string" && p.timezone.trim()) timezone = p.timezone.trim().slice(0, 64);
@@ -2677,7 +2675,6 @@ const apiRoutes: readonly WebRoute[] = [
 
       const turn = {
         ...(await webTurnBase(req, user, resolved.conversation, threadRef, text)),
-        ...(harness ? { harness } : {}),
         ...(model ? { model } : {}),
         ...(thinkingLevel ? { thinkingLevel } : {}),
         ...(typeof fastMode === "boolean" ? { fastMode } : {}),

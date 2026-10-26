@@ -78,7 +78,7 @@ interface ItemTurnResult {
   sessionId?: string;
 }
 
-type LoopFollowUpOptions = Pick<TurnRequest, "model" | "harness" | "thinkingLevel" | "fastMode" | "attachments">;
+type LoopFollowUpOptions = Pick<TurnRequest, "model" | "thinkingLevel" | "fastMode" | "attachments">;
 
 type StageOptions = LoopFollowUpOptions & Pick<TurnRequest, "readOnly">;
 
@@ -562,7 +562,6 @@ export function createLoopFireService(deps: LoopFireDeps): LoopFireService {
       threadRef,
       surface: "loop",
       ...(options?.model ? { model: options.model } : {}),
-      ...(options?.harness ? { harness: options.harness } : {}),
       ...(options?.thinkingLevel ? { thinkingLevel: options.thinkingLevel } : {}),
       ...(typeof options?.fastMode === "boolean" ? { fastMode: options.fastMode } : {}),
       ...(options?.attachments?.length ? { attachments: options.attachments } : {}),

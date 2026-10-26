@@ -28,7 +28,6 @@ import { redactSecrets } from "../../plugins/chassis/src/redact-secrets.ts";
 import { isObj } from "../util/objects.ts";
 import { BOT_MODES } from "../surface-cache/channel-policy-store.ts";
 import { WEBHOOK_SCHEMES } from "../webhooks/verifiers.ts";
-import { HARNESS_IDS } from "../model/pi-models.ts";
 import { headSlice, tailSlice } from "../util/text.ts";
 import {
   applyGovernorVerdict,
@@ -284,7 +283,7 @@ function fmtCronLine(c: CronLike, preview = false): string {
       ? `\n    shift-change note (${utcMinute(c.lastFireNote.at)}${c.lastFireNote.by ? `, by ${c.lastFireNote.by}` : ""}): ${c.lastFireNote.text}`
       : "";
   const runtime = c.runtime
-    ? `\n    runtime: ${c.runtime.harnessId}/${c.runtime.modelId}${c.runtime.effortLevel ? ` (${c.runtime.effortLevel})` : ""}`
+    ? `\n    runtime: ${c.runtime.modelId}${c.runtime.effortLevel ? ` (${c.runtime.effortLevel})` : ""}`
     : "";
   const grants = c.unattendedGrants?.length ? `\n    unattended grants: ${c.unattendedGrants.join(", ")}` : "";
   return `${c.id}${c.title ? ` "${c.title}"` : ""} — ${fmtCronSchedule(c)}${dest}${state}${next}${what ? `\n    ${what}` : ""}${runtime}${grants}${note}`;
@@ -1642,7 +1641,6 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         }),
       ),
       model: Type.Optional(Type.String({ description: "open: model override; fails closed if unavailable." })),
-      harness: Type.Optional(Type.String({ description: "open: harness override." })),
       thinkingLevel: Type.Optional(Type.String({ description: "open: reasoning effort override." })),
       fastMode: Type.Optional(Type.Boolean({ description: "open: fast mode override." })),
       target: Type.Optional(
@@ -1664,7 +1662,6 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         action: "open" | "read" | "send_message" | "followup_task" | "wait";
         timeoutMs?: number;
         requestId?: string;
-        harness?: string;
         thinkingLevel?: string;
         fastMode?: boolean;
         task?: string;
@@ -1710,7 +1707,6 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         const result = await syscalls.open({
           requestId: p.requestId ?? callId,
           task: p.task ?? "",
-          ...(p.harness ? { harness: p.harness } : {}),
           ...(p.thinkingLevel ? { thinkingLevel: p.thinkingLevel } : {}),
           ...(p.fastMode !== undefined ? { fastMode: p.fastMode } : {}),
           ...(p.name ? { name: p.name } : {}),
@@ -2513,7 +2509,6 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           [
             Type.Null(),
             Type.Object({
-              harnessId: Type.Union(HARNESS_IDS.map((harnessId) => Type.Literal(harnessId))),
               modelId: Type.String(),
               effortLevel: Type.Optional(Type.String()),
               fastMode: Type.Optional(Type.Boolean()),
@@ -2521,7 +2516,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
           ],
           {
             description:
-              "create/patch: optional runtime override for an agent task. Omit to preserve defaults; null clears an override. Use runtime get to discover approved models/harnesses. Choose a cheaper model and explicit low effort when the whole task, including failure handling, is simple. Unavailable choices fail closed. Auto effort is not supported here yet.",
+              "create/patch: optional runtime override for an agent task. Omit to preserve defaults; null clears an override. Use runtime get to discover approved models. Choose a cheaper model and explicit low effort when the whole task, including failure handling, is simple. Unavailable choices fail closed. Auto effort is not supported here yet.",
           },
         ),
       ),
@@ -4372,15 +4367,14 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     name: "runtime",
     label: "runtime",
     description:
-      "Inspect or change your model, harness, reasoning effort, and fast mode. Use get to see the actual active runtime, saved defaults, and available choices. Use set for requests such as 'switch to Astra and do this'. A successful change stops this runtime and resumes the unfinished task on the selected runtime with saved tool results. Omitted settings are preserved. lifetime defaults to task (this user request or cron fire, including retries); scope changes the default for future requests in this scope too and requires a live user. Cron fires may change only their task runtime; the next fire keeps its configured runtime. inherit returns to the scope default, or clears the scope override when lifetime is scope. Never guess capabilities or claim you cannot switch before using this tool. Call a change by itself, after other tools finish.",
+      "Inspect or change your model, reasoning effort, and fast mode. Use get to see the actual active runtime, saved defaults, and available choices. Use set for requests such as 'switch to Astra and do this'. A successful change stops this runtime and resumes the unfinished task on the selected runtime with saved tool results. Omitted settings are preserved. lifetime defaults to task (this user request or cron fire, including retries); scope changes the default for future requests in this scope too and requires a live user. Cron fires may change only their task runtime; the next fire keeps its configured runtime. inherit returns to the scope default, or clears the scope override when lifetime is scope. Never guess capabilities or claim you cannot switch before using this tool. Call a change by itself, after other tools finish.",
     parameters: Type.Object({
       action: Type.Union([Type.Literal("get"), Type.Literal("set"), Type.Literal("inherit")]),
       model: Type.Optional(Type.String({ description: "Model ID or exact display name from get, such as Astra." })),
-      harness: Type.Optional(Type.String()),
       effort: Type.Optional(
         Type.String({
           description:
-            "Use modelCatalog[modelId].effortLevelsByHarness[harnessId] from get. adaptive = native Auto; default = provider default; auto = legacy harness default, not adaptive reasoning.",
+            "Use modelCatalog[modelId].effortLevels from get. adaptive = native Auto; default = provider default; auto = legacy default, not adaptive reasoning.",
         }),
       ),
       fastMode: Type.Optional(Type.Boolean()),
