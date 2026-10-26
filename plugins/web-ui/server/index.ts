@@ -14,6 +14,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { Readable } from "node:stream";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { isMainThread } from "node:worker_threads";
+import { multitenant, serveTenantsByHost } from "../../chassis/src/tenant-workers.ts";
 import { dirname, extname, join, normalize } from "node:path";
 import { randomBytes } from "node:crypto";
 import { LRUCache } from "lru-cache";
@@ -3548,8 +3550,11 @@ export async function startServer(port = PORT, host?: string): Promise<Server> {
   return server;
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  startServer().catch(async (err: unknown) => {
+if (isMainThread && process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  (multitenant(process.env)
+    ? serveTenantsByHost({ entry: new URL(import.meta.url), service: "web-ui", port: PORT, env: process.env })
+    : startServer()
+  ).catch(async (err: unknown) => {
     reportBackendError(err);
     console.error("[web-ui] failed to start:", String(err));
     await flushErrorReporting();

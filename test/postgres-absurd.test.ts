@@ -95,7 +95,9 @@ test("absurd/0.5.1 applies once and a rerun is a no-op", { skip }, async () => {
 test("the three turn queues exist with a 7-day cleanup TTL", { skip }, async () => {
   const { rows } = await admin.query(
     `SELECT q.queue_name, p.storage_mode, p.cleanup_ttl::text AS ttl
-       FROM absurd.list_queues() q, absurd.get_queue_policy(q.queue_name) p ORDER BY q.queue_name`,
+       FROM absurd.list_queues() q, absurd.get_queue_policy(q.queue_name) p
+      WHERE q.queue_name = ANY($1) ORDER BY q.queue_name`,
+    [TURN_QUEUES],
   );
   assert.deepEqual(rows, [
     { queue_name: "turns_background", storage_mode: "unpartitioned", ttl: "7 days" },

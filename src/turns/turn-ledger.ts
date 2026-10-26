@@ -19,7 +19,7 @@ import {
   spawnTask,
   TaskCancelled,
 } from "./absurd.ts";
-import { TURN_QUEUES, type TurnQueue } from "./absurd-schema.ts";
+import { TURN_QUEUES, tenantQueue, type TurnQueue } from "./absurd-schema.ts";
 import { turnFenceHeld } from "./turn-fence.ts";
 
 const TURN_TASK = "turn";
@@ -64,6 +64,30 @@ const TURN_LEDGER_MIGRATION = {
        EXECUTE format(
          'SELECT true FROM absurd.%I WHERE run_id = $1 AND ((state = ''running'' AND claimed_by = $2) OR state = ''cancelled'') FOR SHARE',
          'r_' || v_queue)
+         INTO v_ok USING v_run, p_token;
+       RETURN COALESCE(v_ok, false);
+     END $qm_turn_fence$`,
+  ],
+};
+
+const TURN_TENANT_QUEUES_MIGRATION = {
+  id: "turns/0002-tenant-queues",
+  statements: [
+    `CREATE OR REPLACE FUNCTION qm_turn_fence(p_turn text, p_token text) RETURNS boolean LANGUAGE plpgsql AS $qm_turn_fence$
+     DECLARE
+       v_queue text;
+       v_run uuid;
+       v_ok boolean;
+     BEGIN
+       SELECT absurd_queue, absurd_run_id INTO v_queue, v_run FROM runs
+        WHERE id = p_turn AND engine = 'absurd' AND status = 'running' AND lease_token = p_token
+        FOR SHARE;
+       IF v_queue IS NULL OR v_run IS NULL THEN
+         RETURN false;
+       END IF;
+       EXECUTE format(
+         'SELECT true FROM absurd.%I WHERE run_id = $1 AND ((state = ''running'' AND claimed_by = $2) OR state = ''cancelled'') FOR SHARE',
+         'r_' || v_queue || COALESCE('_t' || left(replace(NULLIF(current_setting('qm.tenant_id', true), ''), '-', ''), 12), ''))
          INTO v_ok USING v_run, p_token;
        RETURN COALESCE(v_ok, false);
      END $qm_turn_fence$`,
@@ -136,7 +160,7 @@ function queueOf(run: Pick<Run, "absurdQueue">): TurnQueue {
 }
 
 function absurdTable(queue: TurnQueue, prefix: "r_" | "t_"): string {
-  return `absurd.${pg.escapeIdentifier(prefix + queue)}`;
+  return `absurd.${pg.escapeIdentifier(prefix + tenantQueue(queue))}`;
 }
 
 function repairReason(row: Record<string, unknown>): string {
@@ -149,7 +173,7 @@ function repairReason(row: Record<string, unknown>): string {
 const POINTER_KEY = "tenant_id = qm_tenant_id() AND thread_ref = $1";
 
 export function createTurnLedger(connectionString: string, opts: { onTerminal?: (run: Run) => void } = {}): TurnLedger {
-  const db: PgPool = createPgPool(connectionString, [TURN_LEDGER_MIGRATION]);
+  const db: PgPool = createPgPool(connectionString, [TURN_LEDGER_MIGRATION, TURN_TENANT_QUEUES_MIGRATION]);
   let tenant: Promise<string> | null = null;
   const tenantId = (client: PoolClient): Promise<string> =>
     (tenant ??= client

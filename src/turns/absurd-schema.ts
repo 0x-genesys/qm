@@ -1,8 +1,13 @@
 import { readFileSync } from "node:fs";
 import { createPgPool, type PgMigrationDefinition, type PgPool } from "../persistence/pg-pool.ts";
+import { tenant } from "../tenant.ts";
 
 export const TURN_QUEUES = ["turns_people", "turns_delegated", "turns_background"] as const;
 export type TurnQueue = (typeof TURN_QUEUES)[number];
+
+export function tenantQueue(queue: TurnQueue, tenantId = tenant().id): string {
+  return tenantId ? `${queue}_t${tenantId.replace(/-/g, "").slice(0, 12).toLowerCase()}` : queue;
+}
 
 const IDENTIFIER_CHAR = /[A-Za-z0-9_$]/;
 const DOLLAR_TAG = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/;
@@ -70,4 +75,14 @@ export const ABSURD_MIGRATION: PgMigrationDefinition = {
 
 export function registerAbsurdSchema(connectionString: string): PgPool {
   return createPgPool(connectionString, [ABSURD_MIGRATION]);
+}
+
+export async function ensureTenantQueues(connectionString: string): Promise<void> {
+  const queues = TURN_QUEUES.map((queue) => tenantQueue(queue)).filter((queue, i) => queue !== TURN_QUEUES[i]);
+  if (!queues.length) return;
+  const pool = await registerAbsurdSchema(connectionString).pool();
+  for (const queue of queues) {
+    await pool.query("SELECT absurd.create_queue($1, 'unpartitioned')", [queue]);
+    await pool.query(`SELECT absurd.set_queue_policy($1, '{"cleanup_ttl":"7 days"}'::jsonb)`, [queue]);
+  }
 }

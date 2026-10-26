@@ -558,6 +558,7 @@ export function buildApp(
     modelCredentialFetch?: typeof fetch;
     modelVerificationProbe?: typeof probeModel;
     harnesses?: Partial<Record<HarnessId, Harness>>;
+    env?: NodeJS.ProcessEnv;
   } = {},
 ): BuiltApp {
   let backgroundAdmission = () => !config.backgroundDeploymentId;
@@ -1178,7 +1179,7 @@ export function buildApp(
     defaultBackend: config.sandboxBackend,
     onError: sandboxOnError,
   });
-  const secretSource = createEnvSecretSource();
+  const secretSource = createEnvSecretSource(overrides.env);
   const resolveClient: OAuthClientResolver = withPublicOAuthClients(
     createConnectorClientResolver({
       reader: configStore,

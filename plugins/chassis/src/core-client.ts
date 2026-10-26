@@ -4,6 +4,7 @@ import { pipeline } from "node:stream/promises";
 import { reportBackendError } from "./error-reporting.ts";
 import { gzipAccepted, withVary } from "./http.ts";
 import { signedRequestHeaders } from "./source-auth-sign.ts";
+import { coreTenantHost } from "./tenant-hosts.ts";
 
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
@@ -16,7 +17,10 @@ export function signedHeaders(
   rawBody = "",
   signatureTail = rawBody,
 ): Record<string, string> {
-  return signedRequestHeaders(secret, method, pathWithQuery, signatureTail, { "content-type": "application/json" });
+  return signedRequestHeaders(secret, method, pathWithQuery, signatureTail, {
+    "content-type": "application/json",
+    ...coreTenantHost(),
+  });
 }
 
 export function withSourceAuthNonce(pathWithQuery: string, secret: string | undefined): string {

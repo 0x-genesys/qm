@@ -1,6 +1,7 @@
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 import { signedHeaders } from "../../chassis/src/core-client.ts";
 import { withVary } from "../../chassis/src/http.ts";
+import { coreTenantHost } from "../../chassis/src/tenant-hosts.ts";
 import { mintPortalIdentity, PORTAL_IDENTITY_HEADER } from "../../chassis/src/portal-identity.ts";
 import { UI_CHANNEL_COOKIE, UI_VERSION_HEADER } from "../../chassis/src/ui-release.ts";
 
@@ -68,7 +69,7 @@ function relay(
       port: target.port,
       method: req.method,
       path: target.path,
-      headers: target.headers,
+      headers: target.headers["x-qm-app-host"] ? target.headers : { ...target.headers, ...coreTenantHost() },
     },
     (upRes) => {
       const out: Record<string, string | string[]> = {};

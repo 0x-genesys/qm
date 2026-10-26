@@ -12,6 +12,8 @@ import { provisionTrustedAdmin } from "./trusted-admin.ts";
 import { createHash } from "node:crypto";
 import { createServer, METHODS, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { pathToFileURL } from "node:url";
+import { isMainThread } from "node:worker_threads";
+import { multitenant, serveTenantsByHost } from "../../chassis/src/tenant-workers.ts";
 import { ADMIN_LOGIN_SCRIPT, ADMIN_LOGIN_SCRIPT_HASH, openAdminLogin } from "./admin-login.ts";
 import { LRUCache } from "lru-cache";
 import { createTrustedEntry, trustedEntryConfig } from "./trusted-entry.ts";
@@ -1768,15 +1770,25 @@ function validEmailDomain(value: string): boolean {
     );
 }
 
-export async function startServer(port = PORT): Promise<Server> {
+function loopbackPort(upstream: string): number | undefined {
+  try {
+    const url = new URL(upstream);
+    return url.protocol === "http:" && url.hostname === "127.0.0.1" && url.port && url.pathname === "/"
+      ? Number(url.port)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function startServer(port = PORT, host?: string): Promise<Server> {
   bootChecks();
   if (process.env.AUTH_EMBEDDED === "1") {
-    if (AUTH_BROKER_UPSTREAM !== "http://127.0.0.1:8099") {
-      throw new Error("Embedded auth requires the loopback broker upstream");
-    }
+    const brokerPort = loopbackPort(AUTH_BROKER_UPSTREAM);
+    if (!brokerPort) throw new Error("Embedded auth requires a loopback broker upstream");
     const auth = await import("../../auth/src/index.ts");
     const broker = await auth.startServer({
-      port: 8099,
+      port: brokerPort,
       host: "127.0.0.1",
       ...(trustedSignInLabel ? { trustedSignInLabel } : {}),
     });
@@ -1785,7 +1797,7 @@ export async function startServer(port = PORT): Promise<Server> {
   }
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, () => {
+    server.listen(port, host, () => {
       server.off("error", reject);
       resolve();
       console.log(`[portal] public front door on http://localhost:${port} → web-ui over 6PN (org ${ORG})`);
@@ -1812,8 +1824,11 @@ export async function startServer(port = PORT): Promise<Server> {
 
 export { handle, server };
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  startServer().catch((error: unknown) => {
+if (isMainThread && process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  (multitenant(process.env)
+    ? serveTenantsByHost({ entry: new URL(import.meta.url), service: "portal", port: PORT, env: process.env })
+    : startServer()
+  ).catch((error: unknown) => {
     reportBackendError(error);
     console.error("[portal] failed to start:", errMessage(error));
     process.exitCode = 1;
