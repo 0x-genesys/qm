@@ -1,3 +1,4 @@
+import type { WorkspaceLayer } from "../types.ts";
 import type { WorkspaceStore } from "../workspace/workspace-store.ts";
 import type { AdvisoryLock } from "../persistence/advisory-lock.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
@@ -20,6 +21,7 @@ import type {
   ComputerStatus,
   EgressEnforcement,
   ExecResult,
+  ProvisionOptions,
   Sandbox,
   SandboxHandle,
   TeardownOptions,
@@ -78,6 +80,7 @@ export interface SandboxDriver {
   backend: string;
   homeDir: string;
   os: string;
+  runtimes?: string[];
   tools?: string[];
   cpus?: number;
   memoryMb?: number;
@@ -188,12 +191,14 @@ export function createProviderSandbox(
     await merge(scope, { initializationPending: true });
     onStatus?.("Preparing the sandbox…");
     let created = false;
+    let booted = false;
     try {
       if (existing) await driver.resume(name);
       else {
         await driver.create(name, { scratch: false });
         created = true;
       }
+      booted = true;
       const checkpointId = stored?.checkpointId;
       const restored =
         created && checkpointId && driver.checkpoints
@@ -206,6 +211,7 @@ export function createProviderSandbox(
       if (created)
         await driver.destroy(name).catch(swallowAs(`${backend}-sandbox: destroy after failed hydration`, undefined));
       driver.forget?.(name);
+      if (!booted) throw e;
       report("sandbox_hydrate", "hydrate_failed", e, scope);
       throw new Error(
         `${backend} provision: home hydration failed (${errMessage(e)}); not risking the stored snapshot`,
@@ -256,7 +262,7 @@ export function createProviderSandbox(
     egressEnforcement: driver.egressEnforcement,
     spec: {
       os: driver.os,
-      runtimes: ["Node", "Python 3"],
+      runtimes: driver.runtimes ?? ["Node", "Python 3"],
       tools: visibleTools([...(driver.tools ?? BASE_TOOLS), ...extraTools]),
       notInstalled: visibleNotInstalled(
         OPTIONAL_TOOLS.filter((t) => !(driver.tools ?? []).includes(t)),
@@ -302,7 +308,28 @@ export function createProviderSandbox(
     };
   }
 
+  const residents = new Map<string, number>();
+  const hold = (name: string, delta: number): void => {
+    const count = (residents.get(name) ?? 0) + delta;
+    if (count > 0) residents.set(name, count);
+    else residents.delete(name);
+  };
+
+  async function provision(layers: WorkspaceLayer[], opts?: ProvisionOptions): Promise<SandboxHandle> {
+    if (opts?.scratch) return base.provision(layers, opts);
+    const writable = layers.find((l) => l.mode === "rw") ?? layers[0];
+    const name = nameFor(writable?.scopeId ?? "default");
+    hold(name, 1);
+    try {
+      return await base.provision(layers, opts);
+    } catch (e) {
+      hold(name, -1);
+      throw e;
+    }
+  }
+
   async function teardown(handle: SandboxHandle, opts?: TeardownOptions): Promise<void> {
+    if (!handle.scratch) hold(handle.id, -1);
     if (!handle.scratch && !opts?.destroy) {
       const scope = base.scopeFor(handle.id) ?? "default";
       await base.provisionQueue(scope, () =>
@@ -315,7 +342,7 @@ export function createProviderSandbox(
               report("sandbox_snapshot", "teardown_snapshot_failed", e, scope),
             );
           }
-          if (driver.park) {
+          if (driver.park && !residents.has(handle.id)) {
             await driver
               .park(handle.id, { keepWarm: !!opts?.keepWarm })
               .catch((e) => report("sandbox_teardown", "park_failed", e, scope));
@@ -330,7 +357,7 @@ export function createProviderSandbox(
     profile,
     scopeFor: base.scopeFor,
     nameFor,
-    provision: base.provision,
+    provision,
     run: base.run,
     writeFile: base.writeFile,
     writeFileBytes: base.writeFileBytes,
