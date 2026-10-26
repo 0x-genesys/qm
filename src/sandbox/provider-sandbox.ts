@@ -35,7 +35,7 @@ const GUEST_PROBE_TIMEOUT_SEC = 15;
 const BASE_TOOLS = ["git", "curl", "jq", "tar", "python3"];
 const OPTIONAL_TOOLS = ["gh", "aws", "gcloud", "kubectl", "flyctl", "glab"];
 
-export type ErrorReport = (e: { category: string; code: string; message: string; scopeLabel?: string }) => void;
+type ErrorReport = (e: { category: string; code: string; message: string; scopeLabel?: string }) => void;
 
 export interface SandboxShared extends BlobStagingOptions {
   namePrefix?: string;
@@ -72,7 +72,7 @@ export interface MachineState {
   resources?: ComputerStatus["resources"];
 }
 
-export interface DriverCheckpoints {
+interface DriverCheckpoints {
   machineBound?: "export-before-destroy" | "export-on-capture";
   capture(name: string): Promise<string>;
   restore(name: string, checkpointId: string): Promise<void>;

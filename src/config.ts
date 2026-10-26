@@ -255,7 +255,7 @@ export function harnessCarriedModelAuth(config: Config): ModelProvider | undefin
   return undefined;
 }
 
-export interface SandboxEnv {
+interface SandboxEnv {
   namePrefix?: string;
   defaultTimeoutSec?: number;
   egressProxyUrl?: string;

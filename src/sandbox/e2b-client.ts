@@ -41,7 +41,7 @@ interface E2bSandboxSummary {
   metadata?: Record<string, string>;
 }
 
-export interface E2bSandboxInfo {
+interface E2bSandboxInfo {
   state: string;
   expiresAtMs: number;
   cpuCount?: number;
