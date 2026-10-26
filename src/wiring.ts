@@ -634,6 +634,7 @@ export function buildApp(
       return {
         ...direct,
         ...(directProviderAvailability.codexOAuth ? { codexOAuth: true } : {}),
+        ...(config.claudeAuthCredential ? { anthropic: true } : {}),
         modelIds: new Set(Object.keys(gatewayTransport?.models ?? {})),
       };
     },
@@ -1384,7 +1385,25 @@ export function buildApp(
       return {};
     }
   };
+  const companyClaudeAuthEnv =
+    config.claudeAuthCredential && keychain
+      ? keychainHarnessAuthEnv(keychain, config.claudeAuthCredential, [
+          "CLAUDE_CODE_OAUTH_TOKEN",
+          "ANTHROPIC_AUTH_TOKEN",
+        ])
+      : undefined;
+  const resolveCompanyClaudeKeys = async (): Promise<ProviderKeys> => {
+    if (!companyClaudeAuthEnv) return {};
+    const env = await companyClaudeAuthEnv();
+    const token = env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_AUTH_TOKEN;
+    if (!token)
+      console.error(
+        `[model] company Claude subscription credential ${config.claudeAuthCredential} yielded no token (missing, expired, or not an env credential)`,
+      );
+    return token ? { anthropic: token } : {};
+  };
   const resolvePiProviderKeys = async (): Promise<ProviderKeys> => ({
+    ...(await resolveCompanyClaudeKeys()),
     ...(await resolveModelProviderKeys()),
     ...(await resolveCompanySubscriptionKeys()),
   });
