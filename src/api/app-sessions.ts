@@ -15,6 +15,7 @@ import { goalView } from "../runs/turn-stream.ts";
 import { SEARCH_HIT_LIMIT, entrySearchText, searchSnippet, searchTerms } from "../sessions/entry-search.ts";
 import { supportsProcessSessions } from "../sandbox/sandbox.ts";
 import { ProcessSessionGoneError } from "../sandbox/exec-process-session.ts";
+import { ScratchJobComputerGoneError } from "../sandbox/held-computers.ts";
 import { cronIsActive, cronTiedTo } from "../cron/cron-store.ts";
 import { cronRef, deployRef, encodeRef, fileRef, parseRef, skillRef } from "../acl/resource-ref.ts";
 import { samePerson } from "../directory/person.ts";
@@ -716,10 +717,16 @@ export function createSessionMethods(
       const sandbox = deps.sandbox;
       const rec = await deps.processes.get(processId);
       if (!rec || rec.kind !== "background" || rec.sessionRef !== session.threadRef) return null;
-      const handle = await sandbox.provision(
-        [{ scopeId: rec.scopeId, mode: "rw", mountPath: "" }],
-        rec.sandboxId ? { sandboxId: rec.sandboxId } : undefined,
-      );
+      const handle = await sandbox
+        .provision(
+          [{ scopeId: rec.scopeId, mode: "rw", mountPath: "" }],
+          rec.sandboxId ? { sandboxId: rec.sandboxId } : undefined,
+        )
+        .catch((error: unknown) => {
+          if (error instanceof ScratchJobComputerGoneError) return null;
+          throw error;
+        });
+      if (!handle) return { chunk: "", cursor: sinceCursor, state: "exited" };
       try {
         const read = await sandbox.readProcess(handle, processId, { sinceCursor, maxBytes: 65_536, waitMs: 0 });
         return {

@@ -101,8 +101,9 @@ export function createScratchJobComputers(deps: {
       if (!entry) return false;
       const live = await jobs(sandboxId, entry.scopeId).then(
         (records) => records.some((process) => process.status === "running" || process.credentialsPending),
-        (error) => {
+        async (error) => {
           held.delete(sandboxId);
+          await reapRunning(sandboxId, entry.handle, entry.scopeId);
           throw error;
         },
       );
@@ -121,7 +122,7 @@ export function createScratchJobComputers(deps: {
         [...held].map(async ([sandboxId, entry]) => {
           clearTimeout(entry.timer);
           await entry.checking;
-          if (!entry.retire) return;
+          if (held.get(sandboxId) !== entry || !entry.retire) return;
           await reapRunning(sandboxId, entry.handle, entry.scopeId);
           await entry.retire().then(
             () => void held.delete(sandboxId),
