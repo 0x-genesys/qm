@@ -20,6 +20,7 @@ import {
 import { fromJSONSchema, type ZodObject } from "zod";
 import { contentText, createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { CONFIG_DEFAULTS, type Config } from "../config.ts";
+import { CLAUDE_BEDROCK_ENV_PASSTHROUGH } from "./bedrock-env.ts";
 import { NonRetryableTurnError } from "../core/turn-error.ts";
 import { isDeliveryNote } from "../core/attachments.ts";
 import {
@@ -106,6 +107,7 @@ const CLAUDE_ENV_PASSTHROUGH = [
   "ANTHROPIC_AUTH_TOKEN",
   "ANTHROPIC_BASE_URL",
   "CLAUDE_CODE_OAUTH_TOKEN",
+  ...CLAUDE_BEDROCK_ENV_PASSTHROUGH,
 ] as const;
 
 export function claudeChildEnv(source: NodeJS.ProcessEnv, jail: string): NodeJS.ProcessEnv {
@@ -122,6 +124,7 @@ export function perUserClaudeEnv(env: NodeJS.ProcessEnv, oauthToken: string | un
   delete scoped.ANTHROPIC_API_KEY;
   delete scoped.ANTHROPIC_AUTH_TOKEN;
   delete scoped.ANTHROPIC_BASE_URL;
+  for (const name of CLAUDE_BEDROCK_ENV_PASSTHROUGH) delete scoped[name];
   scoped.CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
   return scoped;
 }

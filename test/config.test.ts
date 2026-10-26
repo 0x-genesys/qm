@@ -795,6 +795,45 @@ test("company ChatGPT auth satisfies model onboarding on any harness without an 
   );
 });
 
+test("a Bedrock-routed Claude harness satisfies model onboarding as anthropic", () => {
+  const config = { ...loadConfig({}), harness: "claude" as const };
+  assert.equal(
+    harnessCarriedModelAuth({
+      ...config,
+      claudeProcessEnv: { ...config.claudeProcessEnv, CLAUDE_CODE_USE_BEDROCK: "1" },
+    }),
+    "anthropic",
+  );
+  assert.equal(
+    harnessCarriedModelAuth({
+      ...config,
+      claudeProcessEnv: { ...config.claudeProcessEnv, CLAUDE_CODE_USE_BEDROCK: "false" },
+    }),
+    undefined,
+  );
+});
+
+test("loadConfig's claudeProcessEnv forwards Bedrock routing and AWS credentials from the environment", () => {
+  const config = loadConfig({
+    HARNESS: "claude",
+    CLAUDE_CODE_USE_BEDROCK: "1",
+    AWS_REGION: "us-west-2",
+    AWS_ACCESS_KEY_ID: "akid",
+    AWS_SECRET_ACCESS_KEY: "secret",
+    AWS_SESSION_TOKEN: "session",
+    AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: "/v2/credentials/task-role",
+    AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE: "/var/run/secrets/token",
+  });
+  assert.equal(config.claudeProcessEnv.CLAUDE_CODE_USE_BEDROCK, "1");
+  assert.equal(config.claudeProcessEnv.AWS_REGION, "us-west-2");
+  assert.equal(config.claudeProcessEnv.AWS_ACCESS_KEY_ID, "akid");
+  assert.equal(config.claudeProcessEnv.AWS_SECRET_ACCESS_KEY, "secret");
+  assert.equal(config.claudeProcessEnv.AWS_SESSION_TOKEN, "session");
+  assert.equal(config.claudeProcessEnv.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI, "/v2/credentials/task-role");
+  assert.equal(config.claudeProcessEnv.AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE, "/var/run/secrets/token");
+  assert.equal(harnessCarriedModelAuth({ ...config, harness: "claude" as const }), "anthropic");
+});
+
 test("CODEX_AUTH_FILE is a validated local-only company ChatGPT login", (t) => {
   const dir = mkdtempSync(join(tmpdir(), "qm-config-chatgpt-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
