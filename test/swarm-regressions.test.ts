@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { swarmFixture } from "./support/swarm-fixture.ts";
+import { testMap } from "./support/test-database.ts";
 
 test("explicit self-recipient remains in shared history without waking itself", async () => {
   const f = await swarmFixture();
@@ -27,12 +28,21 @@ test("same initial request and settings can be retried without reserving more wo
   );
   assert.equal((await f.store.get(f.root.id))!.members.length, 2);
 });
-test("the default resolved worker deadline is ten minutes", async () => {
+test("a swarm has no worker turn deadline unless it sets turnMs", async () => {
   const f = await swarmFixture();
   await f.service.spawn(f.caller, { requestId: "initial", text: "work" });
+  await f.service.sweep();
   const swarm = (await f.store.get(f.root.id))!;
-  assert.equal(swarm.settings.turnMs, 600_000);
-  assert.equal(swarm.template.turnWallClockMs, 600_000);
+  assert.equal(swarm.settings.turnMs, undefined);
+  const run = (await f.runs.list()).find((item) => item.request.swarm)!;
+  assert.equal(run.request.turnWallClockMs, undefined);
+});
+test("a swarm turn resumed after a shutdown hand-back keeps its dispatch provenance", async () => {
+  const f = await swarmFixture();
+  await f.service.spawn(f.caller, { requestId: "initial", text: "work" });
+  await f.service.sweep();
+  const run = (await f.runs.list()).find((item) => item.request.swarm)!;
+  assert.ok(await f.service.binding({ ...run.request, runId: run.id, resumeCause: { kind: "shutdown" } }));
 });
 test("settings validate shape before creating a swarm", async () => {
   for (const settings of [
@@ -68,13 +78,12 @@ test("eligible and forged recipients reject atomically rather than partially sen
 });
 
 test("provider default is pinned before retries and child provisioning, with no Modal fallback", async () => {
-  const { createMemoryMap } = await import("../src/persistence/durable-map.ts");
   const { createSandboxResources } = await import("../src/sandbox/sandbox-resources.ts");
   const { createSwarmService } = await import("../src/swarms/swarm-service.ts");
   const f = await swarmFixture();
   const options: Parameters<typeof createSandboxResources>[0] = {
     records: f.records,
-    defaults: createMemoryMap(),
+    defaults: testMap(),
     backends: { aws: { ...f.backend, profile: { ...f.backend.profile, backend: "aws" } } },
     defaultBackend: "aws",
     lock: f.serviceOptions.lock,
@@ -96,13 +105,12 @@ test("provider default is pinned before retries and child provisioning, with no 
 });
 
 test("selected scope computer determines new worker provider, but its private disk is not reused", async () => {
-  const { createMemoryMap } = await import("../src/persistence/durable-map.ts");
   const { createSandboxResources } = await import("../src/sandbox/sandbox-resources.ts");
   const { createSwarmService } = await import("../src/swarms/swarm-service.ts");
   const f = await swarmFixture();
   const sandboxes = createSandboxResources({
     records: f.records,
-    defaults: createMemoryMap(),
+    defaults: testMap(),
     backends: { modal: f.backend, aws: { ...f.backend, profile: { ...f.backend.profile, backend: "aws" } } },
     defaultBackend: "modal",
     lock: f.serviceOptions.lock,

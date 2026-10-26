@@ -82,7 +82,6 @@ interface DeploymentConfig {
   port: number;
   publicPort?: number;
   dataDir: string;
-  sessionStore: "memory" | "postgres";
   databaseUrl?: string;
   databaseCaCert?: string;
   databaseCaCertFile?: string;
@@ -1075,8 +1074,8 @@ function modelProviderEnvStrict(env: NodeJS.ProcessEnv): ModelProvider | undefin
   return declared;
 }
 
-function resolveStoreKinds(env: NodeJS.ProcessEnv): Pick<Config, "sessionStore" | "runStore"> {
-  for (const key of ["SESSION_STORE", "RUN_STORE", "ARTIFACT_STORE"] as const) {
+function resolveStoreKinds(env: NodeJS.ProcessEnv): Pick<Config, "runStore"> {
+  for (const key of ["RUN_STORE", "ARTIFACT_STORE"] as const) {
     if (env[key] === "sqlite") {
       throw new Error(
         `${key}=sqlite is no longer supported — SQLite was removed. ` +
@@ -1084,14 +1083,13 @@ function resolveStoreKinds(env: NodeJS.ProcessEnv): Pick<Config, "sessionStore" 
       );
     }
   }
-  const sessionStore = env.SESSION_STORE === "postgres" ? "postgres" : "memory";
-  const runStore = env.RUN_STORE === "memory" || env.RUN_STORE === "postgres" ? env.RUN_STORE : sessionStore;
-  if (env.NODE_ENV === "production" && (sessionStore === "memory" || runStore === "memory")) {
+  const runStore = env.RUN_STORE === "memory" ? "memory" : "postgres";
+  if (env.NODE_ENV === "production" && runStore === "memory") {
     throw new Error(
-      `production requires SESSION_STORE=postgres and a Postgres run store (got SESSION_STORE=${env.SESSION_STORE ?? "unset"}, RUN_STORE=${env.RUN_STORE ?? "unset"}): in-memory sessions and runs are lost on restart and invisible to other instances.`,
+      "production requires a Postgres run store (got RUN_STORE=memory): in-memory runs are lost on restart and invisible to other instances.",
     );
   }
-  return { sessionStore, runStore };
+  return { runStore };
 }
 
 function loadDeploymentConfig(env: NodeJS.ProcessEnv): DeploymentConfig {
@@ -1149,7 +1147,7 @@ function loadDeploymentConfig(env: NodeJS.ProcessEnv): DeploymentConfig {
     throw new Error(`missing or insecure required core secrets: ${described.join(", ")}`);
   }
   const modelProvider = modelProviderEnvStrict(env);
-  const { sessionStore, runStore } = resolveStoreKinds(env);
+  const { runStore } = resolveStoreKinds(env);
   if (env.E2B_API_KEY && !env.E2B_SNAPSHOT_S3_BUCKET) {
     console.warn(
       "[config] e2b sandbox backend enabled without E2B_SNAPSHOT_S3_BUCKET — provider pause preserves the machine, but there are no home snapshots, so a sandbox the provider loses comes back with an empty home; set E2B_SNAPSHOT_S3_BUCKET for durable portable recovery.",
@@ -1342,7 +1340,6 @@ function loadDeploymentConfig(env: NodeJS.ProcessEnv): DeploymentConfig {
     ...(env.POSTHOG_API_KEY?.trim()
       ? { productAnalytics: { apiKey: env.POSTHOG_API_KEY.trim(), host: env.POSTHOG_HOST?.trim() } }
       : {}),
-    sessionStore,
     ...(env.DATABASE_URL ? { databaseUrl: env.DATABASE_URL } : {}),
     ...(env.DATABASE_POOL_URL ? { databasePoolUrl: env.DATABASE_POOL_URL } : {}),
     ...(env.DATABASE_POOL_CA_CERT ? { databasePoolCaCert: env.DATABASE_POOL_CA_CERT } : {}),

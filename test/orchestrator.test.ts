@@ -11,7 +11,7 @@ import type { OutboundPost } from "../src/surfaces/outbound.ts";
 import { scopeId, type TurnRequest } from "../src/types.ts";
 import { TEST_CAPABILITY_SECRET, testConfig } from "./support/test-config.ts";
 import { runNowSettled } from "./support/settle.ts";
-import { loadConfig, type Config } from "../src/config.ts";
+import { type Config } from "../src/config.ts";
 import type { SandboxHandle, ProvisionOptions, Sandbox } from "../src/sandbox/sandbox.ts";
 import { verifyCapabilityToken, EGRESS_PROXY_AUD, SANDBOX_CAPABILITY_TTL_MS } from "../src/auth/capability-token.ts";
 import { egressClaimAllowingControlPlane } from "../src/core/orchestrator.ts";
@@ -27,9 +27,10 @@ import type { AclStore } from "../src/acl/acl-store.ts";
 import type { ScopeId } from "../src/types.ts";
 import type { SecurityScreener } from "../src/security/security-screener.ts";
 import { runTrigger } from "../src/triggers/run-trigger.ts";
-import { createDirectoryStore } from "../src/directory/directory-store.ts";
 import { createIdempotencyStore } from "../src/idempotency/idempotency-store.ts";
-import { createMemoryMap } from "../src/persistence/durable-map.ts";
+import { testMap } from "./support/test-database.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
+import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
 
 const noDefaultSandbox = new WeakSet<object>();
 function requestScope(req: TurnRequest): string | null {
@@ -885,7 +886,7 @@ test("a channel cron receives env credentials only when the directory proves an 
     if (opts) captures.push(opts);
     return realProvision(layers, opts);
   };
-  const directory = createDirectoryStore();
+  const directory = createPostgresDirectoryStore(testDatabaseUrl());
   await directory.replace([
     { principalId: "U1", displayName: "One", type: "internal" },
     { principalId: "U2", displayName: "Two", type: "internal" },
@@ -912,7 +913,7 @@ test("a channel cron receives env credentials only when the directory proves an 
     const out = await runTrigger(
       {
         outbound,
-        idempotency: createIdempotencyStore(createMemoryMap()),
+        idempotency: createIdempotencyStore(testMap()),
         identity,
         run: (req) => app.turn(req),
         directory,
