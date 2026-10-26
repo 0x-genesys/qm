@@ -17,6 +17,7 @@ import {
   type ModelGatewayTransportConfig,
   type ProviderBaseUrls,
 } from "./model/provider-endpoints.ts";
+import { CLAUDE_BEDROCK_ENV_PASSTHROUGH, claudeEnvUsesBedrock } from "./harness/bedrock-env.ts";
 import { join, resolve } from "node:path";
 import {
   parseMemoryCaptureMode,
@@ -236,7 +237,8 @@ export function harnessCarriedModelAuth(config: Config): ModelProvider | undefin
     config.harness === "claude" &&
     (config.claudeAuthCredential ||
       config.claudeProcessEnv.CLAUDE_CODE_OAUTH_TOKEN ||
-      config.claudeProcessEnv.ANTHROPIC_AUTH_TOKEN)
+      config.claudeProcessEnv.ANTHROPIC_AUTH_TOKEN ||
+      claudeEnvUsesBedrock(config.claudeProcessEnv))
   )
     return "anthropic";
   if (config.codexAuthCredential || config.codexAuthFile) return "openai";
@@ -1431,6 +1433,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       "ANTHROPIC_API_KEY",
       "ANTHROPIC_AUTH_TOKEN",
       "CLAUDE_CODE_OAUTH_TOKEN",
+      ...CLAUDE_BEDROCK_ENV_PASSTHROUGH,
     ].flatMap((name) => (env[name] === undefined ? [] : [[name, env[name]]])),
   ) as NodeJS.ProcessEnv;
   if (providerBaseUrls.anthropic) claudeProcessEnv.ANTHROPIC_BASE_URL = providerBaseUrls.anthropic;
