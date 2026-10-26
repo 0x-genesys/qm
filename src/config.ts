@@ -49,7 +49,27 @@ import {
 
 import { resolveSwarmSettings, type SwarmSettings } from "./swarms/swarm-settings.ts";
 
-export interface Config {
+interface TenantConfig {
+  orgId: string;
+  brandingDefault?: OrgBranding;
+  brokerCredentials?: DeploymentBrokerCredential[];
+  adminGrants?: string;
+  trustedOidcAdminIssuer?: string;
+  emailAuthPrincipals?: string[];
+  emailAuthDomain?: string;
+  apiBaseUrl?: string;
+  publicUrl?: string;
+  publicWebUrl?: string;
+  slack?: SlackPluginConfig;
+  externalSlackPolicies?: ExternalSlackPolicies;
+  s3Prefix?: string;
+  deployAppsSessionSecret?: string;
+  deployAppsLoginUrl?: string;
+  deployAppsLoginPath?: "/auth/login" | "/auth/trusted/login";
+  deployAppsDomain?: string;
+}
+
+interface DeploymentConfig {
   productAnalytics?: { apiKey: string; host?: string };
   slackContextSource?: SlackContextSource;
   suggestedActivitiesEnabled?: boolean;
@@ -60,7 +80,6 @@ export interface Config {
   port: number;
   publicPort?: number;
   dataDir: string;
-  orgId: string;
   sessionStore: "memory" | "postgres";
   databaseUrl?: string;
   databaseCaCert?: string;
@@ -76,7 +95,6 @@ export interface Config {
   sandboxBackend: SandboxBackendName;
   sandboxSecondaryBackend?: SandboxBackendName;
   deployProvider: "docker" | "aws" | "porter" | "e2b";
-  brandingDefault?: OrgBranding;
   modelId?: string;
   codexAuthFile?: string;
   /** Keychain credential id holding the Codex ChatGPT OAuth auth.json (production path). */
@@ -95,12 +113,7 @@ export interface Config {
   modelProvider?: ModelProvider;
   providerBaseUrls: ProviderBaseUrls;
   modelGateway?: ModelGatewayTransportConfig;
-  brokerCredentials?: DeploymentBrokerCredential[];
   piSystemCacheSplit: boolean;
-  adminGrants?: string;
-  trustedOidcAdminIssuer?: string;
-  emailAuthPrincipals?: string[];
-  emailAuthDomain?: string;
   resendApiKey?: string;
   emailFrom?: string;
   rateLimitPerWindow: number;
@@ -132,12 +145,7 @@ export interface Config {
   requireSignedPortalIdentity?: boolean;
   connectorSecretKey?: string;
   slackEventsPort?: number;
-  apiBaseUrl?: string;
-  publicUrl?: string;
   gmailPubSub?: { topic: string; audience: string; serviceAccount: string };
-  publicWebUrl?: string;
-  slack?: SlackPluginConfig;
-  externalSlackPolicies?: ExternalSlackPolicies;
   runStore: "memory" | "postgres";
   skillSigningSecret?: string;
   seedSkills: boolean;
@@ -148,12 +156,8 @@ export interface Config {
   filesDirectUploadsEnabled: boolean;
   s3Bucket?: string;
   s3Region?: string;
-  s3Prefix?: string;
   deployGitDir: string;
   deployDialTimeoutMs: number;
-  deployAppsSessionSecret?: string;
-  deployAppsLoginUrl?: string;
-  deployAppsLoginPath?: "/auth/login" | "/auth/trusted/login";
   deepIdleMachineMs: number;
   devIdleMachineMs: number;
   cronFireConcurrency: number;
@@ -194,8 +198,9 @@ export interface Config {
   porterSandbox: PorterSandboxEnv;
   porterDeploy: PorterDeployEnv;
   awsDeploy: AwsDeployEnv;
-  deployAppsDomain?: string;
 }
+
+export type Config = DeploymentConfig & TenantConfig;
 
 export function configuredModelForHarness(config: Config, harness: string): string | undefined {
   if (harness === "claude") return config.claudeModel;
@@ -851,12 +856,8 @@ function awsDeployEnv(env: NodeJS.ProcessEnv): AwsDeployEnv {
 
 const DEFAULT_ORG_ID = "default-org";
 
-export function orgId(): string {
+export function processOrgId(): string {
   return process.env.ORG_ID ?? DEFAULT_ORG_ID;
-}
-
-export function orgScope(): string {
-  return `org:${orgId()}`;
 }
 
 export const CONFIG_DEFAULTS = {
@@ -1091,7 +1092,7 @@ function resolveStoreKinds(env: NodeJS.ProcessEnv): Pick<Config, "sessionStore" 
   return { sessionStore, runStore };
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+function loadDeploymentConfig(env: NodeJS.ProcessEnv): DeploymentConfig {
   const roles = rolesFromEnv(env.QM_ROLES);
   if (roles.length < QM_ROLES.length && env.BACKGROUND_DEPLOYMENT_ID)
     throw new Error("QM_ROLES cannot split roles while BACKGROUND_DEPLOYMENT_ID is set; unset one of them.");
@@ -1284,8 +1285,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       );
     }
   }
-  const publicApiUrl = env.PUBLIC_API_URL ?? env.AGENT_API_URL;
-  const publicUrl = env.PUBLIC_WEB_URL || publicApiUrl;
   const deployProvider = env.DEPLOY_PROVIDER ?? "docker";
   if (
     deployProvider !== "aws" &&
@@ -1299,7 +1298,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const providerBaseUrls = providerBaseUrlsFromEnv(env);
   const modelGateway = modelGatewayFromEnv(env);
-  const brokerCredentials = deploymentBrokerCredentialsFromEnv(env);
   const claudeProcessEnv = Object.fromEntries(
     [
       "PATH",
@@ -1319,12 +1317,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ].flatMap((name) => (env[name] === undefined ? [] : [[name, env[name]]])),
   ) as NodeJS.ProcessEnv;
   if (providerBaseUrls.anthropic) claudeProcessEnv.ANTHROPIC_BASE_URL = providerBaseUrls.anthropic;
-  const slack = slackPluginConfigFromEnv(env);
-  const externalSlackPolicies = Object.fromEntries(
-    [...(slack ? [slack] : []), ...slackAccountConfigsFromEnv(env)]
-      .filter((account) => account.externalAccess)
-      .map((account) => [account.accountId ?? "default", account.externalAccess!]),
-  );
   const slackEventsPort =
     env.SLACK_EVENTS_MODE?.trim() === "http" ? numEnvStrict("SLACK_EVENTS_PORT", env.SLACK_EVENTS_PORT) : undefined;
   if (
@@ -1344,7 +1336,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     port: numEnvStrict("PORT", env.PORT) ?? CONFIG_DEFAULTS.port,
     ...(publicPort !== undefined ? { publicPort } : {}),
     dataDir,
-    orgId: env.ORG_ID ?? DEFAULT_ORG_ID,
     ...(env.POSTHOG_API_KEY?.trim()
       ? { productAnalytics: { apiKey: env.POSTHOG_API_KEY.trim(), host: env.POSTHOG_HOST?.trim() } }
       : {}),
@@ -1368,7 +1359,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     sandboxBackend,
     legacySandboxScopeDefaults,
     deployProvider,
-    ...(orgBrandingFromEnv(env) ? { brandingDefault: orgBrandingFromEnv(env) } : {}),
     ...(env.PI_MODEL ? { modelId: env.PI_MODEL } : {}),
     ...(codexAuthFile ? { codexAuthFile } : {}),
     ...(codexAuthCredential ? { codexAuthCredential } : {}),
@@ -1385,23 +1375,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(modelProvider ? { modelProvider } : {}),
     providerBaseUrls,
     ...(modelGateway ? { modelGateway } : {}),
-    ...(brokerCredentials.length ? { brokerCredentials } : {}),
-    ...(env.TRUSTED_OIDC_ADMIN_ISSUER ? { trustedOidcAdminIssuer: env.TRUSTED_OIDC_ADMIN_ISSUER } : {}),
-    ...(env.ADMIN_GRANTS ? { adminGrants: env.ADMIN_GRANTS } : {}),
-    ...(env.AUTH_ALLOWED_EMAILS
-      ? {
-          emailAuthPrincipals: [
-            ...new Set(
-              env.AUTH_ALLOWED_EMAILS.split(",")
-                .map((email) => email.trim().toLowerCase())
-                .filter(Boolean),
-            ),
-          ],
-        }
-      : {}),
-    ...(env.AUTH_ALLOWED_EMAIL_DOMAIN?.trim()
-      ? { emailAuthDomain: env.AUTH_ALLOWED_EMAIL_DOMAIN.trim().toLowerCase() }
-      : {}),
     ...(env.RESEND_API_KEY?.trim() ? { resendApiKey: env.RESEND_API_KEY.trim() } : {}),
     ...(env.AUTH_EMAIL_FROM?.trim() ? { emailFrom: env.AUTH_EMAIL_FROM.trim() } : {}),
     piSystemCacheSplit: boolEnvStrict("PI_SYSTEM_CACHE_SPLIT", env.PI_SYSTEM_CACHE_SPLIT) ?? false,
@@ -1446,8 +1419,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.CONNECTOR_SECRET_KEY ? { connectorSecretKey: env.CONNECTOR_SECRET_KEY } : {}),
     ...(slackEventsPort !== undefined ? { slackEventsPort } : {}),
     layerEnv: { ...env },
-    ...(publicApiUrl ? { apiBaseUrl: publicApiUrl } : {}),
-    ...(publicUrl ? { publicUrl } : {}),
     ...(env.GMAIL_PUBSUB_TOPIC && env.GMAIL_PUBSUB_AUDIENCE && env.GMAIL_PUBSUB_SERVICE_ACCOUNT
       ? {
           gmailPubSub: {
@@ -1457,9 +1428,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
           },
         }
       : {}),
-    ...(env.PUBLIC_WEB_URL ? { publicWebUrl: env.PUBLIC_WEB_URL } : {}),
-    ...(slack ? { slack } : {}),
-    externalSlackPolicies,
     slackContextSource: parseSlackContextSource(env.SLACK_CONTEXT_SOURCE),
     runStore,
     ...(env.SKILL_SIGNING_SECRET ? { skillSigningSecret: env.SKILL_SIGNING_SECRET } : {}),
@@ -1475,10 +1443,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     filesDirectUploadsEnabled: boolEnvStrict("FILES_DIRECT_UPLOADS_ENABLED", env.FILES_DIRECT_UPLOADS_ENABLED) ?? false,
     ...(env.S3_BUCKET ? { s3Bucket: env.S3_BUCKET } : {}),
     ...(env.S3_REGION ? { s3Region: env.S3_REGION } : {}),
-    ...(env.S3_PREFIX ? { s3Prefix: env.S3_PREFIX } : {}),
     deployGitDir: join(dataDir, "deploy-git"),
     deployDialTimeoutMs: CONFIG_DEFAULTS.deployDialTimeoutMs,
-    ...deployAppsEnv(env, publicUrl),
     deepIdleMachineMs: CONFIG_DEFAULTS.deepIdleMachineMs,
     devIdleMachineMs: CONFIG_DEFAULTS.devIdleMachineMs,
     cronFireConcurrency:
@@ -1514,6 +1480,52 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         ? { appsDomain: deployAppsDomain }
         : {}),
     },
+  };
+}
+
+function loadTenantConfig(env: NodeJS.ProcessEnv): TenantConfig {
+  const publicApiUrl = env.PUBLIC_API_URL ?? env.AGENT_API_URL;
+  const publicUrl = env.PUBLIC_WEB_URL || publicApiUrl;
+  const deployAppsDomain = deployAppsDomainEnv(env, env.DEPLOY_PROVIDER ?? "docker");
+  const brokerCredentials = deploymentBrokerCredentialsFromEnv(env);
+  const slack = slackPluginConfigFromEnv(env);
+  const externalSlackPolicies = Object.fromEntries(
+    [...(slack ? [slack] : []), ...slackAccountConfigsFromEnv(env)]
+      .filter((account) => account.externalAccess)
+      .map((account) => [account.accountId ?? "default", account.externalAccess!]),
+  );
+  const brandingDefault = orgBrandingFromEnv(env);
+  return {
+    orgId: env.ORG_ID ?? DEFAULT_ORG_ID,
+    ...(brandingDefault ? { brandingDefault } : {}),
+    ...(brokerCredentials.length ? { brokerCredentials } : {}),
+    ...(env.TRUSTED_OIDC_ADMIN_ISSUER ? { trustedOidcAdminIssuer: env.TRUSTED_OIDC_ADMIN_ISSUER } : {}),
+    ...(env.ADMIN_GRANTS ? { adminGrants: env.ADMIN_GRANTS } : {}),
+    ...(env.AUTH_ALLOWED_EMAILS
+      ? {
+          emailAuthPrincipals: [
+            ...new Set(
+              env.AUTH_ALLOWED_EMAILS.split(",")
+                .map((email) => email.trim().toLowerCase())
+                .filter(Boolean),
+            ),
+          ],
+        }
+      : {}),
+    ...(env.AUTH_ALLOWED_EMAIL_DOMAIN?.trim()
+      ? { emailAuthDomain: env.AUTH_ALLOWED_EMAIL_DOMAIN.trim().toLowerCase() }
+      : {}),
+    ...(publicApiUrl ? { apiBaseUrl: publicApiUrl } : {}),
+    ...(publicUrl ? { publicUrl } : {}),
+    ...(env.PUBLIC_WEB_URL ? { publicWebUrl: env.PUBLIC_WEB_URL } : {}),
+    ...(slack ? { slack } : {}),
+    externalSlackPolicies,
+    ...(env.S3_PREFIX ? { s3Prefix: env.S3_PREFIX } : {}),
+    ...deployAppsEnv(env, publicUrl),
     ...(deployAppsDomain ? { deployAppsDomain } : {}),
   };
+}
+
+export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+  return { ...loadDeploymentConfig(env), ...loadTenantConfig(env) };
 }

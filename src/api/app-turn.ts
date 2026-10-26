@@ -4,7 +4,6 @@ import type { Run } from "../runs/run-store.ts";
 import { userRuntimeConfigBody } from "./runtime-config.ts";
 import { isSubagentThreadRef, stopSessionTree } from "../sessions/session-syscalls.ts";
 import type { Conversation, Principal, TurnRequest, TurnResult } from "../types.ts";
-import { orgId as orgIdOf } from "../config.ts";
 import { scopeId } from "../types.ts";
 import { rosterAdmits } from "../resolution/scope-membership.ts";
 import { isHalt, routeWake, type Wake } from "../wake/wake.ts";
@@ -41,6 +40,7 @@ import { unscreenedNotice } from "../security/security-posture.ts";
 import type { AppHelpers } from "./app-helpers.ts";
 import type { AmbientHelpers } from "./app-ambient.ts";
 import { isUserMessage } from "../sessions/items.ts";
+import { tenant } from "../tenant.ts";
 
 const USER_STOP = "by user";
 
@@ -136,7 +136,7 @@ export function createTurnMethods(
         const project = await deps.projects?.get(projectId);
         if (
           !project ||
-          project.orgId !== orgIdOf() ||
+          project.orgId !== tenant().orgId ||
           !deps.identity.isInternal(deps.identity.classify(project.ownerId))
         ) {
           return { status: "refused", reason: "you're not a member of that context" };
@@ -176,7 +176,7 @@ export function createTurnMethods(
         )
           return { status: "refused", reason: "you cannot continue that subagent session" };
       }
-      const orgRuntimeScope = scopeId("org", orgIdOf());
+      const orgRuntimeScope = tenant().orgScope;
       const turnRuntimeScope =
         req.conversation.kind === "dm"
           ? scopeId("personal", actor.id)
@@ -261,7 +261,7 @@ export function createTurnMethods(
         } else if (threadRef.startsWith("web:") && !threadRef.startsWith(`web:${actor.id}:`)) {
           return { status: "refused", reason: "you can only start a new conversation on your own thread" };
         }
-        const org = scopeId("org", orgIdOf());
+        const org = tenant().orgScope;
         const targetScope = conversationScope(req.conversation, actor.id);
         const fallbackHarness = harnessIdOrPi(deps.harnessId);
         const runtimeFallback = deps.runtimeFallback ?? {
