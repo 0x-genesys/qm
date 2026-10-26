@@ -298,7 +298,7 @@ test("a failing checkpoint restore fails the replacement provision instead of co
   await s.teardown(a);
   fake.expirePaused();
   failRestore = true;
-  await assert.rejects(() => s.provision(layers), /hydration failed/);
+  await assert.rejects(() => s.provision(layers), /snapshot service unavailable/);
   failRestore = false;
   const b = await s.provision(layers);
   assert.equal(await s.readFile(b, "precious.txt"), "irreplaceable\n", "snapshot survives the outage");

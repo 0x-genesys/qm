@@ -536,7 +536,7 @@ test("a creation rate limit surfaces the provider's code and retry hint", async 
     assert.match(e.message, /sprite_creation_rate_limited/);
     assert.match(e.message, /retry after: 42s/);
     assert.match(e.message, /http 429/);
-    assert.ok((e.cause as Error).cause instanceof APIError);
+    assert.ok(e.cause instanceof APIError);
     return true;
   });
   const created = await sandbox.provision(layers);
