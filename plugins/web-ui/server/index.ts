@@ -1811,12 +1811,7 @@ const apiRoutes: readonly WebRoute[] = [
     path: "/api/inbox/sync-cron",
     handle: async (c) => {
       const { req, res, user } = c;
-      return relayCore(
-        res,
-        "POST",
-        `/v1/inbox/sync-cron?principalId=${encodeURIComponent(user)}`,
-        await readBody(req),
-      );
+      return relayCore(res, "POST", `/v1/inbox/sync-cron?principalId=${encodeURIComponent(user)}`, await readBody(req));
     },
   },
   {

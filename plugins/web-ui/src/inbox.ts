@@ -1453,8 +1453,7 @@ function itemRowTpl(surface: InboxSurface, item: InboxItem): TemplateResult {
                 isGenericItem(item)
                   ? reviewTpl(item)
                   : html`${handled ? nothing : html`<div class="inbox-item-detail-actions">${dismissItemTpl(item)}</div>`}
-                    ${contextTpl(item)}
-                    ${draftMessageTpl(item)} ${handled ? handledNoteTpl(item) : chatTpl(item, true)}`
+                    ${contextTpl(item)} ${draftMessageTpl(item)} ${handled ? handledNoteTpl(item) : chatTpl(item, true)}`
               }
             </div>`
           : nothing
