@@ -216,40 +216,31 @@ function fakeSandbox(): Sandbox {
 
 function buildScenario() {
   const received: Array<{ input: string; resumeToolCall?: ResumableToolCall; historyTypes: string[] }> = [];
-  const harness = defineHarness(
-    {
-      id: "pi",
-      controlTransport: "in-process",
-      toolTransport: "in-process",
-      transcriptFormat: "pi",
-      capabilities: new Set(),
-    },
-    {
-      async runTurn(turn) {
-        received.push({
-          input: turn.input,
-          ...(turn.resumeToolCall ? { resumeToolCall: turn.resumeToolCall } : {}),
-          historyTypes: turn.history.map((e) => e.kind),
+  const harness = defineHarness({
+    async runTurn(turn) {
+      received.push({
+        input: turn.input,
+        ...(turn.resumeToolCall ? { resumeToolCall: turn.resumeToolCall } : {}),
+        historyTypes: turn.history.map((e) => e.kind),
+      });
+      if (turn.resumeToolCall) {
+        await turn.emit({
+          kind: "ToolResult",
+          tool: "history",
+          callId: turn.resumeToolCall.callId,
+          isError: false,
+          text: "- found it",
         });
-        if (turn.resumeToolCall) {
-          await turn.emit({
-            kind: "ToolResult",
-            tool: "history",
-            callId: turn.resumeToolCall.callId,
-            isError: false,
-            text: "- found it",
-          });
-        }
-        await turn.emit({ kind: "UserMessage", text: turn.input });
-        const reply = "we kept the Q2 budget flat";
-        await turn.emit({ kind: "AgentMessage", text: reply });
-        return { reply, modelCalls: 1 };
-      },
-      async screenSecurity() {
-        return { decision: "auto" as const };
-      },
+      }
+      await turn.emit({ kind: "UserMessage", text: turn.input });
+      const reply = "we kept the Q2 budget flat";
+      await turn.emit({ kind: "AgentMessage", text: reply });
+      return { reply, modelCalls: 1 };
     },
-  );
+    async screenSecurity() {
+      return { decision: "auto" as const };
+    },
+  });
   const sessions = createPostgresSessionStore(testDatabaseUrl());
   const { runs } = createMemoryRunStore();
   const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()));

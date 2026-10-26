@@ -16,7 +16,6 @@ const { app } = buildApp({
   port: 0,
   dataDir: mkdtempSync(join(tmpdir(), "pi-smoke-")),
   runStore: "memory",
-  harness: "pi",
 });
 
 const actor = { externalId: "U1" };

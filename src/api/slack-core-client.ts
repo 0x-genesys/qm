@@ -35,13 +35,13 @@ import type { AckEmojiPickStore } from "../surface-cache/ack-emoji-pick-store.ts
 import type { OrgBranding, ScopedConfigStore } from "../resolution/config-store.ts";
 import type { BlobTransferStore } from "../persistence/blob-transfer.ts";
 import { MAX_BLOB_BYTES } from "../persistence/blob-transfer.ts";
-import type { Outbound } from "../surfaces/outbound.ts";
+import type { SlackNative } from "../chat-surface/slack.ts";
 import type { RunStore } from "../runs/run-store.ts";
 import { isTerminal } from "../runs/run-store.ts";
 import type { GoalView, TurnStream } from "../runs/turn-stream.ts";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import { swallowAs } from "../util/errors.ts";
-import { resolveRuntimeChoiceDurable } from "../harness/harness-router.ts";
+import { resolveRuntimeChoiceDurable } from "../harness/runtime-choice.ts";
 import type { RuntimeChoice } from "../harness/harness.ts";
 import { modelDisplayName } from "../model/pi-models.ts";
 import type { ConversationEvent } from "../loops/sources/adapter.ts";
@@ -107,7 +107,7 @@ export interface SlackCoreClient {
   reportRunEditRef(runId: string, editRef: string): Promise<void>;
   getApproval(requestId: string): Promise<StoredApprovalView | null>;
   pushDirectory(body: DirectoryPush): Promise<boolean>;
-  registerSender: Outbound["register"];
+  slack: SlackNative;
   holdEnvelopeReplay<T>(account: string, fn: (lost: Promise<void>) => Promise<T>): Promise<T | null>;
   stagedEnvelopes?: DurableMap<StagedEnvelope>;
   holdDirectorySync<T>(fn: (lost: Promise<void>) => Promise<T>): Promise<T | null>;
@@ -150,7 +150,7 @@ export interface SlackCoreClientDeps {
   config: ScopedConfigStore;
   runtimeFallback: RuntimeChoice;
   blobTransfer: BlobTransferStore;
-  outbound: Pick<Outbound, "register">;
+  slack: SlackNative;
   errors?: ErrorLog;
   runs: RunStore;
   turnStream: TurnStream;
@@ -436,9 +436,7 @@ export function createSlackCoreClient(deps: SlackCoreClientDeps): SlackCoreClien
       return applied;
     },
 
-    registerSender(types, sender) {
-      return deps.outbound.register(types, sender);
-    },
+    slack: deps.slack,
     holdDirectorySync(fn) {
       return lease.hold("slack:directory-sync", fn);
     },

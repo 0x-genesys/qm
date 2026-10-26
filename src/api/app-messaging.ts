@@ -307,7 +307,7 @@ export function createMessagingMethods(
     async ingestSurfaceEvents(events, surface = "slack", self) {
       if (!deps.surfaceCache || !events.length) return { upserted: 0 };
       if (self && (self.name || self.mentionId)) ambientSelf.set(`${tenant().orgId}:${surface}`, self);
-      const out = await deps.surfaceCache.ingest(events);
+      const out = await deps.surfaceCache.ingest(events.map((event) => ({ ...event, surface })));
       if (surface === "slack" && hasRevisionEvents(events)) {
         void recordMessageRevisions(deps.sessions, events).catch(
           reportFailureAs("revisions: surface revision record", undefined),

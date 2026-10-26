@@ -709,7 +709,6 @@ export function createAppHelpers(deps: AppDeps, app: App) {
             const prior = completed.request;
             const inheritedOptions = {
               ...(base.model === undefined && prior.model !== undefined ? { model: prior.model } : {}),
-              ...(base.harness === undefined && prior.harness !== undefined ? { harness: prior.harness } : {}),
               ...(base.thinkingLevel === undefined && prior.thinkingLevel !== undefined
                 ? { thinkingLevel: prior.thinkingLevel }
                 : {}),
@@ -761,7 +760,6 @@ export function createAppHelpers(deps: AppDeps, app: App) {
           const prior = (await deps.runs.get(runId))?.request;
           const inheritedOptions = {
             ...(base.model === undefined && prior?.model !== undefined ? { model: prior.model } : {}),
-            ...(base.harness === undefined && prior?.harness !== undefined ? { harness: prior.harness } : {}),
             ...(base.thinkingLevel === undefined && prior?.thinkingLevel !== undefined
               ? { thinkingLevel: prior.thinkingLevel }
               : {}),

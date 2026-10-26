@@ -83,7 +83,6 @@ let currentGitSha = "";
 let handle = "";
 let sandbox: SandboxResolution | null = null;
 let durability = { databaseUrl: "" };
-let harness = "pi";
 let watch = true;
 let bootId = "";
 let bootedAt: number | null = null;
@@ -302,7 +301,6 @@ function persistState(): void {
     envSha: currentEnvSha,
     gitSha: currentGitSha,
     sandbox: sandbox ? { backend: sandbox.backend, detail: sandbox.detail } : null,
-    harness,
   });
 }
 
@@ -315,11 +313,9 @@ async function assembleAndPrepare(spec: BootSpec): Promise<SpecInputs> {
     log,
   });
   for (const w of assembled.warnings) phase("env", "warn", w);
-  harness = assembled.harness;
-  let harnessDetail = `live ${assembled.harness} turns (anthropic key from ${assembled.anthropicKeySource})`;
-  if (assembled.harness === "claude") harnessDetail = "live claude turns (native CLI authentication)";
-  if (assembled.codexAuthSource) harnessDetail += `; company ChatGPT subscription from ${assembled.codexAuthSource}`;
-  phase("env", "ok", harnessDetail);
+  let modelDetail = `live turns (anthropic key from ${assembled.anthropicKeySource})`;
+  if (assembled.codexAuthSource) modelDetail += `; company ChatGPT subscription from ${assembled.codexAuthSource}`;
+  phase("env", "ok", modelDetail);
 
   phase("deps", "start");
   await ensureDeps(
@@ -786,7 +782,6 @@ async function statusReport(): Promise<StatusReport> {
     durability: {
       databaseUrl: Boolean(durability.databaseUrl),
     },
-    harness,
     slackEnabled,
     webEnabled: readBootSpec().web !== false,
     watch,

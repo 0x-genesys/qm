@@ -62,9 +62,9 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import {
   baseModelProviders,
-  configuredModelForHarness,
+  companySubscriptionAuth,
+  configuredModel,
   enabledSandboxBackends,
-  harnessCarriedModelAuth,
   providerKeysPresent,
   type Config,
 } from "./config.ts";
@@ -125,7 +125,6 @@ import type { SecurityScreenProbe } from "./security/security-screener.ts";
 import { createPostgresBudgetTracker } from "./ratelimit/postgres-budget.ts";
 import { createCronStore, DROP_RUN_AS_MIGRATION, type CronStore } from "./cron/cron-store.ts";
 import { DROP_RECIPIENT_CONSENT_MIGRATION } from "./triggers/trigger-store.ts";
-import { LEGACY_HARNESS_MIGRATION } from "./model/legacy-harness-migration.ts";
 import { createPostgresCronFireStore } from "./cron/fire-store.ts";
 import { createLoopStore } from "./loops/loop-store.ts";
 import { createLoopItemLedger } from "./loops/item-ledger.ts";
@@ -282,9 +281,8 @@ import {
   type CompanyChatGPTAuth,
 } from "./model/company-chatgpt-auth.ts";
 import { keychainHarnessAuthEnv } from "./credentials/harness-auth-env.ts";
-import { createClaudeHarness, claudeHarnessConfigOptions } from "./harness/claude-harness.ts";
 import { createPiHarness, piHarnessConfigOptions, type ProviderKeys } from "./harness/pi-harness.ts";
-import { createHarnessRouter, resolveRuntimeChoiceDurable } from "./harness/harness-router.ts";
+import { withResolvedRuntime, resolveRuntimeChoiceDurable } from "./harness/runtime-choice.ts";
 import { selectableModelCatalog } from "./model/model-catalog.ts";
 import type { Harness } from "./harness/harness.ts";
 import { createSecurityScreenProxy, type SecurityScreener } from "./security/security-screener.ts";
@@ -333,6 +331,9 @@ import { startSession } from "./api/start-session.ts";
 import { createSwarmStore, type SwarmStorage } from "./swarms/swarm-store.ts";
 import { createSwarmService } from "./swarms/swarm-service.ts";
 import { createSlackCoreClient, type SlackCoreClient } from "./api/slack-core-client.ts";
+import { createSlackSurface } from "./chat-surface/slack.ts";
+import { createHttpChatSurface } from "./chat-surface/http-chat.ts";
+import { createSurfaceRegistry, type SurfaceRegistry } from "./chat-surface/registry.ts";
 import { createSurfaceContextPuller } from "./api/surface-context-puller.ts";
 import { createEngagedRegistry } from "./wake/engaged-registry.ts";
 import { createWakeSweep, type WakeSweep } from "./wake/sweep.ts";
@@ -350,11 +351,9 @@ import {
   isOverlayModel,
   modelRequestOverrides,
   auxiliaryModelForProvider,
-  defaultModelForHarness,
-  modelProviderAvailabilityFor,
+  defaultModel,
   resolveModel,
-  type HarnessId,
-  modelSupportedByHarness,
+  modelSupported,
 } from "./model/pi-models.ts";
 import { createAdminService, parseAdminGrants, type AdminService } from "./admin/admin-service.ts";
 import { createAdminGrantStore } from "./admin/admin-grant-store.ts";
@@ -514,6 +513,7 @@ export interface BuiltApp {
   sessionShareBytes: DurableByteStore;
   skillSyncEngine: SkillSyncEngine;
   slackCore: SlackCoreClient;
+  chatSurfaces: SurfaceRegistry;
 }
 
 const MEMORY_CAPTURE_ENTRY_WINDOW = 2_000;
@@ -526,7 +526,7 @@ export function buildApp(
     credentialBrokers?: Record<string, AwsRoleBroker>;
     modelCredentialFetch?: typeof fetch;
     modelVerificationProbe?: typeof probeModel;
-    harnesses?: Partial<Record<HarnessId, Harness>>;
+    harness?: Harness;
     env?: NodeJS.ProcessEnv;
   } = {},
 ): BuiltApp {
@@ -1363,51 +1363,28 @@ export function buildApp(
   const runtimeOrgScope = scopeId("org", config.orgId);
   const orgBaseModelId = (): string | undefined =>
     configStore.getRuntimeSelection(runtimeOrgScope)?.modelId ?? configStore.getBaseModel(runtimeOrgScope) ?? undefined;
-  const defaultForHarness = (harness: string) =>
-    defaultModelForHarness(
-      harness,
-      configuredModelForHarness(config, harness),
+  const deploymentDefaultModel = () =>
+    defaultModel(
+      configuredModel(config),
       baseModelProviders(config) ??
-        (harness === "pi" && gatewayTransport
+        (gatewayTransport
           ? { ...directProviderAvailability, modelIds: new Set(Object.keys(gatewayTransport.models)) }
           : undefined),
     );
-  const adapters = new Map<HarnessId, Harness>([
-    [
-      "pi",
-      overrides.harnesses?.pi ??
-        createPiHarness({
-          ...piHarnessConfigOptions(config),
-          modelGateway: gatewayTransport,
-          resolveBaseModelId: () => orgBaseModelId() ?? defaultForHarness("pi"),
-          resolveFallbackRuntime: () => configStore.getPurposeRuntime("fallback"),
-          resolveProviderKeys: resolvePiProviderKeys,
-          ...(directProviderAvailability.codexOAuth ? { companyModelId } : {}),
-          signals: runSignals,
-        }),
-    ],
-    [
-      "claude",
-      overrides.harnesses?.claude ??
-        createClaudeHarness({
-          ...claudeHarnessConfigOptions(config),
-          ...(config.claudeAuthCredential && keychain
-            ? {
-                authEnv: keychainHarnessAuthEnv(keychain, config.claudeAuthCredential, [
-                  "CLAUDE_CODE_OAUTH_TOKEN",
-                  "ANTHROPIC_AUTH_TOKEN",
-                ]),
-              }
-            : {}),
-          signals: runSignals,
-        }),
-    ],
-  ]);
-  const fallbackHarness = config.harness as HarnessId;
+  const pi =
+    overrides.harness ??
+    createPiHarness({
+      ...piHarnessConfigOptions(config),
+      modelGateway: gatewayTransport,
+      resolveBaseModelId: () => orgBaseModelId() ?? deploymentDefaultModel(),
+      resolveFallbackRuntime: () => configStore.getPurposeRuntime("fallback"),
+      resolveProviderKeys: resolvePiProviderKeys,
+      ...(directProviderAvailability.codexOAuth ? { companyModelId } : {}),
+      signals: runSignals,
+    });
   const fallback = {
-    harnessId: fallbackHarness,
     get modelId() {
-      return defaultForHarness(fallbackHarness);
+      return deploymentDefaultModel();
     },
   };
   const decide = createDecisionHooks(
@@ -1439,7 +1416,7 @@ export function buildApp(
     if (!(await modelCredentials.availability()).openrouter) return undefined;
     return selectableModelCatalog(overrides.modelCredentialFetch);
   };
-  const harness = createHarnessRouter(adapters, adapters.get(fallbackHarness)!, async (input, routedBy) => {
+  const harness = withResolvedRuntime(pi, async (input, routedBy) => {
     await refreshModels();
     const resolve = (requested: typeof input.runtime) =>
       resolveRuntimeChoiceDurable(
@@ -1459,10 +1436,9 @@ export function buildApp(
       ...(input.cancel ? { cancel: input.cancel } : {}),
     });
     const routed = await routeTurnRuntime(decision, resolve, async () => {
-      if (input.runtimePinned && input.runtime?.harnessId && input.runtime.modelId) {
-        if (!modelSupportedByHarness(input.runtime.modelId, input.runtime.harnessId))
-          throw new Error(`Unsupported model: ${input.runtime.modelId}`);
-        return { ...input.runtime, harnessId: input.runtime.harnessId, modelId: input.runtime.modelId };
+      if (input.runtimePinned && input.runtime?.modelId) {
+        if (!modelSupported(input.runtime.modelId)) throw new Error(`Unsupported model: ${input.runtime.modelId}`);
+        return { ...input.runtime, modelId: input.runtime.modelId };
       }
       return resolve(input.runtime);
     });
@@ -1736,7 +1712,18 @@ export function buildApp(
     },
   });
   outbound.register(["web"], createWebSender(transcripts));
-  pgArtifactMap?.pool.registerMigration({
+  const slackSurface = createSlackSurface();
+  const chatSurfaces = createSurfaceRegistry({
+    surfaces: [
+      slackSurface,
+      ...(config.chatSurfaces ?? []).map((surface) =>
+        createHttpChatSurface(surface, { mirror: (events) => app.ingestSurfaceEvents(events, surface.surface) }),
+      ),
+    ],
+    outbound,
+    turn: (request) => app.turn(request),
+  });
+  pgArtifactMap.pool.registerMigration({
     id: "delivery/store/0007-drop",
     statements: ["DROP TABLE IF EXISTS deliveries"],
   });
@@ -1868,7 +1855,17 @@ export function buildApp(
       "DELETE FROM durable_map_versions WHERE tbl = 'internal_member_overrides'",
     ],
   });
-  pgArtifactMap.pool.registerMigration(LEGACY_HARNESS_MIGRATION);
+  pgArtifactMap.pool.registerMigration({
+    id: "runtime/0002-drop-harness-choice",
+    statements: [
+      "DROP TABLE IF EXISTS approved_harness_configs",
+      "DELETE FROM durable_map_versions WHERE tbl = 'approved_harness_configs'",
+      `DO $$ BEGIN IF to_regclass('base_model_configs') IS NOT NULL THEN UPDATE base_model_configs SET json = (CASE WHEN json ? 'harnessId' AND NOT json ? 'orgRevision' THEN json || '{"orgRevision":0}'::jsonb ELSE json END) - 'harnessId' #- '{cronRuntime,harnessId}' #- '{subagentRuntime,harnessId}' #- '{fallbackRuntime,harnessId}' WHERE json ? 'harnessId' OR (json -> 'cronRuntime') ? 'harnessId' OR (json -> 'subagentRuntime') ? 'harnessId' OR (json -> 'fallbackRuntime') ? 'harnessId'; END IF; END $$`,
+      `DO $$ BEGIN IF to_regclass('auto_flagger_configs') IS NOT NULL THEN UPDATE auto_flagger_configs SET json = json - 'harnessId' WHERE json ? 'harnessId'; END IF; END $$`,
+      `DO $$ BEGIN IF to_regclass('crons') IS NOT NULL THEN UPDATE crons SET json = json #- '{runtime,harnessId}' WHERE (json -> 'runtime') ? 'harnessId'; END IF; END $$`,
+      `DO $$ BEGIN IF to_regclass('swarms') IS NOT NULL THEN UPDATE swarms SET json = json #- '{template,harness}' WHERE (json -> 'template') ? 'harness'; END IF; END $$`,
+    ],
+  });
   pgArtifactMap.pool.registerMigration({
     id: "durable-map/suggested_activity_profiles/0001-nightly-on-use",
     statements: [
@@ -1887,7 +1884,11 @@ export function buildApp(
       `UPDATE webhooks SET json = jsonb_set(json, '{enabled}', 'false'::jsonb) WHERE (json ->> 'enabled')::boolean`,
     ],
   });
-  const approvals = createApprovalStore(artifactMap<PendingApprovalRecord>("approvals", ["sessionId"]), outbound);
+  const webUiBase = (config.slack?.webUiPublicUrl ?? config.publicWebUrl)?.replace(/\/+$/, "");
+  const approvals = createApprovalStore(artifactMap<PendingApprovalRecord>("approvals", ["sessionId"]), outbound, {
+    surfaces: chatSurfaces,
+    webSessionUrl: (sessionId) => (webUiBase ? `${webUiBase}/s/${encodeURIComponent(sessionId)}` : undefined),
+  });
   let securityScreener = overrides.securityScreener;
   if (!securityScreener && config.securityScreen !== "off" && config.securityScreenProxy) {
     securityScreener = createSecurityScreenProxy({
@@ -1961,7 +1962,6 @@ export function buildApp(
         scope,
         fallback,
         {
-          ...(input.harness ? { harnessId: input.harness as HarnessId } : {}),
           ...(input.model ? { modelId: input.model } : {}),
           ...(input.thinkingLevel ? { effortLevel: input.thinkingLevel } : {}),
           ...(typeof input.fastMode === "boolean" ? { fastMode: input.fastMode } : {}),
@@ -1973,6 +1973,7 @@ export function buildApp(
   });
   const uiState = artifactMap<PersistedUiState>("web_ui_state");
   const orchestratorDeps: OrchestratorDeps = {
+    surfaceLabel: chatSurfaces.label,
     installSharedCanvas: async (actorId, fileId, where) => {
       const canvas = await installSharedCanvas(uiState, actorId, await app.openFileForViewer(fileId, actorId));
       if (typeof canvas === "string") return canvas;
@@ -1994,7 +1995,6 @@ export function buildApp(
     identity,
     resolution,
     config: configStore,
-    defaultHarness: fallbackHarness,
     defaultTurnWallClockMs: config.turnWallClockMs,
     userModelCredentials,
     ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
@@ -2088,6 +2088,7 @@ export function buildApp(
   const runResultRecovery = wireRunResultPosts(runs, outbound, {
     ...(recoveryAdminUrlFor ? { adminUrlFor: recoveryAdminUrlFor } : {}),
     sessions,
+    postsImmediately: (surface) => chatSurfaces.get(surface)?.normalize !== undefined,
   });
   const skillFetcher = createGitFetcher(
     keychain
@@ -2164,10 +2165,9 @@ export function buildApp(
   const ackEmojiPicks: AckEmojiPickStore = createPostgresAckEmojiPickStore(databaseUrl);
   const providerKeys = directProviderAvailability;
   const screenSecurity: SecurityScreenProbe | undefined = harness.models.screenSecurity
-    ? ({ payload, harnessId, modelId, systemPrompt, actorId, scopeLabel, signal }) =>
+    ? ({ payload, modelId, systemPrompt, actorId, scopeLabel, signal }) =>
         harness.models.screenSecurity!({
           payload,
-          harnessId,
           modelId,
           systemPrompt,
           signal,
@@ -2252,10 +2252,9 @@ export function buildApp(
     ambientJudgments,
     ackEmojiPicks,
     judgeModelId,
-    harnessId: config.harness,
     runtimeFallback: fallback,
     providerKeys,
-    modelProviders: modelProviderAvailabilityFor(config.harness, providerKeys),
+    modelProviders: providerKeys,
     runWaitMs: config.runWaitMs,
     inlineTurns: config.roles.includes("harness"),
   });
@@ -2291,7 +2290,7 @@ export function buildApp(
     config: configStore,
     runtimeFallback: fallback,
     blobTransfer,
-    outbound,
+    slack: slackSurface.slack,
     errors,
     runs,
     turnStream,
@@ -2581,7 +2580,6 @@ export function buildApp(
       {
         deps: {
           config: configStore,
-          harnessId: fallbackHarness,
           baseModelDefault: fallback.modelId,
           providerKeys: providerKeysPresent(config),
           modelCredentials,
@@ -2596,7 +2594,6 @@ export function buildApp(
   orchestratorDeps.runtime = createRuntimeService(
     {
       config: configStore,
-      harnessId: fallbackHarness,
       get baseModelDefault() {
         return fallback.modelId;
       },
@@ -3050,6 +3047,7 @@ export function buildApp(
       : createLocalDurableByteStore(join(config.dataDir, "session-shares")),
     skillSyncEngine,
     slackCore,
+    chatSurfaces,
   };
 }
 
@@ -3059,8 +3057,8 @@ export function serverDeps(
   slackEnvironmentState: "absent" | "configured" | "partial" = "absent",
   slackEnvBotToken?: string,
 ): Omit<ServerDeps, "control"> {
-  const configuredModel = configuredModelForHarness(config, config.harness);
-  const carriedModelAuth = harnessCarriedModelAuth(config);
+  const deploymentModel = configuredModel(config);
+  const subscriptionAuth = companySubscriptionAuth(config);
   return {
     externalSlackPolicies: config.externalSlackPolicies,
     browserModelGateway: built.browserModelGateway,
@@ -3084,8 +3082,8 @@ export function serverDeps(
     ...(built.brokerSessions ? { brokerSessions: built.brokerSessions } : {}),
     config: built.config,
     ...(built.screenSecurity ? { screenSecurity: built.screenSecurity } : {}),
-    ...(configuredModel ? { baseModelDefault: configuredModel } : {}),
-    modelProviders: modelProviderAvailabilityFor(config.harness, providerKeysPresent(config)),
+    ...(deploymentModel ? { baseModelDefault: deploymentModel } : {}),
+    modelProviders: providerKeysPresent(config),
     providerKeys: providerKeysPresent(config),
     modelCredentials: built.modelCredentials,
     userModelCredentials: built.userModelCredentials,
@@ -3097,12 +3095,12 @@ export function serverDeps(
     mcpServers: built.mcpServers,
     mcpToolService: built.mcpToolService,
     ...(config.brandingDefault ? { brandingDefault: config.brandingDefault } : {}),
-    ...(carriedModelAuth ? { harnessCarriedModelAuth: carriedModelAuth } : {}),
-    harnessId: config.harness,
+    ...(subscriptionAuth ? { companySubscriptionAuth: subscriptionAuth } : {}),
     connectorTokens: built.connectorTokens,
     slackInstallation: built.slackInstallation,
     slackEnvironmentState,
     ...(config.slackEventsPort ? { slackEventsPort: config.slackEventsPort } : {}),
+    chatSurfaces: built.chatSurfaces,
     ...(slackEnvBotToken ? { slackEnvBotToken } : {}),
     resolveClient: built.resolveClient,
     consentLinks: built.consentLinks,

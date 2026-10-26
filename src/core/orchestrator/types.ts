@@ -124,8 +124,6 @@ export interface OrchestratorDeps {
   identity: IdentityService;
   resolution: ResolutionService;
   config?: ScopedConfigStore;
-  /** The deployment's fallback harness (wiring's config.harness) — used when no org runtime selection exists. */
-  defaultHarness?: string;
   defaultTurnWallClockMs?: number;
   userModelCredentials?: UserModelCredentialStore;
   brandingDefault?: OrgBranding;
@@ -222,6 +220,7 @@ export interface OrchestratorDeps {
   surfaceSearch?: SurfaceSearchStore;
   surfaceCache?: SurfaceCache;
   slackContextSource?: "live" | "shadow" | "mirror";
+  surfaceLabel?: (surface: string) => string | undefined;
   channelPolicy?: ChannelPolicyStore;
 }
 

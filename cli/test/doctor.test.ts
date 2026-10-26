@@ -19,7 +19,7 @@ const config: QmConfig = {
   services: ["core"],
   plugins: [],
   skills: [],
-  env: { core: { HARNESS: "pi" } },
+  env: {},
   imageOverrides: {},
 };
 

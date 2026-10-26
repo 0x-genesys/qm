@@ -58,34 +58,25 @@ function buildScenario(interruptAfterToolResult = false) {
   const continued: Array<boolean | undefined> = [];
   const environments: Array<string | undefined> = [];
   const sandbox = fakeSandbox();
-  const harness = defineHarness(
-    {
-      id: "pi",
-      controlTransport: "in-process",
-      toolTransport: "in-process",
-      transcriptFormat: "pi",
-      capabilities: new Set(),
+  const harness = defineHarness({
+    async runTurn(turn) {
+      turns.push(turn.input);
+      continued.push(turn.continueTurn);
+      environments.push(turn.environment);
+      if (!turn.continueTurn) await turn.emit({ kind: "UserMessage", text: turn.input });
+      if (interruptAfterToolResult && turns.length === 1) {
+        await turn.emit({ kind: "ToolCall", tool: "execute", callId: "c1", body: { command: "ls" } });
+        await turn.emit({ kind: "ToolResult", tool: "execute", callId: "c1", text: "a.txt" });
+        throw new Error("interrupted after recording a tool result");
+      }
+      const reply = "it runs on this conversation's computer";
+      await turn.emit({ kind: "AgentMessage", text: reply });
+      return { reply, modelCalls: 1 };
     },
-    {
-      async runTurn(turn) {
-        turns.push(turn.input);
-        continued.push(turn.continueTurn);
-        environments.push(turn.environment);
-        if (!turn.continueTurn) await turn.emit({ kind: "UserMessage", text: turn.input });
-        if (interruptAfterToolResult && turns.length === 1) {
-          await turn.emit({ kind: "ToolCall", tool: "execute", callId: "c1", body: { command: "ls" } });
-          await turn.emit({ kind: "ToolResult", tool: "execute", callId: "c1", text: "a.txt" });
-          throw new Error("interrupted after recording a tool result");
-        }
-        const reply = "it runs on this conversation's computer";
-        await turn.emit({ kind: "AgentMessage", text: reply });
-        return { reply, modelCalls: 1 };
-      },
-      async screenSecurity() {
-        return { decision: "auto" as const };
-      },
+    async screenSecurity() {
+      return { decision: "auto" as const };
     },
-  );
+  });
   const sessions = createPostgresSessionStore(testDatabaseUrl());
   const { runs } = createMemoryRunStore();
   const acl = createAclStore(createPostgresGrantStore(testDatabaseUrl()));

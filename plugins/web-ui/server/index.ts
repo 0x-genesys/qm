@@ -247,20 +247,6 @@ function withSecurityHeaders(headers: Record<string, string>): Record<string, st
   };
 }
 
-const PLAYGROUND_CSP = [
-  "sandbox allow-scripts allow-pointer-lock",
-  "default-src 'none'",
-  "script-src 'unsafe-inline'",
-  "style-src 'unsafe-inline'",
-  "img-src data: blob:",
-  "media-src data: blob:",
-  "font-src data:",
-  "connect-src 'none'",
-  "worker-src blob:",
-  "base-uri 'none'",
-  "form-action 'none'",
-].join("; ");
-
 const UNTRUSTED_CONTENT_SANDBOX_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads";
 const APPS_FRAME_DOMAIN = (process.env.DEPLOY_APPS_DOMAIN ?? "").toLowerCase();
 const FILE_FRAME_ANCESTORS = APPS_FRAME_DOMAIN
@@ -1119,8 +1105,8 @@ async function serveInboxItemImage(c: WebCtx): Promise<unknown> {
   return res.end(Buffer.from(await r.arrayBuffer()));
 }
 
-async function serveFileContent(c: WebCtx, playground = false): Promise<unknown> {
-  const { res, user, url } = c;
+async function serveFileContent(c: WebCtx): Promise<unknown> {
+  const { res, user } = c;
   const id = c.params.id!;
   const corePath = withSourceAuthNonce(
     `/v1/files/${encodeURIComponent(id)}/content?viewer=${encodeURIComponent(user)}`,
@@ -1139,21 +1125,6 @@ async function serveFileContent(c: WebCtx, playground = false): Promise<unknown>
     return res.end(JSON.stringify({ error: r.status === 404 ? "not_found" : "upstream_error" }));
   }
   const contentType = r.headers.get("content-type") ?? "application/octet-stream";
-  if (playground && !contentType.toLowerCase().startsWith("text/html")) {
-    res.writeHead(415, { "content-type": "application/json" });
-    return res.end(JSON.stringify({ error: "not_a_playground" }));
-  }
-  if (playground) {
-    res.writeHead(200, {
-      "content-type": url.searchParams.get("source") === "1" ? "text/plain; charset=utf-8" : contentType,
-      "content-security-policy": PLAYGROUND_CSP,
-      "referrer-policy": "no-referrer",
-      "x-frame-options": "SAMEORIGIN",
-      "x-content-type-options": "nosniff",
-    });
-    return Readable.fromWeb(r.body as Parameters<typeof Readable.fromWeb>[0]).pipe(res);
-  }
-
   const csp = scriptCapableContentType(contentType)
     ? `${UNTRUSTED_CONTENT_SANDBOX_CSP}; ${FILE_FRAME_ANCESTORS}`
     : FILE_FRAME_ANCESTORS;
@@ -1206,7 +1177,6 @@ const apiRoutes: readonly WebRoute[] = [
     },
   },
 
-  { method: "GET", path: "/api/playgrounds/:id", handle: (c) => serveFileContent(c, true) },
   {
     method: "GET",
     path: "/api/user-model-auth/status",
@@ -2582,7 +2552,6 @@ const apiRoutes: readonly WebRoute[] = [
       let text = "";
       let threadRef = `${ownPrefix}default`;
       let model: string | undefined;
-      let harness: string | undefined;
       let thinkingLevel: string | undefined;
       let fastMode: boolean | undefined;
       let timezone: string | undefined;
@@ -2623,7 +2592,6 @@ const apiRoutes: readonly WebRoute[] = [
         if (typeof p.scopeId === "string" && p.scopeId) scope = p.scopeId;
         if (typeof p.channelName === "string" && p.channelName.trim()) channelName = p.channelName.trim().slice(0, 200);
         if (typeof p.model === "string" && p.model) model = p.model;
-        if (typeof p.harness === "string") harness = p.harness;
         if (typeof p.thinkingLevel === "string") thinkingLevel = p.thinkingLevel;
         if (typeof p.fastMode === "boolean") fastMode = p.fastMode;
         if (typeof p.timezone === "string" && p.timezone.trim()) timezone = p.timezone.trim().slice(0, 64);
@@ -2651,7 +2619,6 @@ const apiRoutes: readonly WebRoute[] = [
 
       const turn = {
         ...(await webTurnBase(req, user, resolved.conversation, threadRef, text)),
-        ...(harness ? { harness } : {}),
         ...(model ? { model } : {}),
         ...(thinkingLevel ? { thinkingLevel } : {}),
         ...(typeof fastMode === "boolean" ? { fastMode } : {}),

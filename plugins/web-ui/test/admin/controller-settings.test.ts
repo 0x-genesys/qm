@@ -32,7 +32,6 @@ test("a refreshed model catalog only reaches the view that asked for it", async 
           : {
               modelCatalogRefreshing: url.searchParams.get("view") === "models",
               baseModelOptions: [{ id: "configured", name: "Configured" }],
-              modelsByHarness: { pi: [{ id: "configured", name: "Configured" }] },
               webuiModels: [],
             },
     });
@@ -43,7 +42,6 @@ test("a refreshed model catalog only reaches the view that asked for it", async 
     }
     refresh.resolve({
       baseModelOptions: [{ id: "new", name: "New model" }],
-      modelsByHarness: { pi: [{ id: "new", name: "New model" }] },
     });
     await admin.settle();
     const offered = [...admin.document.querySelectorAll<HTMLOptionElement>("#webui-models-options option")].map(
@@ -188,12 +186,10 @@ test("the models view saves runtime rows chosen in the composer picker", async (
   const admin = await mountAdmin("/settings/models", {
     "/scopes/org:acme": {
       baseModelDefault: "model",
-      baseModelOptions: [{ id: "model" }],
-      harnessOptions: ["pi"],
-      modelsByHarness: { pi: [{ id: "model" }, { id: "fast" }] },
+      baseModelOptions: [{ id: "model" }, { id: "fast" }],
       modelCatalog: { model: meta("model"), fast: meta("fast") },
       fastModeModelIds: ["fast"],
-      runtime: { harnessId: "pi", modelId: "fast", effortLevel: "auto", fastMode: false },
+      runtime: { modelId: "fast", effortLevel: "auto", fastMode: false },
       cronRuntime: null,
       subagentRuntime: null,
       fallbackRuntime: null,
@@ -242,8 +238,8 @@ test("the models view saves runtime rows chosen in the composer picker", async (
 
   await saveAll();
   assert.deepEqual(plain(saves), [
-    ["/scopes/org:acme/runtime", { harnessId: "pi", modelId: "fast", effortLevel: "high", fastMode: true }],
-    ["/scopes/org:acme/cron-runtime", { harnessId: "pi", modelId: "model", effortLevel: "auto", fastMode: false }],
+    ["/scopes/org:acme/runtime", { modelId: "fast", effortLevel: "high", fastMode: true }],
+    ["/scopes/org:acme/cron-runtime", { modelId: "model", effortLevel: "auto", fastMode: false }],
     ["/scopes/org:acme/memory-embedding-model", { modelId: "gateway/embed" }],
   ]);
   assert.equal(doc.querySelector(".dirty"), null);

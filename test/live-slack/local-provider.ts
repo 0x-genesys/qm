@@ -23,7 +23,6 @@ async function main(): Promise<void> {
     ...config,
     dataDir: mkdtempSync(join(tmpdir(), "provider-qualification-")),
     databaseUrl: process.env.DATABASE_URL,
-    harness: "pi",
     sandboxBackend: "local",
 
     backgroundWorkEnabled: false,

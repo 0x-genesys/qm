@@ -18,7 +18,6 @@ export const CORE_ENV_NAMES: readonly string[] = [
   "AGENT37_NAME_PREFIX",
   "AGENT37_TEMPLATE",
   "AGENT_API_URL",
-  "ALL_PROXY",
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",
   "ARTIFACT_STORE",
@@ -42,7 +41,6 @@ export const CORE_ENV_NAMES: readonly string[] = [
   "AWS_DEPLOY_MAX_IDLE_SEC",
   "AWS_DEPLOY_PROFILE",
   "AWS_DEPLOY_REGION",
-  "AWS_DEPLOY_ROTATE_AFTER_SEC",
   "AWS_DEPLOY_SNAPSHOT_INTERVAL_MS",
   "AWS_DEPLOY_SUSPENDED_SEC",
   "AWS_DEPLOY_TOKEN_TTL_MIN",
@@ -71,9 +69,7 @@ export const CORE_ENV_NAMES: readonly string[] = [
   "CAPABILITY_SECRET",
   "CAPABILITY_TOKEN_COMPRESSION",
   "CLAUDE_AUTH_CREDENTIAL",
-  "CLAUDE_BIN",
   "CLAUDE_CODE_OAUTH_TOKEN",
-  "CLAUDE_MODEL",
   "CODEX_AUTH_CREDENTIAL",
   "CONNECTOR_SECRET_KEY",
   "CORE_SIGNING_SECRET",
@@ -119,14 +115,9 @@ export const CORE_ENV_NAMES: readonly string[] = [
   "GMAIL_PUBSUB_AUDIENCE",
   "GMAIL_PUBSUB_SERVICE_ACCOUNT",
   "GMAIL_PUBSUB_TOPIC",
-  "HARNESS",
   "HARNESS_SECURITY_POSTURE",
   "HARNESS_SHARING_POSTURE",
-  "HTTPS_PROXY",
-  "HTTP_PROXY",
   "KUBERNETES_SERVICE_HOST",
-  "LANG",
-  "LC_ALL",
   "LOCAL_SANDBOX_CPUS",
   "LOCAL_SANDBOX_DOCKER_BIN",
   "LOCAL_SANDBOX_IMAGE",
@@ -156,8 +147,6 @@ export const CORE_ENV_NAMES: readonly string[] = [
   "MODEL_GATEWAY_URL",
   "MODEL_PROVIDER",
   "NODE_ENV",
-  "NODE_EXTRA_CA_CERTS",
-  "NO_PROXY",
   "OPENAI_API_KEY",
   "OPENROUTER_API_KEY",
   "ORG_BRAND_ACCENT",
@@ -166,7 +155,6 @@ export const CORE_ENV_NAMES: readonly string[] = [
   "ORG_BRAND_SELF_LABEL",
   "ORG_BUDGET_USD_PER_WINDOW",
   "ORG_ID",
-  "PATH",
   "PI_DETECT_MODEL",
   "PI_JUDGE_MODEL",
   "PI_MODEL",
@@ -181,7 +169,6 @@ export const CORE_ENV_NAMES: readonly string[] = [
   "PORTER_DEPLOY_CLUSTER_ID",
   "PORTER_DEPLOY_PROJECT_ID",
   "PORTER_DEPLOY_RUNNER_IMAGE",
-  "PORTER_DEPLOY_TTL_SEC",
   "PORTER_DEPLOY_URL",
   "PORTER_DEPLOY_VISIBILITY",
   "PORTER_SANDBOX_BASE_URL",
@@ -239,8 +226,6 @@ export const CORE_ENV_NAMES: readonly string[] = [
   "SPRITES_NAME_PREFIX",
   "SPRITES_SNAPSHOT_S3_BUCKET",
   "SPRITES_TOKEN",
-  "SSL_CERT_DIR",
-  "SSL_CERT_FILE",
   "SUGGESTED_ACTIVITIES_CONTEXT",
   "SUGGESTED_ACTIVITIES_ENABLED",
   "SUPERSERVE_API_KEY",
@@ -255,24 +240,19 @@ export const CORE_ENV_NAMES: readonly string[] = [
   "SUPERSERVE_TEMPLATE",
   "SWARMS_ENABLED",
   "SWARM_DEFAULTS",
-  "TMPDIR",
   "TRUSTED_OIDC_ADMIN_ISSUER",
   "WORKERS",
 ];
-
-export const ENV_DEFAULTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
-  core: { HARNESS: "pi" },
-};
 
 const AWS_RENDER_ENV_DEFAULTS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
   core: { SANDBOX_BACKEND: "aws" },
 };
 
 export const TARGET_ENV_DEFAULTS: Record<Target, TargetEnvDefaults> = {
-  docker: (_config, service, name) => ENV_DEFAULTS[service]?.[name],
+  docker: () => undefined,
   aws: (config, service, name) => {
     const rendered = AWS_RENDER_ENV_DEFAULTS[service]?.[name];
-    if (rendered === undefined) return ENV_DEFAULTS[service]?.[name];
+    if (rendered === undefined) return undefined;
     if (name === "SANDBOX_BACKEND") return config.sandbox?.backend ?? rendered;
     return rendered;
   },

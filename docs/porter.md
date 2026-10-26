@@ -129,7 +129,7 @@ Nothing generates the inter-service wiring for you — `cli/src/services.ts` has
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | all          | `CORE_ORG_ID`/`ORG_ID`, `CORE_SIGNING_SECRET`, `PORTAL_IDENTITY_SECRET`                                                                                                                                                                                                                                                         |
 | all but core | `CORE_API_URL=http://qm-core-core.<namespace>.svc.cluster.local:8080`                                                                                                                                                                                                                                                           |
-| core         | `MODEL_PROVIDER`, `HARNESS`, `SANDBOX_BACKEND`, `PUBLIC_WEB_URL`/`WEB_UI_PUBLIC_URL` (the portal's hostname), `CAPABILITY_SECRET`, `CONNECTOR_SECRET_KEY`, `SKILL_SIGNING_SECRET`, `DATABASE_URL` — production refuses to boot without them                                                                                     |
+| core         | `MODEL_PROVIDER`, `SANDBOX_BACKEND`, `PUBLIC_WEB_URL`/`WEB_UI_PUBLIC_URL` (the portal's hostname), `CAPABILITY_SECRET`, `CONNECTOR_SECRET_KEY`, `SKILL_SIGNING_SECRET`, `DATABASE_URL` — production refuses to boot without them                                                                                                |
 | portal       | `PORTAL_PUBLIC_URL`, `PORTAL_SESSION_SECRET`, `WEB_UI_UPSTREAM`, `AUTH_BROKER_UPSTREAM`, `AUTH_BROKER_PREFIX=/idp`, the `OIDC_*` set from `brokerWiring` in `cli/src/services.ts` (including `OIDC_CLIENT_SECRET`), and `OIDC_ALLOWED_EMAILS` or `OIDC_ALLOWED_EMAIL_DOMAIN` — production refuses to boot without an allow-list |
 | auth         | `AUTH_ISSUER=<portal>/idp`, `AUTH_CLIENT_ID`, `AUTH_CLIENT_SECRET`, `AUTH_REDIRECT_URI=<portal>/auth/callback`, `AUTH_TOKEN_SECRET`, `AUTH_SIGNING_JWK` (a P-256 private JWK), `AUTH_EMAIL_FROM`, and `AUTH_EMAIL_TRANSPORT` with a `RESEND_API_KEY` or SMTP credentials — without a mail transport nobody can sign in          |
 
@@ -386,15 +386,15 @@ grep for that line rather than assuming the container's own metadata block is in
 
 ## Other knobs
 
-| Variable                                           | Meaning                                                                                                        |
-| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `PORTER_DEPLOY_URL`                                | Porter API host, when it isn't `https://dashboard.porter.run`                                                  |
-| `PORTER_SANDBOX_IMAGE`                             | Image agent computers boot from                                                                                |
-| `PORTER_DEPLOY_RUNNER_IMAGE`                       | Image published apps boot from (defaults to the sandbox image)                                                 |
-| `PORTER_SANDBOX_EGRESS_PROXY_URL`                  | Forces sandbox traffic through the egress proxy; unset means no egress enforcement (see the constraints below) |
-| `PORTER_SANDBOX_NAME_PREFIX`                       | Prefix for sandbox and app names on the cluster                                                                |
-| `PORTER_DEPLOY_VISIBILITY`                         | `internal` (default) serves apps in-cluster only; `private`/`public` put them on sandbox ingress               |
-| `PORTER_DEPLOY_TTL_SEC` / `PORTER_SANDBOX_TTL_SEC` | Reap bodies after this long                                                                                    |
+| Variable                          | Meaning                                                                                                        |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `PORTER_DEPLOY_URL`               | Porter API host, when it isn't `https://dashboard.porter.run`                                                  |
+| `PORTER_SANDBOX_IMAGE`            | Image agent computers boot from                                                                                |
+| `PORTER_DEPLOY_RUNNER_IMAGE`      | Image published apps boot from (defaults to the sandbox image)                                                 |
+| `PORTER_SANDBOX_EGRESS_PROXY_URL` | Forces sandbox traffic through the egress proxy; unset means no egress enforcement (see the constraints below) |
+| `PORTER_SANDBOX_NAME_PREFIX`      | Prefix for sandbox and app names on the cluster                                                                |
+| `PORTER_DEPLOY_VISIBILITY`        | `internal` (default) serves apps in-cluster only; `private`/`public` put them on sandbox ingress               |
+| `PORTER_SANDBOX_TTL_SEC`          | Reap agent computers after this long; idle published apps stop after `DEPLOY_IDLE_TTL_MS`                      |
 
 To QA a branch against a real Porter cluster before deploying it, the dev instance takes
 the same backend:

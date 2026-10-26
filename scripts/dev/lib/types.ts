@@ -93,7 +93,6 @@ export interface StatusReport {
   gitSha: string;
   sandbox: { backend: string; detail: string };
   durability: { databaseUrl: boolean };
-  harness: string;
   webEnabled?: boolean;
   slackEnabled: boolean;
   watch: boolean;

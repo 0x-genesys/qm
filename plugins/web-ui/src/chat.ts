@@ -19,7 +19,6 @@ import {
   sessionPresentation,
 } from "./activity-presentation";
 import { dismissGeneratedActivity, loadGeneratedActivities } from "./generated-activities";
-import { playgroundPath, playgroundsIn, type PlaygroundArtifact } from "./playground";
 import { Agent } from "@earendil-works/pi-agent-core";
 import type { Attachment } from "@earendil-works/pi-web-ui";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -44,7 +43,6 @@ import {
   Clock3,
   Copy,
   FileImage,
-  FileText,
   Files,
   GitFork,
   Link2,
@@ -148,12 +146,7 @@ import { showStateError } from "./error-banner";
 import { splitLinks } from "./linkify";
 import { slackWireToPlain, splitSlackWire, stripSlackDirectives } from "./slack-text";
 import { installMarkdownSanitizer } from "./markdown-sanitize";
-import {
-  transcriptModel,
-  defaultEffortForModel,
-  harnessSupportsEffort,
-  harnessSupportsFastMode,
-} from "./model-options";
+import { transcriptModel, defaultEffortForModel } from "./model-options";
 import {
   attachmentGallery,
   avatarTpl,
@@ -708,11 +701,9 @@ export function createChatSurface(
     if (!selected) throw new Error("No model is available");
     const target = { scopeId: chatState.scopeId, channelName: chatState.contextName };
     if (ctx.composer.followsDefault()) return target;
-    const harness = selected.harnessId;
     return {
-      ...(harnessSupportsEffort(harness) ? { effortLevel: ctx.composer.state.effortLevel } : {}),
-      ...(harnessSupportsFastMode(harness) ? { fastMode: ctx.composer.state.fastMode } : {}),
-      harness,
+      effortLevel: ctx.composer.state.effortLevel,
+      fastMode: ctx.composer.state.fastMode,
       ...target,
     };
   }
@@ -989,12 +980,7 @@ export function createChatSurface(
     return (work: WorkBlock) => {
       if (agent !== chatState.agent) return;
       appendConsumedSteers(agent.state.messages, work);
-      if (
-        work.runtime &&
-        switchedDefault(work.runtime) &&
-        (work.runtime.harnessId !== chatState.turnRuntime?.harnessId ||
-          work.runtime.modelId !== chatState.turnRuntime.modelId)
-      )
+      if (work.runtime && switchedDefault(work.runtime) && work.runtime.modelId !== chatState.turnRuntime?.modelId)
         void ctx.composer.followScopeDefault(agent);
       if (work.runtime) chatState.turnRuntime = work.runtime;
       else if (work !== chatState.liveWork) chatState.turnRuntime = null;
@@ -2198,27 +2184,6 @@ export function createChatSurface(
     return connectorCard(link, connectedConnectors.has(link.provider), withReturnTo);
   }
 
-  function playgroundCard(playground: PlaygroundArtifact): TemplateResult {
-    const src = withBase(playgroundPath(playground.artifactId));
-    const source = withBase(playgroundPath(playground.artifactId, true));
-    return html`<section class="playground-card">
-      <header class="playground-header">
-        <span class="playground-title">${icon(Rocket, 16)}<strong>${playground.title}</strong></span>
-        <nav class="playground-actions" aria-label="Playground actions">
-          <a href=${source} target="_blank" rel="noreferrer">${icon(FileText, 14)} Source</a>
-          <a href=${src} target="_blank" rel="noreferrer">${icon(Maximize2, 14)} Open</a>
-        </nav>
-      </header>
-      <iframe
-        class="playground-frame"
-        src=${src}
-        title=${playground.title}
-        sandbox="allow-scripts allow-forms allow-pointer-lock"
-        referrerpolicy="no-referrer"
-      ></iframe>
-    </section>`;
-  }
-
   function isReadOnlySlackView(): boolean {
     return !chatState.agent && chatState.forkSession !== null && surfaceOf(chatState.forkSession) === "slack";
   }
@@ -2294,9 +2259,6 @@ export function createChatSurface(
           </details>`,
         );
       }
-    }
-    for (const playground of playgroundsIn((message as AssistantWork).work?.activity)) {
-      parts.push(playgroundCard(playground));
     }
     return parts;
   }

@@ -61,9 +61,6 @@ function fakeToolContext(sink?: { lastExecOpts?: Parameters<ToolContext["execute
     async setDeploymentPublic(id, isPublic) {
       return { id, name: id, public: isPublic };
     },
-    async createPlayground(input) {
-      return { kind: "playground", artifactId: "playground-1", title: input.title };
-    },
     async memorySearch(q) {
       return q.includes("billing") ? ["(2026-05-31) Owns the billing service"] : [];
     },
@@ -379,15 +376,6 @@ const call = (tool: ReturnType<typeof createAgentTools>[number] | undefined, par
   assert.ok(tool);
   return (tool.execute as unknown as (id: string, p: unknown) => Promise<unknown>)("t", params);
 };
-
-test("miniapp stays unavailable while playground rendering is deferred", () => {
-  for (const surfaceName of [undefined, "web", "slack"]) {
-    assert.equal(
-      createAgentTools({ current: fakeToolContext() }, { surfaceName }).some((tool) => tool.name === "miniapp"),
-      false,
-    );
-  }
-});
 
 test("each agent tool emits a tool_call then a tool_result", async () => {
   const emitted: Emitted[] = [];
@@ -3076,7 +3064,7 @@ test("runtime persists its decision before terminating and blocks later effects"
   const persisted = new Promise<void>((resolve) => {
     release = resolve;
   });
-  const choice = { harnessId: "pi" as const, modelId: "gpt-6-astra" };
+  const choice = { modelId: "gpt-6-astra" };
   const ref: ToolContextRef = {
     current: { ...fakeToolContext(), runtime: async () => ({ ok: true, handoff: { choice, lifetime: "task" } }) },
     scopeLabel: "personal:U1",
@@ -3107,7 +3095,7 @@ test("runtime persists its decision before terminating and blocks later effects"
 
 test("runtime get persists the active runtime beside a result too long to show in full", async () => {
   const events: Emitted[] = [];
-  const active = { harnessId: "pi" as const, modelId: "claude-sonnet-5" };
+  const active = { modelId: "claude-sonnet-5" };
   const ref: ToolContextRef = {
     current: {
       ...fakeToolContext(),
@@ -3133,7 +3121,7 @@ test("runtime persistence failure does not latch a handoff", async () => {
       ...fakeToolContext(),
       runtime: async () => ({
         ok: true,
-        handoff: { choice: { harnessId: "pi", modelId: "gpt-6-astra" }, lifetime: "task" },
+        handoff: { choice: { modelId: "gpt-6-astra" }, lifetime: "task" },
       }),
     },
     scopeLabel: "personal:U1",

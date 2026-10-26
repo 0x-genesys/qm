@@ -131,7 +131,6 @@ test("bad responses degrade to manual fields with no partial or mismatched metad
 test("live lookup is admin-only and builtin enable verifies without a duplicate or changed default", async () => {
   const upstream = await verificationUpstream();
   const config = testConfig({
-    harness: "pi",
     anthropicApiKey: "lookup-key",
     providerBaseUrls: { anthropic: upstream.url },
   });
@@ -173,8 +172,8 @@ test("live lookup is admin-only and builtin enable verifies without a duplicate 
       base + "/v1/runtime-config?principalId=admin-alice@default-org&scopeId=personal:admin-alice@default-org",
       { headers },
     );
-    const body = (await runtime.json()) as { modelsByHarness: { pi: string[] } };
-    assert.ok(body.modelsByHarness.pi.includes("claude-opus-4-6"));
+    const body = (await runtime.json()) as { models: string[] };
+    assert.ok(body.models.includes("claude-opus-4-6"));
   } finally {
     server.closeAllConnections();
     await new Promise<void>((r) => server.close(() => r()));
@@ -182,10 +181,10 @@ test("live lookup is admin-only and builtin enable verifies without a duplicate 
   }
 });
 
-test("enable rechecks serving credentials and harness policy before mutating the picker", async () => {
+test("enable rechecks serving credentials before mutating the picker", async () => {
   let onProbe: () => Promise<void> = async () => {};
-  const config = testConfig({ harness: "pi", anthropicApiKey: "test-key" });
-  const built = stopAtEnd(buildApp(config, { modelVerificationProbe: async () => onProbe() }));
+  const config = testConfig({ anthropicApiKey: "test-key" });
+  const built = buildApp(config, { modelVerificationProbe: async () => onProbe() });
   const server = createInsecureTestServer(built.app, serverDeps(config, built));
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1/admin/model-registry/claude-opus-4-6/enable`;
@@ -198,15 +197,6 @@ test("enable rechecks serving credentials and harness policy before mutating the
     };
     assert.equal((await enable()).status, 422);
     assert.equal(await built.config.getWebuiModelsDurable(org), null);
-    onProbe = async () => {
-      await built.config.setApprovedHarnesses(["claude"]);
-    };
-    assert.equal((await enable()).status, 422);
-    assert.equal(await built.config.getWebuiModelsDurable(org), null);
-    onProbe = async () => {
-      throw Error("must not call");
-    };
-    assert.equal((await enable()).status, 400);
   } finally {
     server.closeAllConnections();
     await new Promise<void>((r) => server.close(() => r()));

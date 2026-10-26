@@ -19,7 +19,7 @@ export async function swarmFixture(
     runs?: RunStore;
     lock?: AdvisoryLock;
     backend?: Sandbox;
-    runtime?: Pick<OrchestratorInput, "model" | "harness" | "thinkingLevel" | "fastMode">;
+    runtime?: Pick<OrchestratorInput, "model" | "thinkingLevel" | "fastMode">;
   } = {},
 ) {
   const sessions = options.sessions ?? createPostgresSessionStore(testDatabaseUrl());

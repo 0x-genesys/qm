@@ -6,7 +6,6 @@
   "services": ["core", "slack", "web-ui", "portal", "egress-proxy"],
   "env": {
     "core": {
-      "HARNESS": "pi",
       "S3_BUCKET": "acme-data",
       "S3_REGION": "auto",
     },

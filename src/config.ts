@@ -1,3 +1,4 @@
+import { httpChatConfigsFromEnv, type HttpChatConfig } from "./chat-surface/http-chat.ts";
 import { codexAuthFileForEnv, loadCodexAuthFile } from "./model/chatgpt-auth-file.ts";
 import {
   deploymentBrokerCredentialsFromEnv,
@@ -62,6 +63,7 @@ interface TenantConfig {
   publicWebUrl?: string;
   slack?: SlackPluginConfig;
   externalSlackPolicies?: ExternalSlackPolicies;
+  chatSurfaces?: HttpChatConfig[];
   s3Prefix?: string;
   deployAppsSessionSecret?: string;
   deployAppsLoginUrl?: string;
@@ -89,7 +91,6 @@ interface DeploymentConfig {
   databasePoolCaCert?: string;
   databasePoolMax?: number;
   databaseDirectPoolMax?: number;
-  harness: "pi" | "claude";
   securityPosture: SecurityPosture;
   sharingPosture: SharingPosture;
   legacySandboxScopeDefaults?: LegacySandboxScopeDefaults;
@@ -102,9 +103,6 @@ interface DeploymentConfig {
   codexAuthCredential?: string;
   /** Keychain credential id holding a Claude Code subscription token (production path). */
   claudeAuthCredential?: string;
-  claudeModel?: string;
-  claudeBinPath?: string;
-  claudeProcessEnv: NodeJS.ProcessEnv;
   detectModelId?: string;
   titleModelId?: string;
   judgeModelId?: string;
@@ -203,14 +201,12 @@ interface DeploymentConfig {
 
 export type Config = DeploymentConfig & TenantConfig;
 
-export function configuredModelForHarness(config: Config, harness: string): string | undefined {
-  if (harness === "claude") return config.claudeModel;
+export function configuredModel(config: Config): string | undefined {
   if (
-    harness === "pi" &&
     !config.modelId &&
     !config.anthropicApiKey &&
     !config.modelProvider &&
-    harnessCarriedModelAuth(config) === "openai"
+    companySubscriptionAuth(config) === "openai"
   )
     return DEFAULT_CODEX_MODEL_ID;
   return config.modelId;
@@ -229,13 +225,8 @@ export function baseModelProviders(config: Config): ModelProviderAvailability | 
   return config.modelProvider ? onlyProvider(config.modelProvider) : undefined;
 }
 
-export function harnessCarriedModelAuth(config: Config): ModelProvider | undefined {
-  if (
-    !config.claudeProcessEnv.ANTHROPIC_API_KEY &&
-    (config.claudeAuthCredential ||
-      config.claudeProcessEnv.CLAUDE_CODE_OAUTH_TOKEN ||
-      config.claudeProcessEnv.ANTHROPIC_AUTH_TOKEN)
-  )
+export function companySubscriptionAuth(config: Config): ModelProvider | undefined {
+  if (config.anthropicApiKey ? config.anthropicApiKey.includes("sk-ant-oat") : config.claudeAuthCredential)
     return "anthropic";
   if (config.codexAuthCredential || config.codexAuthFile) return "openai";
   return undefined;
@@ -557,7 +548,6 @@ interface PorterDeployEnv {
   appsDomain?: string;
   visibility?: "public" | "private" | "internal";
   namePrefix?: string;
-  ttlSec?: number;
 }
 
 function porterApiBaseUrl(env: NodeJS.ProcessEnv): string | undefined {
@@ -591,7 +581,6 @@ function porterDeployEnv(env: NodeJS.ProcessEnv): PorterDeployEnv {
       "PORTER_DEPLOY_VISIBILITY=internal serves apps inside the cluster only, so it takes no PORTER_DEPLOY_APPS_DOMAIN — unset one of them.",
     );
   }
-  const ttlSec = numEnvStrict("PORTER_DEPLOY_TTL_SEC", env.PORTER_DEPLOY_TTL_SEC);
   const runnerImage = env.PORTER_DEPLOY_RUNNER_IMAGE ?? env.PORTER_SANDBOX_IMAGE;
   return {
     ...(token ? { token } : {}),
@@ -600,7 +589,6 @@ function porterDeployEnv(env: NodeJS.ProcessEnv): PorterDeployEnv {
     ...(env.PORTER_DEPLOY_APPS_DOMAIN ? { appsDomain: env.PORTER_DEPLOY_APPS_DOMAIN } : {}),
     ...(visibility ? { visibility } : {}),
     ...(env.PORTER_SANDBOX_NAME_PREFIX ? { namePrefix: env.PORTER_SANDBOX_NAME_PREFIX } : {}),
-    ...(ttlSec !== undefined ? { ttlSec } : {}),
   };
 }
 
@@ -708,7 +696,6 @@ interface AwsDeployEnv {
   agentPort?: number;
   appPort?: number;
   maximumDurationInSeconds?: number;
-  rotateAfterSeconds?: number;
   maxIdleDurationSeconds?: number;
   suspendedDurationSeconds?: number;
   appsDomain?: string;
@@ -826,9 +813,6 @@ function awsDeployEnv(env: NodeJS.ProcessEnv): AwsDeployEnv {
       : {}),
     ...(numEnvStrict("AWS_DEPLOY_MAX_DURATION_SEC", env.AWS_DEPLOY_MAX_DURATION_SEC) !== undefined
       ? { maximumDurationInSeconds: numEnvStrict("AWS_DEPLOY_MAX_DURATION_SEC", env.AWS_DEPLOY_MAX_DURATION_SEC) }
-      : {}),
-    ...(numEnvStrict("AWS_DEPLOY_ROTATE_AFTER_SEC", env.AWS_DEPLOY_ROTATE_AFTER_SEC) !== undefined
-      ? { rotateAfterSeconds: numEnvStrict("AWS_DEPLOY_ROTATE_AFTER_SEC", env.AWS_DEPLOY_ROTATE_AFTER_SEC) }
       : {}),
     ...(numEnvStrict("AWS_DEPLOY_MAX_IDLE_SEC", env.AWS_DEPLOY_MAX_IDLE_SEC) !== undefined
       ? { maxIdleDurationSeconds: numEnvStrict("AWS_DEPLOY_MAX_IDLE_SEC", env.AWS_DEPLOY_MAX_IDLE_SEC) }
@@ -969,13 +953,6 @@ function orgBrandingFromEnv(env: NodeJS.ProcessEnv): Config["brandingDefault"] {
   });
 }
 
-function harnessEnvStrict(value: string | undefined): Config["harness"] {
-  if (value === undefined || value.trim() === "") return "pi";
-  const harness = value.trim();
-  if (harness === "pi" || harness === "claude") return harness;
-  throw new Error(`HARNESS=${JSON.stringify(value)} is not recognized — use pi or claude, or unset it.`);
-}
-
 export function enabledSandboxBackends(config: Config): Array<Config["sandboxBackend"]> {
   const credentialed: Record<Config["sandboxBackend"], boolean> = {
     local: Boolean(config.localSandbox?.image),
@@ -1064,11 +1041,9 @@ function modelProviderEnvStrict(env: NodeJS.ProcessEnv): ModelProvider | undefin
       `MODEL_PROVIDER=${JSON.stringify(declared)} is not recognized — use ${MODEL_PROVIDERS.join(", ")}.`,
     );
   }
-  const harness = harnessEnvStrict(env.HARNESS);
-  const base = defaultModelForProvider(harness, declared);
-  if (!base) {
+  if (!defaultModelForProvider(declared)) {
     throw new Error(
-      `MODEL_PROVIDER=${declared} cannot serve a base model on HARNESS=${harness} — that harness runs no ${declared} model, so every turn would be refused.`,
+      `MODEL_PROVIDER=${declared} cannot serve a base model — no ${declared} model is available, so every turn would be refused.`,
     );
   }
   return declared;
@@ -1120,7 +1095,6 @@ function loadDeploymentConfig(env: NodeJS.ProcessEnv): DeploymentConfig {
   const swarmDefaults = resolveSwarmSettings(
     env.SWARM_DEFAULTS === undefined ? undefined : JSON.parse(env.SWARM_DEFAULTS),
   );
-  const harness = harnessEnvStrict(env.HARNESS);
   const codexAuthCredential = env.CODEX_AUTH_CREDENTIAL?.trim() || undefined;
   const claudeAuthCredential = env.CLAUDE_AUTH_CREDENTIAL?.trim() || undefined;
   const anthropicApiKey = env.ANTHROPIC_API_KEY || env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_AUTH_TOKEN;
@@ -1298,25 +1272,6 @@ function loadDeploymentConfig(env: NodeJS.ProcessEnv): DeploymentConfig {
   }
   const providerBaseUrls = providerBaseUrlsFromEnv(env);
   const modelGateway = modelGatewayFromEnv(env);
-  const claudeProcessEnv = Object.fromEntries(
-    [
-      "PATH",
-      "TMPDIR",
-      "LANG",
-      "LC_ALL",
-      "SSL_CERT_FILE",
-      "SSL_CERT_DIR",
-      "NODE_EXTRA_CA_CERTS",
-      "HTTP_PROXY",
-      "HTTPS_PROXY",
-      "NO_PROXY",
-      "ALL_PROXY",
-      "ANTHROPIC_API_KEY",
-      "ANTHROPIC_AUTH_TOKEN",
-      "CLAUDE_CODE_OAUTH_TOKEN",
-    ].flatMap((name) => (env[name] === undefined ? [] : [[name, env[name]]])),
-  ) as NodeJS.ProcessEnv;
-  if (providerBaseUrls.anthropic) claudeProcessEnv.ANTHROPIC_BASE_URL = providerBaseUrls.anthropic;
   const slackEventsPort =
     env.SLACK_EVENTS_MODE?.trim() === "http" ? numEnvStrict("SLACK_EVENTS_PORT", env.SLACK_EVENTS_PORT) : undefined;
   if (
@@ -1349,7 +1304,6 @@ function loadDeploymentConfig(env: NodeJS.ProcessEnv): DeploymentConfig {
       : {}),
     ...(env.DATABASE_CA_CERT ? { databaseCaCert: env.DATABASE_CA_CERT } : {}),
     ...(env.DATABASE_CA_CERT_FILE ? { databaseCaCertFile: env.DATABASE_CA_CERT_FILE } : {}),
-    harness,
     securityPosture: DEFAULT_SECURITY_POSTURE,
     sharingPosture: DEFAULT_SHARING_POSTURE,
     securityScreen: "observe",
@@ -1363,9 +1317,6 @@ function loadDeploymentConfig(env: NodeJS.ProcessEnv): DeploymentConfig {
     ...(codexAuthFile ? { codexAuthFile } : {}),
     ...(codexAuthCredential ? { codexAuthCredential } : {}),
     ...(claudeAuthCredential ? { claudeAuthCredential } : {}),
-    ...(env.CLAUDE_MODEL ? { claudeModel: env.CLAUDE_MODEL } : {}),
-    ...(env.CLAUDE_BIN ? { claudeBinPath: env.CLAUDE_BIN } : {}),
-    claudeProcessEnv,
     ...(env.PI_DETECT_MODEL ? { detectModelId: env.PI_DETECT_MODEL } : {}),
     ...(env.PI_TITLE_MODEL ? { titleModelId: env.PI_TITLE_MODEL } : {}),
     ...(env.PI_JUDGE_MODEL ? { judgeModelId: env.PI_JUDGE_MODEL } : {}),
@@ -1520,6 +1471,7 @@ function loadTenantConfig(env: NodeJS.ProcessEnv): TenantConfig {
     ...(env.PUBLIC_WEB_URL ? { publicWebUrl: env.PUBLIC_WEB_URL } : {}),
     ...(slack ? { slack } : {}),
     externalSlackPolicies,
+    chatSurfaces: httpChatConfigsFromEnv(env),
     ...(env.S3_PREFIX ? { s3Prefix: env.S3_PREFIX } : {}),
     ...deployAppsEnv(env, publicUrl),
     ...(deployAppsDomain ? { deployAppsDomain } : {}),

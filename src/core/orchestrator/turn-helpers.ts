@@ -1,12 +1,13 @@
-import type {
-  CandidateDestination,
-  CommandApprovalGrant,
-  Destination,
-  EgressPolicy,
-  Principal,
-  ScopeId,
-  TurnRequest,
-  ActorAssertion,
+import {
+  type CandidateDestination,
+  type CommandApprovalGrant,
+  type Destination,
+  type EgressPolicy,
+  type Principal,
+  type ScopeId,
+  type TurnRequest,
+  type ActorAssertion,
+  turnSource,
 } from "../../types.ts";
 import { turnOriginRequestFields } from "../turn-origin.ts";
 import { isOverheard, isReply, isUserMessage, type Item } from "../../sessions/items.ts";
@@ -154,7 +155,7 @@ export function replayableRequest(input: OrchestratorInput): TurnRequest {
   const c = input.conversation;
   return {
     surface: input.surface ?? "unknown",
-    ...(input.slackSource ? { slackSource: input.slackSource } : {}),
+    ...(turnSource(input) ? { source: turnSource(input) } : {}),
     ...(input.externalSlack ? { externalSlack: input.externalSlack } : {}),
     ...(input.sessionSenderId ? { sessionSenderId: input.sessionSenderId } : {}),
     ...(input.delegatingRunId ? { delegatingRunId: input.delegatingRunId } : {}),
@@ -183,7 +184,6 @@ export function replayableRequest(input: OrchestratorInput): TurnRequest {
     ...(input.detectContext ? { detectContext: input.detectContext } : {}),
     ...(input.detectOpener ? { detectOpener: input.detectOpener } : {}),
     ...(input.attachments?.length ? { attachments: input.attachments } : {}),
-    ...(input.harness ? { harness: input.harness } : {}),
     ...(input.model ? { model: input.model } : {}),
     ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
     ...(input.fastMode !== undefined ? { fastMode: input.fastMode } : {}),

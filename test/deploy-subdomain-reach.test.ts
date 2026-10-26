@@ -70,12 +70,13 @@ test("reachDeployment: a provider's resolveEndpoint refreshes (and persists) the
   let applies = 0;
   let resolved: DeployEndpoint | null = null;
   const provider: DeployProvider = {
-    profile: { managedScaleToZero: true, inPlaceReconcile: true },
+    profile: { managedScaleToZero: true },
     apply: async () => {
       applies++;
       return { host: "stored", port: 443, tls: true };
     },
     resolveEndpoint: async () => resolved,
+    logs: async () => null,
     destroy: async () => {},
   };
   const { deploy, deployStore } = serviceWithProvider(provider);
@@ -102,12 +103,13 @@ test("reachDeployment: a provider's resolveEndpoint refreshes (and persists) the
 test("reachDeployment: a null resolveEndpoint re-applies the current version from source", async () => {
   let applies = 0;
   const provider: DeployProvider = {
-    profile: { managedScaleToZero: true, inPlaceReconcile: true },
+    profile: { managedScaleToZero: true },
     apply: async () => {
       applies++;
       return { host: `body-${applies}`, port: 443, tls: true };
     },
     resolveEndpoint: async () => null,
+    logs: async () => null,
     destroy: async () => {},
   };
   const { deploy } = serviceWithProvider(provider);
@@ -129,6 +131,8 @@ test("reachDeployment: a provider without resolveEndpoint returns the frozen sto
   const provider: DeployProvider = {
     profile: { managedScaleToZero: false },
     apply: async () => ({ host: "frozen", port: 9000 }),
+    resolveEndpoint: async (d) => d.endpoint,
+    logs: async () => null,
     destroy: async () => {},
   };
   const { deploy } = serviceWithProvider(provider);
@@ -150,6 +154,8 @@ function appServingUpstream(upstreamPort: number) {
     provider: {
       profile: { managedScaleToZero: false },
       apply: async () => ({ host: "127.0.0.1", port: upstreamPort }),
+      resolveEndpoint: async (d) => d.endpoint,
+      logs: async () => null,
       destroy: async () => {},
     },
     auditLog,

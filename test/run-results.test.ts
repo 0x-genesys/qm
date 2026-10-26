@@ -76,7 +76,7 @@ test("runResultPost carries the reply's attachments so recovery can replay the f
   assert.equal(d?.text, "here's the file");
 });
 
-test("runResultPost retains the Slack policy used for private admission", () => {
+test("runResultPost retains the Slack policy a legacy-shaped request used for private admission", () => {
   const request = {
     ...turn("hi", "DPRIVATE"),
     slackSource: {
@@ -89,9 +89,23 @@ test("runResultPost retains the Slack policy used for private admission", () => 
   assert.deepEqual(runResultPost(run({ request }))?.destination, {
     type: "slack",
     target: "DPRIVATE",
-    slackAccountId: "partner",
-    slackTeamId: "TPARTNER",
-    slackPolicyNamespace: request.slackSource.externalPolicyNamespace,
+    account: "partner",
+    workspaceId: "TPARTNER",
+    policyNamespace: request.slackSource.externalPolicyNamespace,
+  });
+});
+
+test("runResultPost carries the turn source's account, workspace and policy onto its destination", () => {
+  const request = {
+    ...turn("hi", "DPRIVATE"),
+    source: { account: "partner", workspaceId: "TPARTNER", userId: "U1", policyNamespace: "external-slack:TPARTNER:p" },
+  };
+  assert.deepEqual(runResultPost(run({ request }))?.destination, {
+    type: "slack",
+    target: "DPRIVATE",
+    account: "partner",
+    workspaceId: "TPARTNER",
+    policyNamespace: "external-slack:TPARTNER:p",
   });
 });
 

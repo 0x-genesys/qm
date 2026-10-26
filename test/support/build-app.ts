@@ -15,7 +15,7 @@ export function buildApp(config: Config, overrides: Parameters<typeof buildProdu
   return stopAtEnd(
     buildProductionApp(
       { anthropicApiKey: "test-anthropic-key", ...config },
-      { ...overrides, harnesses: { pi: createMockHarness(), ...overrides.harnesses } },
+      { harness: createMockHarness(), ...overrides },
     ),
   );
 }

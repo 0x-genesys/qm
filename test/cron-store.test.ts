@@ -889,7 +889,7 @@ test("cron runtime overrides survive store reload, distinguish creation, and cle
   const backing = testMap<Cron>();
   const store = createCronStore(backing, { fires: createPostgresCronFireStore(testDatabaseUrl()) });
   const input = { ...base, schedule: { everyMs: 60_000 } };
-  const runtime = { harnessId: "pi" as const, modelId: "gpt-6-luna", effortLevel: "low" };
+  const runtime = { modelId: "gpt-6-luna", effortLevel: "low" };
   const inherited = await store.create(input);
   const overridden = await store.create({ ...input, runtime });
   assert.notEqual(inherited.id, overridden.id);
@@ -906,7 +906,7 @@ test("cron runtime overrides survive store reload, distinguish creation, and cle
 
 test("cron runtime rejects malformed settings and tasks that would ignore them", async () => {
   const store = createCronStore(testMap(), { fires: createPostgresCronFireStore(testDatabaseUrl()) });
-  const runtime = { harnessId: "pi" as const, modelId: "gpt-6-luna", effortLevel: "low" };
+  const runtime = { modelId: "gpt-6-luna", effortLevel: "low" };
   for (const invalid of [
     {},
     { ...runtime, modelId: " " },

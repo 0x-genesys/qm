@@ -60,7 +60,7 @@ function renderConfig(orgId: string, values: ConfigValues): string {
   // settings after deploy instead.
   "modelProvider": ${JSON.stringify(values.modelProvider)},
 
-  // Optional base model id, passed to the harness (e.g. "claude-opus-4-6").
+  // Optional base model id (e.g. "claude-opus-4-6").
   // Omit it and the deployment uses the default model for the provider above.
   // It must be a model that provider can bill.
   // "model": "",
@@ -82,8 +82,7 @@ ${values.providerFields}
   // Extra directories of SKILL.md files, mounted into the agent.
   "skills": [],
 
-  // Non-secret env overrides, per service. HARNESS "pi" runs real agent turns
-  // against the base model selected by "modelProvider" above.
+  // Non-secret env overrides, per service.
   "env": ${values.env}${values.secretEnv}${values.sandbox}
 }
 `;
@@ -164,7 +163,7 @@ export const dockerScaffold: ProviderScaffold = {
       publicUrl: "http://localhost:8081",
       providerFields: "",
       services: ["core", "web-ui", "portal", "auth"],
-      env: `{ "core": { "HARNESS": "pi" }, "auth": { "AUTH_EMAIL_TRANSPORT": ${JSON.stringify(emailTransport)} } }`,
+      env: `{ "auth": { "AUTH_EMAIL_TRANSPORT": ${JSON.stringify(emailTransport)} } }`,
       secretEnv: "",
       sandbox: "",
     }),
@@ -209,7 +208,7 @@ export const awsScaffold: ProviderScaffold = {
   },
 `,
       services: ["core", "slack", "web-ui", "portal", "auth"],
-      env: `{ "core": { "HARNESS": "pi", "AWS_DEPLOY_IMAGE": ${JSON.stringify(`${cluster}-sandbox`)}, "AWS_PUBLIC_ORIGIN_URL": "http://replace-with-alb-hostname" }, "slack": { "SLACK_IDENTITY_EMAIL": "1" }, "auth": { "AUTH_EMAIL_TRANSPORT": ${JSON.stringify(emailTransport)} } }`,
+      env: `{ "core": { "AWS_DEPLOY_IMAGE": ${JSON.stringify(`${cluster}-sandbox`)}, "AWS_PUBLIC_ORIGIN_URL": "http://replace-with-alb-hostname" }, "slack": { "SLACK_IDENTITY_EMAIL": "1" }, "auth": { "AUTH_EMAIL_TRANSPORT": ${JSON.stringify(emailTransport)} } }`,
       secretEnv: `,
 
   // The initial admin seed is kept in the provider secret store, never in config.
