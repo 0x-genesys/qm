@@ -599,18 +599,6 @@ test("DEPLOY_PROVIDER=e2b selects E2B publishing and needs the E2B key", () => {
   assert.throws(() => loadConfig({ DEPLOY_PROVIDER: "e2b" }), /missing or insecure required core secrets: E2B_API_KEY/);
 });
 
-test("the deploy runner image falls back to the sandbox image", () => {
-  const config = loadConfig({
-    DEPLOY_PROVIDER: "porter",
-    PORTER_DEPLOY_PROJECT_ID: "7",
-    PORTER_DEPLOY_CLUSTER_ID: "9",
-    PORTER_DEPLOY_API_TOKEN: "tok",
-    PORTER_DEPLOY_APPS_DOMAIN: "apps.example.com",
-    PORTER_SANDBOX_IMAGE: "localhost:5000/qm-sandbox:latest",
-  });
-  assert.equal(config.porterDeploy.runnerImage, "localhost:5000/qm-sandbox:latest");
-});
-
 test("DEPLOY_PROVIDER=porter refuses to boot without a cluster and tolerates a missing apps domain", () => {
   assert.throws(
     () =>
@@ -669,10 +657,8 @@ test("SANDBOX_BACKEND=porter locates the API and shares the deploy provider's to
     DEPLOY_PROVIDER: "porter",
     PORTER_DEPLOY_API_TOKEN: "tok",
     PORTER_CLUSTER_ID: "3",
-    PORTER_SANDBOX_TTL_SEC: "120",
   });
   assert.equal(inCluster.porterSandbox.token, "tok");
-  assert.equal(inCluster.porterSandbox.ttlSec, 120);
   assert.equal(inCluster.porterDeploy.token, "tok");
 });
 

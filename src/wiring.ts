@@ -232,7 +232,7 @@ import { createSdkManagedAgentsClient } from "./sandbox/managed-agents-client.ts
 import { createS3SnapshotStore } from "./sandbox/home-snapshot.ts";
 import { createModalSandbox, type StoredModalSandbox } from "./sandbox/modal-sandbox.ts";
 import { createSdkModalClient } from "./sandbox/modal-client.ts";
-import { createPorterSandbox } from "./sandbox/porter-sandbox.ts";
+import { createPorterSandbox, type StoredPorterSandbox } from "./sandbox/porter-sandbox.ts";
 import { createSandboxRouter, type SandboxBackendName } from "./sandbox/sandbox-routing.ts";
 import {
   upgradeLegacySandboxes,
@@ -969,7 +969,13 @@ export function buildApp(
       store: awsBodies,
     });
   };
-  const buildPorter = (): Sandbox => createPorterSandbox(workspace, { ...sandboxShared, ...config.porterSandbox });
+  const buildPorter = (): Sandbox =>
+    createPorterSandbox(workspace, {
+      ...sandboxShared,
+      ...config.porterSandbox,
+      ...homeSnapshots("porter-home"),
+      store: artifactMap<StoredPorterSandbox>("porter_sandbox_bodies"),
+    });
   const buildBackend: Record<Config["sandboxBackend"], () => Sandbox> = {
     local: buildLocal,
     sprites: buildSprites,
@@ -1019,7 +1025,9 @@ export function buildApp(
           return [
             ...e2b.map(([scopeId, body]) => ({ scopeId, backend: "e2b" as const, machineId: body.sandboxId })),
             ...modal.map(([scopeId, body]) => ({ scopeId, backend: "modal" as const, machineId: body.sandboxId })),
-            ...aws.map(([scopeId, body]) => ({ scopeId, backend: "aws" as const, machineId: body.microvmId })),
+            ...aws.flatMap(([scopeId, body]) =>
+              body.microvmId ? [{ scopeId, backend: "aws" as const, machineId: body.microvmId }] : [],
+            ),
             ...superserve.map(([scopeId, body]) => ({
               scopeId,
               backend: "superserve" as const,

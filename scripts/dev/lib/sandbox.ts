@@ -249,16 +249,14 @@ export async function resolveSandbox(opts: {
       PORTER_DEPLOY_API_TOKEN: porterToken,
       PORTER_DEPLOY_PROJECT_ID: projectId,
       PORTER_DEPLOY_CLUSTER_ID: clusterId,
-      PORTER_SANDBOX_NAME_PREFIX: opts.baseEnv.PORTER_SANDBOX_NAME_PREFIX || "qmdev",
+      SANDBOX_NAME_PREFIX: opts.baseEnv.SANDBOX_NAME_PREFIX || "qmdev",
       PORTER_DEPLOY_VISIBILITY: opts.baseEnv.PORTER_DEPLOY_VISIBILITY || "private",
     };
     if (opts.baseEnv.PORTER_DEPLOY_URL) env.PORTER_DEPLOY_URL = opts.baseEnv.PORTER_DEPLOY_URL;
-    if (opts.baseEnv.PORTER_SANDBOX_IMAGE) env.PORTER_SANDBOX_IMAGE = opts.baseEnv.PORTER_SANDBOX_IMAGE;
-    if (opts.baseEnv.PORTER_SANDBOX_EGRESS_PROXY_URL)
-      env.PORTER_SANDBOX_EGRESS_PROXY_URL = opts.baseEnv.PORTER_SANDBOX_EGRESS_PROXY_URL;
+    if (opts.baseEnv.SANDBOX_EGRESS_PROXY_URL) env.SANDBOX_EGRESS_PROXY_URL = opts.baseEnv.SANDBOX_EGRESS_PROXY_URL;
     else
       warnings.push(
-        "PORTER_SANDBOX_EGRESS_PROXY_URL unset -- porter sandbox runs with NO egress enforcement; set it to QA the forced-proxy path",
+        "SANDBOX_EGRESS_PROXY_URL unset -- porter sandbox runs with NO egress enforcement; set it to QA the forced-proxy path",
       );
     if (porterApiUrl) env.PUBLIC_API_URL = porterApiUrl;
     return {
