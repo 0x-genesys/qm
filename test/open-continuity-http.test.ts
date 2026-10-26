@@ -47,7 +47,7 @@ const SECRET = "synthetic-continuity-http-signing-key";
 const members = ["alice", "bob"].map((id) => ({ id, type: "internal" as const }));
 
 async function fixture(t: TestContext) {
-  const b = buildApp(testConfig({ signingSecret: SECRET, memoryCapture: "off", scratchExecEnabled: true }));
+  const b = buildApp(testConfig({ signingSecret: SECRET, memoryCapture: "off" }));
   await b.config.hydrate?.();
   await b.identity.hydrate();
   await b.deploymentLayerReady;

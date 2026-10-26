@@ -193,7 +193,6 @@ test("flag ON: the description advertises the routing policy truthfully", () => 
 
 async function freshApp(extra: Partial<Config> = {}) {
   const config = testConfig({
-    scratchExecEnabled: true,
     dataDir: mkdtempSync(join(tmpdir(), "ap-scratch-")),
     ...extra,
   });

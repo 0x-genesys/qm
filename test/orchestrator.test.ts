@@ -857,7 +857,6 @@ test("env-delivery credentials are not offered to an external audience", async (
 
 test("a channel cron receives env credentials only when the directory proves an all-internal roster", async () => {
   const config = testConfig({
-    scratchExecEnabled: true,
     dataDir: mkdtempSync(join(tmpdir(), "ap-")),
     signingSecret: "test-secret",
     apiBaseUrl: "https://core.example.com",

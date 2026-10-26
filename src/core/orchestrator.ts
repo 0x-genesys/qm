@@ -1442,8 +1442,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
         };
       };
       const placeCredential = (credential: CommandCredential): CommandCredential => ({
-        scratchOnly: sharedScope,
         ...credential,
+        scratchOnly: credential.scratchOnly ?? sharedScope,
       });
       const addCredentialToCatalog = (
         credential: CommandCredential,
@@ -2636,7 +2636,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
           sandboxResources: turnSandboxResources,
           invalidateProvision,
           provision,
-          ...(deps.scratchExec ? { provisionScratch } : {}),
+          provisionScratch,
           provisionResource,
           accessSandboxResource: accessResource,
           useSkill,

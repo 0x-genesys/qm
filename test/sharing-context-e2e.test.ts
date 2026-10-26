@@ -14,7 +14,7 @@ import { sleep } from "../src/util/async.ts";
 // Full application/tool/materializer path, with deterministic model commands and
 // the repo's host-backed Sprites transport. This does not test VM isolation.
 async function fixture(t: TestContext, config: Partial<Config> = {}) {
-  const built = buildApp(testConfig({ memoryCapture: "off", scratchExecEnabled: true, ...config }));
+  const built = buildApp(testConfig({ memoryCapture: "off", ...config }));
   await built.config.hydrate?.();
   await built.identity.hydrate();
   await built.deploymentLayerReady;

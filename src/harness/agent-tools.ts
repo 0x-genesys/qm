@@ -631,7 +631,8 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
 
     credentials: Type.Optional(
       Type.Array(Type.String(), {
-        description: `Exact authorized credential handles to materialize for this command only (for a background job, until it exits). Newly granted handles are accepted. ${scratchExec ? "In a shared conversation, a command naming any credential except a brokered org service runs on this turn's scratch computer instead, even with sandbox_id: no shared workspace files (fetch scripts from Files or git in the command), discarded after the turn; background jobs cannot use such credentials." : "In a shared conversation only brokered org service credentials can be used: this deployment has no scratch computer."}`,
+        description:
+          "Exact authorized credential handles to materialize for this command only (for a background job, until it exits). Newly granted handles are accepted. In a shared conversation, credentials other than brokered org services run on this turn's scratch computer instead, even with sandbox_id (no shared workspace files: fetch scripts from Files or git in the command); background jobs cannot use them.",
       }),
     ),
   };

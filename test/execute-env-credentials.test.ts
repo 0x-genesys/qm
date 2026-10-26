@@ -100,7 +100,6 @@ test("role broker sessions in a shared conversation reach only the turn's scratc
       apiBaseUrl: "http://core.test",
       deploymentLayerDir: acmecliBrokeredLayer(),
       maxAttempts: 1,
-      scratchExecEnabled: true,
     }),
     {
       credentialBrokers: {

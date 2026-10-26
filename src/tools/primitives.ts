@@ -562,8 +562,11 @@ const markScratchRerouteFailure = (error: unknown): never => {
 export const reroutedToScratch = (error: unknown): boolean =>
   error !== null && typeof error === "object" && scratchRerouteFailures.has(error);
 
-const SCRATCH_REQUIRED_MESSAGE =
-  "this deployment has no scratch computer, so a shared conversation can use only brokered org service credentials; personal and granted credentials stay off the shared computer";
+const scratchOnlyHandles = (credentials: readonly CommandCredential[]): string =>
+  credentials
+    .filter((credential) => credential.scratchOnly)
+    .map((credential) => credential.handle)
+    .join(", ");
 
 export function createToolContext(deps: ToolContextDeps): ToolContext {
   const writableScopeId = deps.layers.find((l) => l.mode === "rw")?.scopeId ?? null;
@@ -882,7 +885,7 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           throw new Error("command credentials are available only on scoped or scratch computers");
         }
         const requested = await selectCredentials(requestedCredentials);
-        const scratchOnly = requested.some((credential) => credential.scratchOnly);
+        const scratchOnly = scratchOnlyHandles(requested);
         const reachTarget = execOpts?.reachTarget;
         if ([scratch, reachTarget !== undefined, execOpts?.sandboxId !== undefined].filter(Boolean).length > 1) {
           throw new Error("a command runs on one computer — choose scoped, scratch, or a reached room");
@@ -890,8 +893,11 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         if (scratch && !deps.provisionScratch) {
           throw new Error('scratch execution is not available on this computer — run without scope:"scratch"');
         }
-        if (scratchOnly && !deps.provisionScratch) throw new Error(SCRATCH_REQUIRED_MESSAGE);
-        const scratchReroute = scratchOnly && !scratch;
+        if (scratchOnly && !deps.provisionScratch)
+          throw new Error(
+            `this deployment has no scratch computer to keep ${scratchOnly} off the shared one, so a shared conversation can use only brokered org service credentials`,
+          );
+        const scratchReroute = Boolean(scratchOnly) && !scratch;
         let reached: ReachedProvenance | undefined;
         if (reachTarget !== undefined) {
           if (!deps.reach) {
@@ -916,9 +922,10 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
         } else {
           authorizeExecution(command, undefined, executionPolicy());
           if (reached) handle = await deps.reach!.provisionFor(reached.scopeId);
-          else if (scratchReroute) handle = await deps.provisionScratch!().catch(markScratchRerouteFailure);
-          else if (scratch) handle = await deps.provisionScratch!();
-          else handle = await deps.provision();
+          else if (scratch || scratchOnly) {
+            const provisioning = deps.provisionScratch!();
+            handle = await (scratchReroute ? provisioning.catch(markScratchRerouteFailure) : provisioning);
+          } else handle = await deps.provision();
         }
         const resolvedMs = execOpts?.timeoutSeconds != null ? execOpts.timeoutSeconds * 1000 : deps.execTimeoutMs;
         const timeoutMs =
@@ -1278,9 +1285,10 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       if (requestedCredentials.length && !writableScopeId)
         throw new Error("command credentials are available only on scoped computers");
       const requested = await selectCredentials(requestedCredentials);
-      if (requested.some((credential) => credential.scratchOnly))
+      const scratchOnly = scratchOnlyHandles(requested);
+      if (scratchOnly)
         throw new Error(
-          "a background job in a shared conversation cannot use personal or granted credentials, because other members can read and control the job; run the command in the foreground, where it uses this turn's scratch computer",
+          `a background job in a shared conversation cannot use ${scratchOnly}, because other members can read and control the job; run the command in the foreground, where it uses this turn's scratch computer`,
         );
       const policy = deps.commandPolicy;
       let handle: SandboxHandle;
