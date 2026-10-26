@@ -96,7 +96,7 @@ test("pg credential-usage sink: sparse and absent credentials use an ordered ind
 });
 
 test("pg credential summaries aggregate a bounded window without transferring raw events", { skip }, async (t) => {
-  const { createCredentialUsageSink, CREDENTIAL_USAGE_WINDOW } = await import("../src/admin/credential-usage-sink.ts");
+  const { CREDENTIAL_USAGE_WINDOW } = await import("../src/admin/credential-usage-sink.ts");
   const memory = createPostgresCredentialUsageSink(testDatabaseUrl());
   const sink = createPostgresCredentialUsageSink(URL!);
   const pg = (await import("pg")).default;
