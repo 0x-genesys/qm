@@ -54,7 +54,7 @@ function fakeSandbox(): Sandbox {
 
 function buildOrchestrator(
   harness: Harness,
-  sessions: ReturnType<typeof createMemorySessionStore>,
+  sessions: ReturnType<typeof createPostgresSessionStore>,
   deliveries: DeliveryStore,
 ) {
   const config = testConfigStore(ORG);

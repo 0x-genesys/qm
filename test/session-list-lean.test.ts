@@ -46,5 +46,6 @@ test("GET /v1/sessions rows carry no spawn metadata, client tools or entry flag"
     for (const field of ["spawnMeta", "clientTools", "hasEntries"]) assert.equal(field in row, false, field);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await built.runtime.stop();
   }
 });

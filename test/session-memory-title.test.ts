@@ -9,7 +9,8 @@ import type { SessionStore } from "../src/sessions/session-store.ts";
 import type { RunStore } from "../src/runs/run-store.ts";
 import type { OrchestratorInput } from "../src/core/orchestrator.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
-import { testDatabaseUrl, testMap } from "./support/test-database.ts";
+import type { AdvisoryLock } from "../src/persistence/advisory-lock.ts";
+import { testAdvisoryLock, testDatabaseUrl, testMap } from "./support/test-database.ts";
 
 const actor: Principal = { id: "U1", type: "internal", displayName: "Alex" };
 const scope: ScopeId = scopeId("personal", "U1");
@@ -20,6 +21,7 @@ interface Rig {
   sessions: SessionStore;
   runs: RunStore;
   signals: ReturnType<typeof createMemoryRunSignalStore>;
+  advisoryLock: AdvisoryLock;
   room: Session;
   syscallsFor(session: Session): ReturnType<ReturnType<typeof createSessionSyscalls>["forTurn"]>;
 }
@@ -29,11 +31,13 @@ async function rig(opts?: { treeRunCap?: number }): Promise<Rig> {
   const { runs } = createMemoryRunStore();
   const signals = createMemoryRunSignalStore();
   const mailbox = createSessionMailbox(testMap<SessionMessage>());
+  const advisoryLock = testAdvisoryLock();
   const factory = createSessionSyscalls({
     mailbox,
     sessions,
     runs,
     signals,
+    advisoryLock,
     maxAttempts: 3,
     ...(opts?.treeRunCap !== undefined ? { treeRunCap: opts.treeRunCap } : {}),
   });
@@ -57,6 +61,7 @@ async function rig(opts?: { treeRunCap?: number }): Promise<Rig> {
     sessions,
     runs,
     signals,
+    advisoryLock,
     room,
     syscallsFor: (session) => factory.forTurn(binding(session)),
   };
