@@ -7,7 +7,6 @@ import type { IdempotencyStore } from "../idempotency/idempotency-store.ts";
 import type { IdentityService } from "../identity/identity-service.ts";
 import { supportsProcessSessions, type ProcessSandbox, type Sandbox, type SandboxHandle } from "../sandbox/sandbox.ts";
 import { ProcessSessionGoneError } from "../sandbox/exec-process-session.ts";
-import { ScratchJobComputerGoneError } from "../sandbox/held-computers.ts";
 import { runTrigger, type TriggerDeps, type TriggerOutcome } from "../triggers/run-trigger.ts";
 import type { LeaderLease } from "../persistence/leader-lease.ts";
 import { createSweeper } from "../util/sweeper.ts";
@@ -294,11 +293,6 @@ export function createMonitorPoller(deps: MonitorPollerDeps): MonitorPoller {
               sandboxId: rec.sandboxId,
             });
           } catch (e) {
-            if (e instanceof ScratchJobComputerGoneError) {
-              await reportLost(m);
-              fires++;
-              continue;
-            }
             await deps.monitors.recordError(m.id, errMessage(e));
             continue;
           }

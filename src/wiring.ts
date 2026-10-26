@@ -341,7 +341,6 @@ import {
   type ProcessRegistry,
 } from "./processes/process-registry.ts";
 import { createProcessReaper, createReaperKillHook, type ProcessReaper } from "./processes/process-reaper.ts";
-import { createScratchJobComputers, type ScratchJobComputers } from "./processes/scratch-job-computers.ts";
 import { createMonitorStore, type MonitorStore } from "./monitors/monitor-store.ts";
 import { createMonitorPoller, type MonitorPoller } from "./monitors/monitor-poller.ts";
 import { createSkillSyncEngine, type SkillSyncEngine } from "./skills/skill-sync-engine.ts";
@@ -1180,16 +1179,11 @@ export function buildApp(
     },
     canUseScope: (actorId, scopeId) => membership.canUseSandboxScope!(actorId, scopeId),
   });
-  const late: { scratchJobs?: ScratchJobComputers } = {};
   const sandbox: Sandbox = createSandboxRouter({
     resources: sandboxResources,
     backends: sandboxBackends,
     defaultBackend: config.sandboxBackend,
     onError: sandboxOnError,
-    heldComputers: {
-      get: (sandboxId) => late.scratchJobs?.get(sandboxId),
-      holds: (handle) => late.scratchJobs?.holds(handle) ?? false,
-    },
   });
   const secretSource =
     config.secretsBackend === "aws"
@@ -2033,21 +2027,6 @@ export function buildApp(
     },
   });
   const uiState = artifactMap<PersistedUiState>("web_ui_state");
-  const finishCredentials = (handle: SandboxHandle, processId: string) =>
-    finishProcessCredentials({ sandbox, processes: processes!, ...(keychain ? { keychain } : {}) }, handle, processId);
-  const scratchJobs = (late.scratchJobs =
-    processes && supportsProcessSessions(sandbox)
-      ? createScratchJobComputers({
-          sandbox,
-          processes,
-          finish: finishCredentials,
-          onError: (code, error, scopeId) =>
-            errors.record(
-              { category: "process_session", code, message: errMessage(error), scopeLabel: scopeId },
-              error,
-            ),
-        })
-      : undefined);
   const orchestratorDeps: OrchestratorDeps = {
     installSharedCanvas: async (actorId, fileId, where) => {
       const canvas = await installSharedCanvas(uiState, actorId, await app.openFileForViewer(fileId, actorId));
@@ -2141,7 +2120,6 @@ export function buildApp(
     webhooks,
     resolveBaseModelId: () => orgBaseModelId() ?? fallback.modelId,
     ...(config.scratchExecEnabled ? { scratchExec: true } : {}),
-    ...(scratchJobs ? { scratchJobs } : {}),
     directory,
     isCurrentSharedScopeMember,
     currentScopeMembers: createCurrentScopeMembers({ managedGroups: projects, directory, identity }, true),
@@ -2684,6 +2662,8 @@ export function buildApp(
     },
     app,
   );
+  const finishCredentials = (handle: SandboxHandle, processId: string) =>
+    finishProcessCredentials({ sandbox, processes: processes!, ...(keychain ? { keychain } : {}) }, handle, processId);
   const monitorPoller: MonitorPoller | null =
     processes && supportsProcessSessions(sandbox)
       ? createMonitorPoller({
@@ -2756,11 +2736,7 @@ export function buildApp(
     ? createProcessReaper(processes, {
         intervalMs: config.processReaperIntervalMs,
         ...(supportsProcessSessions(sandbox)
-          ? {
-              kill: createReaperKillHook(sandbox, {
-                onExit: finishCredentials,
-              }),
-            }
+          ? { kill: createReaperKillHook(sandbox, { onExit: finishCredentials }) }
           : {}),
         leaderLease,
       })
@@ -2965,7 +2941,6 @@ export function buildApp(
         ...workers.map((w) => w.stop(config.shutdownDrainMs)),
       ]).catch(swallowAs("wiring: worker drain failed", undefined));
       await releaseInFlightRuns();
-      await scratchJobs?.drain();
       await drain.stop();
       stopStreamSync();
       await Promise.all(

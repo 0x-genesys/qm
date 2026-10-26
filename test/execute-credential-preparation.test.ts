@@ -206,11 +206,6 @@ function scratchContext(events: string[], extra: Partial<ToolContextDeps> = {}) 
         ...credential(events, "brokered", { env: [{ key: "AGENT_CREDENTIAL_TOKEN", value: "room-capability" }] }),
         scratchOnly: false,
       },
-      {
-        ...credential(events, "own", { env: [{ key: "OWN_TOKEN", value: "own-secret" }] }),
-        scratchOnly: true,
-        foregroundOnly: true,
-      },
     ],
     {
       sandbox,
@@ -249,39 +244,27 @@ test("without a scratch computer private credentials are refused and brokered on
   assert.equal(commands.length, 1);
 });
 
-test("background jobs with private credentials start on the turn's scratch computer", async () => {
+test("background jobs refuse private credentials before provisioning or staging", async () => {
   const events: string[] = [];
-  const started: Array<[string, string | undefined, string, Record<string, string> | undefined]> = [];
+  const started: Array<[string, Record<string, string> | undefined]> = [];
   const { ctx } = scratchContext(events, {
-    async provisionScratchJob() {
-      events.push("scratch-job");
-      return { handle: { id: "scratch", rootDir: "/scratch" }, sandboxId: "scratch-job:turn" };
-    },
     backgroundBroker: {
       async start(
-        target: SandboxHandle,
+        _target: SandboxHandle,
         command: string,
         _purpose: string,
         _ttl: number,
         credentials?: { env?: Record<string, string> },
-        jobSandboxId?: string,
       ) {
-        started.push([target.id, jobSandboxId, command, credentials?.env]);
+        started.push([command, credentials?.env]);
         return { processId: "p1", output: "", cursor: 0, status: { state: "running" }, reattached: false };
       },
     } as unknown as ToolContextDeps["backgroundBroker"],
   });
-  await assert.rejects(ctx.backgroundStart("sync", { purpose: "Sync", credentials: ["own"] }));
-  assert.deepEqual(started, []);
-  const job = await ctx.backgroundStart("sync", { purpose: "Sync", sandboxId: "box-a", credentials: ["granted"] });
-  assert.equal(job.scratchReroute, true);
-  const plain = await ctx.backgroundStart("gh auth login", { purpose: "Log in" });
-  assert.equal(plain.scratchReroute, undefined);
-  assert.deepEqual(started, [
-    ["scratch", "scratch-job:turn", "sync", { GRANTED_TOKEN: "granted-secret" }],
-    ["credential-preparation", undefined, "gh auth login", undefined],
-  ]);
-  assert.ok(!events.includes("resource"));
+  await assert.rejects(ctx.backgroundStart("sync", { purpose: "Sync", credentials: ["granted"] }));
+  assert.ok(!events.includes("scratch") && !events.some((event) => event.startsWith("resolve")));
+  await ctx.backgroundStart("poll", { purpose: "Poll", credentials: ["brokered"] });
+  assert.deepEqual(started, [["poll", { AGENT_CREDENTIAL_TOKEN: "room-capability" }]]);
 });
 
 test("replay returns cached masked bytes without resolving a consumed single-use credential", async () => {

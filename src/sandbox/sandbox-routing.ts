@@ -15,7 +15,6 @@ import {
   type StageOptions,
   type TeardownOptions,
 } from "./sandbox.ts";
-import { isScratchJobComputer, ScratchJobComputerGoneError, type HeldComputers } from "./held-computers.ts";
 
 export type SandboxBackendName =
   | "sprites"
@@ -42,7 +41,6 @@ export interface RoutingSandboxOptions {
   defaultBackend: SandboxBackendName;
   resources: SandboxResources;
   onError?: (e: { category: string; code: string; message: string; scopeLabel?: string }) => void;
-  heldComputers?: HeldComputers;
 }
 
 export function createSandboxRouter(opts: RoutingSandboxOptions): Sandbox {
@@ -112,11 +110,6 @@ export function createSandboxRouter(opts: RoutingSandboxOptions): Sandbox {
     },
 
     async provision(layers: WorkspaceLayer[], provOpts?: ProvisionOptions): Promise<SandboxHandle> {
-      if (provOpts?.sandboxId !== undefined && isScratchJobComputer(provOpts.sandboxId)) {
-        const held = opts.heldComputers?.get(provOpts.sandboxId);
-        if (!held) throw new ScratchJobComputerGoneError();
-        return held;
-      }
       const scope = provOpts?.routeScopeId ?? writableScope(layers);
       const resource =
         provOpts?.sandboxId !== undefined ? await resources.get(provOpts.sandboxId) : await resources.resolve(scope);
@@ -178,7 +171,6 @@ export function createSandboxRouter(opts: RoutingSandboxOptions): Sandbox {
       });
     },
     teardown(handle, tdOpts?: TeardownOptions): Promise<void> {
-      if (!tdOpts?.destroy && opts.heldComputers?.holds(handle)) return Promise.resolve();
       const action = () => forHandle(handle).teardown(handle, tdOpts);
       return handle.resourceId
         ? resources.use(

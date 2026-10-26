@@ -73,7 +73,6 @@ export interface BackgroundExecBroker {
     purpose: string,
     ttlMs?: number,
     credentials?: BackgroundCredentials,
-    jobSandboxId?: string,
   ): Promise<BackgroundStartResult>;
   poll(
     handle: SandboxHandle,
@@ -115,9 +114,9 @@ export function createBackgroundBroker(deps: BackgroundExecBrokerDeps): Backgrou
       if (!deps.provisionSandbox) throw new Error("background job sandbox is unavailable");
       return deps.provisionSandbox(rec.sandboxId);
     },
-    async start(handle, command, purpose, ttlMs, credentials, jobSandboxId): Promise<BackgroundStartResult> {
+    async start(handle, command, purpose, ttlMs, credentials): Promise<BackgroundStartResult> {
       if (!purpose?.trim()) throw new Error("background start requires a short purpose describing the job");
-      const sandboxId = jobSandboxId ?? handle.resourceId;
+      const sandboxId = handle.resourceId;
       if (!sandboxId)
         throw new Error("background jobs need a lasting computer; this computer is discarded when the turn ends");
       purpose = redactCommand(purpose.replace(/\s+/g, " ").trim(), handle.env);

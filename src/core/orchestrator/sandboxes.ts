@@ -9,7 +9,6 @@ import { accessConversationSandbox, type SandboxAccessPlan } from "../../sandbox
 import { reconcileProcesses } from "../../processes/reconcile.ts";
 import { leaseLapsed } from "../../runs/run-store.ts";
 import { finishProcessCredentials } from "../../credentials/execute-files.ts";
-import { scratchJobComputerId } from "../../sandbox/held-computers.ts";
 import {
   materializeSkillTree as laySkillTree,
   packRoot,
@@ -74,7 +73,37 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     used: boolean;
     provisionMs?: number;
   } = { handle: null, pending: null, used: false };
+  const scratchBox: { handle: SandboxHandle | null; pending: SandboxHandle | null; provisionMs?: number } = {
+    handle: null,
+    pending: null,
+  };
+  let scratchProvisionInFlight: Promise<SandboxHandle> | null = null;
   const scratchKey = () => `turn:${session.id}:${transferId}`;
+  let scratchStartedAt: number | undefined;
+  let scratchReadyAt: number | undefined;
+  const recordScratchLifecycle = (
+    action: string,
+    handle?: SandboxHandle,
+    extra?: { releasedAt?: number; cleanupMs?: number; error?: string },
+  ): void => {
+    deps.auditLog?.record({
+      at: Date.now(),
+      principalId: actor.id,
+      action: `sandbox.scratch.${action}`,
+      resource: scratchKey(),
+      scopeLabel: scopeId,
+      detail: JSON.stringify({
+        runId: input.runId,
+        sessionId: session.id,
+        backend: handle?.backend,
+        sandboxId: handle?.id,
+        startedAt: scratchStartedAt,
+        readyAt: scratchReadyAt,
+        provisionMs: scratchBox.provisionMs,
+        ...extra,
+      }),
+    });
+  };
   const destroyEphemeralHandle = async (handle: SandboxHandle): Promise<void> => {
     const errors: unknown[] = [];
     for (let attempt = 1; attempt <= 3; attempt++) {
@@ -87,102 +116,6 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
       }
     }
     throw new AggregateError(errors, "Disposable sandbox destruction failed");
-  };
-  const createScratchSlot = (key: string) => {
-    const box: { handle: SandboxHandle | null; pending: SandboxHandle | null; provisionMs?: number } = {
-      handle: null,
-      pending: null,
-    };
-    let inFlight: Promise<SandboxHandle> | null = null;
-    let startedAt: number | undefined;
-    let readyAt: number | undefined;
-    const record = (
-      action: string,
-      handle?: SandboxHandle,
-      extra?: { releasedAt?: number; cleanupMs?: number; error?: string },
-    ): void => {
-      deps.auditLog?.record({
-        at: Date.now(),
-        principalId: actor.id,
-        action: `sandbox.scratch.${action}`,
-        resource: key,
-        scopeLabel: scopeId,
-        detail: JSON.stringify({
-          runId: input.runId,
-          sessionId: session.id,
-          backend: handle?.backend,
-          sandboxId: handle?.id,
-          startedAt,
-          readyAt,
-          provisionMs: box.provisionMs,
-          ...extra,
-        }),
-      });
-    };
-    const provision = (): Promise<SandboxHandle> => {
-      if (box.pending) return Promise.reject(new Error("Disposable sandbox initialization cleanup is still pending"));
-      if (box.handle) return Promise.resolve(box.handle);
-      inFlight ??= (async () => {
-        const provisionStart = Date.now();
-        startedAt = provisionStart;
-        record("provision_started");
-        const handle = await deps.sandbox.provision(
-          resolution.layers.filter((l) => l.mode === "ro" && l.mountPath === "global"),
-          {
-            env: connectorEnv,
-            egress: resolution.egress,
-            ...(egressTokenForTurn ? { egressToken: egressTokenForTurn } : {}),
-            scratch: { key },
-            routeScopeId: memoryScopeId,
-            ...(onSandboxStatus ? { onStatus: onSandboxStatus } : {}),
-          },
-        );
-        box.provisionMs = Date.now() - provisionStart;
-        box.handle = handle;
-        readyAt = Date.now();
-        record("provision_ready", handle);
-        return handle;
-      })().catch((error) => {
-        inFlight = null;
-        if (error instanceof SandboxProvisionCleanupError) box.pending = error.handle;
-        record("provision_failed", box.pending ?? undefined, { error: errMessage(error) });
-        throw error;
-      });
-      return inFlight;
-    };
-    const release = async (handle: SandboxHandle): Promise<void> => {
-      const cleanupStart = Date.now();
-      try {
-        await destroyEphemeralHandle(handle);
-        box.handle = null;
-        box.pending = null;
-        record("released", handle, { releasedAt: Date.now(), cleanupMs: Date.now() - cleanupStart });
-      } catch (error) {
-        const cleanupError = error instanceof Error ? error : new Error(errMessage(error));
-        record("release_failed", handle, {
-          releasedAt: Date.now(),
-          cleanupMs: Date.now() - cleanupStart,
-          error: errMessage(error),
-        });
-        deps.errors?.record(
-          {
-            category: "sandbox",
-            code: "scratch_destroy_failed",
-            message: errMessage(error),
-            scopeLabel: scopeId,
-            sessionId: session.id,
-          },
-          cleanupError,
-        );
-        throw cleanupError;
-      }
-    };
-    const settle = async (): Promise<SandboxHandle | null> => {
-      if (inFlight) await inFlight.catch(swallowAs("orchestrator: scratch provision", undefined));
-      inFlight = null;
-      return box.handle ?? box.pending;
-    };
-    return { box, record, provision, release, settle };
   };
   let sandboxStatusSeq = 2_000_000;
   const onSandboxStatus =
@@ -446,16 +379,37 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     return provisioned;
   };
 
-  const scratch = createScratchSlot(scratchKey());
-  const jobScratch = createScratchSlot(`${scratchKey()}:jobs`);
-  const scratchBox = scratch.box;
-  const provisionScratch = scratch.provision;
-  const provisionScratchJob = async (): Promise<{ handle: SandboxHandle; sandboxId: string }> => {
-    if (!deps.scratchJobs) throw new Error("background jobs on a scratch computer are not available here");
-    const handle = await jobScratch.provision();
-    const sandboxId = scratchJobComputerId(scratchKey());
-    deps.scratchJobs.hold(sandboxId, memoryScopeId, handle);
-    return { handle, sandboxId };
+  const provisionScratch = (): Promise<SandboxHandle> => {
+    if (scratchBox.pending)
+      return Promise.reject(new Error("Disposable sandbox initialization cleanup is still pending"));
+    if (scratchBox.handle) return Promise.resolve(scratchBox.handle);
+    scratchProvisionInFlight ??= (async () => {
+      const provisionStart = Date.now();
+      scratchStartedAt = provisionStart;
+      recordScratchLifecycle("provision_started");
+      const handle = await deps.sandbox.provision(
+        resolution.layers.filter((l) => l.mode === "ro" && l.mountPath === "global"),
+        {
+          env: connectorEnv,
+          egress: resolution.egress,
+          ...(egressTokenForTurn ? { egressToken: egressTokenForTurn } : {}),
+          scratch: { key: scratchKey() },
+          routeScopeId: memoryScopeId,
+          ...(onSandboxStatus ? { onStatus: onSandboxStatus } : {}),
+        },
+      );
+      scratchBox.provisionMs = Date.now() - provisionStart;
+      scratchBox.handle = handle;
+      scratchReadyAt = Date.now();
+      recordScratchLifecycle("provision_ready", handle);
+      return handle;
+    })().catch((error) => {
+      scratchProvisionInFlight = null;
+      if (error instanceof SandboxProvisionCleanupError) scratchBox.pending = error.handle;
+      recordScratchLifecycle("provision_failed", scratchBox.pending ?? undefined, { error: errMessage(error) });
+      throw error;
+    });
+    return scratchProvisionInFlight;
   };
   const reachBoxes = new Map<ScopeId, SandboxHandle>();
   const provisionForReach = async (target: ScopeId): Promise<SandboxHandle> => {
@@ -560,43 +514,37 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
         await deps.sandbox.teardown(h).catch(swallowAs("orchestrator: teardown", undefined));
       }),
     );
-    const scratchHandle = await scratch.settle();
+    if (scratchProvisionInFlight)
+      await scratchProvisionInFlight.catch(swallowAs("orchestrator: scratch provision", undefined));
+    scratchProvisionInFlight = null;
+    const scratchHandle = scratchBox.handle ?? scratchBox.pending;
     if (scratchHandle) {
+      const cleanupStart = Date.now();
       try {
-        await scratch.release(scratchHandle);
+        await destroyEphemeralHandle(scratchHandle);
+        scratchBox.handle = null;
+        scratchBox.pending = null;
+        recordScratchLifecycle("released", scratchHandle, {
+          releasedAt: Date.now(),
+          cleanupMs: Date.now() - cleanupStart,
+        });
       } catch (error) {
-        scratchCleanupError = error;
-      }
-    }
-    const jobHandle = await jobScratch.settle();
-    if (jobHandle) {
-      const retained =
-        jobScratch.box.handle !== null &&
-        deps.scratchJobs !== undefined &&
-        (await deps.scratchJobs
-          .retainWhileJobsRun(scratchJobComputerId(scratchKey()), () => jobScratch.release(jobHandle))
-          .catch((error) => {
-            deps.errors?.record(
-              {
-                category: "process_session",
-                code: "scratch_job_retention_failed",
-                message: errMessage(error),
-                scopeLabel: scopeId,
-                sessionId: session.id,
-              },
-              error,
-            );
-            return false;
-          }));
-      if (retained) {
-        jobScratch.box.handle = null;
-        jobScratch.record("retained_for_jobs", jobHandle);
-      } else {
-        try {
-          await jobScratch.release(jobHandle);
-        } catch (error) {
-          scratchCleanupError ??= error;
-        }
+        scratchCleanupError = error instanceof Error ? error : new Error(errMessage(error));
+        recordScratchLifecycle("release_failed", scratchHandle, {
+          releasedAt: Date.now(),
+          cleanupMs: Date.now() - cleanupStart,
+          error: errMessage(error),
+        });
+        deps.errors?.record(
+          {
+            category: "sandbox",
+            code: "scratch_destroy_failed",
+            message: errMessage(error),
+            scopeLabel: scopeId,
+            sessionId: session.id,
+          },
+          scratchCleanupError,
+        );
       }
     }
     await Promise.allSettled(resourcePending.values());
@@ -657,7 +605,6 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     scratchBox,
     provision,
     provisionScratch,
-    provisionScratchJob,
     accessResource,
     provisionResource,
     useSkill,

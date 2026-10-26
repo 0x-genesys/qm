@@ -174,7 +174,6 @@ interface ReachedProvenance {
 export interface CommandCredential {
   handle: string;
   scratchOnly?: boolean;
-  foregroundOnly?: boolean;
   env?: Array<{ key: string; value: string; secret?: boolean }>;
   resolve?: () => Promise<{
     commit?: () => Promise<void>;
@@ -259,7 +258,7 @@ export interface ToolContext extends SurfaceToolDeps {
   backgroundStart(
     command: string,
     opts: { purpose: string; ttlSeconds?: number; sandboxId?: string; credentials?: string[] },
-  ): Promise<BackgroundStartResult & { scratchReroute?: boolean }>;
+  ): Promise<BackgroundStartResult>;
   backgroundPoll(
     processId: string,
     opts?: { sinceCursor?: number; maxBytes?: number; waitSeconds?: number },
@@ -485,7 +484,6 @@ export interface ToolContextDeps {
   resolveCommandCredentials?: (handles: readonly string[]) => Promise<readonly CommandCredential[]>;
   provision: () => Promise<SandboxHandle>;
   provisionScratch?: () => Promise<SandboxHandle>;
-  provisionScratchJob?: () => Promise<{ handle: SandboxHandle; sandboxId: string }>;
   provisionResource?: (
     input: string | SandboxAccessPlan,
     authorize?: (access: SandboxAccessPlan) => void,
@@ -1274,25 +1272,19 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
     async backgroundStart(
       command: string,
       opts: { purpose: string; ttlSeconds?: number; sandboxId?: string; credentials?: string[] },
-    ): Promise<BackgroundStartResult & { scratchReroute?: boolean }> {
+    ): Promise<BackgroundStartResult> {
       if (!deps.backgroundBroker) throw new Error(BACKGROUND_UNAVAILABLE_MESSAGE);
       const requestedCredentials = opts.credentials ?? [];
       if (requestedCredentials.length && !writableScopeId)
         throw new Error("command credentials are available only on scoped computers");
       const requested = await selectCredentials(requestedCredentials);
-      if (requested.some((credential) => credential.foregroundOnly))
+      if (requested.some((credential) => credential.scratchOnly))
         throw new Error(
-          "a background job in a shared conversation cannot use the speaker's own credentials, because other members can read and control the job; run the command in the foreground or request a grant",
+          "a background job in a shared conversation cannot use personal or granted credentials, because other members can read and control the job; run the command in the foreground, where it uses this turn's scratch computer",
         );
-      const scratchOnly = requested.some((credential) => credential.scratchOnly);
-      if (scratchOnly && !deps.provisionScratchJob) throw new Error(SCRATCH_REQUIRED_MESSAGE);
       const policy = deps.commandPolicy;
       let handle: SandboxHandle;
-      let jobSandboxId: string | undefined;
-      if (scratchOnly) {
-        authorizeExecution(command, undefined, policy());
-        ({ handle, sandboxId: jobSandboxId } = await deps.provisionScratchJob!());
-      } else if (opts?.sandboxId !== undefined) {
+      if (opts?.sandboxId !== undefined) {
         if (!deps.sandboxResources || !deps.provisionResource) throw new Error("sandbox inventory unavailable");
         const access = await accessSandbox(opts.sandboxId);
         handle = await deps.provisionResource(access, (current) => {
@@ -1323,15 +1315,13 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
           } catch (error) {
             return withCleanup(() => Promise.reject(error), release);
           }
-          const started = await deps.backgroundBroker!.start(
+          return deps.backgroundBroker!.start(
             handle,
             command,
             opts.purpose,
             opts?.ttlSeconds ? opts.ttlSeconds * 1000 : undefined,
             credentials,
-            jobSandboxId,
           );
-          return scratchOnly ? { ...started, scratchReroute: true } : started;
         },
         () => true,
       );

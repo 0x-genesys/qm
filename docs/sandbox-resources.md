@@ -23,8 +23,7 @@ Commands use `execute(command, sandbox_id?, credentials?, background?)`. Set
 with the job and displayed instead of the command; the raw command remains available
 in expanded output. `timeout_seconds` is the foreground wall-clock timeout or the
 background job lifetime. Background jobs require scoped, durable execution; disposable
-scratch and reached-room routing remain foreground-only, except for the credential rule
-below.
+scratch and reached-room routing remain foreground-only.
 
 In a shared conversation (anything other than the acting person's personal scope), a
 command that names a personal, granted, connector, role-broker or org environment
@@ -37,18 +36,9 @@ service handles (`AGENT_CREDENTIAL_TOKEN`) carry no secret and stay on the reque
 computer. Deployments without scratch execution refuse such credentials in shared
 conversations. Personal conversations stage credentials on their own computer as before.
 
-A background job that names such a credential starts on a second per-turn scratch
-computer reserved for jobs, so foreground commands never share a computer with a job
-other members can poll or send input to. The core process that ran the turn keeps that
-computer while any of its jobs is running or still writing refreshed credentials back,
-checks every ten seconds, and destroys it five minutes after the last job ends (exit,
-stop, or the job's lifetime running out) so the final output can still be read. The
-computer is not durable: a core process that drains on shutdown marks its running jobs
-reaped, writes their credentials back and destroys the computer. Polling a job after
-its computer is gone reports that the job finished; another core process reports that
-it cannot reach the job, and a watch reports the job lost. In an Open conversation the
-live speaker's own credentials stay foreground-only, because other members can control
-background jobs.
+Background jobs in a shared conversation cannot name such a credential: any member can
+poll a job and send it input, and the scratch computer ends with the turn. Brokered org
+service handles still work in background jobs.
 
 The `background` tool controls existing jobs with `poll`, `send_input`, `stop`, `list`,
 `watch`, and `unwatch`. Process IDs retain their durable saved target even after the

@@ -631,7 +631,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
 
     credentials: Type.Optional(
       Type.Array(Type.String(), {
-        description: `Exact authorized credential handles to materialize for this command only (for a background job, until it exits). Newly granted handles are accepted. ${scratchExec ? "In a shared conversation, a command naming any credential except a brokered org service runs on a scratch computer for this turn instead, even with sandbox_id: no shared workspace files (fetch scripts from Files or git in the command), discarded after the turn; background jobs get their own, discarded shortly after they end." : "In a shared conversation only brokered org service credentials can be used: this deployment has no scratch computer."}`,
+        description: `Exact authorized credential handles to materialize for this command only (for a background job, until it exits). Newly granted handles are accepted. ${scratchExec ? "In a shared conversation, a command naming any credential except a brokered org service runs on this turn's scratch computer instead, even with sandbox_id: no shared workspace files (fetch scripts from Files or git in the command), discarded after the turn; background jobs cannot use such credentials." : "In a shared conversation only brokered org service credentials can be used: this deployment has no scratch computer."}`,
       }),
     ),
   };
@@ -1923,18 +1923,15 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         ...(params.sandbox_id ? { sandboxId: params.sandbox_id } : {}),
         ...(params.credentials?.length ? { credentials: params.credentials } : {}),
       });
-      const { output: _output, scratchReroute, ...startMeta } = r;
-      const placePrefix = scratchReroute
-        ? "[running on a scratch computer for this turn's background jobs, not the shared one, because it names a private credential; it is discarded shortly after its jobs end]\n"
-        : "";
+      const { output: _output, ...startMeta } = r;
       return recordResult(
         callId,
-        { tool: "execute", background: true, ...(scratchReroute ? { scope: "scratch" } : {}), ...startMeta },
+        { tool: "execute", background: true, ...startMeta },
         {
           content: [
             {
               type: "text" as const,
-              text: `${placePrefix}started ${r.processId}${r.reattached ? " (reattached)" : ""}\n${r.output}\n[cursor ${r.cursor} | ${fmtStatus(r.status)}]`,
+              text: `started ${r.processId}${r.reattached ? " (reattached)" : ""}\n${r.output}\n[cursor ${r.cursor} | ${fmtStatus(r.status)}]`,
             },
           ],
           details: r,

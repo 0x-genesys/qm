@@ -10,7 +10,6 @@ import type { LeaderLease } from "../src/persistence/leader-lease.ts";
 import { scopeId, type TurnRequest, type TurnResult } from "../src/types.ts";
 import type { ProcessSandbox, ProcessSession, SandboxHandle } from "../src/sandbox/sandbox.ts";
 import { ProcessSessionGoneError } from "../src/sandbox/exec-process-session.ts";
-import { ScratchJobComputerGoneError } from "../src/sandbox/held-computers.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
 
 const SCOPE = "personal:U1";
@@ -224,26 +223,6 @@ test("a lost job with no captured output wakes without an event block", async ()
   assert.match(text, /no longer on your computer/);
   assert.doesNotMatch(text, /<event /);
   assert.doesNotMatch(text, /<standing-orders/);
-});
-
-test("a watch on a scratch job whose computer this process no longer holds wakes once as lost", async () => {
-  const h = await harness();
-  h.sandbox.provision = async () => {
-    throw new ScratchJobComputerGoneError();
-  };
-  await h.processes.register({
-    processId: "p-scratch",
-    scopeId: SCOPE,
-    sandboxId: "scratch-job:turn:gone",
-    kind: "background",
-    command: "bg: sync",
-    ttlMs: 600_000,
-  });
-  const m = await h.arm({ processId: "p-scratch" });
-  await h.poller.tick();
-  await h.poller.tick();
-  assert.equal(h.calls.length, 1);
-  assert.equal((await h.monitors.get(m.id))?.enabled, false);
 });
 
 test("no new output means no wake, and already-seen output never refires", async () => {
