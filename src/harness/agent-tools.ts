@@ -4140,13 +4140,13 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
         }
         const ownerSpoke =
           ref.current?.humanTurn === true ||
-          (await ref.current?.goalOwnerSpoke?.(goal.createdAt).catch(swallowAs("goal: check who may resume", false)));
+          (await ref.current?.goalOwnerReplied?.(goal).catch(swallowAs("goal: check who may resume", false)));
         if (!ownerSpoke) {
           return recordCoreAuthoredResult(
             callId,
             { tool: "goal", action: "update", error: "human_required" },
             text(
-              "Only the user can resume a paused goal, by asking in their own message (in a swarm, a message to you from the agent that gave you the goal or from the root also can); none reached this run. The goal stays paused.",
+              "Only the user can resume a paused goal, by asking in their own message (in a swarm, a message to you from the agent that gave you the goal, or from the root, sent after the governor paused it also can); there is none. The goal stays paused.",
             ),
             true,
           );

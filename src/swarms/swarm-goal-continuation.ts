@@ -23,12 +23,28 @@ function goalPauseText(goal: GoalRecord): string {
   return [
     "The governor paused my goal; it needs a decision from you, as the agent that gave me the goal (or my parent, if I set it myself).",
     `Goal: ${goal.objective}`,
-    `Why it paused: ${goal.pauseReason ?? goal.governor?.reasons ?? ""}`,
-    "Reply to me with notify:true: a reply from you or the swarm root lets me resume the goal. Sending me a new goal replaces it instead.",
+    `Why it paused: ${goal.pauseReason ?? ""}`,
+    "Reply to me with notify:true: a message from you or the swarm root after the pause lets me resume the goal. Sending me a new goal replaces it instead.",
   ].join("\n");
 }
 
 type GoalProgress = NonNullable<SwarmMember["goalContinuation"]>;
+
+function queueFromWorker(swarm: Swarm, worker: SwarmMember, text: string, recipient: string): void {
+  appendMessage(
+    swarm,
+    {
+      senderId: worker.id,
+      senderSessionId: worker.sessionId!,
+      author: "agent",
+      actorId: swarm.ownerId,
+      text,
+      audience: [recipient],
+      unbudgeted: true,
+    },
+    [recipient],
+  );
+}
 
 function goalWorker(swarm: Swarm, memberId: string): SwarmMember | undefined {
   const member = memberById(swarm, memberId);
@@ -61,6 +77,10 @@ function pauseNoticeDue(swarm: Swarm, memberId: string, goal: GoalRecord): Swarm
   return member;
 }
 
+function interrupted(run: Run): boolean {
+  return !!run.result?.stopped || run.lastStop?.kind === "shutdown" || run.lastStop?.kind === "parked";
+}
+
 export function createSwarmGoalContinuation(deps: {
   store: SwarmStore;
   sessions: SessionStore;
@@ -69,76 +89,72 @@ export function createSwarmGoalContinuation(deps: {
 }): Sweeper & { sweep(): Promise<void> } {
   const { store, sessions, runs } = deps;
 
-  async function noticePause(swarm: Swarm, memberId: string, goal: GoalRecord): Promise<void> {
-    if (!pauseNoticeDue(swarm, memberId, goal)) return;
-    await store.update(swarm.id, (current) => {
+  async function noticePause(swarm: Swarm, memberId: string, goal: GoalRecord): Promise<Swarm> {
+    if (!pauseNoticeDue(swarm, memberId, goal)) return swarm;
+    return store.update(swarm.id, (current) => {
       const worker = pauseNoticeDue(current, memberId, goal);
       if (!worker) return;
       worker.goalPauseNotice = { goalCreatedAt: goal.createdAt, pausedAt: goal.updatedAt };
-      const owner = goalOwner(current, worker.id, goal.createdAt);
-      appendMessage(
-        current,
-        {
-          senderId: worker.id,
-          senderSessionId: worker.sessionId!,
-          author: "agent",
-          actorId: current.ownerId,
-          text: goalPauseText(goal),
-          audience: [owner],
-        },
-        [owner],
-        { budgeted: false },
-      );
+      queueFromWorker(current, worker, goalPauseText(goal), goalOwner(current, worker.id, goal.createdAt));
     });
   }
 
-  async function sweepRun(run: Run, checked: Set<string>): Promise<void> {
-    const target = run.request.swarm;
-    if (!target) return;
-    const interrupted = run.result?.stopped || run.lastStop?.kind === "shutdown" || run.lastStop?.kind === "parked";
-    const worker = `${target.swarmId}:${target.recipientId}`;
-    if (!interrupted && checked.has(worker)) return;
-    checked.add(worker);
-    const swarm = await store.get(target.swarmId);
-    const sessionId = swarm ? memberById(swarm, target.recipientId)?.sessionId : undefined;
-    if (!swarm || !sessionId) return;
-    const goal = (await sessions.goals([sessionId])).get(sessionId);
-    if (goal?.status === "paused" && goal.governor?.verdict === "pause")
-      return noticePause(swarm, target.recipientId, goal);
-    if (!interrupted || goal?.status !== "active" || goalCapSpent(goal)) return;
+  async function continueGoal(swarm: Swarm, memberId: string, goal: GoalRecord): Promise<Swarm> {
     const progress = { goalCreatedAt: goal.createdAt, tokensUsed: goal.tokensUsed };
-    const member = continuationDue(swarm, target.recipientId, progress);
-    if (!member || (await runs.inFlightForThread(member.threadRef)).length) return;
-    await store.update(swarm.id, (current) => {
+    const member = continuationDue(swarm, memberId, progress);
+    if (!member || (await runs.inFlightForThread(member.threadRef)).length) return swarm;
+    return store.update(swarm.id, (current) => {
       const recipient = continuationDue(current, member.id, progress);
       if (!recipient) return;
       recipient.goalContinuation = progress;
-      appendMessage(
-        current,
-        {
-          senderId: recipient.id,
-          senderSessionId: recipient.sessionId!,
-          author: "agent",
-          actorId: current.ownerId,
-          text: GOAL_CONTINUATION_TEXT,
-          audience: [recipient.id],
-          unbudgeted: true,
-        },
-        [recipient.id],
-      );
+      queueFromWorker(current, recipient, GOAL_CONTINUATION_TEXT, recipient.id);
     });
+  }
+
+  async function sweepWorker(swarms: Map<string, Swarm | null>, run: Run, goal: GoalRecord): Promise<void> {
+    const { swarmId, recipientId } = run.request.swarm!;
+    const swarm = swarms.get(swarmId);
+    if (!swarm) return;
+    if (goal.status === "paused" && goal.governor?.verdict === "pause")
+      swarms.set(swarmId, await noticePause(swarm, recipientId, goal));
+    else if (interrupted(run) && goal.status === "active" && !goalCapSpent(goal))
+      swarms.set(swarmId, await continueGoal(swarm, recipientId, goal));
   }
 
   async function sweep(): Promise<void> {
     const claim = deps.lock.tryWithLock?.bind(deps.lock) ?? deps.lock.withLock.bind(deps.lock);
     await claim("swarm-goal-continuation", () => {
       const now = Date.now();
-      const checked = new Set<string>();
+      const swarms = new Map<string, Swarm | null>();
+      const seen = new Set<string>();
       return forEachTerminalRun(
         runs,
         { fromMs: now - SWARM_LIMITS.continuationLookbackMs, beforeMs: now, page: SWARM_LIMITS.continuationPage },
         async (batch) => {
-          for (const run of batch) await sweepRun(run, checked).catch(swallowAs("swarm: goal continuation", undefined));
+          const due: Array<{ run: Run; sessionId: string }> = [];
+          for (const run of batch) {
+            const target = run.request.swarm;
+            if (!target) continue;
+            const worker = `${target.swarmId}:${target.recipientId}`;
+            if (seen.has(worker) && !interrupted(run)) continue;
+            seen.add(worker);
+            if (!swarms.has(target.swarmId))
+              swarms.set(
+                target.swarmId,
+                await store.get(target.swarmId).catch(swallowAs("swarm: goal continuation", null)),
+              );
+            const swarm = swarms.get(target.swarmId);
+            const sessionId = swarm ? memberById(swarm, target.recipientId)?.sessionId : undefined;
+            if (sessionId) due.push({ run, sessionId });
+          }
+          if (!due.length) return;
+          const goals = await sessions
+            .goals([...new Set(due.map(({ sessionId }) => sessionId))])
+            .catch(swallowAs("swarm: goal continuation", new Map<string, GoalRecord>()));
+          for (const { run, sessionId } of due) {
+            const goal = goals.get(sessionId);
+            if (goal) await sweepWorker(swarms, run, goal).catch(swallowAs("swarm: goal continuation", undefined));
+          }
         },
       );
     });

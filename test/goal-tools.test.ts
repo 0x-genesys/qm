@@ -267,19 +267,12 @@ test("in a swarm, resume passes only when the goal's owner reached this run", as
   const { ref, create, update } = toolbox();
   await create.execute("c1", { objective: "long haul" });
   ref.goal!.status = "paused";
-  const asked: number[] = [];
   for (const spoke of [false, true]) {
-    ref.current = {
-      goalOwnerSpoke: async (createdAt: number) => {
-        asked.push(createdAt);
-        return spoke;
-      },
-    } as never;
+    ref.current = { goalOwnerReplied: async () => spoke } as never;
     const result = await update.execute("u1", { status: "resume", note: "lead: north region, resume" });
     assert.match(textOf(result as never), spoke ? /active again/ : /Only the user can resume/);
     assert.equal(ref.goal?.status, spoke ? "active" : "paused");
   }
-  assert.deepEqual(asked, [ref.goal!.createdAt, ref.goal!.createdAt]);
 });
 
 test("a person's own request resumes a paused goal with its objective, floor and banked time intact", async () => {
