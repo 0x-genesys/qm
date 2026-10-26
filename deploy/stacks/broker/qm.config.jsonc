@@ -10,7 +10,6 @@
   "services": ["core", "slack", "web-ui", "portal", "auth"],
   "env": {
     "core": {
-      "HARNESS": "pi",
       "PI_DETECT_MODEL": "claude-opus-4-8",
       "S3_BUCKET": "acme-data",
       "S3_REGION": "auto",

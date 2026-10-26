@@ -6,15 +6,11 @@ const governance = {
   securityPosture: "auto",
   sharingPosture: "isolated",
   autoFlagger: null,
-  autoFlaggerDefault: { harnessId: "pi", modelId: "model-a", rubric: "Default rubric" },
-  harnessOptions: ["pi", "claude"],
-  modelsByHarness: {
-    pi: [
-      { id: "model-a", name: "A" },
-      { id: "model-b", name: "B" },
-    ],
-    claude: [{ id: "model-c", name: "C" }],
-  },
+  autoFlaggerDefault: { modelId: "model-a", rubric: "Default rubric" },
+  baseModelOptions: [
+    { id: "model-a", name: "A" },
+    { id: "model-b", name: "B" },
+  ],
 };
 
 async function governancePage(routes: Record<string, Reply | Route> = {}, url = "/settings/governance") {
@@ -86,9 +82,7 @@ test("testing the auto flagger replays the unsaved draft without saving it", asy
   const button = admin.document.getElementById("auto-flagger-test") as HTMLButtonElement;
   button.click();
   await admin.settle();
-  assert.deepEqual(tests, [
-    { window: 25, compare: true, harnessId: "pi", modelId: "model-a", rubric: "Unsaved draft — café" },
-  ]);
+  assert.deepEqual(tests, [{ window: 25, compare: true, modelId: "model-a", rubric: "Unsaved draft — café" }]);
   assert.match(text(admin, "st-auto-flagger-test"), /Flagged 1 of 2 scored \(50.0%\)/);
   assert.equal(button.disabled, false);
   assert.equal(admin.requests.filter((r) => r.method === "PUT").length, 0);

@@ -1245,7 +1245,6 @@ export function startAdmin(host, env) {
     if (requestedView === "slack-settings") governanceUI.integrations.loadScope(r.data, scope);
 
     const opts = r.data.baseModelOptions || [];
-    const modelsByHarness = r.data.modelsByHarness || {};
     if (requestedView === "models") {
       governanceUI.settings.load(r.data, scope, "runtime");
       governanceUI.settings.load(r.data, scope, "cron-runtime");
@@ -1307,9 +1306,6 @@ export function startAdmin(host, env) {
             }
           };
           append(opts, fresh.data.baseModelOptions);
-          for (const [harness, models] of Object.entries(fresh.data.modelsByHarness || {})) {
-            append((modelsByHarness[harness] ||= []), models);
-          }
           if (requestedView === "governance") governanceUI.updateCatalog(fresh.data);
           refreshModelChoices.forEach((refresh) => refresh());
           initCustomDropdowns($("view-governance"));
@@ -1901,7 +1897,6 @@ export function startAdmin(host, env) {
       const r = await api("POST", "/api/scopes/" + encodeURIComponent(requestedScope) + "/auto-flagger/test", {
         window: requested,
         compare: $("auto-flagger-compare").checked,
-        harnessId: $("auto-flagger-harness").value,
         modelId: $("auto-flagger-model").value,
         rubric: $("auto-flagger-rubric").value,
       });

@@ -21,8 +21,7 @@ test("connection continuation waits for scoped runtime settings before submittin
       await runtimeHeld;
       return Response.json({
         scopeId: "context:demo",
-        approvedHarnesses: ["pi"],
-        modelsByHarness: { pi: ["alpha"] },
+        models: ["alpha"],
         modelCatalog: {
           alpha: {
             id: "alpha",
@@ -38,8 +37,8 @@ test("connection continuation waits for scoped runtime settings before submittin
             maxTokens: 4096,
           },
         },
-        orgDefault: { harnessId: "pi", modelId: "alpha", revision: 1 },
-        effective: { harnessId: "pi", modelId: "alpha" },
+        orgDefault: { modelId: "alpha", revision: 1 },
+        effective: { modelId: "alpha" },
         scopeOverride: null,
         upgradeAvailable: false,
       });

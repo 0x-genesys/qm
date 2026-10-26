@@ -51,7 +51,7 @@ test("a sandbox-only secret lands on core ONLY as FLY_RESIDENT_ENV_<NAME>", () =
 
 test("a core + sandbox secret needs both the plain and renamed forms on core", () => {
   const config = makeConfig({
-    env: { core: { HARNESS: "pi" } },
+    env: {},
     sandbox: { secretEnv: ["ANTHROPIC_API_KEY"] },
   });
   const names = runtimeSecretNames("core", secretByName(config, "ANTHROPIC_API_KEY"));
@@ -199,10 +199,6 @@ test("omitting modelProvider preserves the pre-existing deferred-to-Admin behavi
 });
 
 test("conditional secret values use the runtime's trimmed enum semantics", () => {
-  const pi = makeConfig({ env: { core: { HARNESS: "  pi  " } } });
-  assert.equal(secretByName(pi, "ANTHROPIC_API_KEY").required, false);
-  assert.ok(secretByName(pi, "PUBLIC_API_URL").required);
-
   const slack = makeConfig({ services: ["core", "slack"], env: { slack: { SLACK_EVENTS_MODE: "  http  " } } });
   assert.ok(secretByName(slack, "SLACK_SIGNING_SECRET").required);
 });
@@ -218,7 +214,7 @@ test("AWS public app domains require and route their gate secret to core", () =>
   assert.ok(renderEnvExample(enabled).includes("AWS_DEPLOY_GATE_SECRET="));
 });
 
-test("the default harness requires and routes the sandbox-reachable PUBLIC_API_URL to core", () => {
+test("core requires and routes the sandbox-reachable PUBLIC_API_URL", () => {
   const real = makeConfig();
   const publicApi = secretByName(real, "PUBLIC_API_URL");
   assert.equal(publicApi.required, true);
@@ -326,7 +322,7 @@ test("the .env.example catalog names every secret exactly once", () => {
 test("runtime model provider override controls the required billing key", () => {
   const config = makeConfig({
     modelProvider: "anthropic",
-    env: { core: { HARNESS: "pi", MODEL_PROVIDER: " openrouter " } },
+    env: { core: { MODEL_PROVIDER: " openrouter " } },
   });
   assert.equal(secretByName(config, "OPENROUTER_API_KEY").required, true);
   assert.equal(secretByName(config, "ANTHROPIC_API_KEY").required, false);

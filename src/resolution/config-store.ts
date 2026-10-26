@@ -6,7 +6,6 @@ import { isDeepStrictEqual } from "node:util";
 import type { DurableMap } from "../persistence/durable-map.ts";
 import { createMemoryMap } from "../persistence/durable-map.ts";
 import { createKeyedQueue } from "../util/async.ts";
-import { isHarnessId, modelSupportedByHarness } from "../model/pi-models.ts";
 import {
   composeSecurityPosture,
   DEFAULT_SECURITY_POSTURE,
@@ -62,7 +61,6 @@ export interface PersistedBaseModel {
   cronRuntime?: RuntimeSelection;
   subagentRuntime?: RuntimeSelection;
   fallbackRuntime?: RuntimeSelection;
-  harnessId?: string;
   orgRevision?: number;
   revision?: number;
   effortLevel?: string;
@@ -71,7 +69,6 @@ export interface PersistedBaseModel {
 export type RuntimePurpose = "cron" | "subagent" | "fallback";
 
 interface RuntimeSelection {
-  harnessId: string;
   modelId: string;
   effortLevel?: string;
   fastMode?: boolean;
@@ -80,7 +77,6 @@ interface ScopedRuntimeSelection extends RuntimeSelection {
   orgRevision: number;
   revision?: number;
 }
-export type PersistedApprovedHarnesses = ScopedRow<"ids", string[]>;
 interface PersistedSlackEmojiCatalog {
   scopeId: ScopeId;
   emoji: Record<string, string>;
@@ -95,7 +91,6 @@ export interface OrgBranding {
   orgName?: string;
 }
 interface AutoFlaggerConfig {
-  harnessId: string;
   modelId: string;
   rubric: string;
 }
@@ -112,7 +107,6 @@ interface ScopeConfigPresence {
   unfulfilledInsights: boolean;
   externalSlackParticipants: boolean;
   runtime: boolean;
-  approvedHarnesses: boolean;
   branding: boolean;
 }
 
@@ -167,9 +161,6 @@ export interface ScopedConfigStore {
   acknowledgeRuntimeSelection(id: ScopeId): Promise<void>;
   getRuntimeSelectionDurable(id: ScopeId): Promise<ScopedRuntimeSelection | null>;
   onRuntimeSelectionChanged(listener: (id: ScopeId) => void): void;
-  getApprovedHarnesses(): string[] | null;
-  setApprovedHarnesses(ids: string[] | null): Promise<void>;
-  getApprovedHarnessesDurable(): Promise<string[] | null>;
   getOrgAmbient(): boolean;
   setOrgAmbient(on: boolean): Promise<void>;
   getOrgAmbientDurable(): Promise<boolean>;
@@ -224,7 +215,6 @@ export interface ConfigStoreMaps {
   externalSlackParticipants?: DurableMap<PersistedScopedFlag>;
   channelHeaderPin?: DurableMap<PersistedScopedFlag>;
   baseModels?: DurableMap<PersistedBaseModel>;
-  approvedHarnesses?: DurableMap<PersistedApprovedHarnesses>;
   orgAmbient?: DurableMap<PersistedScopedFlag>;
   interactiveFastMode?: DurableMap<PersistedScopedFlag>;
   individualModelAuth?: DurableMap<PersistedModelAccount>;
@@ -251,7 +241,6 @@ const CONFIG_STORE_TABLES: Record<keyof ConfigStoreMaps, string> = {
   externalSlackParticipants: "external_slack_participants_flag",
   channelHeaderPin: "channel_header_pin_flag",
   baseModels: "base_model_configs",
-  approvedHarnesses: "approved_harness_configs",
   orgAmbient: "org_ambient_flag",
   interactiveFastMode: "interactive_fast_mode_flag",
   individualModelAuth: "individual_model_auth_flag",
@@ -346,7 +335,6 @@ export function createMemoryConfigStore(
     unfulfilledInsights: field("unfulfilledInsights", "on"),
     externalSlackParticipants: field("externalSlackParticipants", "on"),
     channelHeaderPin: field("channelHeaderPin", "on"),
-    approvedHarnesses: field("approvedHarnesses", "ids", true),
     orgAmbient: field("orgAmbient", "on", true),
     interactiveFastMode: field("interactiveFastMode", "on", true),
     individualModelAuth: field("individualModelAuth", "on", true),
@@ -357,7 +345,7 @@ export function createMemoryConfigStore(
     browseModels: field("browseModels", "modelId"),
     autoFlaggerConfigs: setting(
       "autoFlaggerConfigs",
-      ({ harnessId, modelId, rubric }): AutoFlaggerConfig => ({ harnessId, modelId, rubric }),
+      ({ modelId, rubric }): AutoFlaggerConfig => ({ modelId, rubric }),
       (id, config) => ({ scopeId: id, ...config }),
       true,
     ),
@@ -421,9 +409,8 @@ export function createMemoryConfigStore(
     }
   };
   const runtimeSelection = (row: PersistedBaseModel | null | undefined): ScopedRuntimeSelection | null => {
-    if (!row?.harnessId || !row.modelId) return null;
+    if (row?.orgRevision === undefined || !row.modelId) return null;
     return {
-      harnessId: row.harnessId,
       modelId: row.modelId,
       orgRevision: row.orgRevision ?? 0,
       ...(row.revision !== undefined ? { revision: row.revision } : {}),
@@ -734,8 +721,6 @@ export function createMemoryConfigStore(
       await writeQueue(`model:${id}`, async () => {
         const saved = await updateBaseModelRow(id, (current) => {
           if (modelId === null) return withoutRuntime(id, current);
-          const harnessId = current?.harnessId;
-          if (harnessId && isHarnessId(harnessId) && !modelSupportedByHarness(modelId, harnessId)) return current!;
           return { ...current, scopeId: id, modelId };
         });
         cacheBaseModel(id, saved);
@@ -771,12 +756,6 @@ export function createMemoryConfigStore(
       runtimeSelectionListeners.add(listener);
     },
     getRuntimeSelectionDurable: async (id) => runtimeSelection(await baseModelStore.get(id)),
-    getApprovedHarnesses: () => {
-      const ids = settings.approvedHarnesses.get(org);
-      return ids ? [...ids] : null;
-    },
-    setApprovedHarnesses: (ids) => settings.approvedHarnesses.set(org, ids ? [...ids] : null),
-    getApprovedHarnessesDurable: async () => (await settings.approvedHarnesses.durable(org)) ?? null,
     getOrgAmbient: () => settings.orgAmbient.get(org) ?? true,
     setOrgAmbient: (on) => settings.orgAmbient.set(org, on),
     getOrgAmbientDurable: async () => (await settings.orgAmbient.durable(org)) ?? true,
@@ -881,7 +860,6 @@ export function createMemoryConfigStore(
         unfulfilledInsights: settings.unfulfilledInsights.store,
         externalSlackParticipants: settings.externalSlackParticipants.store,
         runtime: baseModelStore,
-        approvedHarnesses: settings.approvedHarnesses.store,
         branding: settings.branding.store,
       };
       const present = await Promise.all(

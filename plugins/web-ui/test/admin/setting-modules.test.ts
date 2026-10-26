@@ -27,14 +27,13 @@ test("default runtime controls save reasoning level and fast mode", () => {
     {
       baseModelOptions: [{ id: "a" }],
       baseModelDefault: "a",
-      runtime: { harnessId: "pi", modelId: "a", effortLevel: "high", fastMode: true },
+      runtime: { modelId: "a", effortLevel: "high", fastMode: true },
       fastModeModelIds: ["a"],
     },
     "org:test",
     "runtime",
   );
   assert.deepEqual(settingsStates.get("runtime")!.collect(), {
-    harnessId: "pi",
     modelId: "a",
     effortLevel: "high",
     fastMode: true,
@@ -116,29 +115,23 @@ test("enabled models add and remove through explicit actions", () => {
 
 const loadData = {
   autoFlagger: null,
-  autoFlaggerDefault: { harnessId: "pi", modelId: "model-a", rubric: "Default rubric" },
-  harnessOptions: ["pi", "claude"],
-  modelsByHarness: {
-    pi: [
-      { id: "model-a", name: "A" },
-      { id: "model-b", name: "B" },
-    ],
-    claude: [{ id: "model-c", name: "C" }],
-  },
+  autoFlaggerDefault: { modelId: "model-a", rubric: "Default rubric" },
+  baseModelOptions: [
+    { id: "model-a", name: "A" },
+    { id: "model-b", name: "B" },
+  ],
 };
 
-test("loading defaults replaces a previous model and harness selection", () => {
+test("loading defaults replaces a previous model selection", () => {
   load(loadData, "org:example");
   const state = states.get("auto-flagger")!;
   state.change("auto-flagger-model", "model-b");
   load(loadData, "org:example");
   assert.equal(state.draft.modelId, "model-a");
-  state.change("auto-flagger-harness", "claude");
-  assert.equal(state.draft.modelId, "model-c");
 });
 
 test("unavailable configured flagger stays selectable", () => {
-  load({ ...loadData, autoFlagger: { harnessId: "codex", modelId: "saved-model", rubric: "Saved" } }, "org:example");
+  load({ ...loadData, autoFlagger: { modelId: "saved-model", rubric: "Saved" } }, "org:example");
   const state = states.get("auto-flagger")!;
   assert.equal(state.draft.modelId, "saved-model");
   assert.ok(state.models.some((model) => model.id === "saved-model"));
