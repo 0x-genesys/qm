@@ -9,6 +9,8 @@ import { createServer } from "../src/api/server.ts";
 import { scopeId } from "../src/types.ts";
 import { mintCapabilityToken, CAPABILITY_TTL_MS } from "../src/auth/capability-token.ts";
 import { testConfig } from "./support/test-config.ts";
+import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
+import { testDatabaseUrl } from "./support/test-database.ts";
 
 const SECRET = "route-test-secret".repeat(3);
 
@@ -17,7 +19,11 @@ test("a server without a keychain key says so instead of a bare not_found", asyn
   delete (config as { connectorSecretKey?: string }).connectorSecretKey;
   const built = buildApp(config);
   assert.equal(built.keychain, undefined);
-  const server = createServer(built.app, { signingSecret: SECRET, config: built.config });
+  const server = createServer(built.app, {
+    replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
+    signingSecret: SECRET,
+    config: built.config,
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const token = await mintCapabilityToken(

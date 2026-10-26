@@ -16,6 +16,7 @@ import {
 } from "../src/connectors/browser-session-store.ts";
 import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
 import { testDatabaseUrl, testMap } from "./support/test-database.ts";
+import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
 
 const SECRET = "emoji-route-secret".repeat(3);
 const ACTOR = "U_E1";
@@ -45,12 +46,16 @@ describe("POST /v1/emoji", async () => {
     const directory = createPostgresDirectoryStore(testDatabaseUrl());
     await directory.setWorkspaceUrl("https://acme.slack.com/");
     server = createServer(built.app, {
+      replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
       signingSecret: SECRET,
       browserSessionStore: sessions,
       directory,
       config: built.config,
     });
-    bare = createServer(built.app, { signingSecret: SECRET });
+    bare = createServer(built.app, {
+      replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
+      signingSecret: SECRET,
+    });
     await new Promise<void>((r) => server.listen(0, r));
     await new Promise<void>((r) => bare.listen(0, r));
     base = `http://localhost:${(server.address() as AddressInfo).port}`;
