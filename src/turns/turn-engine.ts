@@ -14,7 +14,7 @@ export function routeTurns(
   base: RunStore,
   ledger: TurnLedger | undefined,
   flags: Pick<FeatureFlagStore, "enabled">,
-): Pick<RunStore, "cancelTurn" | "withdraw" | "leaseHeld"> & {
+): Pick<RunStore, "cancelTurn" | "cancelTree" | "withdraw" | "leaseHeld"> & {
   admit(input: EnqueueInput): Promise<EnqueueResult | null>;
 } {
   return {
@@ -26,6 +26,7 @@ export function routeTurns(
       return ledger.admit({ ...input, priority: runPriority(input.request, delegating?.priority ?? null) });
     },
     cancelTurn: async (runId) => ledger?.cancel(runId) ?? null,
+    cancelTree: async (threadRefs) => ledger?.cancelTree(threadRefs) ?? 0,
     async withdraw(runId, opts) {
       if (await base.withdraw(runId, opts)) return true;
       const run = ledger ? await base.get(runId) : null;
@@ -42,6 +43,7 @@ export async function repairStaleTurns(deps: {
   sessions: Pick<SessionStore, "getByThread" | "forceReleaseLease" | "acquireLease" | "append" | "releaseLease">;
   errors?: ErrorLog;
 }): Promise<void> {
+  await deps.ledger.releaseCapped();
   for (const candidate of await deps.ledger.repairCandidates()) {
     const repaired = await deps.ledger.repair(candidate, {
       status: "failed",

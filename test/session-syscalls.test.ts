@@ -309,6 +309,48 @@ test("a finished child durably wakes its Slack parent exactly once and leaves th
   assert.equal(wakes[0]!.request.surfaceTools, true);
 });
 
+test("children finishing while an Absurd parent is busy share one queued wake", async () => {
+  const r = await rig();
+  const finished = [];
+  for (const task of ["first", "second", "third"]) {
+    const opened = await r.syscallsFor(r.room).open({ task, requestId: task });
+    assert.ok(opened.ok);
+    const child = await freshSession(r.sessions, opened.sessionId);
+    const queued = (await r.runs.inFlightForThread(child.threadRef))[0]!;
+    const claimed = await r.runs.claimById(queued.id, "w1", 60_000);
+    await r.runs.complete(queued.id, claimed!.leaseToken!, { status: "ok", reply: `${task} done` });
+    finished.push((await r.runs.get(queued.id))!);
+  }
+  const busy = await r.runs.enqueue({
+    sessionId: r.room.threadRef,
+    request: { ...finished[0]!.request, text: "busy" },
+  });
+  const absurd = (run: Run): Run => ({
+    ...run,
+    engine: "absurd",
+    status: run.request.wakeCause === "child_done" ? "queued" : run.status,
+  });
+  const runs = {
+    ...r.runs,
+    enqueue: async (input: Parameters<typeof r.runs.enqueue>[0]) => {
+      const out = await r.runs.enqueue(input);
+      return { ...out, run: absurd(out.run) };
+    },
+    inFlightForThread: async (threadRef: string) => (await r.runs.inFlightForThread(threadRef)).map(absurd),
+  };
+  for (const run of finished) {
+    const settled = await deliverSubagentMail(
+      { mailbox: r.mailbox, sessions: r.sessions, runs, maxAttempts: 3, delegationEnabled: async () => true },
+      run,
+    );
+    assert.equal(settled, true);
+  }
+  assert.equal((await r.mailbox.pending(r.room.id)).length, 3);
+  const wakes = (await r.runs.inFlightForThread(r.room.threadRef)).filter((run) => run.id !== busy.run.id);
+  assert.equal(wakes.length, 1);
+  assert.equal(wakes[0]!.request.wakeCause, "child_done");
+});
+
 test("a silent child mails a completed-without-reply notice without borrowing transcript text", async () => {
   const r = await rig();
   const opened = await r.syscallsFor(r.room).open({ task: "quiet work" });

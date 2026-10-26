@@ -14,7 +14,13 @@ import { swarmFixture } from "./support/swarm-fixture.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { registerAbsurdSchema, TURN_QUEUES } from "../src/turns/absurd-schema.ts";
 import { createPostgresNotifyBus } from "../src/persistence/postgres-notify-bus.ts";
-import { createTurnLedger, TURN_READY_CHANNEL, TURN_YIELD_CHANNEL, type TurnLedger } from "../src/turns/turn-ledger.ts";
+import {
+  createTurnLedger,
+  FAIR_ACTIVE_CAP,
+  TURN_READY_CHANNEL,
+  TURN_YIELD_CHANNEL,
+  type TurnLedger,
+} from "../src/turns/turn-ledger.ts";
 import { createTurnRunner } from "../src/turns/turn-runner.ts";
 import { scopeId, type TurnResult } from "../src/types.ts";
 import { sleep } from "../src/util/async.ts";
@@ -628,4 +634,72 @@ test("a person's message parks a background turn that is not running and starts 
   assert.equal(await pointer(thread), null);
   await runner.stopClaims();
   await ready.close?.();
+});
+
+async function admitSwarm(swarmId: string, thread: string, text: string) {
+  const result = await ledger.admit({
+    sessionId: thread,
+    request: { ...request(thread, text), swarm: { swarmId, messageId: randomUUID(), recipientId: thread } },
+    priority: 1,
+  });
+  assert.ok(result);
+  return result;
+}
+
+test("a swarm's ninth active turn waits for a slot, then starts when one ends", { skip }, async () => {
+  const swarmId = randomUUID();
+  const members = [];
+  for (let i = 0; i < FAIR_ACTIVE_CAP + 1; i++)
+    members.push(await admitSwarm(swarmId, `swarm:${swarmId}:${i}`, `member ${i}`));
+  assert.deepEqual(
+    members.map((m) => m.run.status),
+    [...Array(FAIR_ACTIVE_CAP).fill("pending"), "queued"],
+  );
+  const capped = members.at(-1)!.run;
+  assert.equal(await pointer(capped.sessionId), capped.id);
+  assert.equal(
+    (await ledger.repairCandidates(1000)).some((c) => c.turnId === capped.id),
+    false,
+  );
+  assert.equal(await ledger.cancel(members[0]!.run.id), "cancelled");
+  assert.equal((await runStore.runs.get(capped.id))?.status, "pending");
+  for (const member of members.slice(1)) await ledger.cancel(member.run.id);
+});
+
+test("a person's message is not held behind a capped background turn", { skip }, async () => {
+  const swarmId = randomUUID();
+  const members = [];
+  for (let i = 0; i < FAIR_ACTIVE_CAP + 1; i++)
+    members.push(await admitSwarm(swarmId, `swarm:${swarmId}:${i}`, `member ${i}`));
+  const capped = members.at(-1)!.run;
+  const person = await admit(capped.sessionId, "person", undefined, 0);
+  assert.equal(person.run.status, "pending");
+  assert.equal(await pointer(capped.sessionId), person.run.id);
+  for (const member of members) await ledger.cancel(member.run.id);
+  await ledger.cancel(person.run.id);
+});
+
+test("stopping a tree stops every turn in its conversations in one step", { skip }, async () => {
+  const parent = `web:alice:${randomUUID()}`;
+  const child = `agent:main:subagent:${randomUUID()}`;
+  await admit(parent, "parent");
+  const { run: running, token } = await claim();
+  assert.equal(running.sessionId, parent);
+  const queued = await admit(parent, "follow-up");
+  const childTurn = await admit(child, "child work", undefined, 1);
+  assert.equal(childTurn.run.status, "pending");
+  assert.equal(await ledger.cancelTree([parent, child]), 3);
+  assert.equal(await runStore.runs.get(queued.run.id), null);
+  assert.equal(await runStore.runs.get(childTurn.run.id), null);
+  assert.equal(await pointer(child), null);
+  assert.equal(await pointer(parent), running.id);
+  assert.equal(await ledger.extend(running, token), "cancelled");
+  assert.equal(
+    await ledger.finish(running, token, {
+      status: "done",
+      result: { status: "ok", sessionId: parent, stopped: true },
+    }),
+    true,
+  );
+  assert.equal(await pointer(parent), null);
 });
