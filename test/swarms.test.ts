@@ -1,5 +1,5 @@
 import { SWARM_DEFAULTS } from "../src/swarms/swarm-settings.ts";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { createSwarmService, type SwarmCaller } from "../src/swarms/swarm-service.ts";
 import { SWARM_LIMITS } from "../src/swarms/swarm-store.ts";
@@ -8,6 +8,28 @@ import { createTurnSandboxes, type TurnSandboxContext } from "../src/core/orches
 import { processRun } from "../src/runs/worker.ts";
 import type { Orchestrator } from "../src/core/orchestrator.ts";
 import { swarmFixture } from "./support/swarm-fixture.ts";
+import { testPgPool } from "./support/test-database.ts";
+
+const sharedPool = testPgPool();
+
+async function enableMockTimers(
+  context: TestContext,
+  options: Parameters<TestContext["mock"]["timers"]["enable"]>[0],
+): Promise<void> {
+  for (const pool of [await sharedPool.pool(), await sharedPool.sessionPool()]) {
+    const idle = await Promise.all(Array.from({ length: pool.idleCount }, () => pool.connect()));
+    for (const client of idle) client.release(true);
+  }
+  context.mock.timers.enable(options);
+}
+
+async function until(check: () => boolean | Promise<boolean>): Promise<void> {
+  const deadline = performance.now() + 10_000;
+  while (!(await check())) {
+    if (performance.now() > deadline) throw new Error("condition never held");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
 
 test("delayed ready acknowledgment cannot roll back a delivered worker across phase locks", async (context) => {
   const fixture = await swarmFixture();
@@ -27,7 +49,7 @@ test("delayed ready acknowledgment cannot roll back a delivered worker across ph
     }
     return updated;
   };
-  context.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  await enableMockTimers(context, { apis: ["Date", "setTimeout"], now: Date.now() });
   try {
     const firstSweep = fixture.service.sweep();
     await readyWritten.promise;
@@ -174,14 +196,17 @@ test("provisioning deadlines isolate healthy swarms and retire late private reso
     reached();
     return late;
   };
-  context.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  await enableMockTimers(context, { apis: ["Date", "setTimeout"], now: Date.now() });
   try {
     const sweep = first.service.sweep();
     await entered;
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    assert.equal((await first.store.get(second.root.id))!.members[1]!.state, "ready");
+    await until(async () => (await first.store.get(second.root.id))!.members[1]!.state === "ready");
+    await until(
+      async () =>
+        (await first.serviceOptions.lock.tryWithLock!(`swarm-reconcile:${second.root.id}`, async () => true)) !== null,
+    );
     context.mock.timers.tick((SWARM_LIMITS.provisionMs ?? 10_000) + 1);
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await until(async () => (await first.store.get(first.root.id))!.members[1]!.state === "failed");
     context.mock.timers.tick(SWARM_LIMITS.reconcileMs);
     await sweep;
     assert.equal(inventoryReads, 0);
@@ -234,17 +259,25 @@ test("timed-out provider calls retain bounded execution slots across repeated sw
       active--;
     }
   };
-  context.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  const unlocked = async () =>
+    (
+      await Promise.all(
+        fixtures.map((fixture) =>
+          first.serviceOptions.lock.tryWithLock!(`swarm-reconcile:${fixture.root.id}`, async () => true),
+        ),
+      )
+    ).filter((free) => free !== null).length;
+  await enableMockTimers(context, { apis: ["Date", "setTimeout"], now: Date.now() });
   try {
     const sweep = first.service.sweep();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await until(() => entered.length >= SWARM_LIMITS.sweepConcurrency);
     assert.equal(entered.length, SWARM_LIMITS.sweepConcurrency);
     context.mock.timers.tick(SWARM_LIMITS.reconcileMs + 1);
     await sweep;
     await first.service.sweep();
     assert.equal(entered.length, SWARM_LIMITS.sweepConcurrency);
     for (const release of releases.slice(1)) release();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await until(async () => active === 1 && (await unlocked()) === fixtures.length - 1);
     await first.service.sweep();
     assert.equal(entered.length, fixtures.length * 4 - SWARM_LIMITS.sweepConcurrency - 2);
     assert.equal(maximum, SWARM_LIMITS.sweepConcurrency);
@@ -279,13 +312,17 @@ test("ready notifications progress while every provider slot remains fenced afte
     await new Promise<void>((resolve) => releases.push(resolve));
     return create(...args);
   };
-  context.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  await enableMockTimers(context, { apis: ["Date", "setTimeout"], now: Date.now() });
   try {
     const sweep = first.service.sweep();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await until(() => releases.length >= SWARM_LIMITS.sweepConcurrency);
     assert.equal(releases.length, SWARM_LIMITS.sweepConcurrency);
     context.mock.timers.tick(SWARM_LIMITS.provisionMs + 1);
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await until(async () => {
+      for (const fixture of fixtures.slice(0, -1))
+        if ((await first.store.get(fixture.root.id))!.members[1]!.state !== "failed") return false;
+      return true;
+    });
     context.mock.timers.tick(SWARM_LIMITS.reconcileMs + 1);
     await sweep;
     for (let iteration = 0; iteration < 10; iteration++) await first.service.sweep();
@@ -314,12 +351,17 @@ test("timed-out pending selection stays single-flight until the query settles", 
   });
   const pending = store.pending.bind(store);
   let selections = 0;
+  let settled = 0;
   store.pending = async (afterId) => {
     selections++;
     await gate;
-    return pending(afterId);
+    try {
+      return await pending(afterId);
+    } finally {
+      settled++;
+    }
   };
-  context.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  await enableMockTimers(context, { apis: ["Date", "setTimeout"], now: Date.now() });
   try {
     for (let iteration = 0; iteration < 6; iteration++) {
       const sweep = assert.rejects(service.sweep(), /swarm pending batch timed out/);
@@ -328,7 +370,7 @@ test("timed-out pending selection stays single-flight until the query settles", 
     }
     assert.equal(selections, 1);
     release();
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await until(() => settled === 1);
     await service.sweep();
     assert.equal(selections, 2);
   } finally {
@@ -367,14 +409,16 @@ test("late session creation remains fenced from cleanup until its side effect se
     reached = resolve;
   });
   const createSession = fixture.sessions.getOrCreateByThread.bind(fixture.sessions);
+  let late: Promise<unknown> | undefined;
   fixture.sessions.getOrCreateByThread = async (...args) => {
-    if (args[0] === member!.threadRef) {
-      reached();
-      await gate;
-    }
-    return createSession(...args);
+    if (args[0] !== member!.threadRef) return createSession(...args);
+    reached();
+    await gate;
+    const created = createSession(...args);
+    late = created;
+    return created;
   };
-  context.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  await enableMockTimers(context, { apis: ["Date", "setTimeout"], now: Date.now() });
   try {
     const sweep = fixture.service.sweep();
     await entered;
@@ -384,6 +428,8 @@ test("late session creation remains fenced from cleanup until its side effect se
     assert.equal((await fixture.store.get(fixture.root.id))!.members[1]!.cleanupPending, true);
     assert.equal((await fixture.records.get(member!.id))!.state, "ready");
     release();
+    await until(() => late !== undefined);
+    await late;
     await new Promise<void>((resolve) => setImmediate(resolve));
     await createSwarmService(fixture.serviceOptions).sweep();
     assert.equal(await fixture.sessions.getByThread(member!.threadRef), null);
@@ -964,7 +1010,7 @@ test("swarm work cancellation has a hard worker deadline independent of the harn
   await service.sweep();
   const pending = (await runs.list()).find((item) => item.request.swarm)!;
   const claimed = (await runs.claimById(pending.id, "test", 60_000))!;
-  context.mock.timers.enable({ apis: ["setTimeout"] });
+  await enableMockTimers(context, { apis: ["setTimeout"] });
   let cancelled = false;
   const orchestrator = {
     async handleTurn(input: import("../src/core/orchestrator.ts").OrchestratorInput) {
