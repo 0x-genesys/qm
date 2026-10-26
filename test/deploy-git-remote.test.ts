@@ -24,14 +24,12 @@ async function fixture(): Promise<{
   close: () => Promise<void>;
   deployment: Deployment;
 }> {
-  const deployments = testMap<Deployment>();
+  const backing = testDeployBackings();
   const archiveStore = testMap<DeployGitArchive>();
-  const writerStore = createDeployStore(
-    testDeployBackings({
-      deployments,
-      git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-remote-writer-")), archiveStore },
-    }),
-  );
+  const writerStore = createDeployStore({
+    ...backing,
+    git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-remote-writer-")), archiveStore },
+  });
   const deployment = await writerStore.create({
     ownerScopeId: scopeId("personal", "U1"),
     createdBy: "U1",
@@ -44,12 +42,10 @@ async function fixture(): Promise<{
     name: "git-remote",
   });
   await writerStore.setAppliedVersion(deployment.id, 1);
-  const readerStore = createDeployStore(
-    testDeployBackings({
-      deployments,
-      git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-remote-reader-")), archiveStore },
-    }),
-  );
+  const readerStore = createDeployStore({
+    ...backing,
+    git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-remote-reader-")), archiveStore },
+  });
   const app = {
     listDeployments: async () => [deployment],
     deploymentGitRepoPath: async (id: string) => (id === deployment.id ? await readerStore.repoUrl(id) : null),
