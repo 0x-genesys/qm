@@ -480,14 +480,11 @@ export async function stopSessionTree(
   root: Session,
   reason?: string,
 ): Promise<boolean> {
+  const tree = (await treeSessions(deps.sessions, root)).filter((session) => session.scopeId === root.scopeId);
   const inFlight: Run[] = [];
-  for (const session of await treeSessions(deps.sessions, root)) {
-    if (session.scopeId !== root.scopeId) continue;
-    inFlight.push(...(await deps.runs.inFlightForThread(session.threadRef)));
-  }
+  for (const session of tree) inFlight.push(...(await deps.runs.inFlightForThread(session.threadRef)));
   for (const run of inFlight) await deps.signals.send(run.id, { kind: "abort", ...(reason ? { reason } : {}) });
-  const absurd = inFlight.filter((run) => run.engine === "absurd");
-  if (absurd.length && deps.runs.cancelTree) await deps.runs.cancelTree(absurd.map((run) => run.sessionId));
+  if (deps.runs.cancelTree) await deps.runs.cancelTree(tree.map((session) => session.threadRef));
   for (const run of inFlight) if (run.engine !== "absurd" || !deps.runs.cancelTree) await stopRun(deps.runs, run);
   return inFlight.length > 0;
 }
@@ -1201,12 +1198,16 @@ export async function deliverSubagentMail(deps: SubagentMailDeps, run: Run): Pro
     if (existing && (existing.status === "done" || existing.status === "failed")) return true;
     const inFlight = await deps.runs.inFlightForThread(parent.threadRef);
     const absurdParent = inFlight.every((turn) => turn.engine === "absurd");
-    if (absurdParent && inFlight.some((turn) => turn.status === "queued" && turn.request.wakeCause === "child_done"))
-      return true;
-    if (inFlight.length && !absurdParent) return false;
+    const sharedWake = inFlight.some(
+      (turn) =>
+        turn.status === "queued" &&
+        turn.request.wakeCause === "child_done" &&
+        turn.request.actor.id === prepared.actor.id,
+    );
+    if (sharedWake || (inFlight.length && !absurdParent)) return false;
     const wake =
       "A delegated task finished. Check internal messages with subagents wait (timeoutMs: 0), then report any new result or blocker relevant to the user's request. If it was already handled or no message is available, end without posting.";
-    const { run: woken } = await deps.runs.enqueue({
+    await deps.runs.enqueue({
       sessionId: parent.threadRef,
       dedupKey,
       request: {
@@ -1220,7 +1221,7 @@ export async function deliverSubagentMail(deps: SubagentMailDeps, run: Run): Pro
       },
       maxAttempts: deps.maxAttempts,
     });
-    return woken.engine === "absurd";
+    return false;
   }
   return true;
 }

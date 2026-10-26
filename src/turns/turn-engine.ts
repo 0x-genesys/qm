@@ -28,9 +28,9 @@ export function routeTurns(
     cancelTurn: async (runId) => ledger?.cancel(runId) ?? null,
     cancelTree: async (threadRefs) => ledger?.cancelTree(threadRefs) ?? 0,
     async withdraw(runId, opts) {
-      if (await base.withdraw(runId, opts)) return true;
       const run = ledger ? await base.get(runId) : null;
-      if (!ledger || run?.engine !== "absurd" || !isUnstarted(run)) return false;
+      if (!ledger || run?.engine !== "absurd") return base.withdraw(runId, opts);
+      if (!isUnstarted(run)) return false;
       return (await ledger.cancel(runId)) !== null;
     },
     leaseHeld: async (run, token) =>

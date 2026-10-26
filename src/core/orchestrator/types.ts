@@ -112,7 +112,6 @@ export interface OrchestratorInput extends Omit<
   sessionParticipantIds?: readonly string[];
   scopeVersion?: string;
   swarm?: SwarmTurn;
-  /** Set on the turn that wakes a parent because a subagent finished; one queued wake serves every finished child. */
   wakeCause?: "child_done";
   swarmGoal?: GoalCreateInput & { assignedAt: number };
   trace?: TraceCarrier;

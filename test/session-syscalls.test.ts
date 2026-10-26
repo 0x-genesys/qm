@@ -343,7 +343,7 @@ test("children finishing while an Absurd parent is busy share one queued wake", 
       { mailbox: r.mailbox, sessions: r.sessions, runs, maxAttempts: 3, delegationEnabled: async () => true },
       run,
     );
-    assert.equal(settled, true);
+    assert.equal(settled, false, "a return stays open until the parent reads its mail");
   }
   assert.equal((await r.mailbox.pending(r.room.id)).length, 3);
   const wakes = (await r.runs.inFlightForThread(r.room.threadRef)).filter((run) => run.id !== busy.run.id);
