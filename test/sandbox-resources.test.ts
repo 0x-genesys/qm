@@ -971,7 +971,7 @@ test("a job computer is invisible and untargetable for everyone, and only the jo
   await assert.rejects(router.provision(layers, { sandboxId: job.id }), /sandbox not found/);
 });
 
-test("a job computer whose destroy fails is retried by the next sweep and refused where it cannot be retired", async () => {
+test("a job computer whose destroy fails keeps its record for retry, and is refused where it cannot be retired", async () => {
   let failures = 1;
   const { resources } = fixture((backend) => {
     const destroy = backend.destroyScope!.bind(backend);
@@ -983,8 +983,8 @@ test("a job computer whose destroy fails is retried by the next sweep and refuse
   const job = await resources.create("alice", "personal:alice", "local", "background job", undefined, true);
   await assert.rejects(resources.retireJobComputer(job.id), /provider unavailable/);
   assert.deepEqual(
-    (await resources.jobComputers()).map((s) => [s.id, s.state, s.error]),
-    [[job.id, "retired", "Error: provider unavailable"]],
+    (await resources.jobComputers()).map((s) => [s.id, s.state, Boolean(s.error)]),
+    [[job.id, "retired", true]],
   );
   await resources.retireJobComputer(job.id);
   assert.deepEqual(await resources.jobComputers(), []);

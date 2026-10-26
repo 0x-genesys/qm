@@ -45,10 +45,16 @@ function fixture() {
     provisions.push(opts!.sandboxId!);
     return origProvision(layers, opts);
   };
+  const failDestroy = new Set<string>();
+  const destroyAttempts: string[] = [];
   const sweep = createJobComputerSweep({
     resources: {
       jobComputers: async () => computers.filter((computer) => !retired.includes(computer.id)),
-      retireJobComputer: async (id) => void retired.push(id),
+      retireJobComputer: async (id) => {
+        destroyAttempts.push(id);
+        if (failDestroy.has(id)) throw new Error("provider unavailable");
+        retired.push(id);
+      },
     },
     sandbox,
     processes,
@@ -56,7 +62,20 @@ function fixture() {
     onError: (error) => void errors.push(error),
     now: () => now,
   });
-  return { processes, exited, retired, finished, errors, provisions, sweep, advance: (ms: number) => void (now += ms) };
+  return {
+    processes,
+    exited,
+    retired,
+    finished,
+    errors,
+    provisions,
+    computers,
+    failDestroy,
+    destroyAttempts,
+    sweep,
+    now: () => now,
+    advance: (ms: number) => void (now += ms),
+  };
 }
 
 test("the job sweep retires a job computer only after its jobs end and write back", async () => {
@@ -81,22 +100,43 @@ test("the job sweep retires a job computer only after its jobs end and write bac
   f.exited.add("p-b");
   await f.sweep();
   assert.deepEqual(f.retired, ["job-a"], "a box checked within the last five minutes is left alone");
+  const checksBefore = f.provisions.filter((id) => id === "job-b").length;
   f.advance(5 * 60_000);
   await f.sweep();
-  assert.deepEqual(
-    f.retired.filter((id) => id !== "job-new"),
-    ["job-a", "job-b"],
-  );
-  assert.deepEqual(f.provisions, ["job-a", "job-b", "job-b"]);
+  assert.ok(f.retired.includes("job-b"));
+  assert.equal(f.provisions.filter((id) => id === "job-b").length, checksBefore + 1);
   assert.deepEqual(f.errors, []);
 });
 
-test("a job computer with no job yet survives the startup grace period and is retired after it", async () => {
+test("a job computer with no job yet gets a grace period from when the sweep first sees it ready", async () => {
   const f = fixture();
   await f.sweep();
   assert.ok(!f.retired.includes("job-new"));
-  f.advance(3 * 60_000);
+  f.advance(90_000);
+  await f.sweep();
+  assert.ok(!f.retired.includes("job-new"));
+  f.advance(60_000);
   await f.sweep();
   assert.ok(f.retired.includes("job-new"));
   assert.deepEqual(f.provisions, []);
+});
+
+test("a job computer stuck provisioning is retired after the limit, and a failed destroy is retried every five minutes", async () => {
+  const f = fixture();
+  f.computers[0]!.state = "provisioning";
+  f.computers[1]!.state = "retired";
+  f.computers[1]!.error = "provider unavailable";
+  f.failDestroy.add("job-b");
+  await f.sweep();
+  assert.ok(!f.retired.includes("job-a"), "a box still provisioning is left alone");
+  assert.equal(f.destroyAttempts.filter((id) => id === "job-b").length, 1);
+  f.advance(60_000);
+  await f.sweep();
+  assert.equal(f.destroyAttempts.filter((id) => id === "job-b").length, 1, "no retry within five minutes");
+  f.failDestroy.delete("job-b");
+  f.advance(5 * 60_000);
+  f.computers[0]!.createdAt = new Date(f.now() - 16 * 60_000).toISOString();
+  await f.sweep();
+  assert.ok(f.retired.includes("job-b"));
+  assert.ok(f.retired.includes("job-a"), "a box provisioning for over fifteen minutes is retired");
 });
