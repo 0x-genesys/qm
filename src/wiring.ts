@@ -211,7 +211,7 @@ import { createMemoryFileArtifactStore, type FileArtifactStore } from "./files/f
 import { createPostgresFileArtifactStore } from "./files/postgres-file-artifact-store.ts";
 import { createAwsSandbox, type StoredMicrovm } from "./sandbox/aws-sandbox.ts";
 import { createLocalSandbox } from "./sandbox/local-sandbox.ts";
-import { createSpritesSandbox } from "./sandbox/sprites-sandbox.ts";
+import { createSpritesSandbox, type StoredSpritesSandbox } from "./sandbox/sprites-sandbox.ts";
 import { createSmolmachinesSandbox, type StoredSmolmachinesSandbox } from "./sandbox/smolmachines-sandbox.ts";
 import { createAgent37Sandbox } from "./sandbox/agent37-sandbox.ts";
 import {
@@ -860,7 +860,7 @@ export function buildApp(
       ...sandboxShared,
       ...config.spritesSandbox,
       ...homeSnapshots("sprites-home"),
-      initializationStore: artifactMap<{ pending: boolean }>("sprites_initialization"),
+      store: artifactMap<StoredSpritesSandbox>("sprites_initialization"),
       connectorSdk: loadConnectorSdk,
     });
   const buildSmolmachines = (): Sandbox =>

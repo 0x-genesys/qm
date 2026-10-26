@@ -13,6 +13,7 @@ import {
 } from "./exec-file-ops.ts";
 import { createExecSandboxBase, sandboxScopeName } from "./exec-sandbox-base.ts";
 import { createLayerToolInstaller } from "./layer-tool-install.ts";
+import { withConnectorSdk, type ConnectorSdkBundle } from "./connector-sdk.ts";
 import { createHomeSnapshotOps, HOME_SNAPSHOT_PRUNE, snapshotDue, type HomeSnapshotStore } from "./home-snapshot.ts";
 import { visibleNotInstalled, visibleTools } from "./sandbox.ts";
 import type {
@@ -50,6 +51,7 @@ export interface SandboxShared extends BlobStagingOptions {
   extraTools?: string[];
   credentialPaths?: CredentialPathSpec[];
   layerToolFiles?: () => readonly LayerInstallFile[];
+  connectorSdk?: () => Promise<ConnectorSdkBundle>;
   onError?: ErrorReport;
 }
 
@@ -69,9 +71,10 @@ export interface MachineState {
 }
 
 export interface DriverCheckpoints {
+  machineBound?: boolean;
   capture(name: string): Promise<string>;
   restore(name: string, checkpointId: string): Promise<void>;
-  drop(name: string, checkpointId: string): Promise<void>;
+  drop?(name: string, checkpointId: string): Promise<void>;
 }
 
 export interface SandboxDriver {
@@ -84,6 +87,7 @@ export interface SandboxDriver {
   diskGb?: number;
   writablePersistence?: WritablePersistence;
   egressEnforcement: EgressEnforcement;
+  combineRoundTrips?: boolean;
   exec(name: string, script: string, timeoutSec: number): Promise<ExecResult>;
   writeAbsBytes(name: string, absPath: string, data: Uint8Array): Promise<void>;
   readAbsBytes(name: string, absPath: string): Promise<Uint8Array | null>;
@@ -94,7 +98,7 @@ export interface SandboxDriver {
   destroy(name: string): Promise<void>;
   isLive(name: string): boolean;
   forget?(name: string): void;
-  restart?(name: string): Promise<void>;
+  restart?(name: string, ctx: { initializationPending: boolean }): Promise<void>;
   ensureEgress?(name: string): Promise<void>;
   checkpoints?: DriverCheckpoints;
 }
@@ -168,8 +172,8 @@ export function createProviderSandbox(
         snapshotError: undefined,
       });
       if (previous && previous !== checkpointId)
-        await driver
-          .checkpoints!.drop(name, previous)
+        await driver.checkpoints
+          ?.drop?.(name, previous)
           .catch(swallowAs(`${backend}-sandbox: drop checkpoint`, undefined));
     } catch (e) {
       await merge(scope, { snapshotError: errMessage(e) });
@@ -196,7 +200,7 @@ export function createProviderSandbox(
       }
       const checkpointId = stored?.checkpointId;
       const restored =
-        created && checkpointId && driver.checkpoints
+        created && checkpointId && driver.checkpoints && !driver.checkpoints.machineBound
           ? (await driver.checkpoints.restore(name, checkpointId), true)
           : false;
       const hydrated = restored || (homeSnapshots ? await homeSnapshots.hydrateHome(scope, name) : false);
@@ -223,7 +227,16 @@ export function createProviderSandbox(
     homeDir,
     defaultTimeoutSec,
     credentialPaths: shared.credentialPaths ?? [],
-    ...(shared.layerToolFiles ? { installLayerTools: createLayerToolInstaller(shared.layerToolFiles) } : {}),
+    ...(shared.layerToolFiles || shared.connectorSdk
+      ? {
+          installLayerTools: withConnectorSdk(
+            homeDir,
+            createLayerToolInstaller(shared.layerToolFiles ?? (() => [])),
+            shared.connectorSdk,
+          ),
+        }
+      : {}),
+    ...(driver.combineRoundTrips ? { combineLayerToolPrep: true } : {}),
     ...(shared.egressProxyUrl ? { egressProxyUrl: shared.egressProxyUrl } : {}),
     deleteFailureCode: `${backend}_delete_failed`,
     ...(shared.onError ? { onError: shared.onError } : {}),
@@ -274,7 +287,12 @@ export function createProviderSandbox(
     run: (handle, command, execOpts) =>
       driver.exec(handle.id, command, execOpts?.timeoutMs ? Math.ceil(execOpts.timeoutMs / 1000) : defaultTimeoutSec),
   });
-  const fileOps = createExecFileOps({ label: backend, exec: driver.exec, writeInline: driver.writeAbsBytes });
+  const fileOps = createExecFileOps({
+    label: backend,
+    exec: driver.exec,
+    writeInline: driver.writeAbsBytes,
+    ...(driver.combineRoundTrips ? { combineRemoveAndList: true } : {}),
+  });
   const staging = createBackendBlobStaging(backend, driver.exec, shared);
   const execExport = createExecExport({
     label: backend,
@@ -283,6 +301,8 @@ export function createProviderSandbox(
     defaultHomeDir: homeDir,
     ephemeralCredentialPrefixes: credentialPrefixes,
   });
+
+  const portableOnly = !!driver.checkpoints?.machineBound && !!homeSnapshots;
 
   async function capture(scope: string, name: string): Promise<void> {
     if (driver.checkpoints) await captureCheckpoint(scope, name);
@@ -303,6 +323,16 @@ export function createProviderSandbox(
   }
 
   async function teardown(handle: SandboxHandle, opts?: TeardownOptions): Promise<void> {
+    if (!handle.scratch && opts?.destroy && portableOnly) {
+      const scope = base.scopeFor(handle.id) ?? "default";
+      await base.provisionQueue(scope, () =>
+        lock(scope, async () => {
+          const stored = await store.get(scope);
+          if (!stored?.initializationPending && (await driver.inspect(handle.id))) await exportHome(scope, handle.id);
+          await merge(scope, { checkpointId: undefined, checkpointAtMs: undefined });
+        }),
+      );
+    }
     if (!handle.scratch && !opts?.destroy) {
       const scope = base.scopeFor(handle.id) ?? "default";
       await base.provisionQueue(scope, () =>
@@ -353,7 +383,7 @@ export function createProviderSandbox(
             await base.provisionQueue(scopeId, () =>
               lock(scopeId, async () => {
                 await initialize(scopeId, name);
-                await capture(scopeId, name);
+                await (portableOnly ? exportHome(scopeId, name) : capture(scopeId, name));
               }),
             );
           },
@@ -374,9 +404,12 @@ export function createProviderSandbox(
       if (machine.state === "parked")
         return { ...rec, machine: machine.detail, lifecycleState: "paused", provisioned: true, guestResponsive: false };
       let guestResponsive = false;
+      let pressure: ComputerStatus["pressure"];
       let probeError: string | undefined;
       try {
-        guestResponsive = (await driver.exec(name, "true", GUEST_PROBE_TIMEOUT_SEC)).code === 0;
+        const probe = await driver.exec(name, "true", GUEST_PROBE_TIMEOUT_SEC);
+        guestResponsive = probe.code === 0;
+        pressure = probe.pressure;
       } catch (e) {
         probeError = errMessage(e);
       }
@@ -387,6 +420,7 @@ export function createProviderSandbox(
         provisioned: true,
         guestResponsive,
         ...(probeError ? { probeError } : {}),
+        ...(pressure ? { pressure } : {}),
         ...(machine.resources ? { resources: machine.resources } : {}),
       };
     },
@@ -396,7 +430,7 @@ export function createProviderSandbox(
       await base.provisionQueue(scopeId, () =>
         lock(scopeId, async () => {
           const stored = await store.get(scopeId);
-          if (driver.restart) return driver.restart(name);
+          if (driver.restart) return driver.restart(name, { initializationPending: !!stored?.initializationPending });
           if (driver.checkpoints && stored?.checkpointId) {
             await driver.checkpoints.restore(name, stored.checkpointId);
             return;
@@ -423,9 +457,9 @@ export function createProviderSandbox(
             await exportHome(scopeId, name);
           await driver.destroy(name);
           driver.forget?.(name);
-          if (stored?.checkpointId && driver.checkpoints)
+          if (stored?.checkpointId)
             await driver.checkpoints
-              .drop(name, stored.checkpointId)
+              ?.drop?.(name, stored.checkpointId)
               .catch(swallowAs(`${backend}-sandbox: drop checkpoint on destroy`, undefined));
           await store.delete(scopeId);
         }),

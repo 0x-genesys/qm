@@ -284,14 +284,14 @@ export async function resolveSandbox(opts: {
   const env: Record<string, string> = {
     SANDBOX_BACKEND: "sprites",
     SPRITES_TOKEN: token,
-    SPRITES_NAME_PREFIX: opts.baseEnv.SPRITES_NAME_PREFIX || "qmdev",
+    SANDBOX_NAME_PREFIX: opts.baseEnv.SANDBOX_NAME_PREFIX || "qmdev",
   };
   // Force-through egress is opt-in in dev: set it only if the caller supplied a proxy URL.
   // Without it the sandbox has open egress — warn so a "proxy ON" QA run isn't silently toothless.
-  if (opts.baseEnv.SPRITES_EGRESS_PROXY_URL) env.SPRITES_EGRESS_PROXY_URL = opts.baseEnv.SPRITES_EGRESS_PROXY_URL;
+  if (opts.baseEnv.SANDBOX_EGRESS_PROXY_URL) env.SANDBOX_EGRESS_PROXY_URL = opts.baseEnv.SANDBOX_EGRESS_PROXY_URL;
   else
     warnings.push(
-      "SPRITES_EGRESS_PROXY_URL unset -- sprites sandbox runs with NO egress enforcement; set it to QA the forced-proxy path",
+      "SANDBOX_EGRESS_PROXY_URL unset -- sprites sandbox runs with NO egress enforcement; set it to QA the forced-proxy path",
     );
   if (publicApiUrl) env.PUBLIC_API_URL = publicApiUrl;
   return { backend: "sprites", env, detail: "Fly Sprites (api.sprites.dev)", publicApiUrl, warnings };
