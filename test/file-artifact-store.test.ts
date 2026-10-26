@@ -217,9 +217,11 @@ test("document listing groups authorized copies before pagination", async () => 
 
 test("document listing keeps unknown hashes separate and picks deterministic representatives", async () => {
   const store = createPostgresFileArtifactStore(testDatabaseUrl(), createMemoryDurableByteStore());
-  for (const id of ["b", "a", "unknown-1", "unknown-2"]) {
-    const { artifact } = await store.put(put({ id, path: id, createdAt: 100 }));
-    if (id.startsWith("unknown")) artifact.sha256 = null;
+  const { artifact: b } = await store.put(put({ id: "b", path: "b", createdAt: 100 }));
+  await store.put(put({ id: "a", path: "a", createdAt: 100 }));
+  for (const id of ["unknown-1", "unknown-2"]) {
+    const { data: _data, ...input } = put({ id, path: id, createdAt: 100 });
+    await store.publish({ ...input, blobKey: b.blobKey!, sizeBytes: b.sizeBytes, sha256: null });
   }
   assert.deepEqual(
     (await store.listDocuments([owner], [])).files.map((f) => f.id),
