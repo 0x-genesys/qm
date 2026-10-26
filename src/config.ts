@@ -77,6 +77,8 @@ interface DeploymentConfig {
   swarmsEnabled?: boolean;
   swarmDefaults?: SwarmSettings;
   production: boolean;
+  /** QM_MULTITENANT=1: one process serves every registered tenant from one database with row-level tenancy. */
+  multitenant: boolean;
   port: number;
   publicPort?: number;
   dataDir: string;
@@ -1333,6 +1335,7 @@ function loadDeploymentConfig(env: NodeJS.ProcessEnv): DeploymentConfig {
       ? { suggestedActivitiesContext: env.SUGGESTED_ACTIVITIES_CONTEXT.slice(0, 8000) }
       : {}),
     production: env.NODE_ENV === "production",
+    multitenant: env.QM_MULTITENANT === "1",
     port: numEnvStrict("PORT", env.PORT) ?? CONFIG_DEFAULTS.port,
     ...(publicPort !== undefined ? { publicPort } : {}),
     dataDir,

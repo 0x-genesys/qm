@@ -573,10 +573,12 @@ export function buildApp(
   }
   configurePgPooling({
     ...(config.databaseUrl ? { databaseUrl: config.databaseUrl } : {}),
-    ...(config.databasePoolUrl ? { poolUrl: config.databasePoolUrl } : {}),
+    // Tenancy sets qm.tenant_id per session, which a transaction-mode pooler would leak between clients.
+    ...(config.databasePoolUrl && !config.multitenant ? { poolUrl: config.databasePoolUrl } : {}),
     ...(config.databasePoolCaCert ? { caCert: config.databasePoolCaCert } : {}),
     ...(config.databasePoolMax !== undefined ? { queryMax: config.databasePoolMax } : {}),
     ...(config.databaseDirectPoolMax !== undefined ? { sessionMax: config.databaseDirectPoolMax } : {}),
+    tenancy: config.multitenant,
   });
   configurePgCaTrust({
     ...(config.databaseCaCert ? { cert: config.databaseCaCert } : {}),

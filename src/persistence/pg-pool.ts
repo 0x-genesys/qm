@@ -91,7 +91,7 @@ export function configurePgPooling(config: PgPoolingConfig): void {
 }
 
 // Off by default: a single-tenant database keeps its original keys and needs no tenant setting.
-let tenancyEnabled = process.env.QM_MULTITENANT === "1";
+let tenancyEnabled = false;
 
 export function pgTenancyEnabled(): boolean {
   return tenancyEnabled;

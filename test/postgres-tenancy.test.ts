@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
-import { createPgPool } from "../src/persistence/pg-pool.ts";
+import { configurePgTenancy, createPgPool } from "../src/persistence/pg-pool.ts";
 import { tenantFor, withTenant } from "../src/tenant.ts";
 import {
   assertRowSecurityEnforced,
@@ -47,6 +47,7 @@ test(
   { skip },
   async () => {
     const { url, drop } = await provision();
+    configurePgTenancy(true);
     try {
       const legacy = createPgPool(url, [
         {
@@ -121,6 +122,7 @@ test(
       await assert.rejects(listTenants(legacy, undefined), /QM_TENANT_SECRETS_KEY/);
       await legacy.close();
     } finally {
+      configurePgTenancy(false);
       await drop();
     }
   },

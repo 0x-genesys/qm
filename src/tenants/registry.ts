@@ -17,7 +17,7 @@ export interface TenantRecord {
   secretEnv: ServiceEnv;
 }
 
-export function tenantSecretsKey(env: NodeJS.ProcessEnv = process.env): Buffer | undefined {
+export function tenantSecretsKey(env: NodeJS.ProcessEnv): Buffer | undefined {
   const raw = env.QM_TENANT_SECRETS_KEY?.trim();
   if (!raw) return undefined;
   const key = Buffer.from(raw, "base64");

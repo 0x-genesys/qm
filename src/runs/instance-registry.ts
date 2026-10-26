@@ -1,5 +1,5 @@
 import type { PgPool } from "../persistence/pg-pool.ts";
-import { tenantCols } from "../persistence/pg-pool.ts";
+import { pgTenancyEnabled, tenantCols } from "../persistence/pg-pool.ts";
 
 export interface InstanceRegistry {
   beat(): Promise<boolean>;
@@ -28,7 +28,10 @@ export function createPostgresInstanceRegistry(
              beat_at TIMESTAMPTZ NOT NULL
            )`,
         )
-        .then(() => undefined)
+        .then(async () => {
+          // Created outside the migration runner, so give it tenant keys here when tenancy is on.
+          if (pgTenancyEnabled()) await pg.query("SELECT qm_tenantize()");
+        })
         .catch((e) => {
           readyP = null;
           throw e;
