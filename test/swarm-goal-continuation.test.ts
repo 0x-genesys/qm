@@ -234,7 +234,11 @@ test("only a message to the worker from its goal's owner or the root, sent after
     text: "survey",
     goal: { objective: "Map the lane" },
   });
-  const paused = pausedGoal(assigned.createdAt, assigned.createdAt);
+  await f.service.sweep();
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 2));
+  await tick();
+  const paused = pausedGoal(assigned.createdAt, Date.now());
+  await tick();
   const send = async (caller: SwarmCaller, requestId: string, audience: string[], text: string) => {
     await f.service.send(caller, { requestId, audience, text, notify: true });
   };
@@ -254,7 +258,7 @@ test("only a message to the worker from its goal's owner or the root, sent after
   assert.equal(await replied({ ...paused, governor: undefined }), false);
   const later = { ...paused, updatedAt: Date.now() + 1 };
   assert.equal(await replied(later), false);
-  await new Promise((resolve) => setTimeout(resolve, 2));
+  await tick();
   await send(f.caller, "root", [worker!.id], "north region");
   assert.equal(await replied(later), true);
 });

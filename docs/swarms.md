@@ -206,11 +206,12 @@ owner (the root, for a first-level worker). When the governor pauses a worker's 
 sweep sends the owner a message from the worker, once per pause, carrying the
 governor's reason; it wakes the owner and, like a continuation, is never refused by
 the message budgets. Outside swarms only a person's own message can resume a paused
-goal. A worker can also resume one when a message to it from the goal's owner or from
-the root reached that turn, as the message that started it, from its mailbox, or
-mid-turn. The swarm checks the sender it recorded for the message, never the text,
-so a peer cannot resume it by relaying the owner's words, and the worker's own
-continuations, crons, webhooks and other peers cannot resume it. When a goal is complete, the worker
+goal. A worker can also resume a goal the governor paused once the goal's owner or
+the root has sent it a message after the pause. The swarm checks the sender it
+recorded for the message, never the text, so a peer cannot resume the goal by
+relaying the owner's words, and messages from other peers or the worker's own
+continuations never count. A goal a person paused by stopping a turn still needs
+a person. When a goal is complete, the worker
 decides what comes next: a new goal for itself, a message to whoever must act, or
 other work. Each goal message
 installs a fresh goal once (a retried delivery does not reinstall it), so sending
