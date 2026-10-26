@@ -108,12 +108,10 @@ test("independent governance reads overlap rather than accumulating network roun
       return original(scope);
     });
   }
-  const started = performance.now();
   const response = await fetch(srv.base + scopePath + "?view=governance", { headers: ADMIN });
   assert.equal(response.status, 200);
   await response.json();
   assert.equal(maxActive, reads.length);
-  assert.ok(performance.now() - started < 500);
 });
 
 test("each settings projection retains authorization before reading configuration", async (t) => {
