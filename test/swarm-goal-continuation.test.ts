@@ -26,12 +26,15 @@ async function goalWorker() {
     await f.sessions.releaseLease(lease!);
   };
   const workerRuns = async () => (await f.runs.list()).filter((run) => run.request.swarm?.recipientId === member.id);
-  const finishOpenRun = async (whileRunning?: () => Promise<void>) => {
+  const claimOpenRun = async () => {
     await f.service.sweep();
     const run = (await workerRuns()).find((item) => item.status === "pending")!;
-    const claimed = (await f.runs.claimById(run.id, "test", 60_000))!;
+    return (await f.runs.claimById(run.id, "test", 60_000))!;
+  };
+  const finishOpenRun = async (whileRunning?: () => Promise<void>) => {
+    const run = await claimOpenRun();
     await whileRunning?.();
-    await f.runs.complete(run.id, claimed.leaseToken!, {
+    await f.runs.complete(run.id, run.leaseToken!, {
       status: "ok",
       reply: "(stopped)",
       stopped: true,
@@ -43,7 +46,7 @@ async function goalWorker() {
     (await f.store.get(f.root.id))!.messages.filter(
       (message) => message.senderId === member.id && message.audience.join() === member.id,
     );
-  return { f, member, setGoal, workerRuns, finishOpenRun, continuations };
+  return { f, member, setGoal, workerRuns, claimOpenRun, finishOpenRun, continuations };
 }
 
 test("a worker whose turn ends while its goal is active is woken to continue until it stops making progress", async () => {
@@ -101,4 +104,33 @@ test("a swarm turn resumed after an interruption keeps its dispatch provenance",
   const { f, workerRuns } = await goalWorker();
   const [run] = await workerRuns();
   assert.ok(await f.service.binding({ ...run!.request, runId: run!.id, resumeCause: { kind: "shutdown" } }));
+});
+
+test("a run that failed after a shutdown hand-back is continued, but an ordinary failure is not", async () => {
+  for (const handedBack of [true, false]) {
+    const { f, setGoal, claimOpenRun, continuations } = await goalWorker();
+    await setGoal({ ...createGoalRecord({ objective: "Exhaust the lane" }), tokensUsed: 10 });
+    let run = await claimOpenRun();
+    if (handedBack) {
+      await f.runs.releaseLease(run.id, run.leaseToken!, { kind: "shutdown" });
+      run = (await f.runs.claimById(run.id, "test", 60_000))!;
+    }
+    await f.runs.fail(run.id, run.leaseToken!, "swarm claim budget exhausted", { retry: false });
+    await settled();
+    assert.equal((await continuations()).length, handedBack ? 1 : 0);
+  }
+});
+
+test("the continuation sweep recovers a wake-up the finishing process never queued", async () => {
+  const { f, setGoal, finishOpenRun, continuations } = await goalWorker();
+  await finishOpenRun();
+  await settled();
+  assert.equal((await continuations()).length, 0);
+  await setGoal({ ...createGoalRecord({ objective: "Exhaust the lane" }), tokensUsed: 10 });
+  f.service.start();
+  try {
+    await eventually(async () => (await continuations()).length === 1);
+  } finally {
+    await f.service.stop();
+  }
 });

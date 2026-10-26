@@ -15,6 +15,9 @@ export const SWARM_LIMITS = {
   sweepConcurrency: 4,
   reconcileMs: 30_000,
   provisionMs: 10_000,
+  continuationSweepMs: 60_000,
+  continuationLookbackMs: 15 * 60_000,
+  continuationPage: 200,
 } as const;
 
 export interface SwarmMember {

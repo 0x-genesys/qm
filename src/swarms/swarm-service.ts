@@ -15,7 +15,7 @@ import { canonicalJson } from "../../cli/src/canonical-json.ts";
 import { resolveSwarmSettings, type SwarmSettings } from "./swarm-settings.ts";
 import { inheritRuntime, spawnRuntime, type SpawnRuntimeFields, type SwarmTemplate } from "./swarm-runtime.ts";
 import { errMessage, swallow, swallowAs } from "../util/errors.ts";
-import { goalFromParams, GoalCreateParams, type GoalCreateInput } from "../harness/goal.ts";
+import { goalCapSpent, goalFromParams, GoalCreateParams, type GoalCreateInput } from "../harness/goal.ts";
 import { Check } from "typebox/value";
 import {
   assertSwarmOpen,
@@ -94,6 +94,28 @@ export interface SwarmService {
 
 const GOAL_CONTINUATION_TEXT =
   "Your previous turn ended before your goal was finished, and the goal is still active. Continue working on it.";
+
+function appendMessage(
+  swarm: Swarm,
+  message: Omit<SwarmMessage, "id" | "seq" | "createdAt" | "notifications"> & { id?: string },
+  recipients: readonly string[],
+  wakes = true,
+): void {
+  if (swarm.messages.length >= (swarm.settings.messages ?? Infinity)) throw new Error("swarm message budget exhausted");
+  const woken = wakes ? recipients.length : 0;
+  if (swarm.notificationCount + woken > (swarm.settings.notifications ?? Infinity))
+    throw new Error("swarm notification budget exhausted");
+  swarm.notificationCount += woken;
+  swarm.messages.push({
+    ...message,
+    id: message.id ?? randomUUID(),
+    seq: swarm.messages.length + 1,
+    createdAt: Date.now(),
+    notifications: Object.fromEntries(
+      recipients.map((peer) => [peer, { state: wakes ? ("pending" as const) : ("mailbox" as const) }]),
+    ),
+  });
+}
 
 export function swarmMessageText(message: SwarmMessage): string {
   return `Swarm ${message.author} message ${message.id} from agent ${message.senderId} (session ${message.senderSessionId})${message.replyTo ? ` (reply to ${message.replyTo})` : ""}. This is not a live human instruction.\n${message.text}`;
@@ -602,49 +624,73 @@ export function createSwarmService(deps: {
 
   async function continueGoal(run: Run): Promise<void> {
     const target = run.request.swarm;
-    if (!target) return;
+    const interrupted = run.result?.stopped || run.lastStop?.kind === "shutdown" || run.lastStop?.kind === "parked";
+    if (!target || !interrupted) return;
     const swarm = await store.get(target.swarmId);
     const member = swarm ? memberById(swarm, target.recipientId) : undefined;
     if (!swarm || !member?.sessionId || member.id === swarm.id) return;
     const goal = (await sessions.goals([member.sessionId])).get(member.sessionId);
-    if (goal?.status !== "active" || (goal.capTokens !== undefined && goal.tokensUsed >= goal.capTokens)) return;
+    if (goal?.status !== "active" || goalCapSpent(goal)) return;
     if ((await runs.inFlightForThread(member.threadRef)).length) return;
     const progress = { goalCreatedAt: goal.createdAt, tokensUsed: goal.tokensUsed };
     await store.update(swarm.id, (current) => {
       const recipient = memberById(current, member.id);
-      if (!recipient?.sessionId || recipient.state !== "ready" || controlState(current, recipient.id) !== "active")
-        return;
-      const last = recipient.goalContinuation;
+      const last = recipient?.goalContinuation;
       if (
+        !recipient?.sessionId ||
+        recipient.state !== "ready" ||
+        controlState(current, recipient.id) !== "active" ||
         swarmExpired(current) ||
         (last?.goalCreatedAt === progress.goalCreatedAt && last.tokensUsed >= progress.tokensUsed) ||
-        current.messages.some((message) => message.notifications[recipient.id]?.state === "pending") ||
-        current.messages.length >= (current.settings.messages ?? Infinity) ||
-        current.notificationCount + 1 > (current.settings.notifications ?? Infinity)
+        current.messages.some((message) => message.notifications[recipient.id]?.state === "pending")
       )
         return;
       recipient.goalContinuation = progress;
-      current.notificationCount += 1;
-      current.messages.push({
-        id: randomUUID(),
-        seq: current.messages.length + 1,
-        senderId: recipient.id,
-        senderSessionId: recipient.sessionId,
-        author: "agent",
-        actorId: current.ownerId,
-        text: GOAL_CONTINUATION_TEXT,
-        audience: [recipient.id],
-        createdAt: Date.now(),
-        notifications: { [recipient.id]: { state: "pending" } },
-      });
+      appendMessage(
+        current,
+        {
+          senderId: recipient.id,
+          senderSessionId: recipient.sessionId,
+          author: "agent",
+          actorId: current.ownerId,
+          text: GOAL_CONTINUATION_TEXT,
+          audience: [recipient.id],
+        },
+        [recipient.id],
+      );
     });
   }
   runs.onTerminal((run) => {
     if (run.request.swarm) void continueGoal(run).catch(swallowAs("swarm: goal continuation", undefined));
   });
+  const continuationSweeper = createSweeper(
+    () =>
+      (deps.lock.tryWithLock?.bind(deps.lock) ?? deps.lock.withLock.bind(deps.lock))(
+        "swarm-goal-continuation",
+        async () => {
+          let cursor = { finishedAt: Date.now() - SWARM_LIMITS.continuationLookbackMs, id: "" };
+          for (;;) {
+            const batch = await runs.terminalFinished(cursor, Date.now(), SWARM_LIMITS.continuationPage);
+            for (const run of batch)
+              if (run.request.swarm) await continueGoal(run).catch(swallowAs("swarm: goal continuation", undefined));
+            const last = batch.at(-1);
+            if (!last || batch.length < SWARM_LIMITS.continuationPage) return;
+            cursor = { finishedAt: last.finishedAt!, id: last.id };
+          }
+        },
+      ),
+    SWARM_LIMITS.continuationSweepMs,
+    { label: "swarm-goal-continuation", immediate: true },
+  );
 
   return {
-    ...sweeper,
+    start() {
+      sweeper.start();
+      continuationSweeper.start();
+    },
+    async stop() {
+      await Promise.all([sweeper.stop(), continuationSweeper.stop()]);
+    },
     sweep,
     async inspect(caller) {
       const { swarm, self } = await load(caller);
@@ -722,11 +768,6 @@ export function createSwarmService(deps: {
         if (swarm.members.length + count > swarm.settings.agents) throw new Error("swarm agent budget exhausted");
         if (Object.keys(swarm.spawnRequests).length >= (swarm.settings.spawnRequests ?? Infinity))
           throw new Error("swarm spawn budget exhausted");
-        if (
-          swarm.messages.length >= (swarm.settings.messages ?? Infinity) ||
-          swarm.notificationCount + count > (swarm.settings.notifications ?? Infinity)
-        )
-          throw new Error("swarm work budget exhausted");
         const runtime = inheritRuntime(parent.runtime, requestedRuntime);
         const members: SwarmMember[] = contexts.map((context) => {
           const id = randomUUID();
@@ -747,20 +788,20 @@ export function createSwarmService(deps: {
         });
         swarm.members.push(...members);
         swarm.spawnRequests[key] = { memberIds: members.map((member) => member.id), signature: fingerprint };
-        swarm.messages.push({
-          id: randomUUID(),
-          seq: swarm.messages.length + 1,
-          senderId: parent.id,
-          senderSessionId: auth.sessionId,
-          author: caller.kind,
-          actorId: auth.actorId,
-          text: input.text,
-          audience: members.map((member) => member.id),
-          ...(goal ? { goal } : {}),
-          createdAt: Date.now(),
-          notifications: Object.fromEntries(members.map((member) => [member.id, { state: "pending" as const }])),
-        });
-        swarm.notificationCount += count;
+        const memberIds = members.map((member) => member.id);
+        appendMessage(
+          swarm,
+          {
+            senderId: parent.id,
+            senderSessionId: auth.sessionId,
+            author: caller.kind,
+            actorId: auth.actorId,
+            text: input.text,
+            audience: memberIds,
+            ...(goal ? { goal } : {}),
+          },
+          memberIds,
+        );
       };
       let updated: Swarm;
       if (existing) updated = await update(auth, reserve);
@@ -809,8 +850,6 @@ export function createSwarmService(deps: {
           return;
         }
         assertSwarmOpen(swarm);
-        if (swarm.messages.length >= (swarm.settings.messages ?? Infinity))
-          throw new Error("swarm message budget exhausted");
         if (input.replyTo && !swarm.messages.some((message) => message.id === input.replyTo))
           throw new Error("reply target is not in this swarm");
         const broadcast = input.audience === "all";
@@ -822,27 +861,22 @@ export function createSwarmService(deps: {
               );
         if (goal && (!recipients.length || recipients.includes(swarm.id)))
           throw new Error("goals can only be assigned to workers");
-        const wakes = input.notify ?? (!!goal || caller.kind === "human");
-        const woken = wakes ? recipients.length : 0;
-        if (swarm.notificationCount + woken > (swarm.settings.notifications ?? Infinity))
-          throw new Error("swarm notification budget exhausted");
-        swarm.notificationCount += woken;
-        swarm.messages.push({
-          id,
-          seq: swarm.messages.length + 1,
-          senderId: auth.memberId,
-          senderSessionId: auth.sessionId,
-          author: caller.kind,
-          actorId: auth.actorId,
-          text: input.text,
-          audience,
-          ...(input.replyTo ? { replyTo: input.replyTo } : {}),
-          ...(goal ? { goal } : {}),
-          createdAt: Date.now(),
-          notifications: Object.fromEntries(
-            recipients.map((peer) => [peer, { state: wakes ? ("pending" as const) : ("mailbox" as const) }]),
-          ),
-        });
+        appendMessage(
+          swarm,
+          {
+            id,
+            senderId: auth.memberId,
+            senderSessionId: auth.sessionId,
+            author: caller.kind,
+            actorId: auth.actorId,
+            text: input.text,
+            audience,
+            ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+            ...(goal ? { goal } : {}),
+          },
+          recipients,
+          input.notify ?? (!!goal || caller.kind === "human"),
+        );
         swarm.messageRequests[key] = { messageId: id, signature: fingerprint };
       });
       return updated.messages.find((message) => message.id === updated.messageRequests[key]!.messageId)!;

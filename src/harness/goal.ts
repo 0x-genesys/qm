@@ -460,6 +460,10 @@ export function applyGovernorVerdict(goal: GoalRecord, verdict: GovernorVerdict,
   return effective;
 }
 
+export function goalCapSpent(goal: GoalRecord): boolean {
+  return goal.capTokens !== undefined && goal.tokensUsed >= goal.capTokens;
+}
+
 export function goalIsOpen(goal: GoalRecord | null | undefined): goal is GoalRecord {
   return goal?.status === "active" || goal?.status === "paused";
 }
@@ -617,7 +621,7 @@ export async function enforceGoal<T>(opts: {
     }
     if (!arrived && opts.goal.status !== "active" && !floorUnmet()) break;
     const active = opts.goal.status === "active";
-    const capSpent = opts.goal.capTokens !== undefined && opts.goal.tokensUsed >= opts.goal.capTokens;
+    const capSpent = goalCapSpent(opts.goal);
     if (capSpent && capNoticeSent && !arrived) break;
     let note: string;
     if (
