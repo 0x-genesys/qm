@@ -88,7 +88,7 @@ export interface SandboxDriver {
   writeAbsBytes(name: string, absPath: string, data: Uint8Array): Promise<void>;
   readAbsBytes(name: string, absPath: string): Promise<Uint8Array | null>;
   inspect(name: string): Promise<MachineState | null>;
-  create(name: string, opts: { scratch: boolean }): Promise<void>;
+  create(name: string, opts: { scratch: boolean; scope?: string }): Promise<void>;
   resume(name: string): Promise<void>;
   park?(name: string, opts: { keepWarm: boolean }): Promise<void>;
   destroy(name: string): Promise<void>;
@@ -191,7 +191,7 @@ export function createProviderSandbox(
     try {
       if (existing) await driver.resume(name);
       else {
-        await driver.create(name, { scratch: false });
+        await driver.create(name, { scratch: false, scope });
         created = true;
       }
       const checkpointId = stored?.checkpointId;

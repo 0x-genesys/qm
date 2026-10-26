@@ -878,6 +878,7 @@ export function buildApp(
       apiKey: e2b.apiKey,
       ...(e2b.templateId ? { templateId: e2b.templateId } : {}),
       ...(use === "apps" ? { sandboxTtlMs: E2B_DEPLOY_IDLE_TIMEOUT_SEC * 1000 } : {}),
+      ...(use === "computers" && config.sandbox.idleParkSec ? { sandboxTtlMs: config.sandbox.idleParkSec * 1000 } : {}),
       ...(config.sandbox.maxLifetimeSec ? { maxLifetimeMs: config.sandbox.maxLifetimeSec * 1000 } : {}),
       ...(use === "computers" && config.sandbox.egressProxyUrl
         ? { egressProxyUrl: config.sandbox.egressProxyUrl }
