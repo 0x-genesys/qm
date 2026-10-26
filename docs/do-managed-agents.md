@@ -25,7 +25,7 @@ DO_AGENTS_TEMPLATE=qm-sandbox
 
 Templates belong to a team, so each team registers its own. Rerun the script after changing the Dockerfile.
 
-**A snapshot bucket.** When a scope parks, QM takes a DigitalOcean checkpoint, which lets it roll a wedged computer back in place. A checkpoint is tied to its session, though, so if the session is deleted the checkpoint goes with it. Set `SANDBOX_SNAPSHOT_S3_BUCKET` to also keep a copy of the home directory that survives that. Without it, a replacement session starts with an empty home.
+**Checkpoints.** When a scope parks, QM takes a DigitalOcean checkpoint, which lets it roll a wedged computer back in place. A checkpoint is tied to its session, so if the session is deleted the checkpoint goes with it and a replacement session starts with an empty home.
 
 **An egress proxy.** Set `SANDBOX_EGRESS_PROXY_URL` and the proxy host becomes the session's only allowed destination.
 

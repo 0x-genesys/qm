@@ -395,7 +395,6 @@ grep for that line rather than assuming the container's own metadata block is in
 | `SANDBOX_EGRESS_PROXY_URL`   | Forces sandbox traffic through the egress proxy; unset means no egress enforcement (see above)    |
 | `SANDBOX_NAME_PREFIX`        | Prefix for sandbox and app names on the cluster                                                   |
 | `SANDBOX_MAX_LIFETIME_SEC`   | Porter retires an agent computer's body after this long (default 8h); `$HOME` stays on its volume |
-| `SANDBOX_SNAPSHOT_S3_BUCKET` | Also keeps a portable `$HOME` archive in S3, restored only when a scope's home volume is new      |
 
 Agent computers boot `ghcr.io/porter-dev/qm-sandbox:latest`, built from `porter/`.
 

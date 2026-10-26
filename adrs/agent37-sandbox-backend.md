@@ -6,7 +6,7 @@ Agent37 rents isolated Linux machines over a small REST API: create, exec, start
 
 What the PR adds
 
-- `SANDBOX_BACKEND=agent37` with `AGENT37_API_KEY`. Everything else comes from the shared sandbox settings: `SANDBOX_NAME_PREFIX`, `SANDBOX_CPUS`, `SANDBOX_MEMORY_MB` (rounded up to whole GiB for our API), `SANDBOX_DISK_GB`, `SANDBOX_EGRESS_PROXY_URL`, `SANDBOX_TIMEOUT_SEC` and `SANDBOX_SNAPSHOT_S3_BUCKET`.
+- `SANDBOX_BACKEND=agent37` with `AGENT37_API_KEY`. Everything else comes from the shared sandbox settings: `SANDBOX_NAME_PREFIX`, `SANDBOX_CPUS`, `SANDBOX_MEMORY_MB` (rounded up to whole GiB for our API), `SANDBOX_DISK_GB`, `SANDBOX_EGRESS_PROXY_URL` and `SANDBOX_TIMEOUT_SEC`.
 - `src/sandbox/agent37-sandbox.ts`, a driver over the shared provider lifecycle (`src/sandbox/provider-sandbox.ts`). Provision creates the instance and waits for it to run. Run is our exec endpoint. Teardown with destroy deletes the instance. Files move over the same exec endpoint in base64 chunks, the way the Porter backend does it, because our API has no separate file transfer. Process sessions, home backup, ro layers and blob staging come from the shared exec helpers unchanged.
 - Exec on our side returns within 280 seconds and caps each stream at 512 KiB. Longer commands run detached and are polled; larger output is spooled to disk and read back in chunks, so the agent never sees a truncated result.
 - Auto sleep is on. Agent37 checkpoints an idle computer after five minutes and bills disk alone while it sleeps; a command sent to a sleeping computer wakes it first, and every command counts as activity on the Agent37 side (stamped while it runs), so a long command is never frozen mid-flight. A command sent to a stopped instance (an operator stop, a past-due park) starts it first, then runs; while a sleep checkpoint is still in flight the API answers 409 and the backend retries until it clears.
@@ -14,7 +14,7 @@ What the PR adds
 
 What it does not do
 
-- No idle reaping. The instance stays until destroy; the disk is the machine's own and survives stop and start. With `SANDBOX_SNAPSHOT_S3_BUCKET` set, the shared lifecycle also exports the home at teardown and restores it into a replacement instance.
+- No idle reaping. The instance stays until destroy; the disk is the machine's own and survives stop and start. A replacement instance starts with an empty home.
 - No image plumbing. Every instance uses Agent37's `agent37-codex` system template.
 - No new CLI target. `qm init` still deploys the core to Docker, Fly or AWS; this only changes where the computers live.
 
