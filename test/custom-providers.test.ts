@@ -223,7 +223,7 @@ for (const protocol of ["openai", "openai-responses", "anthropic"] as const) {
       };
       assert.equal(json.providers[spec.id]!.models[0]!.reasoning, reasoning ?? false);
       assert.deepEqual(json.providers[spec.id]!.models[0]!.cost, model.cost);
-      assert.deepEqual((await reloaded.statuses())[0]!.models, spec.models);
+      assert.deepEqual((await reloaded.statuses())[0]!.models, JSON.parse(JSON.stringify(spec.models)));
     });
   }
 }

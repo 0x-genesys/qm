@@ -127,10 +127,10 @@ test("grep interleaves notebooks and scope-targeted queries can reach later resu
   await base.capture("channel:b", ["match remote"], AT);
   assert.deepEqual(await searchAcrossScopes(base, ["personal:a", "channel:b"], "match", 2), [
     { scopeId: "personal:a", fact: "#1 (2026-10-01) match local 0" },
-    { scopeId: "channel:b", fact: "#1 (2026-10-01) match remote" },
+    { scopeId: "channel:b", fact: "#51 (2026-10-01) match remote" },
   ]);
   assert.deepEqual(await searchAcrossScopes(base, ["channel:b"], "match", 2), [
-    { scopeId: "channel:b", fact: "#1 (2026-10-01) match remote" },
+    { scopeId: "channel:b", fact: "#51 (2026-10-01) match remote" },
   ]);
 });
 
