@@ -1,11 +1,7 @@
 import { createAclStore } from "../src/acl/acl-store.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtempSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { resolveTurnContext } from "../src/resolution/turn-context.ts";
-import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { createMemoryDurableByteStore } from "../src/files/durable-byte-store.ts";
 import type { Resolution, Session } from "../src/types.ts";
 import { renderRecall } from "../src/memory/cross-scope.ts";
@@ -15,7 +11,6 @@ import { createPostgresMemoryService } from "../src/memory/postgres-memory-servi
 import { testConfigStore, testDatabaseUrl } from "./support/test-database.ts";
 
 async function fixture() {
-  const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "turn-context-")));
   const memory = createPostgresMemoryService(testDatabaseUrl());
   const config = testConfigStore("test", { defaultSharingPosture: "open" });
   const files = createPostgresFileArtifactStore(testDatabaseUrl(), createMemoryDurableByteStore());

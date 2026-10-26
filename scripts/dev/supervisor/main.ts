@@ -347,7 +347,6 @@ async function assembleAndPrepare(spec: BootSpec): Promise<SpecInputs> {
   let databaseUrl = assembled.env.DATABASE_URL || envFileGet(join(worktree, ".env"), "DATABASE_URL");
   let adminGrantsSeed = assembled.env.ADMIN_GRANTS || envFileGet(join(worktree, ".env"), "ADMIN_GRANTS");
   let localPg = false;
-  let durableAdminPrincipal = "";
   if (!databaseUrl) {
     try {
       const pg = await ensureLocalPostgres(worktree, log);
@@ -375,7 +374,7 @@ async function assembleAndPrepare(spec: BootSpec): Promise<SpecInputs> {
       );
     }
   }
-  durableAdminPrincipal = await firstAdminPrincipal(worktree, databaseUrl).catch(() => "");
+  const durableAdminPrincipal = await firstAdminPrincipal(worktree, databaseUrl).catch(() => "");
   phase("durability", "ok", `Postgres (${grants} durable grant(s))`);
   durability = { databaseUrl };
 

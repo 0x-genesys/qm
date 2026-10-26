@@ -1,10 +1,8 @@
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { createMemoryStrategy } from "../src/memory/strategy.ts";
 import { createMockHarness } from "./support/mock-harness.ts";
 import {
@@ -39,7 +37,6 @@ test("parseBenchConversation rejects malformed input", () => {
 });
 
 test("replayConversation runs every turn through the strategy and writes the notebook", async () => {
-  const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "membench-")));
   const memory = createPostgresMemoryService(testDatabaseUrl());
   const { strategy } = createMemoryStrategy("per-turn", { harness: createMockHarness().models, memory });
   const conv: BenchConversation = {
@@ -57,7 +54,6 @@ test("replayConversation runs every turn through the strategy and writes the not
 });
 
 test("replayConversation tolerates strategies with no automatic capture (agent-only)", async () => {
-  const workspace = createLocalWorkspaceStore(mkdtempSync(join(tmpdir(), "membench-")));
   const memory = createPostgresMemoryService(testDatabaseUrl());
   const { strategy } = createMemoryStrategy("agent-only", { harness: createMockHarness().models, memory });
   const conv: BenchConversation = { id: "t", description: "test", turns: [{ input: "hi", reply: "yo" }] };
