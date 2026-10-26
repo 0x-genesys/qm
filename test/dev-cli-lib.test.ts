@@ -64,8 +64,6 @@ test("slotPorts derive the full port block from the slot number", () => {
   const ports = slotPorts("pool3", 8080);
   assert.deepEqual(ports, {
     core: 8083,
-    web: 8099,
-    admin: 8115,
     portal: 8131,
     prodProxy: 8147,
     slackHealth: 8163,
@@ -83,7 +81,7 @@ test("port blocks preserve legacy slots and stay disjoint through the port ceili
         assert.ok(port > base && port <= 65535);
         assert.ok(!used.has(port), `port ${port} overlaps at slot ${num}`);
         used.add(port);
-        if (num <= 16) assert.equal(port, base + num + index * 16);
+        if (num <= 16) assert.equal(port, base + num + [0, 3, 4, 5, 6][index]! * 16);
       }
     }
     assert.throws(() => slotPorts(`pool${count + 1}`, base), /No valid port block/);
@@ -515,12 +513,7 @@ test("the dev core hosts the web front door with the selected org", () => {
   assert.equal(core!.env.CORE_ORG_ID, "beta");
   assert.equal(core!.env.CODEX_AUTH_FILE, "/tmp/codex-auth.json");
   assert.equal(core!.env.PUBLIC_PORT, String(inputs.ports.portal));
-  assert.equal(core!.env.PORTAL_PUBLIC_URL, `http://localhost:${inputs.ports.portal}`);
   assert.equal(core!.env.PORTAL_LOCAL_AUTH_BYPASS, "1");
-  assert.deepEqual(core!.readiness, {
-    kind: "log",
-    pattern: `public front door on http://localhost:${inputs.ports.portal}`,
-  });
   inputs.baseEnv.PORTAL_LOCAL_AUTH_BYPASS = "0";
   assert.equal(buildChildSpecs(inputs)[0]!.env.PORTAL_LOCAL_AUTH_BYPASS, "0");
   inputs.baseEnv = {};

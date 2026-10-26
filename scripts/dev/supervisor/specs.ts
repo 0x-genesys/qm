@@ -23,18 +23,19 @@ export function buildChildSpecs(i: SpecInputs): ChildSpec[] {
   const base = { ...i.baseEnv, ...i.sandboxEnv };
   const orgId = i.baseEnv.DEV_INSTANCE_ORG_ID || "acme";
   const signing: Record<string, string> = i.coreSigningSecret ? { CORE_SIGNING_SECRET: i.coreSigningSecret } : {};
+  const publicUrl = `http://localhost:${i.ports.portal}`;
   const edge: Record<string, string> =
     i.web === false
       ? {}
       : {
           PUBLIC_PORT: String(i.ports.portal),
-          PORTAL_PUBLIC_URL: `http://localhost:${i.ports.portal}`,
+          PORTAL_PUBLIC_URL: publicUrl,
           PORTAL_SESSION_SECRET: i.portalSessionSecret,
           PORTAL_LOCAL_AUTH_BYPASS: i.baseEnv.PORTAL_LOCAL_AUTH_BYPASS ?? "1",
           PORTAL_DEV_PRINCIPAL: i.portalDevPrincipal,
           WEB_UI_BASE: i.webUiBasePath,
           WEB_UI_PRINCIPALS: "",
-          WEB_UI_PUBLIC_URL: `http://localhost:${i.ports.portal}`,
+          WEB_UI_PUBLIC_URL: publicUrl,
           ...(i.watch ? { WEB_UI_DEV: "1" } : {}),
         };
   return [
@@ -51,7 +52,7 @@ export function buildChildSpecs(i: SpecInputs): ChildSpec[] {
         PORT: String(i.ports.core),
         ...(i.databaseUrl ? { DATABASE_URL: i.databaseUrl } : {}),
         ...(i.adminGrantsSeed ? { ADMIN_GRANTS: i.adminGrantsSeed } : {}),
-        PUBLIC_WEB_URL: i.web === false ? "" : `http://localhost:${i.ports.portal}`,
+        PUBLIC_WEB_URL: i.web === false ? "" : publicUrl,
         ...(i.slack
           ? {
               SLACK_BOT_TOKEN: i.slack.botToken,
@@ -68,8 +69,7 @@ export function buildChildSpecs(i: SpecInputs): ChildSpec[] {
       port: i.ports.core,
       readiness: {
         kind: "log",
-        pattern:
-          i.web === false ? `listening on :${i.ports.core}` : `public front door on http://localhost:${i.ports.portal}`,
+        pattern: i.web === false ? `listening on :${i.ports.core}` : `public front door on ${publicUrl}`,
       },
       health: { kind: "tcp", port: i.web === false ? i.ports.core : i.ports.portal },
       stopGraceMs: 15_000,

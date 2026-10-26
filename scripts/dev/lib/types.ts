@@ -17,8 +17,6 @@ export const CHILD_ORDER: ChildName[] = ["core"];
 
 export interface SlotPorts {
   core: number;
-  web: number;
-  admin: number;
   portal: number;
   prodProxy: number;
   slackHealth: number;
