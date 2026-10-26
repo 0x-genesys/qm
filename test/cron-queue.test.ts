@@ -34,9 +34,13 @@ async function until(cond: () => boolean, ms: number): Promise<void> {
   while (!cond() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
 }
 
-function instance(calls: TurnRequest[], turnMs = 0, fires?: CronFireStore): { scheduler: Scheduler; crons: CronStore } {
+function instance(
+  calls: TurnRequest[],
+  turnMs: number,
+  fires: CronFireStore,
+): { scheduler: Scheduler; crons: CronStore } {
   const maps = createPostgresMapFactory(URL!);
-  const crons = createCronStore(maps.map<Cron>(CRONS_TABLE), fires ? { fires } : undefined);
+  const crons = createCronStore(maps.map<Cron>(CRONS_TABLE), { fires });
   const run = async (req: TurnRequest): Promise<TurnResult> => {
     calls.push(req);
     if (turnMs) await new Promise((r) => setTimeout(r, turnMs));
@@ -92,8 +96,9 @@ test(
   { skip, timeout: 120_000 },
   async () => {
     const calls: TurnRequest[] = [];
-    const a = instance(calls);
-    const b = instance(calls);
+    const fireStore = createPostgresCronFireStore(testDatabaseUrl());
+    const a = instance(calls, 0, fireStore);
+    const b = instance(calls, 0, fireStore);
     a.scheduler.start(1000);
     b.scheduler.start(1000);
     try {

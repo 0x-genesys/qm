@@ -18,6 +18,7 @@ import { deployRef, encodeRef } from "../src/acl/resource-ref.ts";
 import type { FeatureFlagStore } from "../src/feature-flags.ts";
 import { singleProcessDeps } from "./support/single-process.ts";
 import { createPostgresDirectoryStore } from "../src/directory/postgres-directory-store.ts";
+import { createPostgresReplayDedupe } from "../src/auth/replay-dedupe.ts";
 import { createPostgresSessionStore } from "../src/sessions/postgres-session-store.ts";
 import { testDatabaseUrl, testDeployBackings, testMap } from "./support/test-database.ts";
 
@@ -92,6 +93,7 @@ test("app-only gateway checks exact current personal read grants without inherit
     featureFlags: externalSharingOn,
     identity,
     signingSecret: secret,
+    replayDedupe: createPostgresReplayDedupe(testDatabaseUrl()),
     deployAppsDomain: "apps.example.test",
     deployGateSecret: "gate",
     deployAppsSessionSecret: secret,

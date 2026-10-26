@@ -245,8 +245,24 @@ for (const scope of ["conversation", "channel"] as const) {
   test(`concurrent guidance edits at ${scope} scope reject a stale replacement without losing the winner`, async () => {
     const { control } = build();
     const channelPolicy = createPostgresChannelPolicyStore(testDatabaseUrl());
+    let reads = 0;
+    let releaseReads!: () => void;
+    const bothRead = new Promise<void>((resolve) => (releaseReads = resolve));
+    const racingPolicy = {
+      ...channelPolicy,
+      async get(container: string) {
+        const policy = await channelPolicy.get(container);
+        if (++reads === 2) releaseReads();
+        await bothRead;
+        return policy;
+      },
+    };
     const surface = createSurfaceToolDeps({
-      deps: { deliveries: {}, channelPolicy, auditLog: { record() {} } },
+      deps: {
+        deliveries: {},
+        channelPolicy: scope === "channel" ? racingPolicy : channelPolicy,
+        auditLog: { record() {} },
+      },
       input: { surfaceTools: true },
       actor: { id: "U1" },
       conversation: { kind: "channel", channelRef: "C1" },

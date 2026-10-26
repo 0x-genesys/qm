@@ -26,8 +26,12 @@ function makeCtx(over: {
   url?: string;
   body?: unknown;
   contexts?: string[];
-  store?: ReturnType<typeof createMemoryChannelPolicyStore>;
-}): { ctx: ApiCtx; out: { status: number; body: unknown }; store: ReturnType<typeof createMemoryChannelPolicyStore> } {
+  store?: ReturnType<typeof createPostgresChannelPolicyStore>;
+}): {
+  ctx: ApiCtx;
+  out: { status: number; body: unknown };
+  store: ReturnType<typeof createPostgresChannelPolicyStore>;
+} {
   const { res, out } = fakeRes();
   const store = over.store ?? createPostgresChannelPolicyStore(testDatabaseUrl());
   const audits: unknown[] = [];
