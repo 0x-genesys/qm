@@ -956,7 +956,7 @@ export function buildApp(
     return createSuperserveSandbox(workspace, {
       ...sandboxShared,
       configEpoch: createConfigEpochResolver(superserveEpochs, generationKey, advisoryLock),
-      client: createSdkSuperserveClient({ apiKey: ss.apiKey, template: ss.template }),
+      client: createSdkSuperserveClient({ apiKey: ss.apiKey }),
       template: ss.template,
       store: superserveBodies,
     });
