@@ -65,7 +65,7 @@ test("an already-aborted command neither resumes the body nor executes", async (
   assert.equal(fake.commands.length, commandCount);
 });
 
-test("declared credential paths are symlinked outside the snapshotted home", async () => {
+test("declared credential paths are symlinked outside the home", async () => {
   const fake = installFakeMicrovm();
   const sb = makeSandbox(fake, {
     credentialPaths: [
@@ -78,9 +78,6 @@ test("declared credential paths are symlinked outside the snapshotted home", asy
   assert.ok(setup);
   assert.match(setup, /ln -s '\/tmp\/agent-creds\/\.acmecli' '\/root\/\.acmecli'/);
   await sb.teardown(handle);
-  const snapshot = fake.commands.find((command) => command.includes(".qm-home.tar"));
-  assert.match(snapshot ?? "", /-path '\.\/\.acmecli'/);
-  assert.match(snapshot ?? "", /-path '\.\/\.acme\/token\.json'/);
 });
 
 test("between turns the body is suspended and the next turn resumes it warm (no relaunch)", async () => {
@@ -154,7 +151,6 @@ test("a scratch box is a fresh, ephemeral body terminated on teardown", async ()
     ["TERMINATED"],
     "scratch box destroyed, not parked",
   );
-  assert.equal(fake.s3store.size, 0, "scratch boxes own nothing durable");
 });
 
 test("concurrent provisions for one scope launch a single body", async () => {
@@ -197,30 +193,21 @@ test("scope retirement terminates only its body and forgets its record, includin
   await sb.destroyScope!("personal:retire-one");
 });
 
-for (const stage of ["terminate", "snapshot"] as const) {
-  test(`scope retirement retains durable recovery metadata when ${stage} fails`, async () => {
-    const fake = installFakeMicrovm();
-    const sb = makeSandbox(fake);
-    const handle = await sb.provision(rw("personal:retire-failure"));
-    await sb.teardown(handle);
-    const terminate = fake.api.terminate;
-    const send = fake.s3.send;
-    if (stage === "terminate")
-      fake.api.terminate = async () => {
-        throw new Error("termination failed");
-      };
-    else
-      fake.s3.send = async () => {
-        throw new Error("snapshot upload failed");
-      };
-    await assert.rejects(sb.destroyScope!("personal:retire-failure"), /failed/);
-    assert.ok(await sb.store.get("personal:retire-failure"));
-    fake.api.terminate = terminate;
-    fake.s3.send = send;
-    await sb.destroyScope!("personal:retire-failure");
-    assert.equal(await sb.store.get("personal:retire-failure"), null);
-  });
-}
+test("scope retirement retains durable recovery metadata when terminate fails", async () => {
+  const fake = installFakeMicrovm();
+  const sb = makeSandbox(fake);
+  const handle = await sb.provision(rw("personal:retire-failure"));
+  await sb.teardown(handle);
+  const terminate = fake.api.terminate;
+  fake.api.terminate = async () => {
+    throw new Error("termination failed");
+  };
+  await assert.rejects(sb.destroyScope!("personal:retire-failure"), /failed/);
+  assert.ok(await sb.store.get("personal:retire-failure"));
+  fake.api.terminate = terminate;
+  await sb.destroyScope!("personal:retire-failure");
+  assert.equal(await sb.store.get("personal:retire-failure"), null);
+});
 
 test("a launch that never became ready stays recorded and is resumed or retired later", async () => {
   const fake = installFakeMicrovm();
@@ -249,37 +236,6 @@ test("a launch that never became ready stays recorded and is resumed or retired 
   assert.equal(await sb.store.get(scope), null);
 });
 
-test("retirement waits for an in-flight teardown snapshot", async () => {
-  const fake = installFakeMicrovm();
-  const sb = makeSandbox(fake);
-  const scope = "personal:retire-race";
-  const handle = await sb.provision(rw(scope));
-  await sb.writeFile(handle, "retired.txt", "x");
-  const uploading = Promise.withResolvers<void>();
-  const release = Promise.withResolvers<void>();
-  const send = fake.s3.send;
-  let held = false;
-  fake.s3.send = async (command: unknown) => {
-    if (!held && command?.constructor.name === "CompleteMultipartUploadCommand") {
-      held = true;
-      uploading.resolve();
-      await release.promise;
-    }
-    return send(command);
-  };
-  const snapshot = sb.teardown(handle);
-  await uploading.promise;
-  let retired = false;
-  const retirement = sb.destroyScope!(scope).then(() => {
-    retired = true;
-  });
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  assert.equal(retired, false);
-  release.resolve();
-  await Promise.all([snapshot, retirement]);
-  assert.equal(await sb.store.get(scope), null);
-});
-
 test("failed overlapping preparation leaves the running body alone", async () => {
   const fake = installFakeMicrovm();
   let failPreparation = false;
@@ -297,7 +253,6 @@ test("failed overlapping preparation leaves the running body alone", async () =>
   failPreparation = true;
   await assert.rejects(sb.provision(rw(scope)), /injected preparation failure/);
   assert.equal((await sb.vm(scope)).state, "RUNNING");
-  assert.equal(fake.s3store.size, 0);
   await sb.teardown(first);
   assert.equal((await sb.vm(scope)).state, "SUSPENDED");
 });
