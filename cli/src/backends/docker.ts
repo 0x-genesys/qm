@@ -30,6 +30,7 @@ import {
   serviceHost,
   serviceDef,
   teardownOrdered,
+  VIRTUAL_SERVICE_NAMES,
   type LogOpts,
   type ServiceName,
 } from "../services.ts";
@@ -668,6 +669,7 @@ export async function dockerUp(
 
   for (const def of ordered(runnableServices(config.services))) {
     const image = resolveImage(ctx, def.name);
+    if (def.name === "core") removeHostedServiceContainers(ctx);
     docker(["rm", "-f", cname(ctx, def.name)], /No such container|is not running/);
     step(`starting ${def.name}`);
     const run = runArgs(ctx, def.name, image);
@@ -744,6 +746,14 @@ export function dockerStatus(config: QmConfig): void {
   ]);
   const hosted = config.services.filter(isVirtualService);
   if (hosted.length) note(`${hosted.join(", ")}: running in the core container`);
+}
+
+function removeHostedServiceContainers(ctx: DockerCtx): void {
+  const present = new Set(psNames(["-a"]));
+  for (const name of VIRTUAL_SERVICE_NAMES.map((service) => cname(ctx, service)).filter((n) => present.has(n))) {
+    step(`removing ${name} (core hosts it now)`);
+    docker(["rm", "-f", name], /No such container/);
+  }
 }
 
 function psNames(args: string[]): string[] {

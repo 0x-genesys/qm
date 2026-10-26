@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -38,9 +39,7 @@ function fixture(paths: unknown = ["/hooks/*"], blueGreen = false, priority = "2
         imageLabel: "latest",
         networking: { cloudMapNamespace: "acme.internal" },
         services: {
-          "web-ui": service("web-ui"),
-          core: service("core"),
-          portal: service("portal"),
+          core: { ...service("core"), targetGroup: "portal" },
           hooks: { ...service("hooks"), publicPaths: paths },
         },
       },
@@ -48,7 +47,11 @@ function fixture(paths: unknown = ["/hooks/*"], blueGreen = false, priority = "2
   );
   const names = ["core", "portal", "hooks"];
   const groups = names.flatMap((name) => [
-    { TargetGroupArn: name, TargetGroupName: name },
+    {
+      TargetGroupArn: name,
+      TargetGroupName:
+        name === "core" ? `acme-core-${createHash("sha1").update("acme:core").digest("hex").slice(0, 6)}` : name,
+    },
     ...(blueGreen ? [{ TargetGroupArn: `${name}-alternate`, TargetGroupName: `${name}-alternate` }] : []),
   ]);
   const rules = names

@@ -36,27 +36,6 @@ primary_region = "sjc"
 [deploy]
   strategy = "bluegreen"
 
-[http_service]
-  internal_port = 8000
-  force_https = true
-  auto_stop_machines = false
-  auto_start_machines = true
-  min_machines_running = 1
-
-  [[http_service.ports]]
-    port = 80
-    handlers = ["http"]
-    force_https = true
-
-  [[http_service.ports]]
-    port = 443
-    handlers = ["tls", "http"]
-
-  [http_service.concurrency]
-    type = "requests"
-    soft_limit = 200
-    hard_limit = 250
-
 [[restart]]
   policy = "always"
 

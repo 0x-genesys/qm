@@ -7,6 +7,7 @@ import {
   VIRTUAL_SERVICE_NAMES,
   isDeclaredService,
   isServiceName,
+  isVirtualService,
   pluginNameError,
   runnableServices,
   type DeclaredServiceName,
@@ -1270,7 +1271,16 @@ function validateAws(
     return false;
   };
   for (const [name, value] of Object.entries(servicesRaw)) {
-    if (!isDeclaredService(name) && pluginNameError(name)) {
+    if (isVirtualService(name)) {
+      const move =
+        name === "portal" && isPlainObject(value) && value["targetGroup"] !== undefined
+          ? " and move its targetGroup to aws.services.core.targetGroup"
+          : "";
+      throw new CliError(
+        `${path}: "aws.services.${name}" is no longer a workload — core runs ${name}. Delete the entry${move}; the next terraform apply retires its ECS service and ECR repository`,
+      );
+    }
+    if (!isServiceName(name) && pluginNameError(name)) {
       throw new CliError(`${path}: "aws.services" has invalid workload name "${name}"`);
     }
     if (!isPlainObject(value)) throw new CliError(`${path}: "aws.services.${name}" must be an object`);

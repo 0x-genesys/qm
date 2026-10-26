@@ -345,21 +345,17 @@ function deriveToml(ctx: FlyCtx, service: ServiceName): string {
   const out: string[] = [];
   let inEnv = false;
   let inVm = false;
-  let dropped = false;
   let envIndent = "  ";
   const seen = new Set<string>();
-  const publicIngress = spec.publicIngress?.(ctx.serviceCtx) ?? true;
   for (const line of lines) {
     const section = line.match(/^\s*\[(.+)\]\s*$/);
     if (section) {
       if (inEnv) out.splice(out.length, 0, ...pendingExtra());
       inEnv = section[1] === "env";
       inVm = section[1] === "[vm]";
-      dropped = !publicIngress && /^\[?http_service\b/.test(section[1]!);
-      if (!dropped) out.push(line);
+      out.push(line);
       continue;
     }
-    if (dropped) continue;
     if (line.startsWith("app = ")) {
       out.push(`app = ${tomlStr(`${ctx.appPrefix}-${service}`)}`);
       continue;
@@ -399,6 +395,7 @@ function deriveToml(ctx: FlyCtx, service: ServiceName): string {
     out.push(line);
   }
   if (inEnv) out.push(...pendingExtra());
+  if (overrides.PUBLIC_PORT) out.push(...publicHttpService(Number(overrides.PUBLIC_PORT)));
   return out.join("\n");
 
   function pendingExtra(): string[] {
@@ -407,6 +404,30 @@ function deriveToml(ctx: FlyCtx, service: ServiceName): string {
       .map(([k, v]) => `${envIndent}${k} = ${tomlStr(v)}`);
   }
 }
+
+const publicHttpService = (port: number): string[] => [
+  "[http_service]",
+  `  internal_port = ${port}`,
+  "  force_https = true",
+  "  auto_stop_machines = false",
+  "  auto_start_machines = true",
+  "  min_machines_running = 1",
+  "",
+  "  [[http_service.ports]]",
+  "    port = 80",
+  '    handlers = ["http"]',
+  "    force_https = true",
+  "",
+  "  [[http_service.ports]]",
+  "    port = 443",
+  '    handlers = ["tls", "http"]',
+  "",
+  "  [http_service.concurrency]",
+  '    type = "requests"',
+  "    soft_limit = 200",
+  "    hard_limit = 250",
+  "",
+];
 
 export function derivedTomlFor(config: QmConfig, service: ServiceName, repoRoot: string): string {
   const appPrefix = appPrefixOf(config);

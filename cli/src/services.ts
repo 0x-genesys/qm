@@ -22,6 +22,9 @@ export const PUBLIC_PORT = 8000;
 
 export const hostsWebEdge = (services: readonly DeclaredServiceName[]): boolean => services.includes("portal");
 
+export const runsSeparateWebEdge = (deployedWorkloads: Iterable<string>): boolean =>
+  [...deployedWorkloads].some(isVirtualService);
+
 export function hostedServiceEnv(
   services: readonly DeclaredServiceName[],
   env: Partial<Record<DeclaredServiceName, Record<string, string>>>,
@@ -91,16 +94,6 @@ export interface ServiceDef {
   tcpIngress?: { healthCheck: string[] };
 }
 
-export interface BrandEnv {
-  botName?: string;
-  orgName?: string;
-}
-
-const brandEnvOf = (c: { botName?: string; orgName?: string }): BrandEnv | undefined =>
-  c.botName || c.orgName
-    ? { ...(c.botName ? { botName: c.botName } : {}), ...(c.orgName ? { orgName: c.orgName } : {}) }
-    : undefined;
-
 const AUTH_PATH_PREFIX = "/idp";
 const AUTH_CLIENT_ID = "qm-portal";
 const AUTH_LOOPBACK = "http://127.0.0.1:8099";
@@ -143,42 +136,34 @@ export function brokerWiring(o: { publicUrl: string; allowedEmailDomain?: string
   };
 }
 
-export function orgEnv(
-  service: string,
-  orgId: string,
-  publicUrl: string,
-  hasPortal: boolean,
-  brand?: BrandEnv,
-): Record<string, string> {
-  if (service !== "core") return { CORE_ORG_ID: orgId };
-  const base = publicUrl.replace(/\/$/, "");
+export function coreWebEnv(c: WebConfig): Record<string, string> {
+  const base = c.publicUrl.replace(/\/$/, "");
+  const edge = hostsWebEdge(c.services);
   return {
-    ORG_ID: orgId,
+    ORG_ID: c.orgId,
     PUBLIC_WEB_URL: base,
     WEB_UI_PUBLIC_URL: base,
-    ...(brand?.botName ? { ORG_BRAND_SELF_LABEL: brand.botName } : {}),
-    ...(brand?.orgName ? { ORG_BRAND_ORG_NAME: brand.orgName } : {}),
-    ...(hasPortal
+    ...(c.botName ? { ORG_BRAND_SELF_LABEL: c.botName } : {}),
+    ...(c.orgName ? { ORG_BRAND_ORG_NAME: c.orgName } : {}),
+    ...(edge
       ? {
           PUBLIC_PORT: String(PUBLIC_PORT),
           PORTAL_PUBLIC_URL: base,
           REQUIRE_SIGNED_PORTAL_IDENTITY: "1",
-          ...(brand?.botName ? { AUTH_BRAND_NAME: brand.botName } : {}),
+          ADMIN_ENABLED: c.services.includes("admin") ? "1" : "0",
+          ...(c.botName ? { AUTH_BRAND_NAME: c.botName } : {}),
         }
+      : {}),
+    ...(c.services.includes("auth")
+      ? brokerWiring({
+          publicUrl: c.publicUrl,
+          ...(c.env.auth?.AUTH_ALLOWED_EMAIL_DOMAIN
+            ? { allowedEmailDomain: c.env.auth.AUTH_ALLOWED_EMAIL_DOMAIN }
+            : {}),
+        })
       : {}),
   };
 }
-
-export const coreWebEnv = (c: WebConfig): Record<string, string> => ({
-  ...orgEnv("core", c.orgId, c.publicUrl, hostsWebEdge(c.services), brandEnvOf(c)),
-  ...(hostsWebEdge(c.services) ? { ADMIN_ENABLED: c.services.includes("admin") ? "1" : "0" } : {}),
-  ...(c.services.includes("auth")
-    ? brokerWiring({
-        publicUrl: c.publicUrl,
-        ...(c.env.auth?.AUTH_ALLOWED_EMAIL_DOMAIN ? { allowedEmailDomain: c.env.auth.AUTH_ALLOWED_EMAIL_DOMAIN } : {}),
-      })
-    : {}),
-});
 
 const CATALOG: Record<ServiceName, ServiceDef> = {
   core: {

@@ -46,6 +46,7 @@ import {
   coreWebEnv,
   hostsWebEdge,
   PUBLIC_PORT,
+  runsSeparateWebEdge,
   runnableServices,
   hostedServiceEnv,
   serviceHost,
@@ -250,10 +251,6 @@ function rdsInstanceIdentifier(aws: AwsConfig): string {
   return aws.rdsInstance ?? `${aws.cluster}-core`;
 }
 
-function deployedAwsServices(aws: AwsConfig): string[] {
-  return Object.keys(aws.services).filter((name) => serviceHost(name) === name);
-}
-
 function awsTopology(
   config: QmConfig,
   configDir: string,
@@ -265,7 +262,7 @@ function awsTopology(
   const workloads = [...runnableServices(config.services), ...discovered.plugins.map((plugin) => plugin.name)];
   const enabled = new Set(workloads);
   const stale = Object.keys(aws.services)
-    .filter((workload) => !enabled.has(workload) && !enabled.has(serviceHost(workload)))
+    .filter((workload) => !enabled.has(workload))
     .sort();
   const missing = workloads.filter((workload) => !aws.services[workload]);
   if (stale.length || missing.length) {
@@ -3466,21 +3463,9 @@ export async function awsSecretsPush(config: QmConfig, configDir: string, envFil
         );
         affected.splice(affected.indexOf("core"), 1);
       }
-      if (hostsWebEdge(config.services) && workloads.includes("core")) {
-        const task = awsJson<{ taskDefinition?: Record<string, unknown> }>(aws, [
-          "ecs",
-          "describe-task-definition",
-          "--task-definition",
-          before.tasks.core!,
-        ]).taskDefinition;
-        const container = (task?.containerDefinitions as Array<Record<string, unknown>> | undefined)?.find(
-          (item) => item.name === "core",
-        );
-        const environment = (container?.environment ?? []) as Array<{ name: string; value: string }>;
-        if (!environment.some((entry) => entry.name === "PUBLIC_PORT" && entry.value === String(PUBLIC_PORT))) {
-          step("secret activation deferred until core hosting the web edge is deployed with qm up");
-          return;
-        }
+      if (hostsWebEdge(config.services) && runsSeparateWebEdge(Object.keys(baseline.tasks))) {
+        step("secret activation deferred until core hosting the web edge is deployed with qm up");
+        return;
       }
       const arns = secretArns(config);
       const targets = { ...before.tasks };
@@ -3788,7 +3773,7 @@ export function assertAwsServiceDiscovery(
     ]).Namespaces ?? [];
   let namespaceId: string | undefined;
   let registrations: Array<{ Arn?: string; Name?: string }> = [];
-  for (const name of deployedAwsServices(aws)) {
+  for (const name of Object.keys(aws.services)) {
     const ecsService = ecsServices.get(name);
     const connect = ecsService ? awsServiceConnectConfiguration(ecsService) : undefined;
     if (!connect?.enabled) throw new Error(`ECS service ${name} does not have Service Connect enabled`);
@@ -3825,7 +3810,7 @@ export function assertAwsServiceDiscovery(
 
 function awsEcsRoutingServices(config: QmConfig): ReadonlyMap<string, AwsEcsRoutingService> {
   const aws = requireAws(config);
-  const entries = deployedAwsServices(aws).map((name) => [name, aws.services[name]!] as const);
+  const entries = Object.keys(aws.services).map((name) => [name, aws.services[name]!] as const);
   const services: AwsEcsRoutingService[] = [];
   const failures: Array<{ arn?: string; reason?: string }> = [];
   for (const batch of chunks(
@@ -3949,10 +3934,15 @@ export function assertAwsPublicRouting(
   const aws = requireAws(config);
   const hash = (value: string, length: number): string =>
     createHash("sha1").update(value).digest("hex").slice(0, length);
-  const targetName = (name: string): string =>
-    aws.services[name]?.targetGroup ??
-    `${aws.cluster.slice(0, 20)}-${name.replaceAll("-", "").slice(0, 4)}-${hash(`${aws.cluster}:${name}`, 6)}`;
   const hasPortal = hostsWebEdge(config.services);
+  const frontDoor = hasPortal ? "portal" : "core";
+  const pinned = (name: string): string | undefined => {
+    if (name === frontDoor) return aws.services.core?.targetGroup;
+    return name === "core" ? undefined : aws.services[name]?.targetGroup;
+  };
+  const targetName = (name: string): string =>
+    pinned(name) ??
+    `${aws.cluster.slice(0, 20)}-${name.replaceAll("-", "").slice(0, 4)}-${hash(`${aws.cluster}:${name}`, 6)}`;
   const ingressService = (name: string): string => (name === "portal" ? "core" : name);
   const coreHosts = hasPortal ? awsCoreHostnames(config) : [];
   let ingress = ["core"];
@@ -4005,7 +3995,7 @@ export function assertAwsPublicRouting(
       expectedTargetArns.add(alternate);
     }
   }
-  for (const name of deployedAwsServices(aws)) {
+  for (const name of Object.keys(aws.services)) {
     if (
       !ingress.map(ingressService).includes(name) &&
       !(isServiceName(name) && serviceDef(name).tcpIngress) &&
@@ -4509,7 +4499,7 @@ export async function awsDoctor(config: QmConfig, configDir: string): Promise<vo
       throw new Error("DATABASE_URL does not point at the configured RDS endpoint");
   });
   const ecsServices = new Map<string, AwsEcsRoutingService>();
-  for (const service of deployedAwsServices(aws)) {
+  for (const service of Object.keys(aws.services)) {
     const spec = aws.services[service]!;
     check(`ECS service ${spec.ecsService}`, () => {
       const found = awsJson<{ services?: AwsEcsRoutingService[] }>(aws, [

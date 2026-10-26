@@ -1,5 +1,4 @@
 export { loadConfigAt, sandboxCoreEnv, securityScreenEnv, CONTRACT_VERSION as contractVersion } from "./config.ts";
-export { orgEnv } from "./services.ts";
 export { compileApproval } from "./tool-descriptor.ts";
 export { parseSkillFrontmatter, validateSandboxLayer } from "./sandbox-layer.ts";
 export { renderTaskDefinition } from "./backends/aws.ts";

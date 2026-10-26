@@ -281,12 +281,8 @@ function statefulAws(
     const apps = configured.env.core?.AWS_DEPLOY_APPS_DOMAIN;
     if (apps) coreHosts.push(`*.${apps.toLowerCase().replace(/\.$/, "")}`);
   }
-  const targetGroups = Object.fromEntries(
-    (["core", "portal"] as const).flatMap((name) => {
-      const pinned = configured.aws!.services[name]?.targetGroup;
-      return pinned ? [[name, pinned]] : [];
-    }),
-  );
+  const pinned = configured.aws!.services.core?.targetGroup;
+  const targetGroups: Partial<Record<"core" | "portal", string>> = pinned ? { [frontService]: pinned } : {};
   const tgName = (name: "core" | "portal"): string =>
     targetGroups[name] ??
     `acme-qm-${name.replaceAll("-", "").slice(0, 4)}-${createHash("sha1").update(`acme-qm:${name}`).digest("hex").slice(0, 6)}`;
@@ -1141,7 +1137,7 @@ test("AWS deploy requires the live core-only ALB to default 404 and expose exact
   }
 });
 
-test("AWS portal ALB adopts pinned target groups and requires exactly the env-derived host rules", async () => {
+test("AWS portal ALB adopts core's pinned front-door target group and requires exactly the env-derived host rules", async () => {
   const dir = mkdtempSync(join(tmpdir(), "qm-aws-host-split-"));
   const dockerBin = join(dir, "docker");
   writeFileSync(dockerBin, `#!/usr/bin/env node\nconsole.log("Digest: sha256:${"a".repeat(64)}");\n`);
@@ -1159,8 +1155,7 @@ test("AWS portal ALB adopts pinned target groups and requires exactly the env-de
       ...config.aws!,
       services: {
         ...config.aws!.services,
-        core: { ...config.aws!.services.core!, targetGroup: "legacy-core-tg" },
-        portal: { ...config.aws!.services.portal!, targetGroup: "legacy-portal-tg" },
+        core: { ...config.aws!.services.core!, targetGroup: "legacy-portal-tg" },
       },
     },
   });
@@ -5463,36 +5458,31 @@ test("AWS layer deadline aborts a native response body that never finishes", asy
   }
 });
 
-test("AWS secrets push defers activation until core hosts the web edge", async () => {
+test("AWS secrets push defers activation while the live manifest still runs separate web workloads", async () => {
   const dir = mkdtempSync(join(tmpdir(), "qm-aws-secrets-edge-"));
   const operator = computedSecrets(config).filter((secret) => secret.managedBy === "operator" && secret.required);
   writeFileSync(join(dir, ".env"), operator.map((secret) => `${secret.name}=${TEST_SECRET_VALUE}`).join("\n"));
   const fake = statefulAws(dir, config);
   const state = JSON.parse(readFileSync(fake.state, "utf8"));
-  const tasks = { core: state.services["acme-core"].taskDefinition };
+  const core = state.services["acme-core"].taskDefinition;
   const image = `123456789012.dkr.ecr.us-west-2.amazonaws.com/qm-core@sha256:${"a".repeat(64)}`;
-  const edge = renderTaskDefinition(config, "core", image);
-  const container = edge.containerDefinitions[0]!;
-  state.definitions[tasks.core] = {
-    ...edge,
-    containerDefinitions: [
-      {
-        ...container,
-        environment: (container.environment as Array<{ name: string }>).filter(({ name }) => name !== "PUBLIC_PORT"),
-      },
-    ],
+  state.definitions[core] = renderTaskDefinition(config, "core", image);
+  const legacy = {
+    core,
+    "web-ui": "arn:aws:ecs:us-west-2:123456789012:task-definition/acme-web-ui:1",
+    portal: "arn:aws:ecs:us-west-2:123456789012:task-definition/acme-portal:1",
   };
-  state.dynamo = manifestItems([{ id: "current", imageLabel: "release", tasks }], "current");
+  state.dynamo = manifestItems([{ id: "current", imageLabel: "release", tasks: legacy }], "current");
   writeFileSync(fake.state, JSON.stringify(state));
   try {
     await awsSecretsPush(config, dir);
     assert.match(readFileSync(fake.log, "utf8"), /secretsmanager put-secret-value/);
     assert.doesNotMatch(readFileSync(fake.log, "utf8"), /ecs (?:register-task-definition|update-service)/);
-    state.definitions[tasks.core] = edge;
+    state.dynamo = manifestItems([{ id: "current", imageLabel: "release", tasks: { core } }], "current");
     writeFileSync(fake.state, JSON.stringify(state));
     writeFileSync(fake.log, "");
     await awsSecretsPush(config, dir);
-    assert.match(readFileSync(fake.log, "utf8"), /ecs register-task-definition/);
+    assert.match(readFileSync(fake.log, "utf8"), /ecs (?:register-task-definition|update-service)/);
   } finally {
     fake.restore();
     rmSync(dir, { recursive: true, force: true });

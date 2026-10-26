@@ -73,6 +73,19 @@ test(
 
     try {
       await t.test("up builds + starts every service, the source plugin, and Postgres", () => {
+        for (const svc of ["web-ui", "portal"]) {
+          execFileSync("docker", [
+            "run",
+            "-d",
+            "--name",
+            `qm-${org}-${svc}`,
+            "--label",
+            `qm.org=${org}`,
+            "alpine:latest",
+            "sleep",
+            "3600",
+          ]);
+        }
         const r = up();
         assert.equal(r.code, 0, r.out);
         assert.match(r.out, /stack up/);
@@ -87,6 +100,7 @@ test(
         for (const svc of ["web-ui", "admin", "portal"]) {
           assert.equal(suffix(names, svc), undefined, `${svc} runs inside core, not in its own container`);
         }
+        assert.match(r.out, new RegExp(`removing qm-${org}-portal \\(core hosts it now\\)`));
       });
 
       await t.test("local sandbox mode gives only core the host Docker socket", () => {

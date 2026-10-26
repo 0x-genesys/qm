@@ -45,7 +45,7 @@ test("the web surfaces are names core hosts, reserved from plugins", () => {
   assert.equal(new Set(offsets).size, offsets.length, "host port offsets stay unique");
 });
 
-test("fly derives the whole OIDC block from the embedded broker into core, with core's public port", () => {
+test("fly derives the whole OIDC block from the embedded broker into core", () => {
   const core = derivedTomlFor(brokerConfig(), "core", repoRoot);
   assert.match(core, /OIDC_ISSUER = "https:\/\/agent\.example\.com\/idp"/);
   assert.match(core, /OIDC_AUTH_ENDPOINT = "https:\/\/agent\.example\.com\/idp\/authorize"/);
@@ -60,9 +60,6 @@ test("fly derives the whole OIDC block from the embedded broker into core, with 
   assert.match(core, /OIDC_PRINCIPAL_CLAIM = "email"/);
   assert.match(core, /OIDC_ALLOWED_EMAIL_DOMAIN = "example\.com"/);
   assert.match(core, /AUTH_ALLOWED_EMAIL_DOMAIN = "example\.com"/, "core refuses in-domain external invites");
-  assert.match(core, /PUBLIC_PORT = "8000"/);
-  assert.match(core, /PORTAL_PUBLIC_URL = "https:\/\/agent\.example\.com"/);
-  assert.match(core, /\[http_service\]\n {2}internal_port = 8000\n/);
   assert.doesNotMatch(core, /internal_port = 8080/, "core's API port never gets public ingress");
   assert.doesNotMatch(core, /WEB_UI_UPSTREAM|ADMIN_UPSTREAM|CORE_API_URL/, "core wires its hosted surfaces itself");
 });
