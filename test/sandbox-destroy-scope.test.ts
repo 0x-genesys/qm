@@ -65,7 +65,7 @@ test("Sprites scope deletion sends only DELETE, retries provider errors, and acc
   const fake = installFakeSprites();
   try {
     const sandbox = createSpritesSandbox(workspace(), {
-      initializationStore: createMemoryMap(),
+      store: createMemoryMap(),
       advisoryLock: createMemoryAdvisoryLock(),
       token: "test",
       baseUrl: fake.baseUrl,

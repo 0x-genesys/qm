@@ -41,7 +41,7 @@ test("the sprites sandbox declares the Agent Computer contract (persistent per-s
   await withWorkspace(async (dir) => {
     const workspace = createLocalWorkspaceStore(dir);
     const sprites = createSpritesSandbox(workspace, {
-      initializationStore: createMemoryMap(),
+      store: createMemoryMap(),
       advisoryLock: createMemoryAdvisoryLock(),
       token: "test-token",
     });
@@ -80,7 +80,7 @@ test("a layer that advertises a tool removes it from notInstalled (no install/no
 test("egress enforcement is effective only when core can mint a reachable proxy token", async () => {
   await withWorkspace((dir) => {
     const sprites = createSpritesSandbox(createLocalWorkspaceStore(dir), {
-      initializationStore: createMemoryMap(),
+      store: createMemoryMap(),
       advisoryLock: createMemoryAdvisoryLock(),
       token: "test-token",
       egressProxyUrl: "https://egress-proxy.example.com",
