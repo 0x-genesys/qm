@@ -1,0 +1,125 @@
+{
+  // The deployment contract major this directory conforms to.
+  "contract": 1,
+
+  // Short identifier for your organization; app and container names derive from it.
+  "orgId": "springworks",
+
+  // The one public address of the deployment; the service URLs derive from it.
+  "publicUrl": "https://springworks.example.com",
+
+  // Optional bot identity. "botName" is what the bot is called everywhere users
+  // see it — the Slack app, the prompt identity, sign-in pages — and "orgName"
+  // is how the bot refers to your organization. Both default to neutral values
+  // ("qm" / "this organization") and can be changed live from the Admin page.
+  // "botName": "straylight",
+  // "orgName": "Acme Corp",
+
+  // Where to deploy: "docker" runs local containers, "fly" deploys Fly apps,
+  // and "aws" runs the control plane on ECS and agent computers on Lambda MicroVMs.
+  "target": "aws",
+
+  // The vendor supplying the base model: "anthropic", "openai", or "openrouter"
+  // (one key, many models). Naming one makes that vendor's API key a required
+  // deployment secret and points the base model at that vendor: `qm setup`
+  // collects the key, `qm doctor` proves the provider accepts it, and `qm up`
+  // refuses a stack that cannot serve an agent turn. Delete this line to leave
+  // the base model unset and have an administrator add the key from the Admin
+  // page after deploy instead.
+  "modelProvider": "anthropic",
+
+  // Optional base model id, passed to the harness (e.g. "claude-opus-4-6").
+  // Omit it and the deployment uses the default model for the provider above.
+  // It must be a model that provider can bill.
+  // "model": "",
+
+  // AWS coordinates. Replace the account id and public URL before applying infra/.
+  // imageLabel identifies the deployment manifest used by rollback and live checks.
+  "aws": {
+    "accountId": "000000000000",
+    "region": "us-west-2",
+    "cluster": "springworks-qm",
+    "deployRoleArn": "arn:aws:iam::000000000000:role/springworks-qm-github-deploy",
+    "secretsPrefix": "springworks/qm/",
+    "imageLabel": "latest",
+    "networking": { "cloudMapNamespace": "springworks.internal" },
+    "services": {
+      "core": {
+        "ecrRepository": "springworks-qm-core",
+        "ecsService": "springworks-qm-core",
+        "cpu": 2048,
+        "memory": 4096,
+      },
+      "web-ui": {
+        "ecrRepository": "springworks-qm-web-ui",
+        "ecsService": "springworks-qm-web-ui",
+        "cpu": 512,
+        "memory": 1024,
+      },
+      "portal": {
+        "ecrRepository": "springworks-qm-portal",
+        "ecsService": "springworks-qm-portal",
+        "cpu": 512,
+        "memory": 1024,
+      },
+      "admin": {
+        "ecrRepository": "springworks-qm-admin",
+        "ecsService": "springworks-qm-admin",
+        "cpu": 512,
+        "memory": 1024,
+      },
+      "auth": {
+        "ecrRepository": "springworks-qm-auth",
+        "ecsService": "springworks-qm-auth",
+        "cpu": 512,
+        "memory": 1024,
+      },
+    },
+  },
+
+  // First-party services to run. The full set: "core" (the agent runtime and API,
+  // always required), "slack" (the Slack surface, runs inside the core process),
+  // "web-ui" (a browser chat UI), "admin" (the operator dashboard), "portal"
+  // (the public sign-in front door), "auth" (the built-in sign-in broker that
+  // emails one-time links; drop it to sign in through an external OIDC provider),
+  // and "egress-proxy" (the TLS proxy that enforces sandbox egress policy).
+  "services": ["core", "slack", "web-ui", "admin", "portal", "auth"],
+
+  // Extra plugins to run alongside the services. A prebuilt image runs with
+  // { "name": "linear", "image": "ghcr.io/you/qm-linear:1.0" }. A plugin with a
+  // Dockerfile at plugins/<name>/ in this directory needs no entry here at all.
+  "plugins": [],
+
+  // Extra directories of SKILL.md files, mounted into the agent.
+  "skills": [],
+
+  // Non-secret env overrides, per service. HARNESS "claude" spawns the real
+  // Claude Code subprocess for every turn; combined with CLAUDE_CODE_USE_BEDROCK
+  // below, that subprocess bills and routes inference through AWS Bedrock in
+  // this account/region instead of the direct Anthropic API, while still using
+  // ANTHROPIC_API_KEY (below) only to satisfy `qm check`/`qm doctor`'s own
+  // provider-key validation. AWS credentials are never set here: the ECS task
+  // role attached to the core service (see infra/main.tf's
+  // aws_iam_role_policy.core_task_bedrock) is picked up automatically through
+  // the container-credentials env vars ECS injects at runtime.
+  "env": {
+    "core": {
+      "HARNESS": "claude",
+      "CLAUDE_CODE_USE_BEDROCK": "1",
+      // Keep in sync with "aws.region" above — ECS does not inject AWS_REGION
+      // the way Lambda does, so the Bedrock-routed subprocess needs it explicitly.
+      "AWS_REGION": "us-west-2",
+      "AWS_DEPLOY_IMAGE": "springworks-qm-sandbox",
+      "AWS_PUBLIC_ORIGIN_URL": "http://replace-with-alb-hostname",
+    },
+    "slack": { "SLACK_IDENTITY_EMAIL": "1" },
+    "auth": { "AUTH_EMAIL_TRANSPORT": "resend" },
+  },
+
+  // The initial admin seed is kept in the provider secret store, never in config.
+  "secretEnv": { "core": { "ADMIN_GRANTS": "ADMIN_GRANTS" } },
+
+  // Where agent sandboxes execute. Omitting "sandbox" entirely runs AWS Lambda MicroVMs
+  // (published by `qm infra build-image`). To run Fly Sprites instead, declare it explicitly:
+  //   "sandbox": { "backend": "sprites" }
+}
