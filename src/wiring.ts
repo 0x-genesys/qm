@@ -163,7 +163,7 @@ import { createScheduler, type Scheduler } from "./cron/scheduler.ts";
 import { createPgBossCronQueue } from "./cron/job-queue.ts";
 import { createWebhookStore, type WebhookHistory } from "./webhooks/webhook-store.ts";
 import { createWebhookReceiver, type WebhookReceiver } from "./webhooks/webhook-receiver.ts";
-import { createDeployStore, deployTouchDebounceMs, type Deployment } from "./deploy/deploy-store.ts";
+import { createDeployStore, type Deployment } from "./deploy/deploy-store.ts";
 import { viewerIdentityKey } from "./deploy/access-token.ts";
 import { deploymentCredentialSlugs } from "./deploy/deployment-credentials.ts";
 import { createDockerDeployProvider } from "./deploy/docker-deploy-provider.ts";
@@ -239,12 +239,7 @@ import {
   type LegacyRoute,
 } from "./sandbox/sandbox-resource-upgrade.ts";
 import { effectiveEgressEnforcement, type Sandbox } from "./sandbox/sandbox.ts";
-import { withOperatorTokenFallback } from "./credentials/connector-token.ts";
-import {
-  createAwsSecretsManagerSource,
-  createEnvSecretSource,
-  createLayeredSecretSource,
-} from "./credentials/secret-source.ts";
+import { createEnvSecretSource } from "./credentials/secret-source.ts";
 import {
   credentialRequestHeaders,
   createKeychain,
@@ -770,27 +765,25 @@ export function buildApp(
   );
 
   const workspace = createLocalWorkspaceStore(config.dataDir);
-  const blobTransfer: BlobTransferStore =
-    config.transferStore === "s3" && config.s3Bucket
-      ? createS3BlobTransferStore({
-          bucket: config.s3Bucket,
-          ...(config.s3Region ? { region: config.s3Region } : {}),
-          ...(config.s3Prefix ? { prefix: config.s3Prefix } : {}),
-        })
-      : createLocalBlobTransferStore(join(config.dataDir, "transfer"));
-  const fileBytes: DurableByteStore =
-    config.snapshotStore === "s3" && config.s3Bucket
-      ? createS3DurableByteStore({
-          bucket: config.s3Bucket,
-          ...(config.s3Region ? { region: config.s3Region } : {}),
-          ...(config.s3Prefix ? { prefix: config.s3Prefix } : {}),
-        })
-      : createLocalDurableByteStore(join(config.dataDir, "docstore"));
+  const blobTransfer: BlobTransferStore = config.s3Bucket
+    ? createS3BlobTransferStore({
+        bucket: config.s3Bucket,
+        ...(config.s3Region ? { region: config.s3Region } : {}),
+        ...(config.s3Prefix ? { prefix: config.s3Prefix } : {}),
+      })
+    : createLocalBlobTransferStore(join(config.dataDir, "transfer"));
+  const fileBytes: DurableByteStore = config.s3Bucket
+    ? createS3DurableByteStore({
+        bucket: config.s3Bucket,
+        ...(config.s3Region ? { region: config.s3Region } : {}),
+        ...(config.s3Prefix ? { prefix: config.s3Prefix } : {}),
+      })
+    : createLocalDurableByteStore(join(config.dataDir, "docstore"));
   const files: FileArtifactStore = config.databaseUrl
     ? createPostgresFileArtifactStore(config.databaseUrl, fileBytes)
     : createMemoryFileArtifactStore(fileBytes);
   const fileUploads =
-    config.databaseUrl && config.snapshotStore === "s3" && config.s3Bucket
+    config.databaseUrl && config.s3Bucket
       ? createDirectFileUploads({
           bucket: config.s3Bucket,
           ...(config.s3Region ? { region: config.s3Region } : {}),
@@ -907,7 +900,6 @@ export function buildApp(
       advisoryLock,
       client: e2bClient("computers"),
       ...(e2b.namePrefix ? { namePrefix: e2b.namePrefix } : {}),
-      ...(e2b.defaultTimeoutSec ? { defaultTimeoutSec: e2b.defaultTimeoutSec } : {}),
       keepWarmSec: Math.ceil(config.backgroundJobTtlMaxMs / 1000),
       ...(e2b.snapshotIntervalSec !== undefined ? { snapshotIntervalMs: e2b.snapshotIntervalSec * 1000 } : {}),
       ...(e2b.nativeSnapshotIntervalSec !== undefined
@@ -942,7 +934,6 @@ export function buildApp(
         ...(managedAgents.egressProxyUrl ? { egressProxyUrl: managedAgents.egressProxyUrl } : {}),
       }),
       ...(managedAgents.namePrefix ? { namePrefix: managedAgents.namePrefix } : {}),
-      ...(managedAgents.defaultTimeoutSec ? { defaultTimeoutSec: managedAgents.defaultTimeoutSec } : {}),
       ...(managedAgents.snapshotIntervalSec !== undefined
         ? { snapshotIntervalMs: managedAgents.snapshotIntervalSec * 1000 }
         : {}),
@@ -984,7 +975,6 @@ export function buildApp(
         ...(modal.egressProxyUrl ? { egressProxyUrl: modal.egressProxyUrl } : {}),
       }),
       ...(modal.namePrefix ? { namePrefix: modal.namePrefix } : {}),
-      ...(modal.defaultTimeoutSec ? { defaultTimeoutSec: modal.defaultTimeoutSec } : {}),
       ...(modal.snapshotIntervalSec !== undefined ? { snapshotIntervalMs: modal.snapshotIntervalSec * 1000 } : {}),
       nativeSnapshotsEnabled: modal.nativeSnapshotsEnabled ?? false,
       ...(modal.nativeSnapshotIntervalSec !== undefined
@@ -1059,7 +1049,6 @@ export function buildApp(
       ...(ss.retentionSec !== undefined ? { retentionSec: ss.retentionSec } : {}),
       ...(ss.egressAllow ? { egressAllow: ss.egressAllow } : {}),
       ...(ss.egressDeny ? { egressDeny: ss.egressDeny } : {}),
-      ...(ss.defaultTimeoutSec ? { defaultTimeoutSec: ss.defaultTimeoutSec } : {}),
       advisoryLock,
       extraTools: deploymentLayer.advertisedTools,
       credentialPaths: deploymentLayer.credentialPaths,
@@ -1189,13 +1178,7 @@ export function buildApp(
     defaultBackend: config.sandboxBackend,
     onError: sandboxOnError,
   });
-  const secretSource =
-    config.secretsBackend === "aws"
-      ? createLayeredSecretSource(
-          createEnvSecretSource(),
-          createAwsSecretsManagerSource({ prefix: config.secretsPrefix }),
-        )
-      : createEnvSecretSource();
+  const secretSource = createEnvSecretSource();
   const resolveClient: OAuthClientResolver = withPublicOAuthClients(
     createConnectorClientResolver({
       reader: configStore,
@@ -1293,7 +1276,7 @@ export function buildApp(
   const browserSessionStore: BrowserSessionStore | undefined = keychainKeyMaterial
     ? createBrowserSessionStore({ sessions: artifactMap<StoredBrowserSession>("browser_sessions"), key: credentialKey })
     : undefined;
-  const connectorTokens = withOperatorTokenFallback(credentialStore, config.egressServiceHosts ?? [], secretSource);
+  const connectorTokens = credentialStore;
   const consentLinks: ConsentLinkStore = createConsentLinkStore(artifactMap<ConsentLinkRecord>("consent_links"));
   const oauthFlows: OAuthFlowStore = createOAuthFlowStore(artifactMap<OAuthState>("oauth_flows"));
   const secretDrops: SecretDropStore = createSecretDropStore(artifactMap<SecretDropRecord>("secret_drops"));
@@ -1313,7 +1296,7 @@ export function buildApp(
       ? createPostgresToolOutputStore({
           pool: pgArtifactMap.pool,
           bytesFor: (prefix) =>
-            config.snapshotStore === "s3" && config.s3Bucket
+            config.s3Bucket
               ? createS3DurableByteStore({
                   bucket: config.s3Bucket,
                   ...(config.s3Region ? { region: config.s3Region } : {}),
@@ -1689,11 +1672,10 @@ export function buildApp(
   const deployStore = createDeployStore({
     deployments: artifactMap<Deployment>("deployments"),
     ...(pgArtifactMap ? { pg: pgArtifactMap.pool } : {}),
-    touchDebounceMs: deployTouchDebounceMs(config.deployIdleTtlMs),
     git: {
       repoRoot: config.deployGitDir,
       archiveStore: artifactMap<DeployGitArchive>("deploy_git_repos"),
-      ...(config.snapshotStore === "s3" && config.s3Bucket
+      ...(config.s3Bucket
         ? {
             archiveBytes: createS3DurableByteStore({
               bucket: config.s3Bucket,
@@ -1777,7 +1759,6 @@ export function buildApp(
     harness: harness.models,
     memory: baseMemory,
     captureQuietMs: config.memoryCaptureQuietMs,
-    ...(config.memoryCaptureMaxTurns !== undefined ? { captureMaxTurns: config.memoryCaptureMaxTurns } : {}),
     onCaptureError: (e, scope) =>
       errors.record({ category: "memory", code: "capture_failed", message: errMessage(e), scopeLabel: scope }, e),
   });
@@ -2124,7 +2105,6 @@ export function buildApp(
     ...(securityScreener ? { securityScreener } : {}),
     backgroundJobTtlMs: config.backgroundJobTtlMs,
     backgroundJobTtlMaxMs: config.backgroundJobTtlMaxMs,
-    sandboxCapabilityTtlMs: config.sandboxCapabilityTtlMs,
     ...(config.signingSecret ? { signingSecret: config.signingSecret } : {}),
     ...(config.capabilitySecret ? { capabilitySecret: config.capabilitySecret } : {}),
     capabilityTokenCompression: config.capabilityTokenCompression,
@@ -2171,7 +2151,6 @@ export function buildApp(
     managedGroups: projects,
     projects,
     ...(config.reachExecEnabled ? { reachExec: true } : {}),
-    ...(config.surfaceDebugFooter ? { surfaceDebugFooter: true } : {}),
     ...(config.eagerProvisionEnabled ? { eagerProvision: true } : {}),
     environments,
     brokeredTools,
@@ -2865,7 +2844,6 @@ export function buildApp(
     MONITOR_RETENTION_SWEEP_MS,
     { label: "monitor-retention", immediate: true },
   );
-  const deployIdleTtlMs = deployProvider.profile.managedScaleToZero ? undefined : config.deployIdleTtlMs;
   const BLOB_TTL_MS = 6 * 60 * 60_000;
   const composioReturns = artifactMap<ComposioReturn>("composio_returns");
   const composioReturnSweeper = createSweeper(
@@ -2883,10 +2861,6 @@ export function buildApp(
     .catch((e) =>
       console.error("[blob-transfer] S3 lifecycle expiry install failed (sweep remains the fallback):", errMessage(e)),
     );
-  const idleSweeper =
-    deployIdleTtlMs && deployIdleTtlMs > 0
-      ? createSweeper(() => app.reapIdleDeployments(deployIdleTtlMs), Math.max(5_000, Math.floor(deployIdleTtlMs / 4)))
-      : null;
   const DEPLOY_MAINTENANCE_INTERVAL_MS = 5 * 60_000;
   const deployMaintenanceSweeper = createSweeper(() => app.maintainDeployments(), DEPLOY_MAINTENANCE_INTERVAL_MS);
   const deepIdleMachineMs = config.deepIdleMachineMs;
@@ -2943,7 +2917,6 @@ export function buildApp(
       blobSweeper.start();
       composioReturnSweeper.start();
       fileUploads?.start();
-      idleSweeper?.start();
       deployMaintenanceSweeper.start();
       deepIdleSweeper?.start();
       wakeSweep.start();
@@ -2975,7 +2948,6 @@ export function buildApp(
       llmCaptureSweeper?.stop(),
       semanticMemory.stop(),
       skillSyncEngine.stop(),
-      idleSweeper?.stop(),
       deployMaintenanceSweeper.stop(),
       deepIdleSweeper?.stop(),
       blobSweeper.stop(),
@@ -3160,14 +3132,13 @@ export function buildApp(
     ...(backgroundOwnership ? { backgroundOwnership } : {}),
     uiState,
     sessionShares: artifactMap<SessionShare>("session_shares"),
-    sessionShareBytes:
-      config.snapshotStore === "s3" && config.s3Bucket
-        ? createS3DurableByteStore({
-            bucket: config.s3Bucket,
-            ...(config.s3Region ? { region: config.s3Region } : {}),
-            prefix: `${config.s3Prefix ?? ""}session-shares/`,
-          })
-        : createLocalDurableByteStore(join(config.dataDir, "session-shares")),
+    sessionShareBytes: config.s3Bucket
+      ? createS3DurableByteStore({
+          bucket: config.s3Bucket,
+          ...(config.s3Region ? { region: config.s3Region } : {}),
+          prefix: `${config.s3Prefix ?? ""}session-shares/`,
+        })
+      : createLocalDurableByteStore(join(config.dataDir, "session-shares")),
     skillSyncEngine,
     slackCore,
   };
@@ -3194,7 +3165,6 @@ export function serverDeps(
           deploymentLiveSmoke: () => runSessionSmoke(config, `http://127.0.0.1:${config.port}`),
         }
       : {}),
-    allowUnauthenticatedCore: config.allowUnauthenticatedCore,
     ...(config.spendExportToken ? { spendExportToken: config.spendExportToken } : {}),
     ...(config.signingSecret ? { signingSecret: config.signingSecret } : {}),
     ...(config.capabilitySecret ? { capabilitySecret: config.capabilitySecret } : {}),

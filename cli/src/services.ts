@@ -203,8 +203,6 @@ const CATALOG: Record<ServiceName, ServiceDef> = {
     fly: {
       managed: (s) => ({ ...coreWebEnv(s.config), FLY_DEPLOY_APP_PREFIX: s.deployAppPrefix }),
       stackKeys: [
-        "SNAPSHOT_STORE",
-        "TRANSFER_STORE",
         "S3_BUCKET",
         "S3_REGION",
         "PUBLIC_WEB_URL",

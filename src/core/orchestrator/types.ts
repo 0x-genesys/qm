@@ -151,7 +151,6 @@ export interface OrchestratorDeps {
   securityScreenTimeoutMs?: number;
   securityScreener?: SecurityScreener;
   backgroundJobTtlMs?: number;
-  sandboxCapabilityTtlMs?: number;
   backgroundJobTtlMaxMs?: number;
   harness: Harness;
   signingSecret?: string;
@@ -225,7 +224,6 @@ export interface OrchestratorDeps {
   surfaceCache?: SurfaceCache;
   slackContextSource?: "live" | "shadow" | "mirror";
   channelPolicy?: ChannelPolicyStore;
-  surfaceDebugFooter?: boolean;
 }
 
 export interface SurfaceContextPuller {

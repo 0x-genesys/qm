@@ -190,10 +190,7 @@ export function createSlackSender(deps: {
     };
     const messageFooter = deliveryFooter(d);
     if (!text.trim() && !messageFooter.length && d.attachments?.length) text = "Files attached.";
-    const footer = [
-      ...messageFooter,
-      ...(d.destination.debugFooter ? [{ type: "mrkdwn", text: d.destination.debugFooter }] : []),
-    ];
+    const footer = [...messageFooter];
     const footerBlocks = footer.length
       ? [...(text.trim() ? slackSectionBlocks(text) : []), { type: "context", elements: footer }]
       : undefined;

@@ -199,7 +199,6 @@ export interface Destination {
   delete?: { messageTs: string };
   pin?: { messageTs: string; remove?: boolean };
   identity?: string;
-  debugFooter?: string;
   webTranscript?: { kind: "reply" };
 }
 
