@@ -67,7 +67,7 @@ import {
   type KeychainManifestInput,
 } from "../credentials/keychain.ts";
 import { finishProcessCredentials } from "../credentials/execute-files.ts";
-import { isScratchJobComputer, SCRATCH_JOB_GONE_MESSAGE } from "../processes/scratch-job-computers.ts";
+import { isScratchJobComputer } from "../processes/scratch-job-computers.ts";
 import {
   configuredConnectorProviders,
   connectorStatusIsStale,
@@ -1491,6 +1491,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             addCredential(
               {
                 handle: credentialHandle(credential),
+                foregroundOnly: sharedScope,
                 resolve: async () => {
                   await authorizeOwnerCredentials();
                   return resolvedCredential(
@@ -1529,6 +1530,7 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
               addCredential(
                 {
                   handle: `connector:${host}:${accountType ?? "default"}`,
+                  foregroundOnly: sharedScope,
                   resolve: async () => {
                     await authorizeOwnerCredentials();
                     const token = await tokens.connectorAccessToken(host, actor.id, accountType);
@@ -2297,7 +2299,6 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             scopeId,
             conversationKind: conversation.kind,
             openSpeakerKeychain,
-            scratchOnly: sharedScope && deps.scratchExec === true,
             actorId: actor.id,
             members,
             entriesByOwner,
@@ -2407,12 +2408,8 @@ export function createOrchestrator(deps: OrchestratorDeps): Orchestrator {
             ? createBackgroundBroker({
                 sandbox: deps.sandbox,
                 registry: deps.processes,
-                provisionSandbox: async (id) => {
-                  if (!isScratchJobComputer(id)) return provisionResource(id);
-                  const handle = deps.scratchJobs?.get(id);
-                  if (!handle) throw new Error(SCRATCH_JOB_GONE_MESSAGE);
-                  return handle;
-                },
+                provisionSandbox: (id) =>
+                  isScratchJobComputer(id) ? deps.sandbox.provision([], { sandboxId: id }) : provisionResource(id),
                 onExit: (handle, processId) =>
                   finishProcessCredentials(
                     {

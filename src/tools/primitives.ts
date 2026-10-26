@@ -174,6 +174,7 @@ interface ReachedProvenance {
 export interface CommandCredential {
   handle: string;
   scratchOnly?: boolean;
+  foregroundOnly?: boolean;
   env?: Array<{ key: string; value: string; secret?: boolean }>;
   resolve?: () => Promise<{
     commit?: () => Promise<void>;
@@ -1279,6 +1280,10 @@ export function createToolContext(deps: ToolContextDeps): ToolContext {
       if (requestedCredentials.length && !writableScopeId)
         throw new Error("command credentials are available only on scoped computers");
       const requested = await selectCredentials(requestedCredentials);
+      if (requested.some((credential) => credential.foregroundOnly))
+        throw new Error(
+          "a background job in a shared conversation cannot use the speaker's own credentials, because other members can read and control the job; run the command in the foreground or request a grant",
+        );
       const scratchOnly = requested.some((credential) => credential.scratchOnly);
       if (scratchOnly && !deps.provisionScratchJob) throw new Error(SCRATCH_REQUIRED_MESSAGE);
       const policy = deps.commandPolicy;

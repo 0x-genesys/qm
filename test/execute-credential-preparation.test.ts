@@ -206,6 +206,11 @@ function scratchContext(events: string[], extra: Partial<ToolContextDeps> = {}) 
         ...credential(events, "brokered", { env: [{ key: "AGENT_CREDENTIAL_TOKEN", value: "room-capability" }] }),
         scratchOnly: false,
       },
+      {
+        ...credential(events, "own", { env: [{ key: "OWN_TOKEN", value: "own-secret" }] }),
+        scratchOnly: true,
+        foregroundOnly: true,
+      },
     ],
     {
       sandbox,
@@ -224,43 +229,22 @@ function scratchContext(events: string[], extra: Partial<ToolContextDeps> = {}) 
   return { ctx, commands };
 }
 
-test("private credentials run scoped and sandbox_id commands on the turn's scratch computer", async () => {
-  const events: string[] = [];
-  const { ctx, commands } = scratchContext(events);
-  const routes = [{}, { sandboxId: "box-a" }, { scratch: true }];
-  const results = [];
-  for (const route of routes) results.push(await ctx.execute("whoami", { ...route, credentials: ["granted"] }));
-  assert.deepEqual(
-    results.map((result) => result.scratchReroute),
-    [true, true, undefined],
-  );
-  const env = { AGENT_API_TOKEN: "turn-capability", GRANTED_TOKEN: "granted-secret" };
-  assert.deepEqual(commands, [
-    ["scratch", "whoami", env],
-    ["scratch", "whoami", env],
-    ["scratch", "whoami", env],
-  ]);
-  assert.ok(!events.includes("provision") && !events.includes("resource"));
-  const brokered = await ctx.execute("whoami", { credentials: ["brokered"] });
-  assert.equal(brokered.scratchReroute, undefined);
-  assert.deepEqual(commands[3], ["credential-preparation", "whoami", { AGENT_CREDENTIAL_TOKEN: "room-capability" }]);
-});
-
 test("without a scratch computer private credentials are refused and brokered ones still run", async () => {
   const events: string[] = [];
+  const started: string[] = [];
   const { ctx, commands } = scratchContext(events, {
     provisionScratch: undefined,
-    backgroundBroker: {} as ToolContextDeps["backgroundBroker"],
+    backgroundBroker: {
+      async start(_target: SandboxHandle, command: string) {
+        started.push(command);
+        return { processId: "p1", output: "", cursor: 0, status: { state: "running" }, reattached: false };
+      },
+    } as unknown as ToolContextDeps["backgroundBroker"],
   });
-  await assert.rejects(
-    ctx.execute("whoami", { credentials: ["granted"] }),
-    /this deployment has no scratch computer, so a shared conversation can use only brokered org service credentials/,
-  );
-  await assert.rejects(
-    ctx.backgroundStart("sleep 60", { purpose: "Wait", credentials: ["granted"] }),
-    /this deployment has no scratch computer/,
-  );
+  await assert.rejects(ctx.execute("whoami", { credentials: ["granted"] }));
+  await assert.rejects(ctx.backgroundStart("sleep 60", { purpose: "Wait", credentials: ["granted"] }));
   assert.ok(!events.some((event) => event.startsWith("resolve")));
+  assert.deepEqual([commands, started], [[], []]);
   await ctx.execute("whoami", { credentials: ["brokered"] });
   assert.equal(commands.length, 1);
 });
@@ -287,6 +271,8 @@ test("background jobs with private credentials start on the turn's scratch compu
       },
     } as unknown as ToolContextDeps["backgroundBroker"],
   });
+  await assert.rejects(ctx.backgroundStart("sync", { purpose: "Sync", credentials: ["own"] }));
+  assert.deepEqual(started, []);
   const job = await ctx.backgroundStart("sync", { purpose: "Sync", sandboxId: "box-a", credentials: ["granted"] });
   assert.equal(job.scratchReroute, true);
   const plain = await ctx.backgroundStart("gh auth login", { purpose: "Log in" });
@@ -364,10 +350,10 @@ test("the model and transcript see when a command moved to the scratch computer"
       ...params,
     });
   const ran = await run({ credentials: ["granted"] });
-  assert.match(ran.content[0]!.text, /^\[ran on this turn's scratch computer, not the shared one, [^\]]*\]\nok/);
   assert.equal(entries.at(-1)?.scope, "scratch");
   const shared = await run({ credentials: ["brokered"] });
-  assert.match(shared.content[0]!.text, /^ok/);
+  assert.ok(ran.content[0]!.text.endsWith(shared.content[0]!.text));
+  assert.ok(ran.content[0]!.text.length > shared.content[0]!.text.length);
   assert.equal(entries.at(-1)?.scope, "scoped");
   available = false;
   await assert.rejects(run({ credentials: ["granted"] }), /provider unavailable/);

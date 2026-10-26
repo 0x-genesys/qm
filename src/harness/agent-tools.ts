@@ -604,7 +604,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
     background: Type.Optional(
       Type.Boolean({
         description:
-          "Run detached and return a process_id. Use background to poll, send input, stop, or watch the process. Background jobs run on the scoped computer, or on this turn's scratch computer when they name a private credential in a shared conversation.",
+          "Run detached and return a process_id. Use background to poll, send input, stop, or watch the process. Only scoped execution supports background jobs.",
       }),
     ),
     sandbox_id: Type.Optional(
@@ -631,7 +631,7 @@ export function createAgentTools(ref: ToolContextRef, opts?: AgentToolsOptions):
 
     credentials: Type.Optional(
       Type.Array(Type.String(), {
-        description: `Exact authorized credential handles to materialize for this command only (for a background job, until it exits). Newly granted handles are accepted. ${scratchExec ? "In a shared conversation, a command that names any credential except a brokered org service runs on this turn's scratch computer instead of the shared one, even with sandbox_id. That computer has none of the shared workspace's files, so fetch any script or state the command needs from Files or git within the command. Its files are discarded once the turn and its background jobs end, and a background job there ends if this server is redeployed." : "In a shared conversation, only brokered org service credentials can be used: this deployment has no scratch computer to keep other credentials off the shared one."}`,
+        description: `Exact authorized credential handles to materialize for this command only (for a background job, until it exits). Newly granted handles are accepted. ${scratchExec ? "In a shared conversation, a command naming any credential except a brokered org service runs on this turn's scratch computer instead, even with sandbox_id: no shared workspace files (fetch scripts from Files or git in the command), discarded once the turn and its background jobs end." : "In a shared conversation only brokered org service credentials can be used: this deployment has no scratch computer."}`,
       }),
     ),
   };

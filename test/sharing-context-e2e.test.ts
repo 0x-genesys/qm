@@ -683,6 +683,11 @@ test("shared conversations run named credentials on the turn's scratch computer 
     await execute({ command: probe, credentials: handles, scratch: true }),
     "True|file_granted_U2|True|True|isolated",
   );
+  const roomComputer = await b.sandboxResources.resolve("channel:C1");
+  assert.equal(
+    await execute({ command: probe, credentials: handles, sandboxId: roomComputer!.id }),
+    "True|file_granted_U2|True|True|isolated",
+  );
   assert.equal(
     await execute({
       command: `python3 -c 'import os; print(os.getenv("NPM_TOKEN") == "npm_granted_U2", bool(os.getenv("AGENT_CREDENTIAL_TOKEN")), os.getenv("AGENT_API_URL"))'`,
@@ -699,7 +704,7 @@ test("shared conversations run named credentials on the turn's scratch computer 
   );
   assert.deepEqual(exposed, []);
   assert.ok(carried.length >= 3);
-  assert.equal(provisions.filter((key) => key.startsWith("turn:")).length, 3);
+  assert.equal(provisions.filter((key) => key.startsWith("turn:")).length, 4);
   const own = await b.keychain.save({ ownerId: "U1", service: "dm-cli", secret: "dm_own_U1", envKey: "DM_TOKEN" });
   assert.equal(await b.turn(`!run python3 -c 'open("dm-only.txt","w").write("dm")'`), "(exit 0)");
   const before = provisions.length;

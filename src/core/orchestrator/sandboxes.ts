@@ -384,7 +384,7 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
     if (!deps.scratchJobs) throw new Error("background jobs on a scratch computer are not available here");
     const handle = await provisionScratch();
     const sandboxId = scratchJobComputerId(scratchKey());
-    deps.scratchJobs.hold(sandboxId, handle);
+    deps.scratchJobs.hold(sandboxId, memoryScopeId, handle);
     return { handle, sandboxId };
   };
   const provisionScratch = (): Promise<SandboxHandle> => {
@@ -562,7 +562,19 @@ export function createTurnSandboxes(ctx: TurnSandboxContext) {
         deps.scratchJobs !== undefined &&
         (await deps.scratchJobs
           .retainWhileJobsRun(scratchJobComputerId(scratchKey()), () => releaseScratch(scratchHandle))
-          .catch(swallowAs("orchestrator: scratch job retention", false)));
+          .catch((error) => {
+            deps.errors?.record(
+              {
+                category: "process_session",
+                code: "scratch_job_retention_failed",
+                message: errMessage(error),
+                scopeLabel: scopeId,
+                sessionId: session.id,
+              },
+              error,
+            );
+            return false;
+          }));
       if (retained) {
         scratchBox.handle = null;
         recordScratchLifecycle("retained_for_jobs", scratchHandle);
