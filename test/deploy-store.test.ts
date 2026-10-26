@@ -212,8 +212,9 @@ test("touch is debounced per id within the window", async () => {
 });
 
 test("touch does not rewrite the deployment blob and falls back to the blob's legacy value", async () => {
-  const deployments = testMap<Deployment>();
-  const s1 = createDeployStore(testDeployBackings({ deployments }));
+  const backing = testDeployBackings();
+  const { deployments } = backing;
+  const s1 = createDeployStore(backing);
   const d = await s1.create({
     ownerScopeId: scopeId("personal", "U1"),
     createdBy: "U1",
@@ -222,7 +223,7 @@ test("touch does not rewrite the deployment blob and falls back to the blob's le
   });
   await deployments.merge(d.id, { lastAccessAt: 777 } as Partial<Deployment>);
 
-  const s2 = createDeployStore(testDeployBackings({ deployments, touchDebounceMs: 0 }));
+  const s2 = createDeployStore({ ...backing, touchDebounceMs: 0 });
   assert.equal((await s2.get(d.id))!.lastAccessAt, 777, "a never-touched row reads the blob's value");
   await s2.touch(d.id, 9_999);
   assert.equal((await s2.get(d.id))!.lastAccessAt, 9_999);
@@ -230,9 +231,9 @@ test("touch does not rewrite the deployment blob and falls back to the blob's le
 });
 
 test("deploy versions carry git commits for app files and rollback moves the current ref", async () => {
-  const deployments = testMap<Deployment>();
+  const backing = testDeployBackings();
   const repoRoot = mkdtempSync(join(tmpdir(), "deploy-git-"));
-  const s1 = createDeployStore(testDeployBackings({ deployments, git: { repoRoot } }));
+  const s1 = createDeployStore({ ...backing, git: { repoRoot } });
   const d = await s1.create({
     ownerScopeId: scopeId("personal", "U1"),
     createdBy: "U1",
@@ -257,7 +258,7 @@ test("deploy versions carry git commits for app files and rollback moves the cur
     homeDir: "/home/v2",
   });
 
-  const s2 = createDeployStore(testDeployBackings({ deployments, git: { repoRoot } }));
+  const s2 = createDeployStore({ ...backing, git: { repoRoot } });
   const v2 = (await s2.versionOf(d.id, 2))!;
   assert.match(v1.commit ?? "", /^[0-9a-f]{40}$/);
   assert.match(v2.commit ?? "", /^[0-9a-f]{40}$/);
@@ -378,9 +379,9 @@ test("an upload cannot smuggle files into the deployment repo's own git director
 });
 
 test("uploaded files a .gitignore would exclude still reach the deployment's git history", async () => {
-  const deployments = testMap<Deployment>();
+  const backing = testDeployBackings();
   const repoRoot = mkdtempSync(join(tmpdir(), "deploy-git-ignored-"));
-  const s = createDeployStore(testDeployBackings({ deployments, git: { repoRoot } }));
+  const s = createDeployStore({ ...backing, git: { repoRoot } });
   const d = await s.create({
     ownerScopeId: scopeId("personal", "U1"),
     createdBy: "U1",
@@ -422,14 +423,12 @@ test("uploaded files a .gitignore would exclude still reach the deployment's git
 });
 
 test("deploy git repos restore from the durable archive into a fresh repo root", async () => {
-  const deployments = testMap<Deployment>();
+  const backing = testDeployBackings();
   const archiveStore = testMap<DeployGitArchive>();
-  const s1 = createDeployStore(
-    testDeployBackings({
-      deployments,
-      git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-a-")), archiveStore },
-    }),
-  );
+  const s1 = createDeployStore({
+    ...backing,
+    git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-a-")), archiveStore },
+  });
   const d = await s1.create({
     ownerScopeId: scopeId("personal", "U1"),
     createdBy: "U1",
@@ -444,12 +443,10 @@ test("deploy git repos restore from the durable archive into a fresh repo root",
     files: [{ path: "server.js", data: "console.log('v2')" }],
   });
 
-  const s2 = createDeployStore(
-    testDeployBackings({
-      deployments,
-      git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-b-")), archiveStore },
-    }),
-  );
+  const s2 = createDeployStore({
+    ...backing,
+    git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-b-")), archiveStore },
+  });
   const v2 = (await s2.versionOf(d.id, 2))!;
   await s2.setAppliedVersion(d.id, 2);
   assert.equal(
@@ -465,25 +462,21 @@ test("deploy git repos restore from the durable archive into a fresh repo root",
 
   await s2.setCurrentVersion(d.id, 1);
   await s2.setAppliedVersion(d.id, 1);
-  const s3 = createDeployStore(
-    testDeployBackings({
-      deployments,
-      git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-c-")), archiveStore },
-    }),
-  );
+  const s3 = createDeployStore({
+    ...backing,
+    git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-c-")), archiveStore },
+  });
   assert.equal(await s3.refOf(d.id, deployCurrentGitRef), v1.commit, "ref-only changes are also durably archived");
 });
 
 test("deploy git archives keep bundle bytes in the byte store, not the row", async () => {
-  const deployments = testMap<Deployment>();
+  const backing = testDeployBackings();
   const archiveStore = testMap<DeployGitArchive>();
   const archiveBytes = createMemoryDurableByteStore();
-  const s1 = createDeployStore(
-    testDeployBackings({
-      deployments,
-      git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-blob-a-")), archiveStore, archiveBytes },
-    }),
-  );
+  const s1 = createDeployStore({
+    ...backing,
+    git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-blob-a-")), archiveStore, archiveBytes },
+  });
   const d = await s1.create({
     ownerScopeId: scopeId("personal", "U1"),
     createdBy: "U1",
@@ -497,12 +490,10 @@ test("deploy git archives keep bundle bytes in the byte store, not the row", asy
   assert.ok(row.blobKey, "the row references the bundle blob");
   const firstBlobKey = row.blobKey!;
 
-  const s2 = createDeployStore(
-    testDeployBackings({
-      deployments,
-      git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-blob-b-")), archiveStore, archiveBytes },
-    }),
-  );
+  const s2 = createDeployStore({
+    ...backing,
+    git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-blob-b-")), archiveStore, archiveBytes },
+  });
   assert.deepEqual(
     (await s2.filesOf(d.id, 1))?.map((f) => [f.path, Buffer.from(f.data).toString("utf8")]),
     [["server.js", "console.log('v1')"]],
@@ -522,14 +513,12 @@ test("deploy git archives keep bundle bytes in the byte store, not the row", asy
 });
 
 test("legacy inline-bundle rows still restore and migrate to blob refs on read", async () => {
-  const deployments = testMap<Deployment>();
+  const backing = testDeployBackings();
   const archiveStore = testMap<DeployGitArchive>();
-  const s1 = createDeployStore(
-    testDeployBackings({
-      deployments,
-      git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-legacy-a-")), archiveStore },
-    }),
-  );
+  const s1 = createDeployStore({
+    ...backing,
+    git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-legacy-a-")), archiveStore },
+  });
   const d = await s1.create({
     ownerScopeId: scopeId("personal", "U1"),
     createdBy: "U1",
@@ -541,12 +530,10 @@ test("legacy inline-bundle rows still restore and migrate to blob refs on read",
   assert.ok(legacy.bundleB64, "without a byte store the bundle is stored inline (legacy format)");
 
   const archiveBytes = createMemoryDurableByteStore();
-  const s2 = createDeployStore(
-    testDeployBackings({
-      deployments,
-      git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-legacy-b-")), archiveStore, archiveBytes },
-    }),
-  );
+  const s2 = createDeployStore({
+    ...backing,
+    git: { repoRoot: mkdtempSync(join(tmpdir(), "deploy-git-legacy-b-")), archiveStore, archiveBytes },
+  });
   assert.deepEqual(
     (await s2.filesOf(d.id, 1))?.map((f) => [f.path, Buffer.from(f.data).toString("utf8")]),
     [["server.js", "console.log('v1')"]],

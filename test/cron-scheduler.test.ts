@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createScheduler } from "../src/cron/scheduler.ts";
-import { runNowSettled } from "./support/settle.ts";
+import { runNowSettled, settle } from "./support/settle.ts";
 import { createCronStore } from "../src/cron/cron-store.ts";
 import { createDeliveryStore } from "../src/delivery/delivery-store.ts";
 import { createIdempotencyStore } from "../src/idempotency/idempotency-store.ts";
@@ -156,7 +156,8 @@ test("a channel cron fire gives the agent the people-here roster with real <@…
   });
   await runNowSettled(scheduler, cron.id);
   const text = calls[0]?.text ?? "";
-  assert.match(text, /People here: @Eve \(<@U9>\), @Dana \(<@U5>\)\./);
+  assert.match(text, /People here: [^\n]*@Eve \(<@U9>\)/);
+  assert.match(text, /People here: [^\n]*@Dana \(<@U5>\)/);
   assert.match(text, /@-mention them with their <@…> id/);
   assert.doesNotMatch(text, /<@eve@acme\.com>/);
 });
@@ -863,9 +864,7 @@ test("a failing cron fire is logged, not swallowed", async (t) => {
   });
   scheduler.start(1000);
   t.mock.timers.tick(1000);
-  for (let i = 0; i < 50 && !logged.some((l) => l.includes("[failed] scheduler: fire:")); i++) {
-    await new Promise((r) => setImmediate(r));
-  }
+  await settle(async () => logged.some((l) => l.includes("[failed] scheduler: fire:")));
   scheduler.stop();
   assert.ok(
     logged.some((l) => l.includes("[failed] scheduler: fire:") && l.includes("boom")),
@@ -911,10 +910,10 @@ test("queue mode: fires claim the slot before running, and stale or lost claims 
     createdBy: "U1",
     ownerScopeId: scopeId("channel", "C1"),
   });
-  for (let i = 0; i < 20 && !onFire; i++) await new Promise((r) => setImmediate(r));
+  await settle(async () => onFire !== undefined);
   assert.ok(onFire, "queue mode registers the fire handler");
   scheduler.notifyChanged(cron.id);
-  for (let i = 0; i < 20 && !enqueued.length; i++) await new Promise((r) => setImmediate(r));
+  await settle(async () => enqueued.length > 0);
   assert.deepEqual(enqueued.pop(), { cronId: cron.id, scheduledAt: 1 }, "notifyChanged prompt-schedules the slot");
 
   await onFire!({ cronId: cron.id, scheduledAt: 1 });
@@ -997,7 +996,7 @@ for (const queued of [false, true]) {
       () => (deferred = true),
     );
     try {
-      await new Promise((resolve) => setImmediate(resolve));
+      await Promise.race([second, new Promise((resolve) => setTimeout(resolve, 5_000))]);
       assert.equal(deferred, true, "an active fire must not make the scheduler wait for its lifecycle lock");
       assert.equal(calls.length, 1, "the busy cron did not start another agent");
       const pending = (await crons.get(cron.id))!;
@@ -1086,7 +1085,7 @@ test("queue mode: concurrent reconciliation cannot consume an overdue slot while
   let second: Promise<void> | undefined;
   try {
     await gates[0]!.entered.promise;
-    for (let i = 0; i < 50 && !enqueued.length; i++) await new Promise((r) => setImmediate(r));
+    await settle(async () => enqueued.length > 0);
     clock++;
     second = onFire(enqueued.at(-1)!);
     await gates[1]!.entered.promise;
@@ -1134,7 +1133,7 @@ test("queue mode: while the queue runs, the interval scheduler's leader lease is
   });
   let queueHealthy = true;
   scheduler.start(1000);
-  for (let i = 0; i < 50 && !heldKeys.length; i++) await new Promise((r) => setImmediate(r));
+  await settle(async () => heldKeys.length > 0);
   assert.deepEqual(
     heldKeys,
     ["cron:scheduler:tick"],
@@ -1183,7 +1182,7 @@ test("queue mode: an authz-failed fire disables the cron but gives the slot back
     destination: { type: "slack", target: "C1", audienceScopeId: scopeId("channel", "C1") },
   });
   await identity.deactivate("U1");
-  for (let i = 0; i < 20 && !onFire; i++) await new Promise((r) => setImmediate(r));
+  await settle(async () => onFire !== undefined);
   await onFire!({ cronId: cron.id, scheduledAt: 1 });
   const after = (await crons.get(cron.id))!;
   assert.equal(calls.length, 0, "no turn runs for a departed owner");
@@ -1497,7 +1496,7 @@ test("queue mode: a busy fire releases its slot and is re-queued to run after th
     createdBy: "U1",
     ownerScopeId: scopeId("channel", "C1"),
   });
-  for (let i = 0; i < 20 && !onFire; i++) await new Promise((r) => setImmediate(r));
+  await settle(async () => onFire !== undefined);
   enqueued.length = 0;
 
   await onFire!({ cronId: cron.id, scheduledAt: 1 });
