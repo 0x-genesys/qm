@@ -72,6 +72,7 @@ export interface DriverCheckpoints {
   capture(name: string): Promise<string>;
   restore(name: string, checkpointId: string): Promise<void>;
   drop(name: string, checkpointId: string): Promise<void>;
+  sameMachineOnly?: boolean;
 }
 
 export interface SandboxDriver {
@@ -195,12 +196,17 @@ export function createProviderSandbox(
         created = true;
       }
       const checkpointId = stored?.checkpointId;
+      const sameMachineOnly = !!driver.checkpoints?.sameMachineOnly;
       const restored =
-        created && checkpointId && driver.checkpoints
+        created && checkpointId && driver.checkpoints && !sameMachineOnly
           ? (await driver.checkpoints.restore(name, checkpointId), true)
           : false;
       const hydrated = restored || (homeSnapshots ? await homeSnapshots.hydrateHome(scope, name) : false);
-      await merge(scope, { initializationPending: undefined, ...(hydrated ? { homeDirty: false } : {}) });
+      await merge(scope, {
+        initializationPending: undefined,
+        ...(hydrated ? { homeDirty: false } : {}),
+        ...(created && sameMachineOnly ? { checkpointId: undefined, checkpointAtMs: undefined } : {}),
+      });
       return !hydrated;
     } catch (e) {
       if (created)
@@ -285,8 +291,11 @@ export function createProviderSandbox(
   });
 
   async function capture(scope: string, name: string): Promise<void> {
+    const portable = homeSnapshots && (!driver.checkpoints || driver.checkpoints.sameMachineOnly);
+    let exportError: unknown;
+    if (portable) await exportHome(scope, name).catch((e: unknown) => (exportError = e));
     if (driver.checkpoints) await captureCheckpoint(scope, name);
-    else if (homeSnapshots) await exportHome(scope, name);
+    if (exportError) throw exportError;
   }
 
   async function recovery(scope: string): Promise<Pick<ComputerStatus, "recovery">> {

@@ -207,22 +207,19 @@ export async function resolveSandbox(opts: {
     const env: Record<string, string> = {
       SANDBOX_BACKEND: "do-managed-agents",
       DO_AGENTS_API_TOKEN: managedAgentsToken,
-      DO_AGENTS_NAME_PREFIX: opts.baseEnv.DO_AGENTS_NAME_PREFIX || "qmdev",
+      SANDBOX_NAME_PREFIX: opts.baseEnv.SANDBOX_NAME_PREFIX || "qmdev",
     };
-    if (opts.baseEnv.DO_AGENTS_API_BASE_URL) env.DO_AGENTS_API_BASE_URL = opts.baseEnv.DO_AGENTS_API_BASE_URL;
     if (opts.baseEnv.DO_AGENTS_TEMPLATE) env.DO_AGENTS_TEMPLATE = opts.baseEnv.DO_AGENTS_TEMPLATE;
-    if (opts.baseEnv.DO_AGENTS_SIZE_SLUG) env.DO_AGENTS_SIZE_SLUG = opts.baseEnv.DO_AGENTS_SIZE_SLUG;
-    if (opts.baseEnv.DO_AGENTS_EGRESS_PROXY_URL)
-      env.DO_AGENTS_EGRESS_PROXY_URL = opts.baseEnv.DO_AGENTS_EGRESS_PROXY_URL;
+    if (opts.baseEnv.SANDBOX_EGRESS_PROXY_URL) env.SANDBOX_EGRESS_PROXY_URL = opts.baseEnv.SANDBOX_EGRESS_PROXY_URL;
     else
       warnings.push(
-        "DO_AGENTS_EGRESS_PROXY_URL unset -- do-managed-agents sandbox runs with NO egress enforcement; set it to QA the forced-proxy path",
+        "SANDBOX_EGRESS_PROXY_URL unset -- do-managed-agents sandbox runs with NO egress enforcement; set it to QA the forced-proxy path",
       );
     if (managedAgentsApiUrl) env.PUBLIC_API_URL = managedAgentsApiUrl;
     return {
       backend: "do-managed-agents",
       env,
-      detail: `Managed Agents (${opts.baseEnv.DO_AGENTS_API_BASE_URL || "api.digitalocean.com"})`,
+      detail: "Managed Agents (api.digitalocean.com)",
       publicApiUrl: managedAgentsApiUrl,
       warnings,
     };

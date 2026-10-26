@@ -10,11 +10,10 @@ import { createLocalWorkspaceStore } from "../src/workspace/workspace-store.ts";
 import { scopeId } from "../src/types.ts";
 import { createMemoryMap } from "../src/persistence/durable-map.ts";
 import { createMemorySnapshotStore } from "../src/sandbox/home-snapshot.ts";
+import { createMemoryAdvisoryLock } from "../src/persistence/advisory-lock.ts";
 
 const apiToken = process.env.DO_AGENTS_API_TOKEN;
-const apiBaseUrl = process.env.DO_AGENTS_API_BASE_URL;
 const template = process.env.DO_AGENTS_TEMPLATE ?? "";
-const agent = process.env.DO_AGENTS_AGENT;
 const keep = process.env.DO_AGENTS_SMOKE_KEEP === "1";
 
 const log = (...a: unknown[]) => console.log("[managed-agents-smoke]", ...a);
@@ -24,8 +23,6 @@ async function main(): Promise<void> {
 
   const client = createSdkManagedAgentsClient({
     apiToken,
-    ...(apiBaseUrl ? { apiBaseUrl } : {}),
-    ...(agent ? { agent } : {}),
     ...(template ? { template } : {}),
   });
 
@@ -36,6 +33,7 @@ async function main(): Promise<void> {
       client,
       namePrefix: prefix,
       store: createMemoryMap(),
+      advisoryLock: createMemoryAdvisoryLock(),
       snapshots: createMemorySnapshotStore(),
     },
   );
