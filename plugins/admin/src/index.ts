@@ -203,13 +203,8 @@ async function forwardDownload(res: ServerResponse, principal: string, corePath:
   }
 }
 
-function uploadFileName(req: IncomingMessage): string {
-  const raw = typeof req.headers["x-file-name"] === "string" ? req.headers["x-file-name"] : "";
-  try {
-    return decodeURIComponent(raw) || "file";
-  } catch {
-    return raw || "file";
-  }
+function uploadFileName(url: URL): string {
+  return url.searchParams.get("name")?.trim() || "file";
 }
 
 async function stageUploadStream(req: IncomingMessage, sha256: string): Promise<Response> {
@@ -230,16 +225,17 @@ async function uploadFileFromRequest(
   req: IncomingMessage,
   res: ServerResponse,
   principal: string,
-  scope: string,
+  url: URL,
 ): Promise<void> {
+  const scope = url.searchParams.get("scope") ?? "";
   if (!scope) {
     req.resume();
     return json(res, 400, { error: "bad_request", message: "scope required" });
   }
-  const sha256 = typeof req.headers["x-content-sha256"] === "string" ? req.headers["x-content-sha256"] : "";
+  const sha256 = url.searchParams.get("sha") ?? "";
   if (!/^[0-9a-f]{64}$/.test(sha256)) {
     req.resume();
-    return json(res, 400, { error: "bad_request", message: "x-content-sha256 required" });
+    return json(res, 400, { error: "bad_request", message: "sha (hex sha-256) required" });
   }
   try {
     const staged = await stageUploadStream(req, sha256);
@@ -251,7 +247,7 @@ async function uploadFileFromRequest(
     const { blobId } = JSON.parse(stagedText) as { blobId: string };
     const corePath = `/v1/admin/files/upload?scope=${encodeURIComponent(scope)}`;
     const body = JSON.stringify({
-      name: uploadFileName(req),
+      name: uploadFileName(url),
       mimetype:
         typeof req.headers["content-type"] === "string" ? req.headers["content-type"] : "application/octet-stream",
       blobId,
@@ -497,7 +493,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       req.resume();
       return json(res, 401, { error: "signed_out" });
     }
-    return uploadFileFromRequest(req, res, principal, url.searchParams.get("scope") ?? "");
+    return uploadFileFromRequest(req, res, principal, url);
   }
 
   if (WRITES.get(first)?.includes(method)) {

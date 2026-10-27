@@ -5,6 +5,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
 
 const calls: { method: string; url: string; actor: string | null; signed: boolean }[] = [];
+let registered: unknown;
 const core = createServer((req: IncomingMessage, res) => {
   calls.push({
     method: req.method ?? "",
@@ -33,8 +34,14 @@ const core = createServer((req: IncomingMessage, res) => {
     return void res.end(JSON.stringify({ blobId: "feedfacefeedfacefeedfacefeedface", sizeBytes: 9 }));
   }
   if (req.method === "POST" && (req.url ?? "").startsWith("/v1/admin/files/upload")) {
-    res.writeHead(200, { "content-type": "application/json" });
-    return void res.end(JSON.stringify({ file: { id: "file-1", name: "note.txt" } }));
+    let text = "";
+    req.on("data", (chunk) => (text += chunk));
+    req.on("end", () => {
+      registered = JSON.parse(text);
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ file: { id: "file-1", name: (registered as { name: string }).name } }));
+    });
+    return;
   }
   res.writeHead(404, { "content-type": "application/json" });
   res.end(JSON.stringify({ error: "not_found" }));
@@ -84,18 +91,19 @@ test("GET /api/files/download requires a signed-in cookie before proxying", asyn
 test("POST /api/files/upload stages the body, then registers it with the admin actor", async () => {
   const body = Buffer.from("upload me");
   const sha = createHash("sha256").update(body).digest("hex");
-  const r = await fetch(`${base}/api/files/upload?scope=personal%3AU1`, {
+  const query = new URLSearchParams({ scope: "personal:U1", sha, name: "Q3 report & notes é.txt" });
+  const r = await fetch(`${base}/api/files/upload?${query}`, {
     method: "POST",
-    headers: {
-      cookie: ADMIN,
-      "content-type": "text/plain",
-      "x-file-name": encodeURIComponent("note.txt"),
-      "x-content-sha256": sha,
-    },
+    headers: { cookie: ADMIN, "content-type": "text/plain" },
     body,
   });
   assert.equal(r.status, 200);
-  assert.deepEqual(await r.json(), { file: { id: "file-1", name: "note.txt" } });
+  assert.deepEqual(await r.json(), { file: { id: "file-1", name: "Q3 report & notes é.txt" } });
+  assert.deepEqual(registered, {
+    name: "Q3 report & notes é.txt",
+    mimetype: "text/plain",
+    blobId: "feedfacefeedfacefeedfacefeedface",
+  });
   const blob = calls.at(-2)!;
   assert.equal(blob.method, "POST");
   assert.match(blob.url, /^\/v1\/blobs\?_sourceAuthNonce=/);

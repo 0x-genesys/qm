@@ -103,3 +103,29 @@ test("reasoning edits preserve pricing and omitted positional fields", () => {
   assert.equal(models[1].reasoning, true);
   dom.window.close();
 });
+
+test("vision edits round-trip through the models field without disturbing other columns", () => {
+  const { dom, ui } = fixture();
+  ui.openProvider({
+    id: "gpu",
+    name: "GPU",
+    protocol: "openai",
+    baseUrl: "http://10.0.0.5:8000/v1",
+    models: [
+      { id: "qwen", name: "Qwen", contextWindow: 131072, maxTokens: 16384, vision: true, input: 0 },
+      { id: "plain", reasoning: true },
+    ],
+  });
+  assert.equal(ui.provider.draft.models, "qwen | Qwen | 131072 | 16384 |  | true\nplain |  |  |  | true");
+  assert.deepEqual(JSON.parse(JSON.stringify(ui.providerBody().models)), [
+    { id: "qwen", name: "Qwen", contextWindow: 131072, maxTokens: 16384, vision: true, input: 0 },
+    { id: "plain", reasoning: true },
+  ]);
+  ui.provider.draft.models = "qwen | Qwen | 131072 | 16384 |  | false\nnew-vl | New | 16000 | 2000 | false | true";
+  const models = ui.providerBody().models;
+  assert.equal(models[0].vision, false);
+  assert.equal(models[0].input, 0);
+  assert.equal(models[1].vision, true);
+  assert.equal(models[1].reasoning, false);
+  dom.window.close();
+});

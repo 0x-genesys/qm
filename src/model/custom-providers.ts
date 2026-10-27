@@ -28,6 +28,7 @@ interface CustomModelSpec {
   input?: number;
   /** USD per million output tokens. Defaults to 0. */
   output?: number;
+  vision?: boolean;
 }
 
 export interface CustomProviderSpec {
@@ -64,6 +65,8 @@ export function validateCustomProviderSpec(spec: CustomProviderSpec): void {
       throw new Error(`model "${m.id}": name must be a string of 200 chars or fewer`);
     if (m.reasoning !== undefined && typeof m.reasoning !== "boolean")
       throw new Error(`model "${m.id}": reasoning must be a boolean`);
+    if (m.vision !== undefined && typeof m.vision !== "boolean")
+      throw new Error(`model "${m.id}": vision must be a boolean`);
     if (seen.has(m.id)) throw new Error(`duplicate model id "${m.id}"`);
     seen.add(m.id);
     for (const [field, v] of [
@@ -123,7 +126,7 @@ function toRuntimeModel(provider: CustomProviderSpec, m: CustomModelSpec): Custo
     api: customProviderApi(provider.protocol),
     baseUrl: provider.baseUrl,
     reasoning: m.reasoning ?? false,
-    input: ["text"],
+    input: m.vision ? ["text", "image"] : ["text"],
     cost: { input: m.input ?? 0, output: m.output ?? 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: m.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     maxTokens: m.maxTokens ?? DEFAULT_MAX_TOKENS,
@@ -195,10 +198,11 @@ export function customModelsJson(): { providers: Record<string, unknown> } | und
           api: customProviderApi(spec.protocol),
           models: [...registry.values()]
             .filter((m) => m.provider === spec.id)
-            .map(({ id, name, reasoning, contextWindow, maxTokens, cost }) => ({
+            .map(({ id, name, reasoning, input, contextWindow, maxTokens, cost }) => ({
               id,
               name,
               reasoning,
+              input,
               contextWindow,
               maxTokens,
               cost,
