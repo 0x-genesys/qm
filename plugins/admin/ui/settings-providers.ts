@@ -42,7 +42,11 @@ export function openProvider(item: any = null) {
     modelSpecs: item?.models || [],
     models: item
       ? item.models
-          .map((m: any) => [m.id, m.name, m.contextWindow, m.maxTokens, m.reasoning].map((x) => x ?? "").join(" | "))
+          .map((m: any) =>
+            [m.id, m.name, m.contextWindow, m.maxTokens, m.reasoning, ...(m.vision === undefined ? [] : [m.vision])]
+              .map((x) => x ?? "")
+              .join(" | "),
+          )
           .join("\n")
       : "",
     validate: true,
@@ -63,6 +67,9 @@ function closeProvider() {
   provider.draft.key = "";
   redraw();
 }
+function capabilityField(value: string | undefined) {
+  return value === "true" || value === "false" ? value === "true" : value || undefined;
+}
 export function providerBody() {
   const d = provider.draft;
   const models = d.models
@@ -70,15 +77,15 @@ export function providerBody() {
     .map((l: string) => l.trim())
     .filter(Boolean)
     .map((l: string) => {
-      const [id, name, contextWindow, maxTokens, reasoning] = l.split("|").map((p) => p.trim());
-      const capability = reasoning === "true" || reasoning === "false" ? reasoning === "true" : reasoning || undefined;
+      const [id, name, contextWindow, maxTokens, reasoning, vision] = l.split("|").map((p) => p.trim());
       return {
         ...d.modelSpecs?.find((model: any) => model.id === id),
         id,
         name: name || undefined,
         contextWindow: contextWindow ? Number(contextWindow) : undefined,
         maxTokens: maxTokens ? Number(maxTokens) : undefined,
-        reasoning: capability,
+        reasoning: capabilityField(reasoning),
+        vision: capabilityField(vision),
       };
     });
   return {
@@ -262,7 +269,8 @@ function template() {
         /></label>
         <label class="custom-provider-models"
           >Models
-          <span class="label-detail">one per line: id | name | context | max tokens | reasoning (true/false)</span
+          <span class="label-detail"
+            >one per line: id | name | context | max tokens | reasoning (true/false) | vision (true/false)</span
           ><textarea
             id="custom-provider-models"
             .value=${provider.draft.models || ""}

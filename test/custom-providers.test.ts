@@ -228,6 +228,36 @@ for (const protocol of ["openai", "openai-responses", "anthropic"] as const) {
   }
 }
 
+test("custom vision models accept image input in resolution and in models.json; others stay text-only", async () => {
+  const spec = {
+    ...GATEWAY,
+    models: [{ id: "acme-vl", vision: true }, { id: "acme-text", vision: false }, { id: "acme-plain" }],
+  };
+  const backing = createMemoryMap<StoredCustomProvider>();
+  await createCustomProviderStore({ backing, keyMaterial: "vision-test" }).upsert(spec, "local", "admin@example.com");
+  setCustomProviders(await createCustomProviderStore({ backing, keyMaterial: "vision-test" }).enabled());
+  assert.deepEqual(resolveModel("custom/acme-gateway/acme-vl")?.input, ["text", "image"]);
+  assert.deepEqual(resolveModel("custom/acme-gateway/acme-text")?.input, ["text"]);
+  assert.deepEqual(resolveModel("custom/acme-gateway/acme-plain")?.input, ["text"]);
+  const json = customModelsJson() as {
+    providers: Record<string, { models: Array<{ id: string; input: string[] }> }>;
+  };
+  assert.deepEqual(Object.fromEntries(json.providers["acme-gateway"]!.models.map((m) => [m.id, m.input])), {
+    "custom/acme-gateway/acme-vl": ["text", "image"],
+    "custom/acme-gateway/acme-text": ["text"],
+    "custom/acme-gateway/acme-plain": ["text"],
+  });
+});
+
+test("custom provider vision rejects non-boolean capabilities", () => {
+  for (const vision of ["true", "vision", 0, 1, null, {}]) {
+    assert.throws(
+      () => validateCustomProviderSpec({ ...GATEWAY, models: [{ id: "acme-large", vision } as never] }),
+      /vision must be a boolean/,
+    );
+  }
+});
+
 test("custom provider reasoning rejects non-boolean capabilities", () => {
   for (const reasoning of ["true", "false", 0, 1, null, {}]) {
     assert.throws(
