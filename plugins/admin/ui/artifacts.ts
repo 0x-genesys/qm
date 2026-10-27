@@ -218,13 +218,10 @@ export function uploadBox(c: Context) {
     let uploaded = 0;
     try {
       for (const file of picked) {
-        const response = await fetch(c.apiBase + "/api/files/upload?scope=" + encodeURIComponent(c.scope), {
+        const query = new URLSearchParams({ scope: c.scope, sha: await c.fileSha256(file), name: file.name || "file" });
+        const response = await fetch(c.apiBase + "/api/files/upload?" + query, {
           method: "POST",
-          headers: {
-            "content-type": file.type || "application/octet-stream",
-            "x-file-name": encodeURIComponent(file.name || "file"),
-            "x-content-sha256": await c.fileSha256(file),
-          },
+          headers: { "content-type": file.type || "application/octet-stream" },
           body: file,
         });
         if (!response.ok)
